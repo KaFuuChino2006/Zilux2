@@ -141,6 +141,9 @@
 
 ## 7. 发布流程（GitHub Actions）
 
+> **发版节奏约定**：累计修复 / 优化超过 5 处，或新增功能累计 3 个以上，才递增 patch 版本并发 Release；不足门槛时只提交推送 `main`，不改版本、不打 tag。
+
+
 `.github/workflows/release.yml`：
 
 1. 触发：推送 `v*` tag，或手动 `workflow_dispatch`（输入版本号）。

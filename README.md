@@ -92,6 +92,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\make-installer.ps1 -Ve
 
 当前版本：**1.1.3**，唯一来源为根目录 `Directory.Build.props` 的 `<Version>`；宿主、安装器、Release 与更新检查均读取该值（CI 通过 `-p:Version=<tag>` 覆盖）。
 
+发版节奏：修复 / 优化累计超过 5 处，或新增功能累计 3 个以上，才递增 patch 版本并发布 Release；未达门槛的改动只提交推送 `main`。
+
 ## 运行与自测
 
 ```powershell

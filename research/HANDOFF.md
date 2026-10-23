@@ -1,8 +1,8 @@
 # Zilux2 上下文交接（HANDOFF）
 
-> 更新时间：2026-10-24（播放渐变增强 v1.1.3 完成）
-> 当前版本：**1.0.0**（唯一来源：根目录 `Directory.Build.props`；安装包 `dist/Zilux2-Setup-1.0.0.exe`）
-> 代码仓库：`KaFuuChino2006/Zilux2`（**private**，已推送 `main`；tag `v1.0.0` 仅本地、未发布，等将来公开仓库再推）
+> 更新时间：2026-10-24（v1.1.3 已发布）
+> 当前版本：**1.1.3**（唯一来源：根目录 `Directory.Build.props`；最新安装包 `dist/Zilux2-Setup-1.1.3.exe`）
+> 代码仓库：`KaFuuChino2006/Zilux2`（**private**，`main` 已同步；Releases 已有 v1.1.0 / v1.1.1 / v1.1.2 / v1.1.3）
 > 本文件给下一个接手的 AI / 开发者：读完即可继续开发。
 
 ## 1. 项目是什么
@@ -138,14 +138,25 @@ powershell -File tools/release.ps1 -DryRun   # 演练；去掉 -DryRun 真发版
 ## 8. 当前状态
 
 - 版本号统一由 `Directory.Build.props` 控制（当前 **1.1.3**）；`%LOCALAPPDATA%\Programs\Zilux2` 装的是最近一次构建（自动更新会改装到更新版本）。
-- 本窗口（1.1.3）：播放/暂停渐变增强——淡出/淡入时长分开（`playback.fadeOutMs` / `playback.fadeInMs`）、曲线可选（`playback.fadeCurve`: smooth/linear/exponential）、新增「人声保留淡出」（`playback.fadeVocal` / `playback.fadeVocalTailMs`，暂停时压低低频/高频让人声多留一会儿）；快捷设置新增人声保留开关；设置契约与 README 同步。
+- 1.1.1：播放/暂停渐变增强——淡出/淡入时长分开（`playback.fadeOutMs` / `playback.fadeInMs`）、曲线可选（`playback.fadeCurve`: smooth/linear/exponential）、新增「人声保留淡出」（`playback.fadeVocal` / `playback.fadeVocalTailMs`，暂停时压低低频/高频让人声多留一会儿）；快捷设置新增人声保留开关；设置契约与 README 同步。
 - 上一窗口（1.1.0）：设置改为居中大弹窗（效果设置同款）；新增 10 段均衡器（7 预设 + 手动增益，Web Audio BiquadFilter 链）；播放/暂停渐变（`playback.fadeEnabled/fadeMs`，默认关）；快捷设置新增「均衡器 / 播放暂停渐变」；修复宿主 settings patch 会重置同 section 其它字段的 bug（`SettingsService.ApplyKnownValues` 的 fallback 改为保留当前值）。
+- 近期 patch：1.1.2 把 EQ 频响曲线从折线改为 PCHIP 平滑曲线，并修复「暂停后再播放首帧满音量」；1.1.3 把房间设置/文字设置弹层的遮罩改为铺满整个窗口（此前只暗底部一块）。
 - 更新通道（本窗口完成）：GitHub Releases 自动检查 → 后台下载 → 提示安装 → 静默安装并重启；设置页「更新」分区；GitHub Actions 自动发版。已用本地 mock Release 真机实测 1.0.0 → 1.0.1 全链路。
-- 代码已推到私有仓库 `KaFuuChino2006/Zilux2`（`main` 含完整历史；`v1.0.0` tag 仅本地，尚未发布 Release）。`origin` 为 SSH over 443，见 §9。
+- 代码已推到私有仓库 `KaFuuChino2006/Zilux2`（`main` 含完整历史；Releases 已发布 v1.1.0–v1.1.3，私有可见；`v1.0.0` tag 未推送、已被 1.1.x 取代）。`origin` 为 SSH over 443，见 §10。
 - 本窗口已完成：房间效果系列（歌词颜色跟随/流星/粒子 3D/自定义）、发现页全量能力、歌曲信息、本地标签歌手 + 歌手页、本地曲库管理、统一下载 + 音质、顶部预期条、首页双收藏卡、应用内确认框、窗口动画设置。
 - 详细更新清单：`research/UPDATES-2026-10-23.md`。
 
-## 9. 更新通道（GitHub Releases）
+## 9. 版本与发版节奏（约定）
+
+- 版本号只递增第三位（patch）：`1.1.x`；小修小补也**不要**跳到 `1.2.0`。
+- **发版门槛**（满足其一才递增版本并发 Release）：
+  1. 累计修复 / 优化类改动 **超过 5 处**；
+  2. 累计新增功能 **3 个以上**。
+- 未达门槛：正常提交并推送 `main`，但**不改** `Directory.Build.props` 版本、不打 tag、不发 Release。
+- 达到门槛：改 `Directory.Build.props` → 提交 → `git tag -a v<version> -m "Zilux2 <version>"` → `git push origin v<version>`（Actions 自动构建发布）。
+- 已按此节奏发布：`v1.1.0`（设置居中/EQ/渐变）、`v1.1.1`（渐变细分 + 歌曲信息浮窗）、`v1.1.2`（EQ 平滑 + 首帧爆音）、`v1.1.3`（效果弹层遮罩）。
+
+## 10. 更新通道（GitHub Releases）
 
 - 设计/协议/发版说明：`docs/zilux2-update-channel.md`；建仓与首发步骤：`docs/zilux2-github-setup.md`。
 - 版本唯一来源：根目录 `Directory.Build.props` 的 `<Version>`（宿主/安装器继承；改它即改版本号）。
@@ -153,11 +164,11 @@ powershell -File tools/release.ps1 -DryRun   # 演练；去掉 -DryRun 真发版
 - 资产：`Zilux2-Setup-<version>.exe`；宿主下载到 `%LOCALAPPDATA%\Zilux2\updates\`，校验 GitHub `digest`（sha256）后以 `--silent --no-shortcuts --launch --dir <安装目录>` 静默安装并重启。
 - 默认 `updates.mode="auto"`（自动下载+提示安装），可切 `"notify"`（只提示）；`updates.autoCheck` 控制启动检查 + 每 4 小时轮询。
 - 发版：改 props 版本 → 提交 → `tools\release.ps1`（或 push tag `v<version>`，Actions 自动构建发布）。
-- 仓库可见性：应用内更新走未认证 GitHub API，**只有公开仓库的 Release 可见**；开发期可先建私有仓库存代码（先不推 tag），要发布更新时把仓库切 public 再推 tag。客户端对 404 的提示为「仓库不存在、未公开，或还没发布 Release」。
+- 仓库可见性：应用内更新走未认证 GitHub API，**只有公开仓库的 Release 可见**；开发期可先建私有仓库存代码（先不推 tag），要发布更新时把仓库切 public 再推 tag。客户端对 404 的提示为「仓库不存在、未公开，或还没发布 Release」。当前仓库仍是 private：Releases 已发布但匿名 API 查不到，**应用内自动更新暂不可用**；要启用自动更新需把仓库切成 public（或后续给客户端加 token 支持）。
 - 本机网络：`github.com:443`（HTTPS）被重置/超时，`origin` 走 **SSH over 443**：`ssh://git@ssh.github.com:443/KaFuuChino2006/Zilux2.git`，deploy key 在 `C:\Users\13329\.ssh\zilux2_deploy`，仓库本地已配 `core.sshCommand`；细节见 `docs/zilux2-github-setup.md` §4.3。
 - 注意：更新包未做代码签名（SmartScreen 会提示，属预期）。
 
-## 10. 已知限制 / TODO
+## 11. 已知限制 / TODO
 
 - QQ 搜索主接口偶发 500，回退备用接口会增加首次搜索耗时（约 10s）。
 - QQ 会员曲目下载/播放受限（提示需要会员）。
@@ -166,7 +177,7 @@ powershell -File tools/release.ps1 -DryRun   # 演练；去掉 -DryRun 真发版
 - 没有单元测试，回归依赖 CDP QA 脚本 + 截图；建议后续把关键 QA 固化成 `research/qa/` 下脚本。
 - 后续可做：房间粒子/流星更多预设、歌词页多效果、本地音乐目录监控、下载队列 UI、更多平台能力。
 
-## 11. 常用命令速查
+## 12. 常用命令速查
 
 ```powershell
 # 当前版本号（唯一来源）
