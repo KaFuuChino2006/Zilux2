@@ -17,6 +17,9 @@ importers:
       pixi.js:
         specifier: 8.22.0
         version: 8.22.0
+      qrc-decoder:
+        specifier: ^1.0.2
+        version: 1.0.2
       qrcode:
         specifier: ^1.5.4
         version: 1.5.4
@@ -503,6 +506,9 @@ packages:
     resolution: {integrity: sha512-R4nPAVTAU0B9D35/Gk3uJf/7XYbQcyohSKdvAxIRSNghFl4e71hVoGnBNQz9cWaXxO2I10KTC+3jMdvvoKw6dQ==}
     engines: {node: '>=6'}
 
+  pako@2.2.0:
+    resolution: {integrity: sha512-zJq6RP/5q+TO2OpFV3FHzlPnFjmkb7Nc99a5SNjJE+uu/PkpChs+NIZSSzbBoD+6kjiISXjfYdwj1ZRQ81dz/w==}
+
   parse-svg-path@0.2.0:
     resolution: {integrity: sha512-Tf7FFIrguPKQwzD4pWnYkR2VOv3raoHeKED80Bm+BYHI3KxC8KsgsGC5+fSMzAGDA6UEk4bHvmi+RsjmL3khpg==}
 
@@ -527,6 +533,9 @@ packages:
   postcss@8.5.30:
     resolution: {integrity: sha512-zkd+e9S1AQHhmaBKye9zlFHWjOwVgqXl1q3ECYy8561K7qxR2cREf/STLskulBFd78k6AOFeA+ff1TtEzk9bAA==}
     engines: {node: ^10 || ^12 || >=14}
+
+  qrc-decoder@1.0.2:
+    resolution: {integrity: sha512-BLU8Mh0dcBq7EtWFEgnYBeUk/8VMpQU0z6KY3v/6Wz+497bc6WdOhQ51T+21DFNmJ0kWLhpmCyAfyVul739RFg==}
 
   qrcode@1.5.4:
     resolution: {integrity: sha512-1ca71Zgiu6ORjHqFBDpnSMTR2ReToX4l1Au1VFLyVeBTFavzQnv5JxMFr3ukHVKpSrSA2MCk0lNJSykjUfz7Zg==}
@@ -960,6 +969,8 @@ snapshots:
 
   p-try@2.2.0: {}
 
+  pako@2.2.0: {}
+
   parse-svg-path@0.2.0: {}
 
   path-exists@4.0.0: {}
@@ -988,6 +999,10 @@ snapshots:
       nanoid: 3.3.20
       picocolors: 1.1.1
       source-map-js: 1.2.2
+
+  qrc-decoder@1.0.2:
+    dependencies:
+      pako: 2.2.0
 
   qrcode@1.5.4:
     dependencies:
