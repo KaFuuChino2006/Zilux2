@@ -11,6 +11,32 @@ export type LyricsSize = 'small' | 'medium' | 'large';
 export type WindowAnimation = 'custom' | 'native';
 export type OnlineSourceId = 'netease' | 'qq' | (string & {});
 
+/** 均衡器预设；gains 单位 dB，顺序同 EQ_BAND_FREQS。 */
+export type EqPreset = 'flat' | 'pop' | 'rock' | 'jazz' | 'classical' | 'vocal' | 'bass';
+export const EQ_BAND_FREQS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000] as const;
+export const EQ_PRESETS: Record<EqPreset, readonly number[]> = {
+  flat: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  pop: [-1, 0, 2, 4, 4, 1, -1, -1, 0, 0],
+  rock: [4, 3, 1, -1, -2, -1, 2, 3, 4, 3],
+  jazz: [3, 2, 1, 2, -1, -1, 0, 1, 2, 3],
+  classical: [4, 3, 2, 1, 0, 0, 0, 2, 3, 4],
+  vocal: [-2, -1, 0, 2, 4, 4, 3, 1, 0, -1],
+  bass: [6, 5, 4, 1, 0, 0, 0, 0, 0, 0],
+};
+export const EQ_PRESET_IDS = Object.keys(EQ_PRESETS) as EqPreset[];
+export const EQ_PRESET_LABELS: Record<EqPreset, string> = {
+  flat: '原声',
+  pop: '流行',
+  rock: '摇滚',
+  jazz: '爵士',
+  classical: '古典',
+  vocal: '人声',
+  bass: '低音',
+};
+export const EQ_GAIN_MIN = -12;
+export const EQ_GAIN_MAX = 12;
+export const FADE_MS = { min: 50, max: 3000, step: 10, fallback: 450 } as const;
+
 export interface Settings {
   version: 1;
   general: {
@@ -37,6 +63,15 @@ export interface Settings {
     volume: number;
     /** 播放音质：standard=128k、high=320k、lossless=无损（宿主按平台能力自动降级）。 */
     quality: StreamQuality;
+    /** 10 段均衡器：关闭时直通（全部 0dB）。 */
+    eqEnabled: boolean;
+    eqPreset: EqPreset;
+    /** 各频段增益（dB，-12..12），顺序同 EQ_BAND_FREQS。 */
+    eqGains: number[];
+    /** 播放/暂停时做音量淡出淡入；关闭时保持原有的瞬时暂停。 */
+    fadeEnabled: boolean;
+    /** 渐变时长（毫秒，50..3000）。 */
+    fadeMs: number;
   };
   downloads: {
     /** 下载目录；空字符串表示 Windows「音乐」目录。 */
@@ -81,6 +116,11 @@ export const DEFAULT_SETTINGS: Settings = {
     audioReactive: true,
     volume: 0.72,
     quality: 'high',
+    eqEnabled: false,
+    eqPreset: 'flat',
+    eqGains: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    fadeEnabled: false,
+    fadeMs: FADE_MS.fallback,
   },
   downloads: { directory: '', quality: 'high' },
   updates: { autoCheck: true, mode: 'auto', repo: '' },
@@ -135,6 +175,21 @@ function asVolume(value: unknown): number {
   return Math.round(Math.min(1, Math.max(0, value)) * 100) / 100;
 }
 
+function asEqGains(value: unknown): number[] {
+  const source = Array.isArray(value) ? value : [];
+  return EQ_BAND_FREQS.map((_, index) => {
+    const raw = source[index];
+    if (typeof raw !== 'number' || !Number.isFinite(raw)) return 0;
+    return Math.round(Math.max(EQ_GAIN_MIN, Math.min(EQ_GAIN_MAX, raw)));
+  });
+}
+
+function asFadeMs(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_SETTINGS.playback.fadeMs;
+  const stepped = Math.round(value / FADE_MS.step) * FADE_MS.step;
+  return Math.max(FADE_MS.min, Math.min(FADE_MS.max, stepped));
+}
+
 /** 深度合并 + 白名单校验：未知字段忽略，非法值回落默认值。 */
 export function normalizeSettings(raw: unknown): Settings {
   const root = asObject(raw);
@@ -169,6 +224,11 @@ export function normalizeSettings(raw: unknown): Settings {
       audioReactive: asBool(playback.audioReactive, DEFAULT_SETTINGS.playback.audioReactive),
       volume: asVolume(playback.volume),
       quality: asEnum(playback.quality, STREAM_QUALITIES, DEFAULT_SETTINGS.playback.quality),
+      eqEnabled: asBool(playback.eqEnabled, DEFAULT_SETTINGS.playback.eqEnabled),
+      eqPreset: asEnum(playback.eqPreset, EQ_PRESET_IDS, DEFAULT_SETTINGS.playback.eqPreset),
+      eqGains: asEqGains(playback.eqGains),
+      fadeEnabled: asBool(playback.fadeEnabled, DEFAULT_SETTINGS.playback.fadeEnabled),
+      fadeMs: asFadeMs(playback.fadeMs),
     },
     downloads: {
       directory: typeof downloads.directory === 'string' ? downloads.directory.trim() : '',
@@ -200,6 +260,17 @@ export function applySettings(next: Settings): void {
   root.classList.toggle('reduce-motion', next.appearance.reduceMotion);
   root.classList.toggle('no-glow', !next.appearance.glow);
   listeners.forEach((listener) => listener(next));
+  // 播放引擎（player.ts / audioTap.ts）不订阅设置对象，避免循环依赖：这里广播音效偏好。
+  window.dispatchEvent(
+    new CustomEvent('zilux:playback-fx', {
+      detail: {
+        fadeEnabled: next.playback.fadeEnabled,
+        fadeMs: next.playback.fadeMs,
+        eqEnabled: next.playback.eqEnabled,
+        eqGains: next.playback.eqGains,
+      },
+    }),
+  );
 }
 
 function readLocal(): Settings {

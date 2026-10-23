@@ -12,7 +12,7 @@ import { onMediaControl, reportMedia, type MediaControl } from '../core/bridge';
 import { fetchStreamInfo, onlineInfo, qualityForSource, streamUrl, checkLiked, addLikedTrack, removeLikedTrack, recordRecent } from '../online/client';
 import type { OnlineTrack } from '../online/types';
 import { getSettings } from '../core/settings';
-import { attachAudioTap, audioTapGraphActive, setAudioTapVolume } from '../core/audioTap';
+import { attachAudioTap, audioTapGraphActive, ensureEqualizerGraph, setAudioTapVolume, setEqualizer } from '../core/audioTap';
 
 export type PlayMode = 'list' | 'single' | 'shuffle';
 
@@ -61,13 +61,87 @@ audio.preload = 'auto';
 // 否则跨域资源接进 Web Audio 后只会输出静音。宿主 /api/stream 已带 Access-Control-Allow-Origin。
 audio.crossOrigin = 'anonymous';
 
-/** 音量下发：取流图存在时元素音量固定 1，音量交给页面本地 gain（避免双重衰减）。 */
+/** 播放音效偏好（均衡 + 播放/暂停渐变），由 settings.applySettings 广播同步。 */
+interface PlaybackFx {
+  fadeEnabled: boolean;
+  fadeMs: number;
+  eqEnabled: boolean;
+  eqGains: number[];
+}
+
+function readPlaybackFx(): PlaybackFx {
+  const playback = getSettings().playback;
+  return {
+    fadeEnabled: playback.fadeEnabled,
+    fadeMs: playback.fadeMs,
+    eqEnabled: playback.eqEnabled,
+    eqGains: playback.eqGains,
+  };
+}
+
+let fx = readPlaybackFx();
+/** 渐变倍率：1=正常音量；淡出/淡入过程中在 0..1 之间。 */
+let fadeScale = 1;
+let fadeRaf = 0;
+let fadeToken = 0;
+
+function applyEq(): void {
+  setEqualizer(fx.eqEnabled, fx.eqGains);
+}
+
+applyEq();
+
+window.addEventListener('zilux:playback-fx', () => {
+  fx = readPlaybackFx();
+  applyEq();
+  applyPlaybackVolume();
+});
+
+function cancelFade(): void {
+  fadeToken += 1;
+  if (fadeRaf) {
+    cancelAnimationFrame(fadeRaf);
+    fadeRaf = 0;
+  }
+}
+
+/** 平滑改变渐变倍率；token 变化（切歌/停止/重新开始渐变）时立即中止。 */
+function fadeTo(target: number, ms: number, token: number): Promise<void> {
+  const total = Math.max(1, ms);
+  const from = fadeScale;
+  const startedAt = performance.now();
+  return new Promise((resolve) => {
+    const step = (): void => {
+      if (token !== fadeToken) {
+        resolve();
+        return;
+      }
+      const progress = Math.min(1, (performance.now() - startedAt) / total);
+      const eased = progress * progress * (3 - 2 * progress);
+      fadeScale = from + (target - from) * eased;
+      applyPlaybackVolume();
+      if (progress >= 1) {
+        fadeRaf = 0;
+        fadeScale = target;
+        applyPlaybackVolume();
+        resolve();
+        return;
+      }
+      fadeRaf = requestAnimationFrame(step);
+    };
+    fadeRaf = requestAnimationFrame(step);
+  });
+}
+
 function applyPlaybackVolume(): void {
+  // 均衡器需要 Web Audio 图；开启时保证图已建立，音量随之交给本地 gain。
+  if (fx.eqEnabled && !audioTapGraphActive()) ensureEqualizerGraph();
+  const volume = state.volume * fadeScale;
   if (audioTapGraphActive()) {
     audio.volume = 1;
-    setAudioTapVolume(state.volume);
+    setAudioTapVolume(volume);
   } else {
-    audio.volume = state.volume;
+    audio.volume = volume;
   }
 }
 
@@ -409,16 +483,25 @@ function load(index: number, autoplay = true): void {
   pendingResumeMs = 0;
   applyPlaybackVolume();
   if (autoplay) {
+    cancelFade();
+    const token = fadeToken;
+    const fade = fx.fadeEnabled ? Math.max(0, fx.fadeMs) : 0;
+    fadeScale = fade > 0 ? 0 : 1;
+    applyPlaybackVolume();
     void audio
       .play()
       .then(() => {
         if (startAt > 0) audio.currentTime = startAt;
+        if (token !== fadeToken) return;
         setState({ playing: true, loading: false });
         scheduleTick();
         void recordRecent(track);
+        if (fade > 0) void fadeTo(1, fade, token);
       })
       .catch((err: unknown) => {
         console.warn('[player] play failed', err);
+        fadeScale = 1;
+        applyPlaybackVolume();
         setState({ playing: false, loading: false });
       });
   } else {
@@ -512,17 +595,48 @@ export function toggle(): void {
       setState({ playing: false });
       return;
     }
-    void audio
-      .play()
-      .then(() => {
-        setState({ playing: true });
-        scheduleTick();
-      })
-      .catch(() => setState({ playing: false }));
+    void startPlayback();
   } else {
+    pausePlayback();
+  }
+}
+
+/** 开始播放：渐变开启时先把音量压到 0 再淡入。 */
+function startPlayback(): Promise<void> {
+  cancelFade();
+  const token = fadeToken;
+  const fade = fx.fadeEnabled ? Math.max(0, fx.fadeMs) : 0;
+  fadeScale = fade > 0 ? 0 : 1;
+  applyPlaybackVolume();
+  return audio
+    .play()
+    .then(() => {
+      if (token !== fadeToken) return;
+      setState({ playing: true });
+      scheduleTick();
+      if (fade > 0) void fadeTo(1, fade, token);
+    })
+    .catch(() => {
+      fadeScale = 1;
+      applyPlaybackVolume();
+      setState({ playing: false });
+    });
+}
+
+/** 暂停：渐变开启时先淡出再真正暂停。 */
+function pausePlayback(): void {
+  cancelFade();
+  const token = fadeToken;
+  const fade = fx.fadeEnabled ? Math.max(0, fx.fadeMs) : 0;
+  const finish = (): void => {
+    if (token !== fadeToken) return;
     audio.pause();
     setState({ playing: false });
-  }
+    fadeScale = 1;
+    applyPlaybackVolume();
+  };
+  if (fade > 0) void fadeTo(0, fade, token).then(finish);
+  else finish();
 }
 
 function advance(): void {
@@ -596,6 +710,8 @@ export function setVolume(value: number): void {
 }
 
 export function stop(): void {
+  cancelFade();
+  fadeScale = 1;
   audio.pause();
   audio.removeAttribute('src');
   audio.load();

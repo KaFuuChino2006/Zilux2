@@ -90,6 +90,15 @@ let pendingStart = false;
 /** 播放器音量（0~1），取流期间本地 gain 恒为 0，停止取流后回落到这个值。 */
 let localVolume = 1;
 
+/** 10 段均衡器中心频率（Hz），与设置里的 eqGains 顺序一致。 */
+const EQ_FREQS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000] as const;
+const EQ_Q = 1.1;
+const EQ_GAIN_LIMIT = 12;
+
+let eqFilters: BiquadFilterNode[] = [];
+let eqEnabled = false;
+let eqGains: number[] = EQ_FREQS.map(() => 0);
+
 /** 记录播放器元素；<audio> 只创建一次，MediaElementAudioSourceNode 也只能建一次。 */
 export function attachAudioTap(element: HTMLAudioElement): void {
   audio = element;
@@ -108,6 +117,35 @@ export function setAudioTapVolume(value: number): void {
 }
 
 /**
+ * 设置 10 段均衡器：enabled=false 时所有频段回到 0dB（等同直通）。
+ * 音频图尚未建立时只记录偏好，等播放第一次建立 Web Audio 图时再生效。
+ */
+export function setEqualizer(enabled: boolean, gains: number[] | null | undefined): void {
+  eqEnabled = enabled === true;
+  if (Array.isArray(gains)) {
+    eqGains = EQ_FREQS.map((_, index) => clampEqGain(gains[index]));
+  }
+  applyEqGains();
+}
+
+/**
+ * 确保均衡器可用的本地音频图：EQ 只能跑在 Web Audio 里，首次调用会把 <audio> 接进
+ * AudioContext（此后音量由本地 gain 接管，播放器侧的 applyPlaybackVolume 已兼容）。
+ * 返回 false 表示当前还建不了图（例如 <audio> 尚未 attach）。
+ */
+export function ensureEqualizerGraph(): boolean {
+  const ctx = ensureContext();
+  if (!ctx || !buildLocalGraph(ctx)) return false;
+  try {
+    void ctx.resume();
+  } catch {
+    // 上下文被策略挂起时，恢复后输出自然生效。
+  }
+  applyEqGains();
+  return true;
+}
+
+/**
  * 歌词页播放效果要的频谱分析器：首次调用时把播放器的输出接进 AudioContext
  * （不改变听感：分析器后面挂 0 增益），返回 AnalyserNode。
  * 和投送取流共用同一个 MediaElementAudioSourceNode，所以也能在投送时用。
@@ -122,7 +160,9 @@ export function playbackAnalyser(): AnalyserNode | null {
       analyser.smoothingTimeConstant = 0.76;
       analyserSink = ctx.createGain();
       analyserSink.gain.value = 0;
-      mediaSource.connect(analyser);
+      const analyserSource = eqOutput();
+      if (!analyserSource) return null;
+      analyserSource.connect(analyser);
       analyser.connect(analyserSink);
       analyserSink.connect(ctx.destination);
     } catch (err) {
@@ -190,7 +230,7 @@ function ensureContext(): AudioContext | null {
   return context;
 }
 
-/** 本地发声链路：<audio> → 本地 gain → 输出（投送时 gain 归 0 静音本软件）。 */
+/** 本地发声链路：<audio> → 10 段 EQ → 本地 gain → 输出（投送时 gain 归 0 静音本软件）。 */
 function buildLocalGraph(ctx: AudioContext): boolean {
   if (!audio) return false;
   if (!mediaSource) {
@@ -201,12 +241,29 @@ function buildLocalGraph(ctx: AudioContext): boolean {
       mediaSource = null;
       return false;
     }
+    const source = mediaSource;
+    if (!source) return false;
     // 元素音量改由本地 gain 接管，避免「元素 × gain」双重衰减。
     audio.volume = 1;
     localGain = ctx.createGain();
     localGain.gain.value = running ? 0 : localVolume;
-    mediaSource.connect(localGain);
+    // 均衡器始终串在 source 与 localGain 之间：关闭时全部 0dB，等价直通。
+    eqFilters = EQ_FREQS.map((freq) => {
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'peaking';
+      filter.frequency.value = freq;
+      filter.Q.value = EQ_Q;
+      filter.gain.value = 0;
+      return filter;
+    });
+    let tail: AudioNode = source;
+    for (const filter of eqFilters) {
+      tail.connect(filter);
+      tail = filter;
+    }
+    tail.connect(localGain);
     localGain.connect(ctx.destination);
+    applyEqGains();
   }
   return true;
 }
@@ -237,7 +294,7 @@ async function ensureWorklet(ctx: AudioContext): Promise<boolean> {
     node.port.postMessage({ type: 'setBlock', block: BLOCK_FRAMES });
     silentGain = ctx.createGain();
     silentGain.gain.value = 0;
-    mediaSource.connect(node);
+    (eqOutput() ?? mediaSource).connect(node);
     node.connect(silentGain);
     silentGain.connect(ctx.destination);
     workletNode = node;
@@ -257,7 +314,7 @@ function ensureScriptProcessor(ctx: AudioContext): boolean {
     processor.onaudioprocess = handleProcess;
     silentGain = ctx.createGain();
     silentGain.gain.value = 0;
-    mediaSource.connect(processor);
+    (eqOutput() ?? mediaSource).connect(processor);
     processor.connect(silentGain);
     silentGain.connect(ctx.destination);
     return true;
@@ -276,6 +333,29 @@ function applyLocalGain(): void {
   } catch {
     localGain.gain.value = target;
   }
+}
+
+function clampEqGain(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 0;
+  return Math.max(-EQ_GAIN_LIMIT, Math.min(EQ_GAIN_LIMIT, value));
+}
+
+/** 均衡器链路输出节点：建图前回落到 mediaSource，供 analyser / 取流复用。 */
+function eqOutput(): AudioNode | null {
+  return eqFilters.length > 0 ? eqFilters[eqFilters.length - 1] : mediaSource;
+}
+
+function applyEqGains(): void {
+  if (!context || eqFilters.length === 0) return;
+  const now = context.currentTime;
+  eqFilters.forEach((filter, index) => {
+    const gain = eqEnabled ? clampEqGain(eqGains[index]) : 0;
+    try {
+      filter.gain.setTargetAtTime(gain, now, 0.03);
+    } catch {
+      filter.gain.value = gain;
+    }
+  });
 }
 
 function handleWorkletBlock(event: MessageEvent): void {

@@ -1,0 +1,90 @@
+/* ---- 设置：居中弹窗 + 均衡器滑块（由更新通道任务追加，独立成文件便于维护） ---- */
+
+.sheet.is-center {
+  justify-content: center;
+  align-items: center;
+  padding: 34px 28px;
+}
+
+.sheet.is-center .sheet-panel {
+  width: min(880px, 94vw);
+  height: min(86vh, 900px);
+  border-left: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.38);
+  animation: sheet-center-in 0.26s var(--ease, ease);
+}
+
+.sheet.is-center .sheet-body {
+  padding-top: 4px;
+}
+
+@keyframes sheet-center-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 均衡器 10 段：竖排滑块 */
+.eq-bands {
+  display: grid;
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+  gap: 10px;
+  align-items: end;
+  padding: 12px 4px 4px;
+  transition: opacity 0.2s ease;
+}
+
+.eq-bands.is-disabled {
+  opacity: 0.45;
+}
+
+.eq-band {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.eq-band-value {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  min-height: 14px;
+}
+
+.eq-band-freq {
+  font-size: 10px;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+
+.eq-slider {
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 20px;
+  height: 132px;
+  padding: 0;
+}
+
+.eq-presets {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+/* 快捷设置里的均衡器预设行 */
+.quick-eq-presets {
+  margin-top: 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.quick-eq-presets::-webkit-scrollbar {
+  display: none;
+}

@@ -324,7 +324,8 @@ internal sealed class SettingsService : IDisposable
     {
         "general" => name is "splash" or "startMaximized",
         "appearance" => name is "theme" or "reduceMotion" or "glow" or "heroAutoRotate" or "lyricsSize",
-        "playback" => name is "defaultSource" or "searchLimit" or "lyricsAutoOpen" or "volume" or "audioReactive",
+        "playback" => name is "defaultSource" or "searchLimit" or "lyricsAutoOpen" or "volume" or "audioReactive"
+            or "eqEnabled" or "eqPreset" or "eqGains" or "fadeEnabled" or "fadeMs",
         "downloads" => name is "directory" or "quality",
         "updates" => name is "autoCheck" or "mode" or "repo",
         _ => false,
@@ -391,31 +392,33 @@ internal sealed class SettingsService : IDisposable
         }
     }
 
-    // Applies every known key that is present. Missing keys keep the current value, invalid
-    // values fall back to the default (contract sections 1 and 2) - never throws.
+    // Applies every known key that is present. Missing keys keep the current value; invalid
+    // values also keep the current value (contract sections 1 and 2) - never throws.
+    // Used both for loading a full document and for partial patches, so each fallback must be
+    // the current state value instead of a hard-coded default.
     private static List<string> ApplyKnownValues(JsonElement document, SettingsModel state)
     {
         var keys = new List<string>();
 
         if (TryGetObject(document, "general", out var general))
         {
-            state.General.Splash = ReadBool(general, "splash", true, "general.splash", keys);
-            state.General.StartMaximized = ReadBool(general, "startMaximized", false, "general.startMaximized", keys);
+            state.General.Splash = ReadBool(general, "splash", state.General.Splash, "general.splash", keys);
+            state.General.StartMaximized = ReadBool(general, "startMaximized", state.General.StartMaximized, "general.startMaximized", keys);
         }
 
         if (TryGetObject(document, "appearance", out var appearance))
         {
             state.Appearance.Theme = ReadEnum(
-                appearance, "theme", AppearanceSettings.Themes, AppearanceSettings.ThemeDark, "appearance.theme", keys);
-            state.Appearance.ReduceMotion = ReadBool(appearance, "reduceMotion", false, "appearance.reduceMotion", keys);
-            state.Appearance.Glow = ReadBool(appearance, "glow", true, "appearance.glow", keys);
-            state.Appearance.HeroAutoRotate = ReadBool(appearance, "heroAutoRotate", true, "appearance.heroAutoRotate", keys);
+                appearance, "theme", AppearanceSettings.Themes, state.Appearance.Theme, "appearance.theme", keys);
+            state.Appearance.ReduceMotion = ReadBool(appearance, "reduceMotion", state.Appearance.ReduceMotion, "appearance.reduceMotion", keys);
+            state.Appearance.Glow = ReadBool(appearance, "glow", state.Appearance.Glow, "appearance.glow", keys);
+            state.Appearance.HeroAutoRotate = ReadBool(appearance, "heroAutoRotate", state.Appearance.HeroAutoRotate, "appearance.heroAutoRotate", keys);
             state.Appearance.LyricsSize = ReadEnum(
-                appearance, "lyricsSize", AppearanceSettings.LyricsSizes, AppearanceSettings.LyricsSizeMedium, "appearance.lyricsSize", keys);
+                appearance, "lyricsSize", AppearanceSettings.LyricsSizes, state.Appearance.LyricsSize, "appearance.lyricsSize", keys);
             state.Appearance.WindowAnimation = ReadEnum(
                 appearance, "windowAnimation",
                 AppearanceSettings.WindowAnimations,
-                AppearanceSettings.WindowAnimationCustom,
+                state.Appearance.WindowAnimation,
                 "appearance.windowAnimation",
                 keys);
         }
@@ -423,27 +426,53 @@ internal sealed class SettingsService : IDisposable
         if (TryGetObject(document, "playback", out var playback))
         {
             state.Playback.DefaultSource = ReadEnum(
-                playback, "defaultSource", PlaybackSettings.Sources, PlaybackSettings.SourceNetease, "playback.defaultSource", keys);
+                playback, "defaultSource", PlaybackSettings.Sources, state.Playback.DefaultSource, "playback.defaultSource", keys);
             state.Playback.SearchLimit = ReadAllowedInt(
-                playback, "searchLimit", PlaybackSettings.SearchLimits, 20, "playback.searchLimit", keys);
-            state.Playback.LyricsAutoOpen = ReadBool(playback, "lyricsAutoOpen", true, "playback.lyricsAutoOpen", keys);
-            state.Playback.Volume = ReadVolume(playback, "volume", 0.72, "playback.volume", keys);
-            state.Playback.AudioReactive = ReadBool(playback, "audioReactive", true, "playback.audioReactive", keys);
+                playback, "searchLimit", PlaybackSettings.SearchLimits, state.Playback.SearchLimit, "playback.searchLimit", keys);
+            state.Playback.LyricsAutoOpen = ReadBool(playback, "lyricsAutoOpen", state.Playback.LyricsAutoOpen, "playback.lyricsAutoOpen", keys);
+            state.Playback.Volume = ReadVolume(playback, "volume", state.Playback.Volume, "playback.volume", keys);
+            state.Playback.AudioReactive = ReadBool(playback, "audioReactive", state.Playback.AudioReactive, "playback.audioReactive", keys);
+            if (playback.TryGetProperty("eqEnabled", out _))
+            {
+                state.Playback.EqEnabled = ReadBool(playback, "eqEnabled", state.Playback.EqEnabled, "playback.eqEnabled", keys);
+            }
+
+            if (playback.TryGetProperty("eqPreset", out _))
+            {
+                state.Playback.EqPreset = ReadEnum(
+                    playback, "eqPreset", PlaybackSettings.EqPresets, state.Playback.EqPreset, "playback.eqPreset", keys);
+            }
+
+            if (playback.TryGetProperty("eqGains", out _))
+            {
+                state.Playback.EqGains = ReadIntArray(
+                    playback, "eqGains", PlaybackSettings.EqBandCount, -12, 12, "playback.eqGains", keys);
+            }
+
+            state.Playback.FadeEnabled = ReadBool(playback, "fadeEnabled", state.Playback.FadeEnabled, "playback.fadeEnabled", keys);
+            state.Playback.FadeMs = ReadIntInRange(playback, "fadeMs", 50, 3000, state.Playback.FadeMs, "playback.fadeMs", keys);
         }
 
         if (TryGetObject(document, "downloads", out var downloads))
         {
-            state.Downloads.Directory = ReadDirectory(downloads, "directory", "downloads.directory", keys);
+            if (downloads.TryGetProperty("directory", out _))
+            {
+                state.Downloads.Directory = ReadDirectory(downloads, "directory", "downloads.directory", keys);
+            }
+
             state.Downloads.Quality = ReadEnum(
-                downloads, "quality", DownloadSettings.Qualities, DownloadSettings.QualityHigh, "downloads.quality", keys);
+                downloads, "quality", DownloadSettings.Qualities, state.Downloads.Quality, "downloads.quality", keys);
         }
 
         if (TryGetObject(document, "updates", out var updates))
         {
-            state.Updates.AutoCheck = ReadBool(updates, "autoCheck", true, "updates.autoCheck", keys);
+            state.Updates.AutoCheck = ReadBool(updates, "autoCheck", state.Updates.AutoCheck, "updates.autoCheck", keys);
             state.Updates.Mode = ReadEnum(
-                updates, "mode", UpdateSettings.Modes, UpdateSettings.ModeAuto, "updates.mode", keys);
-            state.Updates.Repo = ReadRepo(updates, "repo", "updates.repo", keys);
+                updates, "mode", UpdateSettings.Modes, state.Updates.Mode, "updates.mode", keys);
+            if (updates.TryGetProperty("repo", out _))
+            {
+                state.Updates.Repo = ReadRepo(updates, "repo", "updates.repo", keys);
+            }
         }
 
         return keys;
@@ -532,6 +561,71 @@ internal sealed class SettingsService : IDisposable
 
         HostLog.Warn($"[settings] invalid key={key} expected={string.Join("|", allowed)} fallback={fallback}");
         return fallback;
+    }
+
+    private static int ReadIntInRange(
+        JsonElement parent,
+        string name,
+        int min,
+        int max,
+        int fallback,
+        string key,
+        List<string> keys)
+    {
+        if (!parent.TryGetProperty(name, out var value))
+        {
+            return fallback;
+        }
+
+        keys.Add(key);
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number) && number >= min && number <= max)
+        {
+            return number;
+        }
+
+        HostLog.Warn($"[settings] invalid key={key} expected=int {min}..{max} fallback={fallback}");
+        return fallback;
+    }
+
+    private static int[] ReadIntArray(
+        JsonElement parent,
+        string name,
+        int length,
+        int min,
+        int max,
+        string key,
+        List<string> keys)
+    {
+        var fallback = new int[length];
+        if (!parent.TryGetProperty(name, out var value))
+        {
+            return fallback;
+        }
+
+        keys.Add(key);
+        if (value.ValueKind != JsonValueKind.Array || value.GetArrayLength() != length)
+        {
+            HostLog.Warn($"[settings] invalid key={key} expected=int[{length}] fallback=0");
+            return fallback;
+        }
+
+        var result = new int[length];
+        var index = 0;
+        foreach (var item in value.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Number ||
+                !item.TryGetInt32(out var number) ||
+                number < min ||
+                number > max)
+            {
+                HostLog.Warn($"[settings] invalid key={key} expected=int[{min}..{max}] fallback=0");
+                return fallback;
+            }
+
+            result[index++] = number;
+        }
+
+        return result;
     }
 
     private static string ReadDirectory(JsonElement parent, string name, string key, List<string> keys)

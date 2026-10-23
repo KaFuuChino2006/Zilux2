@@ -5,11 +5,11 @@
     The version is stamped into the host exe, the installer exe, the release tag and the
     update check, so it must only ever live here (or be overridden on the command line).
 
-      local build : 1.0.0
+      local build : 1.1.0
       release CI  : dotnet publish ... -p:Version=<tag> -p:ZiluxUpdateRepo=<owner>/<repo>
   -->
   <PropertyGroup>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
 
     <!-- GitHub repository (owner/name) used by the built-in update channel.
          Local builds default to the real repo below; CI overrides it with
