@@ -106,6 +106,7 @@
 }
 
 .settings-nav {
+  position: relative;
   width: 164px;
   flex: none;
   display: flex;
@@ -117,14 +118,32 @@
   overflow: auto;
 }
 
+.settings-nav-thumb {
+  position: absolute;
+  top: 0;
+  left: 6px;
+  right: 6px;
+  height: 36px;
+  border-radius: 9px;
+  background: var(--panel-strong, #fff);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .16);
+  transform: translateY(6px);
+  transition: transform .26s var(--ease), height .26s var(--ease);
+  pointer-events: none;
+  z-index: 0;
+}
+
 .settings-nav-btn {
+  position: relative;
+  z-index: 1;
   height: 36px;
   padding: 0 12px;
   border-radius: 9px;
   text-align: left;
   font-size: 13px;
   color: var(--text-soft);
-  transition: background .18s var(--ease), color .18s var(--ease), box-shadow .18s var(--ease);
+  background: transparent;
+  transition: color .18s var(--ease);
 }
 
 .settings-nav-btn:hover {
@@ -132,10 +151,8 @@
 }
 
 .settings-nav-btn.is-on {
-  background: var(--panel-strong, #fff);
   color: var(--accent-strong, var(--accent));
   font-weight: 600;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, .16);
 }
 
 .settings-content {

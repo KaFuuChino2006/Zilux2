@@ -2568,7 +2568,8 @@ export class App {
         if (eqSliders[index].value !== String(gain)) eqSliders[index].value = String(gain);
       };
       EQ_BAND_FREQS.forEach((freq, index) => {
-        const valueLabel = h('div', { class: 'eq-band-value', text: '0' });
+        const initialGain = eqGains[index] ?? 0;
+        const valueLabel = h('div', { class: 'eq-band-value', text: initialGain > 0 ? `+${initialGain}` : String(initialGain) });
         const slider = h('input', {
           class: 'slider eq-slider',
           type: 'range',
@@ -2679,14 +2680,28 @@ export class App {
       ];
       if (hasExperimentalSources()) entries.push({ key: 'experimental', label: '实验功能', node: experimental });
       const nav = h('div', { class: 'settings-nav' });
+      const navThumb = h('div', { class: 'settings-nav-thumb' });
+      nav.append(navThumb);
       const content = h('div', { class: 'settings-content' });
       const panes = new Map<string, HTMLElement>();
       const navBtns = new Map<string, HTMLButtonElement>();
-      const activate = (key: string): void => {
+      const moveNavThumb = (btn: HTMLButtonElement, animate: boolean): void => {
+        navThumb.style.transition = animate ? '' : 'none';
+        navThumb.style.height = `${btn.offsetHeight}px`;
+        navThumb.style.transform = `translateY(${btn.offsetTop}px)`;
+        if (!animate) {
+          window.requestAnimationFrame(() => {
+            navThumb.style.transition = '';
+          });
+        }
+      };
+      const activate = (key: string, animate = true): void => {
         navBtns.forEach((btn, name) => btn.classList.toggle('is-on', name === key));
         panes.forEach((pane, name) => {
           pane.hidden = name !== key;
         });
+        const target = navBtns.get(key);
+        if (target) moveNavThumb(target, animate);
       };
       entries.forEach((entry, index) => {
         const pane = h('div', { class: 'settings-pane' }, entry.node);
@@ -2699,6 +2714,10 @@ export class App {
         nav.append(btn);
       });
       body.append(h('div', { class: 'settings-layout' }, nav, content));
+      window.requestAnimationFrame(() => {
+        const first = navBtns.get(entries[0]?.key ?? 'general');
+        if (first) moveNavThumb(first, false);
+      });
     });
   }
 
