@@ -1,9 +1,18 @@
 # Zilux2 上下文交接（HANDOFF）
 
-> 更新时间：2026-10-24（v1.1.3 已发布）
-> 当前版本：**1.1.3**（唯一来源：根目录 `Directory.Build.props`；最新安装包 `dist/Zilux2-Setup-1.1.3.exe`）
-> 代码仓库：`KaFuuChino2006/Zilux2`（**private**，`main` 已同步；Releases 已有 v1.1.0 / v1.1.1 / v1.1.2 / v1.1.3）
+> 更新时间：2026-10-24（v1.1.3 已按 `463995e` 重发覆盖）
+> 当前版本：**1.1.3**（唯一来源：根目录 `Directory.Build.props`；最近构建 `1.1.3+463995e`，安装包 `dist/Zilux2-Setup-1.1.3.exe` 13,064,383 B）
+> 代码仓库：`KaFuuChino2006/Zilux2`（**private**，`main` 已同步；Releases 已有 v1.1.0 / v1.1.1 / v1.1.2 / **v1.1.3（已重发为含房间修复的构建）**）
 > 本文件给下一个接手的 AI / 开发者：读完即可继续开发。
+
+## 0. 交接速览（先读这里）
+
+- **在做什么**：Windows 桌面音乐播放器 Zilux2（WPF + WebView2 宿主 + Vite/TS 前端），已具备完整播放器、在线音乐、发现页、房间/歌词效果、本地曲库、GitHub 自动更新。
+- **当前状态（2026-10-24 交接时）**：`main` 干净、已推送；`HEAD = 463995e`；版本 1.1.3；本机已安装并运行 `1.1.3+463995e`；Releases 最新为 v1.1.3（重发覆盖，资产含最新修复）。
+- **最近 5 个提交（由新到旧）**：`463995e` 房间地毯椭圆修复 → `06ef14e` 滑块数值+滑杆图标 → `d13dc7a` 交接文档 v1.1.3 → `a189335` 效果弹层遮罩铺满 → `abd4561` EQ 平滑 + 恢复播放首帧爆音。
+- **下一步候选**（按优先级）：①仓库切 **public** 才能真正启用应用内自动更新（当前 private，匿名 API 404）；②房间粒子/流星更多预设；③本地音乐目录监控；④下载队列 UI；⑤把 `research/tmp/qa-*.mjs` 固化为 `research/qa/` 回归脚本。
+- **改代码前必看**：§3 构建流程、§9 版本/发版节奏（**不要擅自跳版本号**）、§4 真机 QA、§10 更新通道。私有仓 + 未签名安装包会触发 SmartScreen，属预期。
+- **本机环境**：`E:/dotnet/dotnet.exe`；Node 用 `C:/Users/13329/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/node/bin/node.exe`；`github.com:443` 不通，git 走 SSH over 443（§10）；bash 里 `$LOCALAPPDATA` 不展开。
 
 ## 1. 项目是什么
 
@@ -90,6 +99,11 @@ powershell -File tools/release.ps1 -DryRun   # 演练；去掉 -DryRun 真发版
   - 原生 `window.confirm` 会卡死渲染进程 → 一律使用应用内 `confirmDialog`。
   - `Page.reload` 偶发卡死（旧页面残留模态）→ 直接 taskkill 重启安装版更稳。
    - 抓「正在播放/即将播放」类过渡要 80–90ms 采样一次。
+   - 关键界面触发路径（2026-10 交接时实测）：
+     - 设置：`.rail-btn[title="设置"]` → `.sheet.is-center`（两栏：`.settings-nav-btn` 切换 `.settings-pane`）。
+     - 房间/文字效果设置：`.pb-quick` → 快捷设置「歌词」tab → `.quick-text-settings-btn` → `.sheet.text-sheet`（全屏遮罩 + 底部居中面板）。
+     - 歌曲信息：首页 `.ui-tile`（歌单卡）→ 歌单页 `.track-row` → 行内 `.track-info` → `.sd-modal`（居中浮窗，Esc/关闭按钮均可关）。
+     - 快捷设置：`.pb-quick`；播放条主按钮 `.pb-btn.is-main`（CDP 真实鼠标点击不可靠，优先页面内 JS `.click()`）。
    - 更新通道 QA：本地起 mock GitHub API（`research/tmp/mock-updater.mjs`，默认 8765），启动应用时设 `ZILUX2_UPDATE_API=http://127.0.0.1:8765`、`ZILUX2_UPDATE_INSTALL_DIR=<QA 安装目录>`、`ZILUX2_SETTINGS_PATH=<临时 settings>`，即可走完整「检查→下载→安装→重启」；详见 `docs/zilux2-update-channel.md` §8。
 
 ## 5. 关键前端文件职责
@@ -102,7 +116,8 @@ powershell -File tools/release.ps1 -DryRun   # 演练；去掉 -DryRun 真发版
 | `src/ui/roomSettings.ts` | 房间设置数据模型（RoomStyleSettings + 默认值 + localStorage `zilux2.roomStyle`） |
 | `src/ui/roomSettingsPanel.ts` | 房间设置面板（九组：预设/文字/布局/背景/流星/粒子/地毯/镜头/动效） |
 | `src/ui/upNextToast.ts` | 顶部「即将播放/正在播放」单框预告条（连续过渡、渐变倒计时） |
-| `src/ui/songInfo.ts` | 歌曲信息两种形态（整页详情 / 列表内展开，设置可选） |
+| `src/ui/songInfo.ts` | 歌曲信息：page=居中浮窗（`.sd-modal`，不再占满 stage）、inline=列表内展开；设置可选 |
+| `src/ui/eqCurve.ts` | ★ 均衡器频响曲线：Canvas2D + PCHIP 平滑插值 + 节点拖拽（设置页与快捷设置共用） |
 | `src/ui/keywords.ts` | 重点词（关键分词）提取，纯字/房间共用 |
 | `src/ui/localArtists.ts` / `src/ui/local.ts` | 本地歌手聚合（歌手页）/ 本地曲库数据 |
 | `src/ui/confirmDialog.ts` | 应用内确认弹窗（替代 `window.confirm`） |
@@ -140,7 +155,8 @@ powershell -File tools/release.ps1 -DryRun   # 演练；去掉 -DryRun 真发版
 - 版本号统一由 `Directory.Build.props` 控制（当前 **1.1.3**）；`%LOCALAPPDATA%\Programs\Zilux2` 装的是最近一次构建（自动更新会改装到更新版本）。
 - 1.1.1：播放/暂停渐变增强——淡出/淡入时长分开（`playback.fadeOutMs` / `playback.fadeInMs`）、曲线可选（`playback.fadeCurve`: smooth/linear/exponential）、新增「人声保留淡出」（`playback.fadeVocal` / `playback.fadeVocalTailMs`，暂停时压低低频/高频让人声多留一会儿）；快捷设置新增人声保留开关；设置契约与 README 同步。
 - 上一窗口（1.1.0）：设置改为居中大弹窗（效果设置同款）；新增 10 段均衡器（7 预设 + 手动增益，Web Audio BiquadFilter 链）；播放/暂停渐变（`playback.fadeEnabled/fadeMs`，默认关）；快捷设置新增「均衡器 / 播放暂停渐变」；修复宿主 settings patch 会重置同 section 其它字段的 bug（`SettingsService.ApplyKnownValues` 的 fallback 改为保留当前值）。
-- 近期 patch：1.1.2 把 EQ 频响曲线从折线改为 PCHIP 平滑曲线，并修复「暂停后再播放首帧满音量」；1.1.3 把房间设置/文字设置弹层的遮罩改为铺满整个窗口（此前只暗底部一块）。
+- 近期 patch：1.1.2 把 EQ 频响曲线从折线改为 PCHIP 平滑曲线，并修复「暂停后再播放首帧满音量」；1.1.3 把房间设置/文字设置弹层的遮罩改为铺满整个窗口（此前只暗底部一块），并补上设置滑块右侧数值、播放条滑杆风格图标；1.1.3 已按 `463995e` **重发覆盖** Release，额外包含「房间地毯远端椭圆色斑」修复（原实现用径向渐变椭圆做远端渐隐，粉色/深色房间会看出椭圆边界；改为裁切在地毯形状内的线性渐隐）。
+- 注意：**同一版本号替换 Release 后，已安装该版本的客户端不会收到更新提示**（更新逻辑比版本号）；只有新下载安装包/新装用户拿到新构建。要让老用户自动升级必须递增版本发新 Release。
 - 更新通道（本窗口完成）：GitHub Releases 自动检查 → 后台下载 → 提示安装 → 静默安装并重启；设置页「更新」分区；GitHub Actions 自动发版。已用本地 mock Release 真机实测 1.0.0 → 1.0.1 全链路。
 - 代码已推到私有仓库 `KaFuuChino2006/Zilux2`（`main` 含完整历史；Releases 已发布 v1.1.0–v1.1.3，私有可见；`v1.0.0` tag 未推送、已被 1.1.x 取代）。`origin` 为 SSH over 443，见 §10。
 - 本窗口已完成：房间效果系列（歌词颜色跟随/流星/粒子 3D/自定义）、发现页全量能力、歌曲信息、本地标签歌手 + 歌手页、本地曲库管理、统一下载 + 音质、顶部预期条、首页双收藏卡、应用内确认框、窗口动画设置。
@@ -154,7 +170,15 @@ powershell -File tools/release.ps1 -DryRun   # 演练；去掉 -DryRun 真发版
   2. 累计新增功能 **3 个以上**。
 - 未达门槛：正常提交并推送 `main`，但**不改** `Directory.Build.props` 版本、不打 tag、不发 Release。
 - 达到门槛：改 `Directory.Build.props` → 提交 → `git tag -a v<version> -m "Zilux2 <version>"` → `git push origin v<version>`（Actions 自动构建发布）。
-- 已按此节奏发布：`v1.1.0`（设置居中/EQ/渐变）、`v1.1.1`（渐变细分 + 歌曲信息浮窗）、`v1.1.2`（EQ 平滑 + 首帧爆音）、`v1.1.3`（效果弹层遮罩）。
+- **同版本替换已发布构建**（用户要求「替换最新版但版本号不换」时）：不改版本号；先删远端/本地旧 tag，再把 `v<version>` 重新指到新提交并 push：
+  ```bash
+  git tag -d v1.1.3
+  git push origin :refs/tags/v1.1.3
+  git tag -a v1.1.3 -m "Zilux2 v1.1.3（重发）" <new-commit>
+  git push origin v1.1.3
+  ```
+  Actions 会重新跑并覆盖同一 Release 的资产；本地再 `make-installer` + 静默安装同步。已安装同版本的客户端不会提示更新（见 §8）。
+- 已按此节奏发布：`v1.1.0`（设置居中/EQ/渐变）、`v1.1.1`（渐变细分 + 歌曲信息浮窗）、`v1.1.2`（EQ 平滑 + 首帧爆音）、`v1.1.3`（效果弹层遮罩；后按 `06ef14e` 重发含滑块数值/图标，再按 `463995e` 重发含地毯椭圆修复）。
 
 ## 10. 更新通道（GitHub Releases）
 
@@ -164,12 +188,14 @@ powershell -File tools/release.ps1 -DryRun   # 演练；去掉 -DryRun 真发版
 - 资产：`Zilux2-Setup-<version>.exe`；宿主下载到 `%LOCALAPPDATA%\Zilux2\updates\`，校验 GitHub `digest`（sha256）后以 `--silent --no-shortcuts --launch --dir <安装目录>` 静默安装并重启。
 - 默认 `updates.mode="auto"`（自动下载+提示安装），可切 `"notify"`（只提示）；`updates.autoCheck` 控制启动检查 + 每 4 小时轮询。
 - 发版：改 props 版本 → 提交 → `tools\release.ps1`（或 push tag `v<version>`，Actions 自动构建发布）。
+- 当前 Release：`v1.1.3`，tag 指向 `463995e`，2026-10-23T19:16:05Z 覆盖重发；资产 `Zilux2-Setup-1.1.3.exe` 13,064,383 B、`Zilux2-Portable-1.1.3.zip` 13,152,499 B、`.exe.sha256`。
 - 仓库可见性：应用内更新走未认证 GitHub API，**只有公开仓库的 Release 可见**；开发期可先建私有仓库存代码（先不推 tag），要发布更新时把仓库切 public 再推 tag。客户端对 404 的提示为「仓库不存在、未公开，或还没发布 Release」。当前仓库仍是 private：Releases 已发布但匿名 API 查不到，**应用内自动更新暂不可用**；要启用自动更新需把仓库切成 public（或后续给客户端加 token 支持）。
 - 本机网络：`github.com:443`（HTTPS）被重置/超时，`origin` 走 **SSH over 443**：`ssh://git@ssh.github.com:443/KaFuuChino2006/Zilux2.git`，deploy key 在 `C:\Users\13329\.ssh\zilux2_deploy`，仓库本地已配 `core.sshCommand`；细节见 `docs/zilux2-github-setup.md` §4.3。
 - 注意：更新包未做代码签名（SmartScreen 会提示，属预期）。
 
 ## 11. 已知限制 / TODO
 
+- **应用内自动更新目前不可用**：仓库是 private，未认证 GitHub API 查不到 Release（404）。要启用：仓库 Settings → 底部 Danger Zone → Change visibility → Public（或后续给客户端做 token 支持）。切 public 后，还需发一个**比已装版本更高**的 Release 才会触发更新提示。
 - QQ 搜索主接口偶发 500，回退备用接口会增加首次搜索耗时（约 10s）。
 - QQ 会员曲目下载/播放受限（提示需要会员）。
 - 匿名/失效 mvmp3 曲目 403（上游下架）。
