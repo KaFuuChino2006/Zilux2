@@ -1,0 +1,190 @@
+# Zilux2 Release CI
+#
+# 触发方式：
+#   1) push 形如 v1.0.1 的 tag（推荐，正常发版路径）；
+#   2) 在 Actions 页面手动 Run workflow，version 留空则用当前 tag 解析，否则必须与
+#      Directory.Build.props 的 <Version> 一致。
+#
+# 产物（GitHub Release 资产，名字不能改，应用内更新按文件名匹配）：
+#   Zilux2-Setup-<version>.exe          安装包（宿主自动更新下载的就是它）
+#   Zilux2-Setup-<version>.exe.sha256   校验和
+#   Zilux2-Portable-<version>.zip       便携版（解压即用）
+#
+# 协议与版本约定见 docs/zilux2-update-channel.md（§1 版本号、§2 资产命名、§7 发布流程）。
+# 本地等价流程见 tools/release.ps1。
+#
+# 约定：仓库内 tools/*.ps1 以 Windows PowerShell 5.1 为目标版本，所以这里用
+# `powershell -NoProfile -File ...` 调用；YAML 内联步骤用 runner 自带的 pwsh 7。
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号，如 1.0.1 或 v1.0.1；留空则使用当前 tag'
+        required: false
+        default: ''
+        type: string
+
+# 创建/更新 Release 需要写权限
+permissions:
+  contents: write
+
+# 同一 tag 重复触发时排队而不是并行，避免并发写同一个 Release
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DOTNET_NOLOGO: '1'
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+
+jobs:
+  build:
+    name: 构建并发布
+    runs-on: windows-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 安装 .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      # setup-node 的 pnpm 缓存需要先装好 pnpm，所以先跑 pnpm/action-setup。
+      # web/package.json 没有 packageManager 字段，这里显式指定 pnpm 9。
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: 安装 Node.js 22（缓存 pnpm 依赖）
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: 解析并校验版本号
+        id: version
+        shell: pwsh
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $raw = ''
+          if ($env:INPUT_VERSION -and $env:INPUT_VERSION.Trim()) {
+            $raw = $env:INPUT_VERSION.Trim()
+          } elseif ($env:REF_TYPE -eq 'tag' -and $env:REF_NAME) {
+            $raw = $env:REF_NAME.Trim()
+          } else {
+            throw '无法确定版本号：workflow_dispatch 触发时请填写 version 输入，或直接推送 v* tag。'
+          }
+
+          $version = $raw.TrimStart('v')
+          if ($version -notmatch '^\d+\.\d+\.\d+([-.][0-9A-Za-z.]+)?$') {
+            throw "版本号格式不合法：'$raw'；应为 1.2.3 或 v1.2.3（可带 -beta.1 这类后缀）。"
+          }
+
+          # 版本号唯一来源：仓库根 Directory.Build.props
+          $propsRaw = Get-Content -Raw -Path (Join-Path $PWD 'Directory.Build.props')
+          if ($propsRaw -notmatch '<Version>\s*([^<\s]+)\s*</Version>') {
+            throw 'Directory.Build.props 里找不到 <Version> 节点（版本号唯一来源，见 docs/zilux2-update-channel.md §1）。'
+          }
+          $propsVersion = $Matches[1].Trim()
+          if ($propsVersion -ne $version) {
+            throw "版本号不一致：tag/输入为 $version，但 Directory.Build.props 的 <Version> 是 $propsVersion。请把两者改成同一个版本（tag 可带 v 前缀）后重试。"
+          }
+
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "版本校验通过：$version（tag 约定 v$version）"
+
+      - name: 构建前端（web/dist）
+        shell: pwsh
+        working-directory: web
+        run: |
+          pnpm install --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) { throw "pnpm install 失败（退出码 $LASTEXITCODE）" }
+          pnpm run build
+          if ($LASTEXITCODE -ne 0) { throw "pnpm run build 失败（退出码 $LASTEXITCODE）" }
+
+      # -SkipWebBuild：前端已在上一步构建好，避免 publish.ps1 再跑一遍。
+      # -UpdateRepo：把实际仓库名编译进 exe，替换 Directory.Build.props 里的占位
+      # zilux2/Zilux2（见 docs/zilux2-update-channel.md §1）。
+      - name: 发布宿主程序（tools/publish.ps1）
+        shell: pwsh
+        env:
+          UPDATE_REPO: ${{ github.repository }}
+        run: |
+          $version = $env:VERSION
+          powershell -NoProfile -ExecutionPolicy Bypass -File tools/publish.ps1 -SkipWebBuild -Version $version -UpdateRepo $env:UPDATE_REPO
+          if ($LASTEXITCODE -ne 0) { throw "tools/publish.ps1 失败（退出码 $LASTEXITCODE）" }
+
+      - name: 生成安装包（tools/make-installer.ps1）
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File tools/make-installer.ps1 -Version $env:VERSION
+          if ($LASTEXITCODE -ne 0) { throw "tools/make-installer.ps1 失败（退出码 $LASTEXITCODE）" }
+
+      - name: 校验资产并生成校验和 / 便携版
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = $env:VERSION
+          $setup = "dist/Zilux2-Setup-$version.exe"
+          if (-not (Test-Path $setup)) { throw "缺少安装包：$setup" }
+          $sizeMb = [math]::Round((Get-Item $setup).Length / 1MB, 1)
+          if ($sizeMb -lt 5) { throw "安装包体积异常（$sizeMb MB），请检查构建日志。" }
+          Write-Host "安装包：$setup（$sizeMb MB）"
+
+          $sha = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$sha  Zilux2-Setup-$version.exe" | Out-File -FilePath "$setup.sha256" -Encoding ascii
+          Write-Host "SHA256：$sha"
+
+          $portable = "dist/Zilux2-Portable-$version.zip"
+          if (Test-Path $portable) { Remove-Item $portable -Force }
+          Compress-Archive -Path 'dist/Zilux2/*' -DestinationPath $portable -CompressionLevel Optimal
+          Write-Host "便携版：$portable"
+
+      # tag 触发时 body 里额外说明「应用内更新已启用」；generate_release_notes 会把
+      # 自动生成的更新日志追加在 body 后面（前端设置页会原样展示这份说明）。
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: Zilux2 v${{ steps.version.outputs.version }}
+          body: |
+            ## Zilux2 v${{ steps.version.outputs.version }}
+
+            本版本已启用**应用内更新**：打开 设置 → 更新 即可检查 / 下载 / 安装新版本。
+            默认在启动约 8 秒后自动检查，之后每 4 小时检查一次；也可以随时手动点「检查更新」。
+
+            | 资产 | 用途 |
+            | --- | --- |
+            | `Zilux2-Setup-${{ steps.version.outputs.version }}.exe` | 安装包，应用内更新按**这个文件名**匹配，请勿改名 |
+            | `Zilux2-Portable-${{ steps.version.outputs.version }}.zip` | 便携版，解压即用（不含自动更新安装器） |
+            | `Zilux2-Setup-${{ steps.version.outputs.version }}.exe.sha256` | 安装包 SHA-256 校验和 |
+
+            注意：自动更新走 GitHub Releases API，仓库需要公开；未签名的安装包首次运行会被
+            SmartScreen 提示，属正常现象。
+
+            完整更新日志见下方。
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
+          files: |
+            dist/Zilux2-Setup-${{ steps.version.outputs.version }}.exe
+            dist/Zilux2-Setup-${{ steps.version.outputs.version }}.exe.sha256
+            dist/Zilux2-Portable-${{ steps.version.outputs.version }}.zip

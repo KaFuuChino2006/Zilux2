@@ -1,0 +1,231 @@
+/* 右上角账号：圆形头像按钮，鼠标移上去向左展开两个平台的账号信息 */
+.space-account {
+  position: absolute;
+  top: 18px;
+  right: 138px;
+  z-index: 24;
+  display: flex;
+  align-items: center;
+}
+.space-account-btn {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--glass-border, rgba(23, 26, 33, 0.14));
+  background: var(--glass, rgba(255, 255, 255, 0.72));
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
+  backdrop-filter: blur(20px) saturate(150%);
+  color: var(--ink, #171a21);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+.space-account-btn:hover {
+  border-color: rgba(216, 183, 74, 0.55);
+  box-shadow: 0 8px 22px rgba(23, 26, 33, 0.16);
+  transform: translateY(-1px);
+}
+.space-account-btn.is-online::after {
+  content: '';
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #3ddc84;
+  border: 2px solid rgba(255, 255, 255, 0.92);
+}
+.space-account-avatar {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  overflow: hidden;
+}
+.space-account-avatar.has-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.space-account-pop {
+  position: absolute;
+  top: 50%;
+  right: calc(100% + 12px);
+  width: 288px;
+  padding: 12px;
+  border-radius: 20px;
+  border: 1px solid var(--glass-border, rgba(23, 26, 33, 0.14));
+  background: var(--glass-strong, rgba(255, 255, 255, 0.9));
+  -webkit-backdrop-filter: blur(26px) saturate(160%);
+  backdrop-filter: blur(26px) saturate(160%);
+  box-shadow: 0 22px 54px rgba(23, 26, 33, 0.2);
+  opacity: 0;
+  transform: translate(10px, -50%) scale(0.97);
+  transform-origin: right center;
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.24s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+/* 右侧留一条隐形搭桥，鼠标从头像移到面板上时不会掉出 hover */
+.space-account-pop::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: -16px;
+  width: 16px;
+  height: 100%;
+}
+.space-account:hover .space-account-pop,
+.space-account:focus-within .space-account-pop,
+.space-account.is-open .space-account-pop {
+  opacity: 1;
+  transform: translate(0, -50%) scale(1);
+  pointer-events: auto;
+}
+.space-account-pop-head {
+  margin: 0 0 10px;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #8a8f99;
+}
+.space-account-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.space-account-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border-radius: 14px;
+  background: rgba(23, 26, 33, 0.04);
+  transition: background 0.2s ease;
+}
+.space-account-face {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex: none;
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.8);
+}
+.space-account-face.is-empty {
+  border: 1px dashed rgba(23, 26, 33, 0.16);
+}
+.space-account-meta {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.space-account-meta strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink, #171a21);
+}
+.space-account-meta span {
+  font-size: 12px;
+  color: #4b5464;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.space-account-meta i {
+  font-style: normal;
+  font-size: 11px;
+  color: #8a8f99;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.space-account-actions {
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
+.space-account-action {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(23, 26, 33, 0.14);
+  background: rgba(255, 255, 255, 0.9);
+  color: #171a21;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+.space-account-action:hover {
+  border-color: rgba(216, 183, 74, 0.6);
+}
+.space-account-action.is-quiet {
+  background: transparent;
+  color: #6a7180;
+}
+.space-account-pop-foot {
+  margin: 10px 0 0;
+  font-size: 11px;
+  color: #8a8f99;
+}
+.space-shell.theme-gold .space-account-btn {
+  border-color: rgba(212, 175, 55, 0.3) !important;
+  background: rgba(20, 18, 13, 0.72) !important;
+  color: #f2e9d3 !important;
+}
+.space-shell.theme-gold .space-account-btn:hover {
+  border-color: rgba(216, 183, 74, 0.7) !important;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.42) !important;
+}
+.space-shell.theme-gold .space-account-btn.is-online::after {
+  border-color: rgba(20, 18, 13, 0.9);
+}
+.space-shell.theme-gold .space-account-pop {
+  border-color: rgba(212, 175, 55, 0.28) !important;
+  background: rgba(20, 18, 13, 0.92) !important;
+  box-shadow: 0 24px 58px rgba(0, 0, 0, 0.55) !important;
+}
+.space-shell.theme-gold .space-account-pop-head,
+.space-shell.theme-gold .space-account-pop-foot,
+.space-shell.theme-gold .space-account-meta i {
+  color: #cfc4a6 !important;
+}
+.space-shell.theme-gold .space-account-meta strong {
+  color: #f2e9d3 !important;
+}
+.space-shell.theme-gold .space-account-meta span {
+  color: #cfc4a6 !important;
+}
+.space-shell.theme-gold .space-account-row {
+  background: rgba(255, 255, 255, 0.05);
+}
+.space-shell.theme-gold .space-account-row:hover {
+  background: rgba(216, 183, 74, 0.12);
+}
+.space-shell.theme-gold .space-account-face {
+  background: rgba(255, 255, 255, 0.08);
+}
+.space-shell.theme-gold .space-account-face.is-empty {
+  border-color: rgba(212, 175, 55, 0.3);
+}
+.space-shell.theme-gold .space-account-action {
+  border-color: rgba(212, 175, 55, 0.32);
+  background: rgba(255, 255, 255, 0.06);
+  color: #f2e9d3;
+}
+.space-shell.theme-gold .space-account-action:hover {
+  border-color: rgba(216, 183, 74, 0.7);
+  background: rgba(216, 183, 74, 0.16);
+}
+.space-shell.theme-gold .space-account-action.is-quiet {
+  background: transparent;
+  color: #cfc4a6;
+}

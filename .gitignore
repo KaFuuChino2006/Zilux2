@@ -1,0 +1,80 @@
+# Node
+web/node_modules/
+web/dist/
+web/.vite/
+npm-debug.log*
+
+# .NET
+src/**/bin/
+src/**/obj/
+*.user
+*.suo
+
+# 运行时
+tools/_out/
+artifacts/
+dist/
+
+# 本地临时
+*.log
+.tmp/
+
+# 本机工具链 / WebView2 临时 profile（体积大且与代码无关）
+.tmp-edge/
+aurora-toolchainclihome/
+aurora-toolchainnuget/
+
+# 安装器打包中间文件（tools/make-installer.ps1 生成，失败时可能残留）
+src/Zilux2.Installer/payload.zip
+
+# 系统垃圾文件
+Thumbs.db
+Desktop.ini
+.DS_Store
+__pycache__/
+*.pyc
+
+# 大归档一律不入库（GitHub 单文件上限 100MB，push 会直接失败）
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+*.rar
+
+# 调研工作区：保留 *.md / *.json / 脚本等轻量资料，其余大体积产物不入库
+# （research/ 当前实占约 2.9GB，其中截图 1.4G、临时目录 723M、QA 产物 352M）
+research/shots/
+research/tmp/
+research/repos/
+research/mac-dist/
+research/**/_ref/
+research/**/bin/
+research/**/obj/
+research/**/node_modules/
+research/**/dist/
+research/**/publish/
+research/qa/folia-asar/
+research/fonts/work/
+research/fonts/dist/
+research/airplay/tuneblade-decomp/
+
+# 调研时抓取的本机凭据 / 令牌，绝不能入库
+research/qa/kugou_cookies.json
+research/probe/vkey.json
+research/probe/vkey_req.json
+
+# macOS 端实验目录：只保留 shell / packaging 源码，构建与缓存产物不入库（约 1.1GB）
+mac/build/
+mac/cache/
+mac/engine/bin/
+mac/engine/obj/
+mac/engine/publish/
+
+
+# 仓库体积控制：归档包与解包的 npm 包不入库（首提交约 75MB，保留源码/文档）
+archive/
+research/ncm/
+research/qqma/
+
+# 个人文档，不入库
+DeepSeek二创人格设定-鲸鱼娘v1.0.md

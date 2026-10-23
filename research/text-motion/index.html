@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>纯字 · 文字动效试验台</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="top">
+        <div class="brand">
+          <span class="dot"></span>
+          <div>
+            <h1>纯字 · 文字动效试验台</h1>
+            <p>按「纯字」里的文字层重做的 8 组动效 · 独立网页，不进软件</p>
+          </div>
+        </div>
+        <div class="hint">
+          <span><kbd>空格</kbd> 播放 / 暂停</span>
+          <span><kbd>←</kbd> <kbd>→</kbd> 切换动效</span>
+          <span><kbd>R</kbd> 重播</span>
+        </div>
+      </header>
+
+      <main class="main">
+        <aside class="rail" id="rail"></aside>
+        <section class="stage">
+          <canvas id="canvas"></canvas>
+          <div class="stage-badge" id="badge">
+            <strong id="badgeName">经典绘光</strong>
+            <span id="badgeDesc"></span>
+          </div>
+          <div class="stage-progress">
+            <div class="stage-line" id="stageLine"></div>
+            <div class="stage-track"><div class="stage-fill" id="stageFill"></div></div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="bar">
+        <div class="bar-left">
+          <button class="btn primary" id="playBtn" title="播放 / 暂停">
+            <span id="playIcon">❚❚</span>
+          </button>
+          <button class="btn" id="replayBtn" title="从头重播">↺ 重播</button>
+          <span class="clock" id="clock">0:00 / 0:00</span>
+        </div>
+        <div class="bar-mid">
+          <label class="slider">
+            <span>速度</span>
+            <input id="speed" type="range" min="0.5" max="1.6" step="0.05" value="1" />
+            <output id="speedOut">1.00×</output>
+          </label>
+          <label class="slider">
+            <span>发光</span>
+            <input id="glow" type="range" min="0.2" max="2" step="0.05" value="1" />
+            <output id="glowOut">1.00</output>
+          </label>
+          <label class="slider">
+            <span>字距</span>
+            <input id="spacing" type="range" min="0" max="1.6" step="0.05" value="0.62" />
+            <output id="spacingOut">0.62</output>
+          </label>
+        </div>
+        <div class="bar-right">
+          <label class="check">
+            <input id="keyword" type="checkbox" checked />
+            <span>关键字染色</span>
+          </label>
+          <label class="check">
+            <input id="echo" type="checkbox" checked />
+            <span>回响残影</span>
+          </label>
+        </div>
+      </footer>
+    </div>
+    <script src="./app.js"></script>
+  </body>
+</html>

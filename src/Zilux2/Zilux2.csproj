@@ -1,0 +1,69 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>Zilux2</RootNamespace>
+    <AssemblyName>Zilux2</AssemblyName>
+    <!-- Version comes from Directory.Build.props (single source of truth for releases). -->
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- WebView2 runtime ships separately; no need to flatten native bits into the output root. -->
+    <Platforms>AnyCPU;x64</Platforms>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- NAudio：用系统 Media Foundation 解 ALAC 的 .m4a（WebView2 自身不支持 ALAC）。 -->
+    <Reference Include="NAudio.Core">
+      <HintPath>$(MSBuildThisFileDirectory)lib\NAudio.Core.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="NAudio.Wasapi">
+      <HintPath>$(MSBuildThisFileDirectory)lib\NAudio.Wasapi.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Dev harness page: never shipped with the build; used through ZILUX2_WEB_DIR. -->
+    <None Update="_devtest\**\*" CopyToOutputDirectory="Never" CopyToPublishDirectory="Never" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <!-- Repo-relative frontend output. tools\build.ps1 -WebDir can override it after the build. -->
+    <ZiluxWebDistDir>$(MSBuildThisFileDirectory)..\..\web\dist</ZiluxWebDistDir>
+  </PropertyGroup>
+
+  <!-- Keep a plain `dotnet build` producing a runnable exe when the frontend has been built.
+       tools\build.ps1 re-copies a custom -WebDir on top of this. -->
+  <Target Name="CopyWebDistIntoOutput" AfterTargets="Build" Condition="Exists('$(ZiluxWebDistDir)\index.html')">
+    <ItemGroup>
+      <_ZiluxWebDistFile Include="$(ZiluxWebDistDir)\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_ZiluxWebDistFile)"
+          DestinationFiles="@(_ZiluxWebDistFile->'$(OutDir)web\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+  <!-- Supply the front end next to the published exe as well (<publish>\web\index.html).
+       Clean the target first so stale hashed bundles from older builds never linger. -->
+  <Target Name="CopyWebDistIntoPublish" AfterTargets="Publish" Condition="Exists('$(ZiluxWebDistDir)\index.html')">
+    <RemoveDir Directories="$(PublishDir)web" />
+    <ItemGroup>
+      <_ZiluxWebPublishFile Include="$(ZiluxWebDistDir)\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_ZiluxWebPublishFile)"
+          DestinationFiles="@(_ZiluxWebPublishFile->'$(PublishDir)web\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>

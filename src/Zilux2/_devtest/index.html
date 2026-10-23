@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="color-scheme" content="dark" />
+<title>Zilux2 · host devtest</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: #07080b;
+    color: #e8ecf3;
+    font: 14px/1.5 "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .titlebar {
+    height: 48px;
+    flex: 0 0 48px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 0 18px;
+    background: linear-gradient(180deg, #12141b, #0b0d12);
+    border-bottom: 1px solid #1d2130;
+    cursor: default;
+    user-select: none;
+  }
+  .brand { font-weight: 600; letter-spacing: .3px; }
+  .badge {
+    font-size: 11px; padding: 2px 8px; border-radius: 999px;
+    background: #1b2030; color: #8fa0bd; border: 1px solid #273049;
+  }
+  .drag-hint { margin-left: auto; color: #5b6478; font-size: 12px; }
+  main { flex: 1 1 auto; padding: 28px 32px; overflow: auto; }
+  h1 { font-size: 22px; margin: 0 0 6px; font-weight: 650; }
+  h2 { font-size: 13px; margin: 26px 0 8px; color: #8fa0bd; text-transform: uppercase; letter-spacing: .08em; }
+  p { margin: 6px 0; color: #9aa3b2; }
+  .bridge { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
+  .bridge.ok { color: #7ee2a8; }
+  .bridge.missing { color: #f0b46b; }
+  .buttons { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+  button {
+    appearance: none;
+    border: 1px solid #2b3346;
+    background: #161a24;
+    color: #d9e0ec;
+    padding: 9px 16px;
+    border-radius: 8px;
+    font: inherit;
+    cursor: pointer;
+    transition: background .12s ease, border-color .12s ease;
+  }
+  button:hover { background: #1d2331; border-color: #3a4560; }
+  button:active { background: #11151d; }
+  #messages {
+    margin: 0;
+    height: 240px;
+    overflow: auto;
+    background: #0b0d12;
+    border: 1px solid #1d2130;
+    border-radius: 10px;
+    padding: 12px 14px;
+    font: 12px/1.7 ui-monospace, "Cascadia Code", Consolas, monospace;
+    color: #a8b4c8;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .hint { margin-top: 14px; color: #5b6478; font-size: 12px; }
+  .pill { display: inline-flex; gap: 6px; align-items: center; }
+</style>
+</head>
+<body>
+  <header class="titlebar" id="titlebar">
+    <span class="brand">Zilux2 · host devtest</span>
+    <span class="badge">milestone 2</span>
+    <span class="drag-hint">按住此栏拖动窗口 · drag area</span>
+  </header>
+
+  <main>
+    <h1>Host bridge self-test</h1>
+    <p>这个页面只用于宿主自测（<code>ZILUX2_WEB_DIR</code> 指向本目录），不随发布包分发。</p>
+    <p class="pill">bridge:
+      <span id="bridge-state" class="bridge">checking…</span>
+    </p>
+    <p class="hint">自动场景（供 tools/selftest.ps1 使用）：<code>?auto=maximize</code> / <code>?auto=minimize</code> / <code>?auto=close</code>。在线服务探针（供 tools/online-selftest.ps1 使用）：收到 <code>online</code> 消息后自动请求 health 与 search。</p>
+
+    <div class="buttons">
+      <button id="btn-min" type="button">Minimize</button>
+      <button id="btn-max" type="button">Toggle maximize</button>
+      <button id="btn-close" type="button">Close window</button>
+      <button id="btn-log" type="button">Send log</button>
+    </div>
+
+    <h2>Host → page messages</h2>
+    <pre id="messages">(waiting)</pre>
+  </main>
+
+<script>
+(() => {
+  'use strict';
+
+  const bridge = window.chrome && window.chrome.webview ? window.chrome.webview : null;
+  const stateElement = document.getElementById('bridge-state');
+  const messagesElement = document.getElementById('messages');
+  const auto = new URLSearchParams(location.search).get('auto');
+
+  const post = (payload) => {
+    if (bridge) {
+      bridge.postMessage(payload);
+    }
+  };
+
+  const show = (text) => {
+    const line = document.createElement('div');
+    line.textContent = text;
+    if (messagesElement.textContent === '(waiting)') {
+      messagesElement.textContent = '';
+    }
+    messagesElement.prepend(line);
+  };
+
+  stateElement.textContent = bridge ? 'available (WebView2)' : 'missing (plain browser fallback)';
+  stateElement.className = 'bridge ' + (bridge ? 'ok' : 'missing');
+
+  const sendLog = (level, message) => post({ v: 1, type: 'log', level, message });
+
+  // Hit the loopback service from inside the real WebView2 content process. The online
+  // payload carries the API token, so it must never be mirrored into host.log.
+  const probeOnline = async (payload) => {
+    const base = 'http://127.0.0.1:' + payload.port;
+    try {
+      const health = await fetch(base + '/api/health', { cache: 'no-store' });
+      const json = await health.json();
+      sendLog('info', 'devtest health status=' + health.status + ' ok=' + json.ok + ' sources=' + (json.sources || []).join(','));
+    } catch (error) {
+      sendLog('error', 'devtest health failed: ' + error);
+    }
+    try {
+      const url = base + '/api/search?source=netease&q=' + encodeURIComponent('晴天') +
+        '&limit=2&token=' + encodeURIComponent(payload.token);
+      const response = await fetch(url, { cache: 'no-store' });
+      const json = await response.json();
+      const tracks = Array.isArray(json.tracks) ? json.tracks : [];
+      const first = tracks[0] || null;
+      const coverProxy = !!(first && typeof first.cover === 'string' && first.cover.indexOf('/api/cover') > 0);
+      sendLog('info', 'devtest search status=' + response.status + ' tracks=' + tracks.length +
+        ' coverProxy=' + (coverProxy ? 'yes' : 'no'));
+    } catch (error) {
+      sendLog('error', 'devtest search failed: ' + error);
+    }
+  };
+
+  // The host pushes messages back; mirror them into the DOM and into host.log so a
+  // headless self-test can prove the round trip actually happened.
+  let audioFrames = 0;
+  let audioBeats = 0;
+  if (bridge) {
+    bridge.addEventListener('message', (event) => {
+      const data = event.data;
+      if (data && data.type === 'host' && data.event === 'online' && data.payload) {
+        const payload = data.payload;
+        show('host → online port=' + payload.port +
+          ' tokenLen=' + (payload.token ? payload.token.length : 0) +
+          ' sources=' + (payload.sources || []).join(','));
+        sendLog('info', 'devtest online event port=' + payload.port +
+          ' sources=' + (payload.sources || []).join(','));
+        probeOnline(payload);
+        return;
+      }
+      if (data && data.type === 'host' && data.event === 'audio' && data.payload) {
+        const payload = data.payload;
+        audioFrames += 1;
+        if (payload.beat === true) {
+          audioBeats += 1;
+        }
+        const bins = Array.isArray(payload.bins) ? payload.bins : [];
+        const bands = Array.isArray(payload.bands) ? payload.bands : [];
+        let bytes = 0;
+        try {
+          bytes = JSON.stringify(data).length;
+        } catch (ignored) {
+          bytes = -1;
+        }
+        if (audioFrames === 1 || audioFrames % 30 === 0) {
+          sendLog('info', 'devtest audio frames=' + audioFrames +
+            ' beats=' + audioBeats +
+            ' bins=' + bins.length + ' bands=' + bands.length + ' bytes=' + bytes +
+            ' level=' + (typeof payload.level === 'number' ? payload.level.toFixed(3) : '?') +
+            ' beat=' + (payload.beat === true));
+        }
+        return;
+      }
+      if (data && data.type === 'host' && data.event === 'mediaControl' && data.payload) {
+        const payload = data.payload;
+        show('host → mediaControl action=' + payload.action);
+        sendLog('info', 'devtest mediaControl action=' + payload.action +
+          (typeof payload.positionMs === 'number' ? ' positionMs=' + payload.positionMs : ''));
+        return;
+      }
+      const raw = typeof data === 'string' ? data : JSON.stringify(data);
+      show('host → ' + raw);
+      sendLog('info', 'hostmsg ' + raw);
+    });
+  }
+
+  document.getElementById('btn-min').addEventListener('click', () => {
+    sendLog('info', 'devtest: minimize clicked');
+    post({ v: 1, type: 'window', action: 'minimize' });
+  });
+
+  document.getElementById('btn-max').addEventListener('click', () => {
+    sendLog('info', 'devtest: toggleMaximize clicked');
+    post({ v: 1, type: 'window', action: 'toggleMaximize' });
+  });
+
+  document.getElementById('btn-close').addEventListener('click', () => {
+    sendLog('info', 'devtest: close clicked');
+    post({ v: 1, type: 'window', action: 'close' });
+  });
+
+  document.getElementById('btn-log').addEventListener('click', () => {
+    sendLog('info', 'devtest: log button clicked');
+  });
+
+  // Frameless title bar: pointerdown asks the host to start the native move loop.
+  const titlebar = document.getElementById('titlebar');
+  titlebar.addEventListener('pointerdown', (event) => {
+    if (event.button === 0) {
+      sendLog('info', 'devtest: drag pointerdown');
+      post({ v: 1, type: 'drag' });
+    }
+  });
+
+  // Same contract as the real front end: a double click is a second pointerdown (drag) plus a
+  // dblclick (toggleMaximize); the host must let the state change win over the queued move loop.
+  titlebar.addEventListener('dblclick', () => {
+    sendLog('info', 'devtest: titlebar dblclick');
+    post({ v: 1, type: 'window', action: 'toggleMaximize' });
+  });
+
+  const announceReady = () => {
+    post({ v: 1, type: 'ready' });
+    sendLog('info', 'devtest page loaded (auto=' + (auto || 'none') + ')');
+  };
+
+  if (bridge) {
+    if (auto === 'maximize') {
+      setTimeout(() => {
+        sendLog('info', 'auto: requesting maximize');
+        post({ v: 1, type: 'window', action: 'toggleMaximize' });
+      }, 800);
+      setTimeout(() => {
+        sendLog('info', 'auto: requesting restore');
+        post({ v: 1, type: 'window', action: 'toggleMaximize' });
+      }, 2400);
+    } else if (auto === 'minimize') {
+      setTimeout(() => {
+        sendLog('info', 'auto: requesting minimize');
+        post({ v: 1, type: 'window', action: 'minimize' });
+      }, 800);
+    } else if (auto === 'close') {
+      setTimeout(() => {
+        sendLog('info', 'auto: requesting close');
+        post({ v: 1, type: 'window', action: 'close' });
+      }, 2200);
+    } else if (auto === 'double') {
+      // Reproduce the real pointerdown+dblclick order of one double click: a drag message
+      // followed by toggleMaximize in the same task, twice (maximize, then restore).
+      const doubleClick = () => {
+        post({ v: 1, type: 'drag' });
+        post({ v: 1, type: 'window', action: 'toggleMaximize' });
+      };
+      setTimeout(() => {
+        sendLog('info', 'auto: simulating double click (maximize)');
+        doubleClick();
+      }, 900);
+      setTimeout(() => {
+        sendLog('info', 'auto: simulating double click (restore)');
+        doubleClick();
+      }, 2600);
+    } else if (auto === 'media') {
+      // Contract §11: the page owns playback, so it periodically publishes metadata plus
+      // position while playing (the host coalesces to <=10 updates/s for SMTC).
+      const cover = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+      let mediaSent = 0;
+      const pushMedia = (positionMs, playing) => {
+        mediaSent += 1;
+        post({
+          v: 1,
+          type: 'media',
+          payload: {
+            title: 'Devtest Track',
+            artist: 'Zilux2 Host',
+            album: 'Contract 11',
+            coverUrl: cover,
+            durationMs: 240000,
+            positionMs,
+            playing,
+          },
+        });
+        sendLog('info', 'devtest media sent #' + mediaSent +
+          ' positionMs=' + positionMs + ' playing=' + playing);
+      };
+      setTimeout(() => pushMedia(0, true), 700);
+      setTimeout(() => pushMedia(8000, true), 1500);
+      setTimeout(() => pushMedia(16000, true), 2300);
+      setTimeout(() => pushMedia(24000, false), 3100);
+      setTimeout(() => pushMedia(32000, true), 3900);
+    }
+  }
+
+  announceReady();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,62 @@
+Port | Type | Service1 or protocol | RFC2 | Service name3 | Used by
+22 | TCP | Secure Shell (SSH), SSH File Transfer Protocol (SFTP), and Secure copy (scp) | 4253 | ssh | Xcode Server (hosted and remote Git+SSH, remote SVN+SSH)
+25 | TCP | Simple Mail Transfer Protocol (SMTP) | 5321 | smtp | Mail (sending email), iCloud Mail (sending email)
+53 | TCP, UDP | Domain Name System (DNS) | 1034 | domain | &mdash;
+80 | TCP | Hypertext Transfer Protocol (HTTP) | 2616 | http | World Wide Web, FaceTime, iMessage, iCloud, Maps, Apple Music, iTunes Store, Podcasts, Mac App Store, Backup, Calendar, WebDAV, AirPlay, macOS Internet Recovery, Xcode Server (Xcode app, hosted and remote Git HTTP, remote SVN HTTP)
+88 | TCP | Kerberos | 4120 | kerberos | Kerberos, including Screen Sharing authentication
+110 | TCP | Post Office Protocol (POP3), | Authenticated Post Office Protocol (APOP) | 1939 | pop3 | Mail (receiving email)
+123 | UDP | Network Time Protocol (NTP) | 1305 | ntp | Date &amp; Time preferences, network time server synchronization, Apple TV network time server sync
+137 | UDP | Windows Internet Naming Service (WINS) | &mdash; | netbios-ns | &mdash;
+138 | UDP | NETBIOS Datagram Service | &mdash; | netbios-dgm | Windows Datagram Service, Windows Network Neighborhood
+139 | TCP | Server Message Block (SMB) | &mdash; | netbios-ssn | File sharing and Windows print services
+143 | TCP | Internet Message Access Protocol (IMAP) | 3501 | imap | Mail (receiving email)
+192 | UDP | OSU Network Monitoring System | &mdash; | osu-nms | AirPort Base Station PPP status or discovery (certain configurations), AirPort Admin Utility, AirPort Express Assistant
+389 | TCP | Lightweight Directory Access Protocol (LDAP) | 4511 | ldap | Apps that look up addresses, such as Mail and Address Book
+443 | TCP | Secure Sockets Layer (SSL or HTTPS) | 2818 | https | TLS websites, iTunes Store, Software Update, Spotlight Suggestions, Mac App Store, Maps, FaceTime, Game Center, iCloud authentication and DAV Services (Contacts, Calendars, Bookmarks), iCloud backup and apps (Calendars, Contacts, Find My iPhone, Find My Friends, Mail, iMessage, Documents &amp; Photo Stream), iCloud Key Value Store (KVS), AirPlay, macOS Internet Recovery, Dictation, Siri, Xcode Server (hosted and remote Git HTTPS, remote SVN HTTPS, Apple Developer registration), Push notifications (if necessary)
+443 | UDP | QUIC | &mdash; | https | iCloud Private Relay
+445 | TCP | Microsoft SMB Domain Server | &mdash; | microsoft-ds | &mdash;
+465 | TCP | Message Submission for Mail (Authenticated SMTP) | urd, smtp (legacy) | Mail (sending mail)
+500 | UDP | Wi-Fi Calling | 5996 | isakmp | Wi-Fi Calling
+515 | TCP | Line Printer (LPR), Line Printer Daemon (LPD) | &mdash; | printer | Printing to a network printer, Printer Sharing in macOS
+548 | TCP | Apple Filing Protocol (AFP) over TCP | &mdash; | afpovertcp | AppleShare, Personal File Sharing, Apple File Service
+554 | TCP, UDP | Real Time Streaming Protocol (RTSP) | 2326 | rtsp | AirPlay, streaming media players
+587 | TCP | Message Submission for Mail (Authenticated SMTP) | 4409 | submission | Mail (sending mail), iCloud Mail (SMTP authentication)
+631 | TCP | Internet Printing Protocol (IPP) | 2910 | ipp | macOS Printer Sharing, printing to many common printers
+636 | TCP | Secure LDAP | &mdash; | ldaps | &mdash;
+749 | TCP, UDP | Kerberos 5 admin/changepw | &mdash; | kerberos-adm | &mdash;
+993 | TCP | Mail IMAP SSL | &mdash; | imaps | iCloud Mail (SSL IMAP)
+995 | TCP, UDP | Mail POP SSL | &mdash; | pop3s | &mdash;
+1900 | UDP | SSDP | &mdash; | ssdp | Bonjour
+2197 | TCP | Apple Push Notification Service (APNS) | &mdash; | mnp-exchange | Push notifications
+3031 | TCP, UDP | Remote AppleEvents | &mdash; | eppc | Program Linking, Remote Apple Events
+3283 | TCP, UDP | Apple Remote Desktop | &mdash; | net-assistant | Apple Remote Desktop
+3284 | TCP | Classroom File Transfer | &mdash; | 4talk, classroom | Classroom app (document sharing)
+3285 | TCP | Classroom | &mdash; | plato, classroom | Classroom
+3478&ndash;3497 | UDP | &mdash; | &mdash; | nat-stun-port,&nbsp;etc. | FaceTime, Game Center
+3689 | TCP | Digital Audio Access Protocol (DAAP) | &mdash; | daap | iTunes Music Sharing, AirPlay
+3690 | TCP, UDP | Subversion | &mdash; | svn | Xcode Server (anonymous remote SVN)
+4398 | UDP | &mdash; | &mdash; | &mdash; | Game Center
+4500 | UDP | Wi-Fi Calling | 5996 | ipsec-msft | Wi-Fi Calling
+5000 | TCP | &mdash; | &mdash; | &mdash; | AirPlay
+5100 | TCP | &mdash; | &mdash; | socalia | macOS camera and scanner sharing
+5223 | TCP | Apple Push Notification Service (APNS) | &mdash; | &mdash; | iCloud DAV Services (Contacts, Calendars, Bookmarks), Push Notifications, FaceTime, iMessage, Game Center, Photo Stream
+5228 | TCP | &mdash; | &mdash; | &mdash; | Spotlight Suggestions, Siri
+5297 | TCP | &mdash; | &mdash; | &mdash; | Messages (local traffic)
+5350 | UDP | NAT Port Mapping Protocol Announcements | &mdash; | &mdash; | Bonjour
+5351 | UDP | NAT Port Mapping Protocol | &mdash; | nat-pmp | Bonjour
+5353 | UDP | Multicast DNS (MDNS) | 3927 | mdns | Bonjour, AirPlay, Home Sharing, Printer Discovery
+5900 | TCP | Remote Framebuffer | 6143 | rfb | Apple Remote Desktop, Screen Sharing
+5900 | UDP | Remote Framebuffer, Real-Time Transport Protocol (RTP), Real-Time Control Protocol (RTCP) | &mdash; | rfb | Apple Remote Desktop, Screen Sharing
+5901&ndash;5902 | UDP | Real-Time Transport Protocol (RTP), Real-Time Control Protocol (RTCP) | &mdash; | &mdash; | Apple Remote Desktop, Screen Sharing
+6000 | TCP | &mdash; | &mdash; | &mdash; | AirPlay
+7000 | TCP | &mdash; | &mdash; | &mdash; | AirPlay
+8000&ndash;8999 | TCP | &mdash; | &mdash; | irdmi, etc. | Web service, iTunes Radio streams
+9100 | TCP | Printing | &mdash; | hp-pdl-datastr | Printing to certain network printers
+9418 | TCP, UDP | git pack transfer | &mdash; | git | Xcode Server (remote git)
+16384&ndash;16403 | UDP | Real-Time Transport Protocol (RTP), Real-Time Control Protocol (RTCP) | &mdash; | connected, etc. | Messages (Audio RTP &amp; RTCP, Video RTP &amp; RTCP)
+16384&ndash;16387 | UDP | Real-Time Transport Protocol (RTP), Real-Time Control Protocol (RTCP) | &mdash; | connected, etc. | FaceTime, Game Center
+16393&ndash;16402 | UDP | Real-Time Transport Protocol (RTP), Real-Time Control Protocol (RTCP) | &mdash; | connected, etc. | FaceTime, Game Center
+16403&ndash;16472 | UDP | Real-Time Transport Protocol (RTP), Real-Time Control Protocol (RTCP) | &mdash; | &mdash; | Game Center
+42000&ndash;42999 | TCP | &mdash; | &mdash; | &mdash; | iTunes Radio streams
+49152&ndash;65535 | TCP, UDP | Xsan | &mdash; | &mdash; | AirPlay, device pairing, network diagnostics, Xsan filesystem access
+62078 | TCP | &mdash; | &mdash; | &mdash; | Device pairing, sync, and backup

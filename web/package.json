@@ -1,0 +1,29 @@
+{
+  "name": "zilux2-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@chenglou/pretext": "1.0.0",
+    "bidi-js": "^1.1.0",
+    "pixi.js": "8.22.0",
+    "qrcode": "^1.5.4",
+    "require-from-string": "^2.0.2",
+    "three": "^0.180.0",
+    "troika-three-text": "^0.52.5",
+    "troika-three-utils": "^0.52.5",
+    "troika-worker-utils": "^0.52.0",
+    "webgl-sdf-generator": "^1.1.1"
+  },
+  "devDependencies": {
+    "@types/qrcode": "^1.5.6",
+    "@types/three": "^0.180.0",
+    "typescript": "~5.9.3",
+    "vite": "^7.1.7"
+  }
+}

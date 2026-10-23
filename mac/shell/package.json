@@ -1,0 +1,9 @@
+{
+  "name": "zilux2-mac-shell",
+  "productName": "Zilux2",
+  "version": "1.0.0",
+  "description": "Zilux2 macOS (Apple Silicon) 测试版：Electron 壳 + .NET 回环引擎，承载与 Windows 版相同的 web 前端。",
+  "main": "main.js",
+  "private": true,
+  "license": "UNLICENSED"
+}

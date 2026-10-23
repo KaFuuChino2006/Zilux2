@@ -1,0 +1,185 @@
+
+
+        POST /auth-setup - Unofficial AirPlay Specification
+
+- 1. Introduction
+
+- 2. Service Discovery
+
+- 3. Features
+
+- 4. Status Flags
+
+- 5. Photos
+
+- 
+- 5.1. HTTP Requests
+
+- 5.2. Events
+
+- 5.3. Photo Caching
+
+- 5.4. Slideshows
+
+- 6. Video
+
+- 
+- 6.1. HTTP Requests
+
+- 6.2. Events
+
+- 7. Audio
+
+- 
+- 7.1. RTSP Requests
+
+- 
+- 7.1.1. GET /info
+
+- 7.1.2. POST /pair-setup
+
+- 7.1.3. POST /pair-verify
+
+- 7.1.4. POST /fp-setup
+
+- 7.1.5. POST /auth-setup
+
+- 7.1.6. OPTIONS
+
+- 7.1.7. ANNOUNCE
+
+- 7.1.8. SETUP
+
+- 7.1.9. SETPEERS
+
+- 7.1.10. POST /command
+
+- 7.1.11. POST /feedback
+
+- 7.1.12. POST /audioMode
+
+- 7.1.13. RECORD
+
+- 7.1.14. FLUSH
+
+- 7.1.15. FLUSHBUFFERED
+
+- 7.1.16. TEARDOWN
+
+- 7.2. RTP Streams
+
+- 7.3. Volume Control
+
+- 7.4. Metadata
+
+- 7.5. AirPort Express Authentication
+
+- 7.6. Remote Control
+
+- 8. Screen Mirroring
+
+- 
+- 8.1. HTTP Requests
+
+- 8.2. Stream Packets
+
+- 8.3. Time Synchronization
+
+- 9. Pairing
+
+- 
+- 9.1. HomeKit Based Pairings
+
+- 9.2. Legacy Pairing
+
+- 10. Known Implementations
+
+- 11. Contributing
+
+- 12. History
+
+- 13. Resources
+
+- Light (default)
+
+- Rust
+
+- Coal
+
+- Navy
+
+- Ayu
+
+## Unofficial AirPlay Specification
+
+## POST /auth-setup
+
+In case MFi authentication is supported (HasUnifiedAdvertiserInfo), it can be raised either with a auth-setup challenge or included in the pairing process if supported (SupportsUnifiedPairSetupAndMFi).
+This section describes the first option.
+
+Note that even if it is a server authentication (so that clients ensure MFi authenticity), with Airplay2 devices this step cannot be ignored from a client implementation point of view. Meaning, even if the
+authentication/signature is not checked on client side, the request has to be done, otherwise the server will deny further requests
+
+The challenge process is the following:
+
+- Generation of Curve25119 key pairs on both client and server
+
+- Client send its public key to server
+
+- Server append its public key with client's one, this will be the message to sign. It then gets the signature from Apple authentication IC. RSA-1024 is used, with SHA-1 hash algorithm.
+
+- Signature is encrypted with AES-128 in Counter mode with:
+
+- Key = 16 first bytes of SHA1(<7:AES-KEY><32:Curve25119 Shared key>) 
+
+- IV  = 16 first bytes of SHA1(<6:AES-IV><32:Curve25119 Shared key>) 
+
+- Server respond with it's Curve25119 public key, the encrypted signature and the certificate.
+
+A pair-setup request body has the following format:
+
+<1:Encryption Type>
+
+<32:Client’s Curve25119 public key>
+
+Where encryption type is:
+
+value | type | 
+
+0x00 | Invalid | 
+
+0x01 | Unencrypted | 
+
+0x10 | MFi-SAP-encrypted AES key. | 
+
+A pair-setup response body has the following format:
+
+<32:Server’s Curve25119 public key>  
+<4:Certificate length (int32be)>  
+<n:PKCS#7 DER encoded MFiCertificate>  
+<4:Signature length (int32be)>  
+<n:Signature>
+
+client &rarr; server
+
+POST /auth-setup RTSP/1.0
+Content-Type: application/octet-stream
+Content-Length: 33
+CSeq: 1
+User-Agent: iTunes/7.6.2 (Windows; N;)
+Client-Instance: 050748FD6F0853AC
+DACP-ID: 124D322761E2EC16
+Client-instance-identifier: 5743a6b4-e835-412f-9894-14011e386cf2
+
+<BINARY_REQUEST>
+
+server &rarr; client
+
+RTSP/1.0 200 OK
+Content-Length: 1076
+Content-Type: application/octet-stream
+Server: AirTunes/366.0
+CSeq: 1
+
+<BINARY_RESPONSE>
+

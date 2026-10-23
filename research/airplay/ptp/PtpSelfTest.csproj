@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>PtpSelfTest</RootNamespace>
+    <AssemblyName>PtpSelfTest</AssemblyName>
+    <Nullable>enable</Nullable>
+    <!-- Must match the WPF project: the product sources rely on the implicit global usings. -->
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <!--
+    The product file is compiled directly into this console assembly (same trick as the other
+    research harnesses): no project reference, no NuGet packages, and `internal` members stay
+    reachable. HostLog.cs is needed only because the master logs through it.
+  -->
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="..\..\..\src\Zilux2\AirPlay\Ap2\Ap2PtpMaster.cs" Link="src\Ap2PtpMaster.cs" />
+    <Compile Include="..\..\..\src\Zilux2\HostLog.cs" Link="src\HostLog.cs" />
+  </ItemGroup>
+
+</Project>
