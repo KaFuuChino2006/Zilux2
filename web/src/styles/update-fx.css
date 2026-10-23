@@ -166,6 +166,8 @@
   position: relative;
   display: inline-flex;
   flex: none;
+  width: fit-content;
+  justify-self: start;
   align-items: center;
   padding: 3px;
   border-radius: 10px;
