@@ -187,35 +187,75 @@
   word-break: break-word;
 }
 
-/* ---------- 过滤标签 ---------- */
+/* ---------- 过滤标签（统一走全局 .seg 分段控件） ---------- */
 
+/* 白色滑块 .seg-thumb 与选中态金色字由 update-fx.css 的 .seg 规则 + app.ts enhanceSegs 负责，
+   这里只做容器对齐与防溢出，不再覆盖按钮的 pill/边框/背景。 */
 .dlq-tabs {
-  display: flex;
-  align-items: center;
-  gap: 4px;
+  align-self: flex-start;
+  flex: 0 0 auto;
+  max-width: 100%;
 }
 
 .dlq-tab {
   flex: none;
-  height: 26px;
-  padding: 0 11px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-pill, 999px);
-  color: var(--muted);
-  font-size: 12px;
-  transition: background var(--dur-fast, 160ms) var(--ease), color var(--dur-fast, 160ms) var(--ease),
-    border-color var(--dur-fast, 160ms) var(--ease);
+  white-space: nowrap;
 }
 
-.dlq-tab:hover {
-  color: var(--text-soft);
-  background: rgb(var(--overlay-rgb) / 0.06);
+/* ---------- tab 切换动画：列表内容淡入 + 轻微上滑（行 24ms stagger） ---------- */
+
+@keyframes dlq-switch-in {
+  from {
+    opacity: 0;
+    transform: translateY(7px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
-.dlq-tab.is-active {
-  border-color: var(--line);
-  background: rgb(var(--overlay-rgb) / 0.1);
-  color: var(--text);
+.dlq-list.is-switch .dlq-row {
+  animation: dlq-switch-in 0.24s cubic-bezier(0.22, 0.82, 0.3, 1) both;
+}
+
+.dlq-list.is-switch .dlq-row:nth-child(2) {
+  animation-delay: 24ms;
+}
+
+.dlq-list.is-switch .dlq-row:nth-child(3) {
+  animation-delay: 48ms;
+}
+
+.dlq-list.is-switch .dlq-row:nth-child(4) {
+  animation-delay: 72ms;
+}
+
+.dlq-list.is-switch .dlq-row:nth-child(5) {
+  animation-delay: 96ms;
+}
+
+.dlq-list.is-switch .dlq-row:nth-child(6) {
+  animation-delay: 120ms;
+}
+
+.dlq-list.is-switch .dlq-row:nth-child(7) {
+  animation-delay: 144ms;
+}
+
+.dlq-list.is-switch .dlq-row:nth-child(8) {
+  animation-delay: 168ms;
+}
+
+.dlq-empty.is-switch {
+  animation: dlq-switch-in 0.22s cubic-bezier(0.22, 0.82, 0.3, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dlq-list.is-switch .dlq-row,
+  .dlq-empty.is-switch {
+    animation: none;
+  }
 }
 
 /* ---------- 列表 ---------- */

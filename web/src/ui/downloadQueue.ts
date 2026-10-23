@@ -92,6 +92,9 @@ const QUALITY_LABELS: Record<string, string> = {
   standard: '标准',
 };
 
+// 与 app.ts 左侧 rail 里「下载队列」常驻入口的 aria-label 保持一致（用于放行它的 pointerdown）。
+const RAIL_ENTRY_SELECTOR = '.rail .rail-btn[aria-label="下载队列"]';
+
 const POLL_RUNNING_MS = 1200;
 const POLL_HIDDEN_MS = 5000;
 const POLL_IDLE_MS = 4000;
@@ -123,6 +126,9 @@ let initialized = false;
 let disposed = false;
 let documentBound = false;
 let lastPointerToggleAt = 0;
+// 过滤切换动画：记录上一次渲染的 tab，变化时给列表加一次性动画类。
+let renderedFilter: DownloadFilter | null = null;
+let switchTimer = 0;
 
 /* ---------- 小工具 ---------- */
 
@@ -217,9 +223,13 @@ function syncPanel(): void {
   setText(refs.sumError, String(summary.error));
   for (const [key, button] of refs.tabs) {
     const active = key === filter;
+    // is-active 是 QA 套件既有契约；is-on 供全局 .seg 白色滑块定位。
     button.classList.toggle('is-active', active);
+    button.classList.toggle('is-on', active);
     button.setAttribute('aria-selected', active ? 'true' : 'false');
   }
+  if (renderedFilter !== null && renderedFilter !== filter) playFilterSwitch(refs);
+  renderedFilter = filter;
   const errorText = lastError ? `刷新下载列表失败：${lastError}` : '';
   setText(refs.error, errorText);
   refs.error.hidden = errorText === '';
@@ -228,6 +238,24 @@ function syncPanel(): void {
   setText(refs.dirPath, dirText);
   refs.dirPath.title = dirText;
   syncRows(refs);
+}
+
+/** tab 切换时给列表内容做一次淡入 + 上滑（行 24ms stagger）；行节点复用不受影响。 */
+function playFilterSwitch(refs: PanelRefs): void {
+  if (disposed) return;
+  refs.list.classList.remove('is-switch');
+  refs.empty.classList.remove('is-switch');
+  // 强制一次重排，保证连续切换时动画能重新播放。
+  void refs.list.offsetWidth;
+  refs.list.classList.add('is-switch');
+  refs.empty.classList.add('is-switch');
+  if (switchTimer) window.clearTimeout(switchTimer);
+  switchTimer = window.setTimeout(() => {
+    switchTimer = 0;
+    if (disposed) return;
+    refs.list.classList.remove('is-switch');
+    refs.empty.classList.remove('is-switch');
+  }, 420);
 }
 
 function visibleJobs(): DownloadJob[] {
@@ -469,11 +497,12 @@ function ensurePanel(): void {
     h('span', { class: 'dlq-sum-item', 'data-kind': 'error' }, '失败 ', sumError),
   );
   const tabs = new Map<DownloadFilter, HTMLButtonElement>();
-  const tabBar = h('div', { class: 'dlq-tabs', role: 'tablist' });
+  // 统一走全局分段控件 .seg：白色滑块由 app.ts 的 enhanceSegs 自动注入，这里不手写滑块。
+  const tabBar = h('div', { class: 'seg dlq-tabs', role: 'tablist' });
   for (const item of FILTERS) {
     const button = h(
       'button',
-      { class: 'dlq-tab', type: 'button', role: 'tab', 'aria-selected': 'false' },
+      { class: 'seg-btn dlq-tab', type: 'button', role: 'tab', 'aria-selected': 'false' },
       item.label,
     );
     button.addEventListener('click', () => {
@@ -556,6 +585,9 @@ function onDocumentPointerDown(event: PointerEvent): void {
   if (!(target instanceof Node)) return;
   if (panel?.root.contains(target)) return;
   if (entryBtn?.contains(target)) return;
+  // 左侧 rail 的「下载队列」常驻入口自己负责 toggle：pointerdown 阶段放行，
+  // 否则会先被这里关掉、再被随后的 click 打开，表现为「只能开不能关」。
+  if (target instanceof Element && target.closest(RAIL_ENTRY_SELECTOR)) return;
   closeDownloadPanel();
 }
 
@@ -871,6 +903,10 @@ export function disposeDownloadQueue(): void {
     window.clearTimeout(pollTimer);
     pollTimer = 0;
   }
+  if (switchTimer) {
+    window.clearTimeout(switchTimer);
+    switchTimer = 0;
+  }
   unbindDocument();
   for (const [, handle] of rows) handle.el.remove();
   rows.clear();
@@ -891,6 +927,8 @@ export function disposeDownloadQueue(): void {
   updatedAt = 0;
   pendingStarts = 0;
   pendingKeys.clear();
+  renderedFilter = null;
+  switchTimer = 0;
   speeds.clear();
   speedSamples.clear();
   delete (window as DebugWindow).__zilux2DownloadQueue;
