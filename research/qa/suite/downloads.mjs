@@ -3,13 +3,20 @@
  *
  * 覆盖本轮新增的下载队列面板：
  *   1. 入口按钮 [data-qa="download-entry"] 与面板开合（.dlq-panel.is-open / aria-hidden）；
- *   2. 面板结构：标题、摘要计数、筛选 tab、目录行、空态、行内 .dlq-bar>.dlq-fill；
- *   3. 从搜索结果点 .track-download 真实发起一次下载（走 app.beginDownload → beginQueueDownload）；
- *   4. 以 ~85ms 采样 running 行：data-state / .dlq-pct / .dlq-fill 宽度；
- *   5. done 行 UI（100%、已保存、.dlq-reveal 可见、.dlq-retry 隐藏、.dlq-actions 可见）；
- *   6. 落盘校验：宿主任务 path 在磁盘上存在且非空；
- *   7. 筛选 tab（已完成/失败/全部）与刷新、关闭重开；
- *   8. 全程 console 无 error。
+ *   2. rail 常驻入口 .rail .rail-btn[aria-label="下载队列"]：存在、点开、再点收起（toggle），
+ *      零任务时也能打开（空态 .dlq-empty 可见），点外部 / Esc 均可关闭；
+ *   3. 分段控件：.dlq-tabs 带全局 seg 类、tab 带 seg-btn、激活态 is-active + is-on 双类、
+ *      .dlq-tabs > .seg-thumb 白色滑块存在且首开已定位（width>0 / opacity=1 / 对齐激活 tab）；
+ *   4. tab 切换动画：切换后 30ms 内 .dlq-list/.dlq-empty 临时带 is-switch，空态 animationName
+ *      含 dlq-switch-in（有行时行动画含 dlq-switch-in + 24ms stagger），700ms 后临时类移除、
+ *      滑块 left 位移；
+ *   5. 面板结构：标题、摘要计数、筛选 tab、目录行、空态、行内 .dlq-bar>.dlq-fill；
+ *   6. 从搜索结果点 .track-download 真实发起一次下载（走 app.beginDownload → beginQueueDownload）；
+ *   7. 以 ~85ms 采样 running 行：data-state / .dlq-pct / .dlq-fill 宽度；
+ *   8. done 行 UI（100%、已保存、.dlq-reveal 可见、.dlq-retry 隐藏、.dlq-actions 可见）；
+ *   9. 落盘校验：宿主任务 path 在磁盘上存在且非空；
+ *  10. 筛选 tab（已完成/失败/全部，含带行切换动画）与刷新、关闭重开；
+ *  11. 全程 console 无 error；收尾关面板 + 回首页。
  *
  * 说明：
  *   - 数据真值优先取页面调试入口 window.__zilux2DownloadQueue.state()（产品自带），
@@ -21,7 +28,7 @@
 import fs from 'node:fs';
 
 import { runSuite, sleep, repoRel, hostLogTail } from './lib/cdp.mjs';
-import { goHome, openSearch, closeOverlays } from './lib/ui.mjs';
+import { goHome, openSearch, closeOverlays, pressEscape } from './lib/ui.mjs';
 import {
   DLQ,
   DOWNLOAD_TIMEOUT_MS,
@@ -127,6 +134,151 @@ function pageDlqSnapshot() {
     hint: text(panel.querySelector('.dlq-hint')),
   };
 }
+
+/** rail 常驻「下载队列」入口 + 面板开合快照。 */
+function pageRailEntry() {
+  const text = (node) => (node && node.textContent ? node.textContent.trim() : '');
+  const rail = document.querySelector('.rail');
+  const btn = document.querySelector('.rail .rail-btn[aria-label="下载队列"]');
+  const panel = document.querySelector('.dlq-panel');
+  const entry = document.querySelector('[data-qa="download-entry"]');
+  const empty = document.querySelector('.dlq-panel .dlq-empty');
+  const q = window.__zilux2DownloadQueue;
+  const state = q && typeof q.state === 'function' ? q.state() : null;
+  return {
+    railBtnCount: rail ? rail.querySelectorAll('.rail-btn').length : 0,
+    exists: !!btn,
+    cls: btn ? String(btn.className || '') : '',
+    title: btn ? btn.title || '' : '',
+    ariaLabel: btn ? btn.getAttribute('aria-label') : null,
+    label: btn ? text(btn.querySelector('.rail-label')) : '',
+    panelExists: !!panel,
+    panelOpen: !!panel && panel.classList.contains('is-open'),
+    ariaHidden: panel ? panel.getAttribute('aria-hidden') : null,
+    entryExpanded: entry ? entry.getAttribute('aria-expanded') : null,
+    jobs: state ? state.jobs.length : null,
+    rows: document.querySelectorAll('.dlq-panel .dlq-row').length,
+    emptyHidden: empty ? empty.hidden : null,
+    emptyText: text(empty),
+  };
+}
+
+/** 分段控件（.seg）结构 + 白色滑块几何快照。 */
+function pageSegSnapshot() {
+  const text = (node) => (node && node.textContent ? node.textContent.trim() : '');
+  const tabs = document.querySelector('.dlq-panel .dlq-tabs');
+  if (!tabs) return { exists: false };
+  const thumb = tabs.querySelector(':scope > .seg-thumb');
+  const buttons = Array.from(tabs.querySelectorAll('.dlq-tab'));
+  const active = tabs.querySelector('.dlq-tab.is-active');
+  const on = tabs.querySelector('.dlq-tab.is-on');
+  const rect = (el) => {
+    const r = el.getBoundingClientRect();
+    return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
+  };
+  return {
+    exists: true,
+    segClasses: Array.from(tabs.classList),
+    role: tabs.getAttribute('role'),
+    ready: tabs.dataset.segThumb || '',
+    buttons: buttons.map((btn) => ({
+      text: text(btn),
+      classes: Array.from(btn.classList),
+      active: btn.classList.contains('is-active'),
+      on: btn.classList.contains('is-on'),
+      selected: btn.getAttribute('aria-selected'),
+      offsetLeft: btn.offsetLeft,
+      offsetWidth: btn.offsetWidth,
+      rect: rect(btn),
+    })),
+    thumb: thumb
+      ? {
+          exists: true,
+          parentIsTabs: thumb.parentElement === tabs,
+          cls: Array.from(thumb.classList),
+          left: parseFloat(thumb.style.left || '0') || 0,
+          width: parseFloat(thumb.style.width || '0') || 0,
+          opacity: getComputedStyle(thumb).opacity,
+          display: getComputedStyle(thumb).display,
+          rect: rect(thumb),
+        }
+      : { exists: false },
+    activeText: active ? text(active) : '',
+    onText: on ? text(on) : '',
+    activeCount: tabs.querySelectorAll('.dlq-tab.is-active').length,
+    onCount: tabs.querySelectorAll('.dlq-tab.is-on').length,
+  };
+}
+
+/**
+ * 切换 tab 并分段取样：
+ *   - 点击后 ~20ms 读 is-switch / computed animationName / 滑块几何（CDP 往返在点击前后，
+ *     取样时机全在页面内，保证「30ms 内」这条不被 CDP 延迟污染）；
+ *   - 再等 700ms 读临时类是否已移除、滑块 left 是否已位移。
+ */
+function pageSwitchProbe(label) {
+  const panel = document.querySelector('.dlq-panel');
+  if (!panel) return Promise.resolve({ ok: false, reason: 'no-panel' });
+  const tabs = Array.from(panel.querySelectorAll('.dlq-tab'));
+  const target = tabs.find((btn) => (btn.textContent || '').trim() === label) || null;
+  if (!target) {
+    return Promise.resolve({ ok: false, reason: 'no-tab', labels: tabs.map((b) => (b.textContent || '').trim()) });
+  }
+  const tabsBox = panel.querySelector('.dlq-tabs');
+  const thumb = tabsBox ? tabsBox.querySelector(':scope > .seg-thumb') : null;
+  const list = panel.querySelector('.dlq-list');
+  const empty = panel.querySelector('.dlq-empty');
+  const readThumb = () =>
+    thumb
+      ? {
+          left: parseFloat(thumb.style.left || '0') || 0,
+          width: parseFloat(thumb.style.width || '0') || 0,
+          opacity: getComputedStyle(thumb).opacity,
+        }
+      : null;
+  const activeBefore = (panel.querySelector('.dlq-tab.is-active') || {}).textContent || '';
+  const before = readThumb();
+  const started = performance.now();
+  target.click();
+  return new Promise((resolve) => {
+    window.setTimeout(() => {
+      const dt = Math.round(performance.now() - started);
+      const rows = list ? Array.from(list.querySelectorAll('.dlq-row')) : [];
+      const mid = {
+        dt,
+        activeBefore: activeBefore.trim ? activeBefore.trim() : activeBefore,
+        active: ((panel.querySelector('.dlq-tab.is-active') || {}).textContent || '').trim(),
+        on: ((panel.querySelector('.dlq-tab.is-on') || {}).textContent || '').trim(),
+        listSwitch: list ? list.classList.contains('is-switch') : null,
+        emptySwitch: empty ? empty.classList.contains('is-switch') : null,
+        listAnim: list ? getComputedStyle(list).animationName : '',
+        emptyAnim: empty ? getComputedStyle(empty).animationName : '',
+        firstRowAnim: rows[0] ? getComputedStyle(rows[0]).animationName : '',
+        rows: rows.slice(0, 4).map((row) => ({
+          anim: getComputedStyle(row).animationName,
+          delay: getComputedStyle(row).animationDelay,
+        })),
+        rowsCount: rows.length,
+        emptyHidden: empty ? empty.hidden : null,
+        thumb: readThumb(),
+      };
+      window.setTimeout(() => {
+        const after = {
+          dt: Math.round(performance.now() - started),
+          listSwitch: list ? list.classList.contains('is-switch') : null,
+          emptySwitch: empty ? empty.classList.contains('is-switch') : null,
+          active: ((panel.querySelector('.dlq-tab.is-active') || {}).textContent || '').trim(),
+          on: ((panel.querySelector('.dlq-tab.is-on') || {}).textContent || '').trim(),
+          rowsCount: list ? list.querySelectorAll('.dlq-row').length : 0,
+          emptyHidden: empty ? empty.hidden : null,
+          thumb: readThumb(),
+        };
+        resolve({ ok: true, target: label, before, mid, after });
+      }, 700);
+    }, 20);
+  });
+}
+
 
 /** 下载采样（真值 + DOM + 入口按钮 + toast），每次 CDP 往返只取一次。 */
 function pageSample(jobId) {
@@ -236,6 +388,18 @@ async function dlqDebug(cdp) {
 
 async function dlqSnapshot(cdp) {
   return cdp.eval(`(${pageDlqSnapshot.toString()})()`);
+}
+
+async function railEntry(cdp) {
+  return cdp.eval(`(${pageRailEntry.toString()})()`);
+}
+
+async function segSnapshot(cdp) {
+  return cdp.eval(`(${pageSegSnapshot.toString()})()`);
+}
+
+async function switchProbe(cdp, label) {
+  return cdp.eval(`(${pageSwitchProbe.toString()})(${JSON.stringify(label)})`);
 }
 
 /** 等某个 track key 对应的「新任务」出现（排除基线已有的 id）。 */
@@ -470,35 +634,233 @@ await runSuite('downloads', '下载队列（T2）', async (suite) => {
   });
 
   /* ---------------------------------------------------------------------- */
+  /* ---------------------------------------------------------------------- */
+  await suite.step('常驻入口：rail「下载队列」toggle / 无任务也能打开 / 点外与 Esc 关闭', async () => {
+    // 上一结构步骤把面板留成打开态，先收起再验证 rail 入口从零打开。
+    if (await cdp.eval(`!!document.querySelector('.dlq-panel.is-open')`)) {
+      await cdp.click(DLQ.close, { desc: '收起下载面板' });
+      await cdp.waitFor(`!document.querySelector('.dlq-panel.is-open')`, { desc: '面板收起', timeoutMs: 5000 });
+    }
+    await cdp.waitFor(`!!document.querySelector('.rail .rail-btn[aria-label="下载队列"]')`, {
+      desc: 'rail 常驻「下载队列」入口',
+      timeoutMs: 8000,
+    });
+    let snap = await railEntry(cdp);
+    suite.assert(snap.exists, '缺少 rail 常驻入口 .rail .rail-btn[aria-label="下载队列"]');
+    suite.assert(snap.cls.includes('rail-btn'), `rail 下载入口 class 应含 rail-btn，实际「${snap.cls}」`);
+    suite.assert(snap.title === '下载队列', `rail 下载入口 title 应为「下载队列」，实际「${snap.title}」`);
+    suite.assert(snap.ariaLabel === '下载队列', `rail 下载入口 aria-label 应为「下载队列」，实际「${snap.ariaLabel}」`);
+    suite.assert(snap.label === '下载队列', `rail 下载入口文案应为「下载队列」，实际「${snap.label}」`);
+    const emptySession = baseline.jobs.length === 0;
+
+    // 1) rail 点击 → 打开
+    await cdp.click(DLQ.railEntry, { desc: 'rail「下载队列」常驻入口' });
+    await cdp.waitFor(`!!document.querySelector('.dlq-panel.is-open')`, {
+      desc: 'rail 入口打开下载面板（.dlq-panel.is-open）',
+      timeoutMs: 6000,
+    });
+    await sleep(150);
+    snap = await railEntry(cdp);
+    suite.assert(snap.panelExists, '点击 rail 入口后 .dlq-panel 未创建');
+    suite.assert(snap.panelOpen, '点击 rail 入口后面板未带 .is-open');
+    suite.assert(snap.ariaHidden === 'false', `面板打开时 aria-hidden 应为 false，实际 ${snap.ariaHidden}`);
+    suite.assert(snap.entryExpanded === 'true', `面板打开时播放条入口 aria-expanded 应为 true，实际 ${snap.entryExpanded}`);
+    if (emptySession) {
+      suite.assert(snap.jobs === 0, `基线无任务，但调试入口 jobs=${snap.jobs}`);
+      suite.assert(snap.rows === 0, `无任务时面板不应有 .dlq-row，实际 ${snap.rows} 行`);
+      suite.assert(snap.emptyHidden === false, `无任务时 .dlq-empty 应可见（hidden=false），实际 ${snap.emptyHidden}`);
+      suite.assert(snap.emptyText.length > 0, '无任务时 .dlq-empty 文案为空');
+      suite.note(`零任务会话验证通过：不下载也能打开面板，空态文案「${snap.emptyText}」`);
+    } else {
+      suite.note(`宿主会话已有 ${snap.jobs} 个任务，跳过「零任务空态」断言（冷启动时本步骤已覆盖）`);
+    }
+    await suite.shot('rail-entry-open');
+
+    // 2) 再点 rail → 收起（toggle，验证 pointerdown 放行没把开关互相抵消）
+    await cdp.click(DLQ.railEntry, { desc: '再次点击 rail「下载队列」入口' });
+    await cdp.waitFor(`!document.querySelector('.dlq-panel.is-open')`, { desc: 'rail 再点收起面板', timeoutMs: 6000 });
+    snap = await railEntry(cdp);
+    suite.assert(!snap.panelOpen, 'rail 再点后面板仍打开（toggle 失效）');
+    suite.assert(snap.ariaHidden === 'true', `收起后 aria-hidden 应为 true，实际 ${snap.ariaHidden}`);
+
+    // 3) 点面板外 → 关闭
+    await cdp.click(DLQ.railEntry, { desc: 'rail 入口重新打开面板' });
+    await cdp.waitFor(`!!document.querySelector('.dlq-panel.is-open')`, { desc: '面板再次打开', timeoutMs: 6000 });
+    await cdp.eval(`(() => {
+      const target = document.querySelector('.stage') || document.body;
+      target.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+      return true;
+    })()`);
+    await cdp.waitFor(`!document.querySelector('.dlq-panel.is-open')`, { desc: '点击面板外收起', timeoutMs: 6000 });
+
+    // 4) Esc → 关闭（main.ts 全局快捷键 → app.escapeTopLayer 关下载面板）
+    await cdp.click(DLQ.railEntry, { desc: 'rail 入口再次打开面板（Esc 前）' });
+    await cdp.waitFor(`!!document.querySelector('.dlq-panel.is-open')`, { desc: '面板打开（Esc 前）', timeoutMs: 6000 });
+    await pressEscape(cdp);
+    await cdp.waitFor(`!document.querySelector('.dlq-panel.is-open')`, { desc: 'Esc 收起下载面板', timeoutMs: 6000 });
+
+    return `rail 入口存在（rail 共 ${snap.railBtnCount} 个按钮）· 点开/再点收/点外/Esc 均正常${emptySession ? ' · 零任务空态可打开' : ''}`;
+  });
+
+  /* ---------------------------------------------------------------------- */
+  await suite.step('分段控件：.seg 类名 / is-on / .seg-thumb 滑块定位', async () => {
+    if (!(await cdp.eval(`!!document.querySelector('.dlq-panel.is-open')`))) {
+      await cdp.click(DLQ.railEntry, { desc: 'rail 入口打开下载面板' });
+      await cdp.waitFor(`!!document.querySelector('.dlq-panel.is-open')`, { desc: '面板打开', timeoutMs: 6000 });
+    }
+    // 等 app.ts enhanceSegs 注入 .seg-thumb 并完成首帧定位（rAF×2 + 无动画 place(false)）
+    await cdp.waitFor(
+      `(() => {
+        const tabs = document.querySelector('.dlq-panel .dlq-tabs');
+        if (!tabs || tabs.dataset.segThumb !== 'ready') return false;
+        const thumb = tabs.querySelector(':scope > .seg-thumb');
+        if (!thumb) return false;
+        return parseFloat(thumb.style.width || '0') > 0 && getComputedStyle(thumb).opacity === '1';
+      })()`,
+      { desc: '.dlq-tabs 完成 .seg 增强且滑块已定位', timeoutMs: 10000 },
+    );
+    const seg = await segSnapshot(cdp);
+    suite.assert(seg.exists, '找不到 .dlq-panel .dlq-tabs');
+    suite.assert(seg.segClasses.includes('seg'), `.dlq-tabs 缺少全局 seg 类，实际 ${JSON.stringify(seg.segClasses)}`);
+    suite.assert(seg.segClasses.includes('dlq-tabs'), `.dlq-tabs 缺少 dlq-tabs 类，实际 ${JSON.stringify(seg.segClasses)}`);
+    suite.assert(seg.role === 'tablist', `.dlq-tabs role 应为 tablist，实际 ${seg.role}`);
+    suite.assert(seg.ready === 'ready', `.dlq-tabs 未标记 data-seg-thumb="ready"，实际「${seg.ready}」`);
+    suite.assert(seg.buttons.length === 4, `tab 数量应为 4，实际 ${seg.buttons.length}`);
+    for (const btn of seg.buttons) {
+      suite.assert(btn.classes.includes('seg-btn'), `tab「${btn.text}」缺少 seg-btn 类：${JSON.stringify(btn.classes)}`);
+      suite.assert(btn.classes.includes('dlq-tab'), `tab「${btn.text}」缺少 dlq-tab 类：${JSON.stringify(btn.classes)}`);
+    }
+    suite.assert(
+      seg.activeCount === 1 && seg.onCount === 1,
+      `激活 tab 应唯一：is-active=${seg.activeCount} 个，is-on=${seg.onCount} 个`,
+    );
+    suite.assert(
+      seg.activeText === seg.onText && seg.activeText.length > 0,
+      `is-active「${seg.activeText}」与 is-on「${seg.onText}」不是同一个 tab`,
+    );
+    const activeBtn = seg.buttons.find((btn) => btn.active) || null;
+    suite.assert(activeBtn, `激活 tab「${seg.activeText}」不在 .dlq-tab 列表里`);
+    suite.assert(activeBtn.selected === 'true', `激活 tab「${seg.activeText}」aria-selected 应为 true，实际 ${activeBtn.selected}`);
+    for (const btn of seg.buttons.filter((btn) => btn.text !== seg.activeText)) {
+      suite.assert(btn.on === false, `非激活 tab「${btn.text}」不应带 is-on`);
+    }
+    // 白色滑块：存在、直接子元素、可见、与激活 tab 对齐
+    suite.assert(seg.thumb.exists, '.dlq-tabs 缺少 .seg-thumb 滑块（enhanceSegs 未注入？）');
+    suite.assert(seg.thumb.parentIsTabs, '.seg-thumb 不是 .dlq-tabs 的直接子元素');
+    suite.assert(seg.thumb.width > 0, `.seg-thumb 内联宽度应 >0，实际 ${seg.thumb.width}px`);
+    suite.assert(seg.thumb.opacity === '1', `.seg-thumb 不透明度应为 1，实际 ${seg.thumb.opacity}`);
+    suite.assert(seg.thumb.display !== 'none', `.seg-thumb 不应 display:none（实际 ${seg.thumb.display}）`);
+    suite.assert(
+      Math.abs(seg.thumb.left - activeBtn.offsetLeft) <= 2,
+      `.seg-thumb left=${seg.thumb.left}px 未对齐激活 tab offsetLeft=${activeBtn.offsetLeft}px`,
+    );
+    suite.assert(
+      Math.abs(seg.thumb.width - activeBtn.offsetWidth) <= 2,
+      `.seg-thumb width=${seg.thumb.width}px 未对齐激活 tab offsetWidth=${activeBtn.offsetWidth}px`,
+    );
+    suite.assert(seg.thumb.rect.w > 0 && seg.thumb.rect.h > 0, `滑块渲染尺寸应为正，实际 ${seg.thumb.rect.w}×${seg.thumb.rect.h}`);
+    const totalTabWidth = seg.buttons.reduce((sum, btn) => sum + btn.rect.w, 0);
+    suite.assert(seg.thumb.rect.w <= totalTabWidth, `滑块宽度 ${seg.thumb.rect.w}px 超过 tab 总宽 ${totalTabWidth}px`);
+    const shot = await suite.shot('panel-tabs-seg');
+    suite.note(`截图 ${repoRel(shot)}`);
+    return `seg 类对齐 · is-active=is-on=「${seg.activeText}」 · 滑块 ${seg.thumb.left}px × ${seg.thumb.width}px（opacity=${seg.thumb.opacity}）`;
+  });
+
+  /* ---------------------------------------------------------------------- */
+  await suite.step('tab 切换动画：is-switch / dlq-switch-in / 700ms 移除 / 滑块位移', async () => {
+    if (!(await cdp.eval(`!!document.querySelector('.dlq-panel.is-open')`))) {
+      await cdp.click(DLQ.railEntry, { desc: 'rail 入口打开下载面板' });
+      await cdp.waitFor(`!!document.querySelector('.dlq-panel.is-open')`, { desc: '面板打开', timeoutMs: 6000 });
+    }
+    // 基线筛选复位到「全部」，保证下面的切换一定发生 filter 变化
+    const currentTab = await cdp.eval(
+      `(() => { const btn = document.querySelector('.dlq-panel .dlq-tab.is-active'); return btn ? btn.textContent.trim() : ''; })()`,
+    );
+    if (currentTab !== '全部') {
+      await switchProbe(cdp, '全部');
+      await sleep(250);
+    }
+    const rowsBefore = await cdp.eval(`document.querySelectorAll('.dlq-panel .dlq-row').length`);
+    const probe = await switchProbe(cdp, '已完成');
+    suite.assert(probe.ok, `切换 tab「已完成」失败：${probe.reason || ''}${probe.labels ? ` labels=${JSON.stringify(probe.labels)}` : ''}`);
+    const mid = probe.mid;
+    const after = probe.after;
+    suite.note(
+      `点击后 ${mid.dt}ms 取样：list.is-switch=${mid.listSwitch} empty.is-switch=${mid.emptySwitch} ` +
+        `emptyAnim=${mid.emptyAnim} firstRowAnim=${mid.firstRowAnim} active=${mid.active} is-on=${mid.on}`,
+    );
+    suite.assert(mid.dt <= 30, `动画取样延迟应在 30ms 内（实际 ${mid.dt}ms，页面内定时器被阻塞？）`);
+    suite.assert(mid.active === '已完成', `点击后 is-active tab 应为「已完成」，实际「${mid.active}」`);
+    suite.assert(mid.on === '已完成', `点击后 is-on tab 应为「已完成」，实际「${mid.on}」`);
+    suite.assert(mid.listSwitch === true, `切换后 .dlq-list 应临时带 is-switch，实际 ${mid.listSwitch}`);
+    if (rowsBefore === 0) {
+      suite.assert(mid.rowsCount === 0, `基线无行但切到「已完成」后出现 ${mid.rowsCount} 行`);
+      suite.assert(mid.emptySwitch === true, `.dlq-empty 应临时带 is-switch，实际 ${mid.emptySwitch}`);
+      suite.assert(/dlq-switch-in/.test(mid.emptyAnim), `空态动画名应含 dlq-switch-in，实际「${mid.emptyAnim}」`);
+      suite.assert(mid.emptyHidden === false, '切到空 tab 后 .dlq-empty 应可见');
+    } else {
+      suite.assert(/dlq-switch-in/.test(mid.firstRowAnim), `行元素动画名应含 dlq-switch-in，实际「${mid.firstRowAnim}」`);
+      if (mid.rows.length >= 2) {
+        suite.assert(
+          /0\.024s/.test(mid.rows[1].delay),
+          `第 2 行 stagger 延迟应为 24ms，实际「${mid.rows[1].delay}」`,
+        );
+      }
+    }
+    // 700ms 后临时类必须移除
+    suite.assert(after.dt >= 690, `第二次取样应 ≥700ms（实际 ${after.dt}ms）`);
+    suite.assert(after.listSwitch === false, `700ms 后 .dlq-list 仍带 is-switch（实际 ${after.listSwitch}）`);
+    suite.assert(after.emptySwitch === false, `700ms 后 .dlq-empty 仍带 is-switch（实际 ${after.emptySwitch}）`);
+    // 滑块 left 位移（白色滑块从「全部」滑到激活 tab）
+    suite.assert(probe.before && probe.before.left !== undefined, '切换前未取到 .seg-thumb 位置');
+    suite.assert(
+      Math.abs(after.thumb.left - probe.before.left) > 1,
+      `.seg-thumb left 未位移：${probe.before.left}px → ${after.thumb.left}px`,
+    );
+    await suite.shot('panel-switch-anim');
+
+    // 复位「全部」并收起面板，保持干净状态
+    await switchProbe(cdp, '全部');
+    await sleep(150);
+    await cdp
+      .eval(`(() => { const q = window.__zilux2DownloadQueue; if (q && typeof q.close === 'function') q.close(); return true; })()`)
+      .catch(() => {});
+    await cdp.waitFor(`!document.querySelector('.dlq-panel.is-open')`, { desc: '动画步骤后收起面板', timeoutMs: 5000 });
+    return rowsBefore === 0
+      ? `空态动画：20ms 内 is-switch + dlq-switch-in，700ms 移除，滑块 ${probe.before.left}px → ${after.thumb.left}px`
+      : `带行动画：行 dlq-switch-in（${mid.rows.length} 行 stagger）+ 700ms 移除，滑块 ${probe.before.left}px → ${after.thumb.left}px`;
+  });
+
+  /* ---------------------------------------------------------------------- */
   await suite.step('发起下载：搜索 → 点 .track-download → 任务进入队列', async () => {
     // 先收起面板，才能验证「首次下载自动弹面板」的行为
     if ((await dlqSnapshot(cdp)).open) {
       await cdp.click(DLQ.close, { desc: '收起面板' });
       await cdp.waitFor(`!document.querySelector('.dlq-panel.is-open')`, { desc: '面板收起', timeoutMs: 5000 });
     }
-    // 搜索源偶发慢/失败（副标题会停在「已找到 0 首 · 加载中…」），最多重试 3 轮
+    // 上游音乐源偶发 502 / 0 行；openSearch 内建竞态回归断言（input 后立即 Enter，12s 内完成且行数>0），
+    // 若外部源失败则整轮重试，最多 3 次。
     let rows = 0;
     let wall = null;
+    let lastErr = null;
     for (let attempt = 1; attempt <= 3 && rows === 0; attempt += 1) {
       await goHome(cdp);
-      wall = await openSearch(cdp, SEARCH_KEYWORD, { timeoutMs: 30000 });
-      await cdp
-        .waitFor(`document.querySelectorAll('.wall .track-row').length > 0`, {
-          desc: '搜索结果行 .wall .track-row 出现',
-          timeoutMs: attempt === 1 ? 20000 : 15000,
-          intervalMs: 300,
-        })
-        .catch(() => {});
-      rows = await cdp.eval(`document.querySelectorAll('.wall .track-row').length`);
-      if (rows === 0) {
-        suite.note(`第 ${attempt} 次搜索无结果（sub=${wall.sub}），收起重试`);
+      try {
+        wall = await openSearch(cdp, SEARCH_KEYWORD);
+        rows = wall.rows;
+      } catch (err) {
+        lastErr = err;
+        suite.note(`第 ${attempt} 次搜索未完成（${err.message}），收起重试`);
         await cdp
           .eval(`(() => { const dock = document.querySelector('.search-dock'); if (dock && dock.dataset.open === 'true') dock.click(); return true; })()`)
           .catch(() => {});
         await sleep(400);
       }
     }
-    suite.assert(wall && wall.sub.includes('首'), `搜索「${SEARCH_KEYWORD}」后副标题应含「N 首」，实际「${wall ? wall.sub : '无'}」`);
+    suite.assert(
+      wall && wall.sub.includes('首'),
+      `搜索「${SEARCH_KEYWORD}」后副标题应含「N 首」，实际「${wall ? wall.sub : '无'}」${lastErr ? `（最后错误：${lastErr.message}）` : ''}`,
+    );
     suite.assert(rows > 0, `搜索「${SEARCH_KEYWORD}」连续 3 次都没有结果行（最后一次 sub=${wall ? wall.sub : '无'}），疑似音乐源网络问题`);
 
     const found = await cdp.eval(`(${pageDownloadCandidates.toString()})(8)`);
@@ -760,6 +1122,26 @@ await runSuite('downloads', '下载队列（T2）', async (suite) => {
     snap = await clickTab('全部');
     suite.assert(snap.rows.length === debug.jobs.length, `「全部」tab 行数 ${snap.rows.length} ≠ 任务总数 ${debug.jobs.length}`);
     suite.assert(snap.rows.some((row) => row.id === jobId), '「全部」tab 下找不到本次任务');
+
+    // 带行数据时的切换动画：真实下载行也要播 dlq-switch-in（24ms stagger），700ms 后复位
+    const rowSwitch = await switchProbe(cdp, '已完成');
+    suite.assert(rowSwitch.ok, `带行切换 tab 失败：${rowSwitch.reason || ''}`);
+    suite.assert(rowSwitch.mid.listSwitch === true, `带行切换后 .dlq-list 应临时带 is-switch，实际 ${rowSwitch.mid.listSwitch}`);
+    suite.assert(rowSwitch.mid.rowsCount > 0, `「已完成」tab 下应有真实下载行，实际 ${rowSwitch.mid.rowsCount} 行`);
+    suite.assert(
+      /dlq-switch-in/.test(rowSwitch.mid.firstRowAnim),
+      `带行切换时行动画名应含 dlq-switch-in，实际「${rowSwitch.mid.firstRowAnim}」`,
+    );
+    if (rowSwitch.mid.rows.length >= 2) {
+      suite.assert(
+        /0\.024s/.test(rowSwitch.mid.rows[1].delay),
+        `第 2 行 stagger 延迟应为 24ms，实际「${rowSwitch.mid.rows[1].delay}」`,
+      );
+    }
+    suite.assert(rowSwitch.after.listSwitch === false, '700ms 后 .dlq-list 仍带 is-switch');
+    // 复位到「全部」，保持后续步骤的筛选上下文
+    await switchProbe(cdp, '全部');
+    await sleep(150);
     await suite.shot('tabs-all');
     return `done=${countBy('done')} error=${countBy('error')} all=${debug.jobs.length}`;
   });
@@ -808,9 +1190,44 @@ await runSuite('downloads', '下载队列（T2）', async (suite) => {
     return '无 console.error / exception / log.error';
   });
 
-  // 收尾：确保面板收起，避免影响其它套件
-  await cdp
-    .eval(`(() => { const q = window.__zilux2DownloadQueue; if (q && typeof q.close === 'function') q.close(); return true; })()`)
-    .catch(() => {});
-  await sleep(200);
+  // 收尾：复位筛选 → 关面板 → 回首页，保持应用干净状态；并记录本次新增的下载测试文件
+  try {
+    if (await cdp.eval(`!!document.querySelector('.dlq-panel.is-open')`)) {
+      const filter = await cdp.eval(`(() => {
+        const q = window.__zilux2DownloadQueue;
+        return q && typeof q.state === 'function' ? q.state().filter : '';
+      })()`);
+      if (filter && filter !== '全部') {
+        await cdp.clickText(DLQ.tabs, '全部', { desc: '收尾复位筛选「全部」' }).catch(() => {});
+        await sleep(250);
+      }
+      if (await cdp.eval(`!!document.querySelector('.dlq-panel.is-open')`)) {
+        await cdp.click(DLQ.close, { desc: '收尾关闭下载面板' }).catch(async () => {
+          await pressEscape(cdp);
+        });
+      }
+      await cdp.waitFor(`!document.querySelector('.dlq-panel.is-open')`, { desc: '收尾面板已收起', timeoutMs: 5000 }).catch(() => {});
+    }
+    await goHome(cdp);
+    const finalDebug = await dlqDebug(cdp).catch(() => null);
+    if (finalDebug && jobId) {
+      const job = finalDebug.jobs.find((item) => item.id === jobId);
+      const wasNew = !baseline.jobs.some((item) => item.id === jobId);
+      if (job && wasNew) {
+        suite.note(`本次新增下载测试文件（保留不删，可手动清理）：${job.fileName || '（未命名）'} → ${job.path || '（无 path）'}`);
+      }
+    }
+    const clean = await cdp.eval(`(() => ({
+      panelOpen: !!document.querySelector('.dlq-panel.is-open'),
+      home: !!document.querySelector('.home-host .ui-page.home'),
+      filter: (window.__zilux2DownloadQueue && typeof window.__zilux2DownloadQueue.state === 'function')
+        ? window.__zilux2DownloadQueue.state().filter
+        : '',
+    }))()`);
+    suite.assert(!clean.panelOpen, '收尾后下载面板仍处于打开状态');
+    suite.assert(clean.home === true, '收尾后未回到首页（.home-host .ui-page.home 不存在）');
+    suite.note(`收尾状态：panelOpen=${clean.panelOpen} filter=${clean.filter || '（空）'} home=${clean.home}`);
+  } catch (err) {
+    suite.note(`收尾清理告警（不影响断言）：${err.message}`);
+  }
 });

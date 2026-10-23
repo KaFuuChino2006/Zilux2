@@ -155,6 +155,7 @@ powershell -File tools/release.ps1 -DryRun   # 演练；去掉 -DryRun 真发版
 
 - 版本号统一由 `Directory.Build.props` 控制（当前 **1.1.4**）；`%LOCALAPPDATA%\Programs\Zilux2` 装的是最近一次构建（自动更新会改装到更新版本）。
 - 1.1.4（本轮）：房间设置新增粒子/流星快捷预设（8 组，`.room-preset-chip`）；宿主新增 `FileSystemWatcher` 本地音乐目录自动监控（`LocalFolderWatcher.cs` + `LocalMusicService.Watch.cs`，1.3s 去抖、增量重扫、自写入抑制）；下载队列浮层（`downloadQueue.ts`：汇总/筛选/进度/速度/定位/重试，入口 `.pb-actions [data-qa=download-entry]`）；QA 回归套件固化到 `research/qa/suite/`；修复 `NotifyFileAdded` 跨线程、`WebViewHost` 未释放 `LocalMusicService`、`DeleteTracks` 自身写入未抑制。详见 `research/UPDATES-2026-10-24.md`。
+- 1.1.4 第二轮微调（同日、已推 main、**未发版**，未达 §9 门槛：4 处修复/优化、无新增功能）：下载入口 rail 常驻（`.rail-btn[aria-label=下载队列]`，`toggleDownloadPanel`）；下载队列 tab 统一全局 `.seg` 分段控件（白色滑块 `.seg-thumb`）并加切换动画（`.is-switch` / `dlq-switch-in`，行 24ms stagger）；修复搜索「input 后立即 Enter 永久卡加载中」竞态（`commitSearch` 清 `searchTimer`）。QA 套件扩到 **46 项**（新增下载队列 UI 断言 + 竞态回归，`run-all` 46.5s 全绿）。详见 `research/UPDATES-2026-10-24.md` §7。
 - 1.1.1：播放/暂停渐变增强——淡出/淡入时长分开（`playback.fadeOutMs` / `playback.fadeInMs`）、曲线可选（`playback.fadeCurve`: smooth/linear/exponential）、新增「人声保留淡出」（`playback.fadeVocal` / `playback.fadeVocalTailMs`，暂停时压低低频/高频让人声多留一会儿）；快捷设置新增人声保留开关；设置契约与 README 同步。
 - 上一窗口（1.1.0）：设置改为居中大弹窗（效果设置同款）；新增 10 段均衡器（7 预设 + 手动增益，Web Audio BiquadFilter 链）；播放/暂停渐变（`playback.fadeEnabled/fadeMs`，默认关）；快捷设置新增「均衡器 / 播放暂停渐变」；修复宿主 settings patch 会重置同 section 其它字段的 bug（`SettingsService.ApplyKnownValues` 的 fallback 改为保留当前值）。
 - 近期 patch：1.1.2 把 EQ 频响曲线从折线改为 PCHIP 平滑曲线，并修复「暂停后再播放首帧满音量」；1.1.3 把房间设置/文字设置弹层的遮罩改为铺满整个窗口（此前只暗底部一块），并补上设置滑块右侧数值、播放条滑杆风格图标；1.1.3 已按 `463995e` **重发覆盖** Release，额外包含「房间地毯远端椭圆色斑」修复（原实现用径向渐变椭圆做远端渐隐，粉色/深色房间会看出椭圆边界；改为裁切在地毯形状内的线性渐隐）。
@@ -170,7 +171,7 @@ powershell -File tools/release.ps1 -DryRun   # 演练；去掉 -DryRun 真发版
 - **发版门槛**（满足其一才递增版本并发 Release）：
   1. 累计修复 / 优化类改动 **超过 5 处**；
   2. 累计新增功能 **3 个以上**。
-- 未达门槛：正常提交并推送 `main`，但**不改** `Directory.Build.props` 版本、不打 tag、不发 Release。
+- 未达门槛：正常提交并推送 `main`，但**不改** `Directory.Build.props` 版本、不打 tag、不发 Release（1.1.4 第二轮微调即按此处理：推 `main`，版本仍 1.1.4）。
 - 达到门槛：改 `Directory.Build.props` → 提交 → `git tag -a v<version> -m "Zilux2 <version>"` → `git push origin v<version>`（Actions 自动构建发布）。
 - **同版本替换已发布构建**（用户要求「替换最新版但版本号不换」时）：不改版本号；先删远端/本地旧 tag，再把 `v<version>` 重新指到新提交并 push：
   ```bash

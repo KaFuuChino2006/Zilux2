@@ -37,6 +37,7 @@ export const LUMIERE_KEY = 'zilux2.lumiere';
  */
 export const DLQ = {
   entry: '[data-qa="download-entry"]',
+  railEntry: '.rail .rail-btn[aria-label="下载队列"]',
   panel: '.dlq-panel',
   panelOpen: '.dlq-panel.is-open',
   row: '.dlq-row[data-state]',
@@ -48,6 +49,9 @@ export const DLQ = {
   sumItem: (kind) => `.dlq-summary .dlq-sum-item[data-kind="${kind}"]`,
   tabs: '.dlq-panel .dlq-tab',
   tab: (label) => `.dlq-panel .dlq-tab`,
+  tabsSeg: '.dlq-panel .dlq-tabs',
+  segBtn: '.dlq-panel .dlq-tabs .seg-btn',
+  segThumb: '.dlq-panel .dlq-tabs > .seg-thumb',
   list: '.dlq-panel .dlq-list',
   empty: '.dlq-panel .dlq-empty',
   error: '.dlq-panel .dlq-error',
