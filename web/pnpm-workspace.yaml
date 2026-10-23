@@ -1,6 +1,6 @@
-# pnpm 10+ 默认不执行依赖安装脚本，这里显式允许 esbuild 构建（否则 vite 可能无法启动）。
-# packages 字段在 pnpm 9 中是必填项，保留单包声明以兼容 CI 的 pnpm 9/11。
+# pnpm 11 使用 allowBuilds 显式允许依赖执行安装脚本（旧字段 onlyBuiltDependencies 已被忽略）。
+# esbuild 需要构建/校验平台二进制，否则 vite 无法启动。
 packages:
   - "."
-onlyBuiltDependencies:
-  - esbuild
+allowBuilds:
+  esbuild: true
