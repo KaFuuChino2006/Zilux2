@@ -14,7 +14,7 @@ namespace Zilux2.Local;
 /// 本地歌曲库：让用户选一个文件夹，递归扫描其中的音频文件，
 /// 并把该文件夹映射成 WebView2 虚拟主机 https://localmusic.local/，页面即可直接用 &lt;audio&gt; 播放。
 /// </summary>
-internal sealed class LocalMusicService
+internal sealed partial class LocalMusicService
 {
     /// <summary>文件夹在页面侧的访问域名（只读映射）。</summary>
     public const string VirtualHost = "localmusic.local";
@@ -611,6 +611,12 @@ internal sealed class LocalMusicService
             return;
         }
 
+        // 自己删的文件别让 watcher 再触发一轮增量扫描。
+        foreach (var path in paths)
+        {
+            MarkHostWrite(path);
+        }
+
         var failed = Zilux2.Interop.NativeMethods.MoveFilesToRecycleBin(paths);
         HostLog.Info($"[local] delete: {paths.Count - failed} file(s) -> recycle bin, {failed} failed, {missing} missing");
         if (failed == 0)
@@ -746,6 +752,7 @@ internal sealed class LocalMusicService
         var core = _core();
         if (core is null)
         {
+            StopFolderWatch();
             PostError(fullPath, "WebView2 尚未就绪，请稍后再试");
             return;
         }
@@ -757,9 +764,13 @@ internal sealed class LocalMusicService
         catch (Exception exception)
         {
             HostLog.Error("[local] virtual host mapping failed", exception);
+            StopFolderWatch();
             PostError(fullPath, $"无法把文件夹映射给页面：{exception.Message}");
             return;
         }
+
+        // 先起 watcher 再扫盘：初扫期间的新增/改名会攒成批次，扫完后增量补上。
+        StartFolderWatch(fullPath);
 
         List<LocalTrackDto> tracks;
         var lyrics = new List<string>();
@@ -770,6 +781,7 @@ internal sealed class LocalMusicService
         catch (Exception exception)
         {
             HostLog.Error("[local] scan failed", exception);
+            StopFolderWatch();
             PostError(fullPath, $"扫描文件夹失败：{exception.Message}");
             return;
         }
@@ -1119,8 +1131,10 @@ internal sealed class LocalMusicService
             return;
         }
 
+        // 下载落盘会触发 watcher 事件，先登记成「宿主自己写的」，避免重复扫描同一个文件。
+        MarkHostWrite(path);
         RescanDownloads();
-        PostMergedTracks();
+        PostOnUi(PostMergedTracks);
     }
 
     /// <summary>打开下载目录（设置页「打开」按钮）。</summary>

@@ -1,0 +1,488 @@
+/* download-queue.css —— 下载队列面板（仅由 web/src/ui/downloadQueue.ts import）。
+ * 设计语言复用 app.css / theme.ts 的语义令牌；不修改 app.css。
+ * 图层：面板 z-index 62（高于播放条 60、低于顶栏浮层 90+）。
+ */
+
+/* hidden 属性优先于组件 display（.dlq-actions 等用 flex 布局） */
+.dlq-panel [hidden],
+.pb-download [hidden] {
+  display: none !important;
+}
+
+/* ---------- 播放条入口按钮 ---------- */
+
+.pb-download {
+  position: relative;
+}
+
+.pb-download.is-active {
+  color: var(--accent);
+}
+
+.pb-download.is-active svg {
+  animation: dlq-pulse 2.4s var(--ease) infinite;
+}
+
+.pb-download[aria-expanded='true'] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.dlq-badge {
+  position: absolute;
+  top: 1px;
+  right: 0;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: var(--radius-pill, 999px);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-family: var(--font-num, inherit);
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+  letter-spacing: 0;
+  box-shadow: 0 2px 6px rgb(var(--ink-rgb, 0 0 0) / 0.24);
+  pointer-events: none;
+}
+
+@keyframes dlq-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+/* ---------- 面板外壳 ---------- */
+
+.dlq-panel {
+  position: fixed;
+  right: 18px;
+  bottom: 78px;
+  z-index: 62;
+  display: none;
+  flex-direction: column;
+  gap: 10px;
+  width: min(392px, calc(100vw - 36px));
+  max-height: min(58vh, 520px);
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l, 20px);
+  background: var(--panel);
+  box-shadow: var(--shadow-2, var(--shadow));
+  backdrop-filter: blur(30px) saturate(1.2);
+  -webkit-backdrop-filter: blur(30px) saturate(1.2);
+  animation: dlq-in var(--dur-mid, 260ms) var(--ease);
+}
+
+.dlq-panel.is-open {
+  display: flex;
+}
+
+@keyframes dlq-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---------- 头部 ---------- */
+
+.dlq-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dlq-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 13.5px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  color: var(--text);
+}
+
+.dlq-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+.dlq-icon-btn {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  color: var(--text-soft);
+  transition: background var(--dur-fast, 160ms) var(--ease), color var(--dur-fast, 160ms) var(--ease);
+}
+
+.dlq-icon-btn:hover {
+  background: rgb(var(--overlay-rgb) / 0.08);
+  color: var(--text);
+}
+
+.dlq-icon-btn.is-busy svg {
+  animation: dlq-spin 0.9s linear infinite;
+}
+
+@keyframes dlq-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------- 汇总 ---------- */
+
+.dlq-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.dlq-sum-item b {
+  margin-left: 2px;
+  font-family: var(--font-num, inherit);
+  font-weight: 650;
+  color: var(--text-soft);
+}
+
+.dlq-sum-item[data-kind='running'] b {
+  color: var(--accent);
+}
+
+.dlq-sum-item[data-kind='error'] b {
+  color: var(--danger);
+}
+
+.dlq-sum-sep {
+  opacity: 0.5;
+}
+
+/* ---------- 错误条 ---------- */
+
+.dlq-error {
+  padding: 8px 10px;
+  border: 1px solid rgb(var(--overlay-rgb) / 0.1);
+  border-radius: var(--radius-s, 8px);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+  font-size: 11.5px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+/* ---------- 过滤标签 ---------- */
+
+.dlq-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.dlq-tab {
+  flex: none;
+  height: 26px;
+  padding: 0 11px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill, 999px);
+  color: var(--muted);
+  font-size: 12px;
+  transition: background var(--dur-fast, 160ms) var(--ease), color var(--dur-fast, 160ms) var(--ease),
+    border-color var(--dur-fast, 160ms) var(--ease);
+}
+
+.dlq-tab:hover {
+  color: var(--text-soft);
+  background: rgb(var(--overlay-rgb) / 0.06);
+}
+
+.dlq-tab.is-active {
+  border-color: var(--line);
+  background: rgb(var(--overlay-rgb) / 0.1);
+  color: var(--text);
+}
+
+/* ---------- 列表 ---------- */
+
+.dlq-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 1px 2px 2px;
+  margin: 0 -2px;
+}
+
+.dlq-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.dlq-list::-webkit-scrollbar-thumb {
+  background: rgb(var(--overlay-rgb) / 0.16);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+.dlq-row {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 11px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m, 14px);
+  background: rgb(var(--overlay-rgb) / 0.04);
+  transition: border-color var(--dur-fast, 160ms) var(--ease), background var(--dur-fast, 160ms) var(--ease);
+}
+
+.dlq-row:hover {
+  border-color: var(--line-strong);
+  background: rgb(var(--overlay-rgb) / 0.07);
+}
+
+.dlq-row-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dlq-cover {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s, 8px);
+  background: rgb(var(--overlay-rgb) / 0.06);
+  color: var(--muted);
+}
+
+.dlq-row[data-state='running'] .dlq-cover {
+  color: var(--accent);
+}
+
+.dlq-row[data-state='done'] .dlq-cover {
+  color: var(--text-soft);
+}
+
+.dlq-row[data-state='error'] .dlq-cover {
+  color: var(--danger);
+}
+
+.dlq-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.dlq-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.dlq-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 1px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.dlq-pct {
+  flex: none;
+  min-width: 34px;
+  text-align: right;
+  color: var(--text-soft);
+  font-family: var(--font-num, inherit);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.dlq-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
+.dlq-act {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  color: var(--muted);
+  transition: background var(--dur-fast, 160ms) var(--ease), color var(--dur-fast, 160ms) var(--ease);
+}
+
+.dlq-act:hover {
+  background: rgb(var(--overlay-rgb) / 0.1);
+  color: var(--text);
+}
+
+.dlq-act.is-busy {
+  pointer-events: none;
+  opacity: 0.5;
+}
+
+.dlq-act.is-busy svg {
+  animation: dlq-spin 0.9s linear infinite;
+}
+
+/* ---------- 进度 ---------- */
+
+.dlq-bar {
+  position: relative;
+  height: 4px;
+  overflow: hidden;
+  border-radius: var(--radius-pill, 999px);
+  background: rgb(var(--overlay-rgb) / 0.1);
+}
+
+.dlq-fill {
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent-strong, var(--accent)), var(--accent));
+  transition: width 0.3s linear;
+}
+
+.dlq-row[data-state='running'] .dlq-fill.is-indeterminate {
+  width: 36% !important;
+  animation: dlq-indeterminate 1.4s var(--ease) infinite;
+}
+
+.dlq-row[data-state='done'] .dlq-fill {
+  background: var(--accent);
+  opacity: 0.55;
+}
+
+.dlq-row[data-state='error'] .dlq-fill {
+  width: 100% !important;
+  background: var(--danger);
+  opacity: 0.5;
+}
+
+@keyframes dlq-indeterminate {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
+/* ---------- 状态行 ---------- */
+
+.dlq-status {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.dlq-row[data-state='error'] .dlq-status {
+  color: var(--danger);
+}
+
+.dlq-row[data-state='done'] .dlq-status {
+  color: var(--text-soft);
+}
+
+/* ---------- 空状态 ---------- */
+
+.dlq-empty {
+  padding: 26px 12px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+  text-align: center;
+  white-space: pre-line;
+}
+
+/* ---------- 底部 ---------- */
+
+.dlq-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.dlq-dir-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.dlq-foot-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  height: 26px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill, 999px);
+  color: var(--text-soft);
+  font-size: 11.5px;
+  transition: background var(--dur-fast, 160ms) var(--ease), border-color var(--dur-fast, 160ms) var(--ease),
+    color var(--dur-fast, 160ms) var(--ease);
+}
+
+.dlq-foot-btn:hover {
+  border-color: var(--line-strong);
+  background: rgb(var(--overlay-rgb) / 0.08);
+  color: var(--text);
+}
+
+.dlq-hint {
+  padding: 0 2px;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.5;
+  opacity: 0.8;
+}
+
+@media (max-width: 720px) {
+  .dlq-panel {
+    right: 12px;
+    bottom: 72px;
+    width: min(360px, calc(100vw - 24px));
+  }
+}

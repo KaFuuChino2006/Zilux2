@@ -1,16 +1,17 @@
 # Zilux2 上下文交接（HANDOFF）
 
-> 更新时间：2026-10-24（v1.1.3 已按 `463995e` 重发覆盖）
-> 当前版本：**1.1.3**（唯一来源：根目录 `Directory.Build.props`；最近构建 `1.1.3+463995e`，安装包 `dist/Zilux2-Setup-1.1.3.exe` 13,064,383 B）
-> 代码仓库：`KaFuuChino2006/Zilux2`（**private**，`main` 已同步；Releases 已有 v1.1.0 / v1.1.1 / v1.1.2 / **v1.1.3（已重发为含房间修复的构建）**）
+> 更新时间：2026-10-24（v1.1.4 集成发版：房间预设 / 本地目录监控 / 下载队列 / QA 套件）
+> 当前版本：**1.1.4**（唯一来源：根目录 `Directory.Build.props`；最近构建 `1.1.4`（tag `v1.1.4`），发布资产由 push tag 后 Actions 构建 `Zilux2-Setup-1.1.4.exe`）
+> 代码仓库：`KaFuuChino2006/Zilux2`（**private**，`main` 已同步；Releases 已有 v1.1.0 / v1.1.1 / v1.1.2 / v1.1.3 / **v1.1.4（本轮）**）
 > 本文件给下一个接手的 AI / 开发者：读完即可继续开发。
 
 ## 0. 交接速览（先读这里）
 
 - **在做什么**：Windows 桌面音乐播放器 Zilux2（WPF + WebView2 宿主 + Vite/TS 前端），已具备完整播放器、在线音乐、发现页、房间/歌词效果、本地曲库、GitHub 自动更新。
-- **当前状态（2026-10-24 交接时）**：`main` 干净、已推送；`HEAD = 463995e`；版本 1.1.3；本机已安装并运行 `1.1.3+463995e`；Releases 最新为 v1.1.3（重发覆盖，资产含最新修复）。
-- **最近 5 个提交（由新到旧）**：`463995e` 房间地毯椭圆修复 → `06ef14e` 滑块数值+滑杆图标 → `d13dc7a` 交接文档 v1.1.3 → `a189335` 效果弹层遮罩铺满 → `abd4561` EQ 平滑 + 恢复播放首帧爆音。
-- **下一步候选**（按优先级）：①仓库切 **public** 才能真正启用应用内自动更新（当前 private，匿名 API 404）；②房间粒子/流星更多预设；③本地音乐目录监控；④下载队列 UI；⑤把 `research/tmp/qa-*.mjs` 固化为 `research/qa/` 回归脚本。
+- **当前状态（2026-10-24 交接时）**：`main` 干净、已推送；`HEAD` 为 `v1.1.4` 发布提交（见 `git log`）；版本 1.1.4；本机已安装并运行 `1.1.4`；Releases 最新为 v1.1.4（本轮新增 3 个功能 + 3 处宿主修复）。
+- **最近 5 个提交（由新到旧）**：`v1.1.4` 发布提交：房间预设/本地目录监控/下载队列/QA 套件 → `1872799` 交接文档 → `463995e` 房间地毯椭圆修复 → `06ef14e` 滑块数值+滑杆图标 → `d13dc7a` 交接文档 v1.1.3。
+- **本轮已完成（2026-10-24）**：①房间设置新增粒子（星尘/萤火/雪点/静谧）+ 流星（默认/流星雨/彗星/微光）快捷预设；②宿主 `FileSystemWatcher` 本地目录自动监控（1.3s 去抖、增量重扫、下载自写入抑制）；③下载队列浮层（汇总/筛选/进度/速度/定位/重试）；④QA 回归套件固化 `research/qa/suite/`（43 PASS / 0 FAIL / 1 SKIP）。详见 `research/UPDATES-2026-10-24.md`。
+- **下一步候选**（按优先级）：①仓库切 **public** 才能真正启用应用内自动更新（当前 private，匿名 API 404）；②歌词页更多效果；③更多平台能力（见 §11）。
 - **改代码前必看**：§3 构建流程、§9 版本/发版节奏（**不要擅自跳版本号**）、§4 真机 QA、§10 更新通道。私有仓 + 未签名安装包会触发 SmartScreen，属预期。
 - **本机环境**：`E:/dotnet/dotnet.exe`；Node 用 `C:/Users/13329/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/node/bin/node.exe`；`github.com:443` 不通，git 走 SSH over 443（§10）；bash 里 `$LOCALAPPDATA` 不展开。
 
@@ -152,7 +153,8 @@ powershell -File tools/release.ps1 -DryRun   # 演练；去掉 -DryRun 真发版
 
 ## 8. 当前状态
 
-- 版本号统一由 `Directory.Build.props` 控制（当前 **1.1.3**）；`%LOCALAPPDATA%\Programs\Zilux2` 装的是最近一次构建（自动更新会改装到更新版本）。
+- 版本号统一由 `Directory.Build.props` 控制（当前 **1.1.4**）；`%LOCALAPPDATA%\Programs\Zilux2` 装的是最近一次构建（自动更新会改装到更新版本）。
+- 1.1.4（本轮）：房间设置新增粒子/流星快捷预设（8 组，`.room-preset-chip`）；宿主新增 `FileSystemWatcher` 本地音乐目录自动监控（`LocalFolderWatcher.cs` + `LocalMusicService.Watch.cs`，1.3s 去抖、增量重扫、自写入抑制）；下载队列浮层（`downloadQueue.ts`：汇总/筛选/进度/速度/定位/重试，入口 `.pb-actions [data-qa=download-entry]`）；QA 回归套件固化到 `research/qa/suite/`；修复 `NotifyFileAdded` 跨线程、`WebViewHost` 未释放 `LocalMusicService`、`DeleteTracks` 自身写入未抑制。详见 `research/UPDATES-2026-10-24.md`。
 - 1.1.1：播放/暂停渐变增强——淡出/淡入时长分开（`playback.fadeOutMs` / `playback.fadeInMs`）、曲线可选（`playback.fadeCurve`: smooth/linear/exponential）、新增「人声保留淡出」（`playback.fadeVocal` / `playback.fadeVocalTailMs`，暂停时压低低频/高频让人声多留一会儿）；快捷设置新增人声保留开关；设置契约与 README 同步。
 - 上一窗口（1.1.0）：设置改为居中大弹窗（效果设置同款）；新增 10 段均衡器（7 预设 + 手动增益，Web Audio BiquadFilter 链）；播放/暂停渐变（`playback.fadeEnabled/fadeMs`，默认关）；快捷设置新增「均衡器 / 播放暂停渐变」；修复宿主 settings patch 会重置同 section 其它字段的 bug（`SettingsService.ApplyKnownValues` 的 fallback 改为保留当前值）。
 - 近期 patch：1.1.2 把 EQ 频响曲线从折线改为 PCHIP 平滑曲线，并修复「暂停后再播放首帧满音量」；1.1.3 把房间设置/文字设置弹层的遮罩改为铺满整个窗口（此前只暗底部一块），并补上设置滑块右侧数值、播放条滑杆风格图标；1.1.3 已按 `463995e` **重发覆盖** Release，额外包含「房间地毯远端椭圆色斑」修复（原实现用径向渐变椭圆做远端渐隐，粉色/深色房间会看出椭圆边界；改为裁切在地毯形状内的线性渐隐）。
@@ -178,7 +180,7 @@ powershell -File tools/release.ps1 -DryRun   # 演练；去掉 -DryRun 真发版
   git push origin v1.1.3
   ```
   Actions 会重新跑并覆盖同一 Release 的资产；本地再 `make-installer` + 静默安装同步。已安装同版本的客户端不会提示更新（见 §8）。
-- 已按此节奏发布：`v1.1.0`（设置居中/EQ/渐变）、`v1.1.1`（渐变细分 + 歌曲信息浮窗）、`v1.1.2`（EQ 平滑 + 首帧爆音）、`v1.1.3`（效果弹层遮罩；后按 `06ef14e` 重发含滑块数值/图标，再按 `463995e` 重发含地毯椭圆修复）。
+- 已按此节奏发布：`v1.1.0`（设置居中/EQ/渐变）、`v1.1.1`（渐变细分 + 歌曲信息浮窗）、`v1.1.2`（EQ 平滑 + 首帧爆音）、`v1.1.3`（效果弹层遮罩；后按 `06ef14e` 重发含滑块数值/图标，再按 `463995e` 重发含地毯椭圆修复）、`v1.1.4`（房间预设/本地目录监控/下载队列/QA 套件，本轮）。
 
 ## 10. 更新通道（GitHub Releases）
 
@@ -188,7 +190,7 @@ powershell -File tools/release.ps1 -DryRun   # 演练；去掉 -DryRun 真发版
 - 资产：`Zilux2-Setup-<version>.exe`；宿主下载到 `%LOCALAPPDATA%\Zilux2\updates\`，校验 GitHub `digest`（sha256）后以 `--silent --no-shortcuts --launch --dir <安装目录>` 静默安装并重启。
 - 默认 `updates.mode="auto"`（自动下载+提示安装），可切 `"notify"`（只提示）；`updates.autoCheck` 控制启动检查 + 每 4 小时轮询。
 - 发版：改 props 版本 → 提交 → `tools\release.ps1`（或 push tag `v<version>`，Actions 自动构建发布）。
-- 当前 Release：`v1.1.3`，tag 指向 `463995e`，2026-10-23T19:16:05Z 覆盖重发；资产 `Zilux2-Setup-1.1.3.exe` 13,064,383 B、`Zilux2-Portable-1.1.3.zip` 13,152,499 B、`.exe.sha256`。
+- 当前 Release：`v1.1.4`，tag 指向 v1.1.4 发布提交（2026-10-24 推送）；Actions 自动构建资产 `Zilux2-Setup-1.1.4.exe` / `Zilux2-Portable-1.1.4.zip` / `.exe.sha256`。上一版 `v1.1.3` 曾按 `463995e` 重发覆盖。
 - 仓库可见性：应用内更新走未认证 GitHub API，**只有公开仓库的 Release 可见**；开发期可先建私有仓库存代码（先不推 tag），要发布更新时把仓库切 public 再推 tag。客户端对 404 的提示为「仓库不存在、未公开，或还没发布 Release」。当前仓库仍是 private：Releases 已发布但匿名 API 查不到，**应用内自动更新暂不可用**；要启用自动更新需把仓库切成 public（或后续给客户端加 token 支持）。
 - 本机网络：`github.com:443`（HTTPS）被重置/超时，`origin` 走 **SSH over 443**：`ssh://git@ssh.github.com:443/KaFuuChino2006/Zilux2.git`，deploy key 在 `C:\Users\13329\.ssh\zilux2_deploy`，仓库本地已配 `core.sshCommand`；细节见 `docs/zilux2-github-setup.md` §4.3。
 - 注意：更新包未做代码签名（SmartScreen 会提示，属预期）。
@@ -200,8 +202,8 @@ powershell -File tools/release.ps1 -DryRun   # 演练；去掉 -DryRun 真发版
 - QQ 会员曲目下载/播放受限（提示需要会员）。
 - 匿名/失效 mvmp3 曲目 403（上游下架）。
 - 房间效果为 Canvas2D + DOM，低配机可调低「渲染像素比」。
-- 没有单元测试，回归依赖 CDP QA 脚本 + 截图；建议后续把关键 QA 固化成 `research/qa/` 下脚本。
-- 后续可做：房间粒子/流星更多预设、歌词页多效果、本地音乐目录监控、下载队列 UI、更多平台能力。
+- 回归靠 `research/qa/suite/`（CDP 套件 + 截图 + results JSON），`node research/qa/suite/run-all.mjs` 一键跑；前提是应用带 `--remote-debugging-port=9223` 运行，且依赖真实在线网络（搜索/下载用例）。
+- 后续可做：歌词页多效果、更多平台能力；下载队列暂无「取消/清空」宿主接口（面板如实提示）；本地目录监控无设置开关（默认开启）。
 
 ## 12. 常用命令速查
 
@@ -221,6 +223,10 @@ $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS='--remote-debugging-port=9223'; Start
 # 只部署前端
 Copy-Item -Recurse -Force web/dist/assets dist/Zilux2/web/; Copy-Item -Force web/dist/index.html dist/Zilux2/web/
 Copy-Item -Recurse -Force web/dist/assets "$env:LOCALAPPDATA\Programs\Zilux2\web/"; Copy-Item -Force web/dist/index.html "$env:LOCALAPPDATA\Programs\Zilux2\web/"
+
+# QA 回归套件（应用需带 --remote-debugging-port=9223 运行；node 用 DSH 自带路径）
+node research/qa/suite/run-all.mjs        # 全部套件（约 100s，退出码 0/1）
+node research/qa/suite/smoke.mjs          # 单跑某个套件
 ```
 
 > Node / Python 用 DSH 运行时自带路径：`C:/Users/13329/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/{node/bin/node.exe,python/python.exe}`。

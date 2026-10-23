@@ -13,13 +13,23 @@ import { createRoomScene, type RoomScene, type RoomSceneSong } from './roomScene
 import { currentRoomLyricTint } from './room';
 import {
   DEFAULT_ROOM_SETTINGS,
+  PARTICLE_PRESETS,
   ROOM_STYLE_PRESETS,
+  STREAK_PRESETS,
+  applyRoomEffectPreset,
   applyRoomPreset,
   normalizeRoomSettings,
+  roomEffectPresetMatches,
   roomStyleSettings,
   saveRoomStyleSettings,
+  type RoomEffectPreset,
   type RoomStyleSettings,
 } from './roomSettings';
+
+// 粒子/流星快捷预设 chips 的补充样式。面板主体样式在 app.css 里，这里单独引一份，不改 app.css。
+// 说明：tsconfig 没引 vite/client 的类型声明，但这是纯副作用 import（import '…css'），
+// 默认关闭的 noUncheckedSideEffectImports 不会检查它的模块解析；Vite 构建会正常把样式打进产物。
+import '../styles/room-presets.css';
 
 /** 滑杆可写的数字字段（字重/句数用分段控件，不在滑杆里）。 */
 type NumericKey = Exclude<
@@ -329,6 +339,27 @@ export function openRoomSettingsSheet(): void {
     return `${scaled.toFixed(spec.digits)}${spec.unit ?? ''}`;
   };
 
+  /** 滑杆控件注册表：点预设时直接把新数值同步到对应滑杆和数值文本，不重建整表（避免列表跳回顶部）。 */
+  const rangeControls = new Map<NumericKey, { spec: RangeSpec; input: HTMLInputElement; value: HTMLElement }>();
+
+  /** 效果快捷预设 chips 及其预设，用来在数值完全匹配时高亮。 */
+  const effectChips: Array<{ btn: HTMLButtonElement; preset: RoomEffectPreset }> = [];
+
+  const syncRangeControls = (): void => {
+    for (const [key, control] of rangeControls) {
+      control.input.value = String(draft[key]);
+      control.value.textContent = formatValue(control.spec, draft[key]);
+    }
+  };
+
+  const refreshEffectChips = (): void => {
+    for (const { btn, preset } of effectChips) {
+      const match = roomEffectPresetMatches(draft, preset);
+      btn.classList.toggle('is-active', match);
+      btn.setAttribute('aria-pressed', match ? 'true' : 'false');
+    }
+  };
+
   const presetRow = (): HTMLElement => {
     const buttons: HTMLButtonElement[] = ROOM_STYLE_PRESETS.map((preset) => {
       const btn = h('button', { class: 'ts-seg-btn', type: 'button', text: preset.label });
@@ -356,6 +387,43 @@ export function openRoomSettingsSheet(): void {
     );
   };
 
+  /** 「粒子 / 流星」的快捷预设 chips 行：点一下套用一组手感，之后仍可拖滑杆继续微调。 */
+  const effectPresetRow = (
+    kind: 'particle' | 'streak',
+    label: string,
+    hint: string,
+    presets: ReadonlyArray<RoomEffectPreset>,
+  ): HTMLElement => {
+    const buttons = presets.map((preset) => {
+      const btn = h('button', { class: 'room-preset-chip', type: 'button', text: preset.name });
+      btn.dataset.presetKind = preset.effect;
+      btn.dataset.presetId = preset.id;
+      btn.title = preset.hint;
+      btn.setAttribute('aria-pressed', 'false');
+      btn.addEventListener('pointerdown', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      });
+      btn.addEventListener('click', () => {
+        draft = applyRoomEffectPreset(draft, preset);
+        syncRangeControls();
+        applyDraft();
+        refreshEffectChips();
+      });
+      effectChips.push({ btn, preset });
+      return btn;
+    });
+    const row = h(
+      'div',
+      { class: 'ts-row room-preset-row' },
+      h('div', { class: 'ts-row-head' }, h('span', { class: 'ts-label', text: label })),
+      h('div', { class: 'room-preset-chips' }, ...buttons),
+      h('div', { class: 'ts-hint', text: hint }),
+    );
+    row.dataset.presetKind = kind;
+    return row;
+  };
+
   const rangeRow = (spec: RangeSpec): HTMLElement => {
     const value = h('span', { class: 'ts-value', text: formatValue(spec, draft[spec.key]) });
     const input = h('input', {
@@ -372,9 +440,11 @@ export function openRoomSettingsSheet(): void {
       draft[spec.key] = parsed;
       value.textContent = formatValue(spec, parsed);
       markPreset(null);
+      refreshEffectChips();
       applyDraft();
     });
     input.addEventListener('pointerdown', (event) => event.stopPropagation());
+    rangeControls.set(spec.key, { spec, input, value });
     return h(
       'div',
       { class: 'ts-row' },
@@ -487,17 +557,39 @@ export function openRoomSettingsSheet(): void {
 
   const renderRows = (): void => {
     rowsHost.textContent = '';
+    // 整表重建前先清掉旧控件的引用，避免高亮/同步指向已经被移除的节点。
+    rangeControls.clear();
+    effectChips.length = 0;
     rowsHost.append(
       group('预设', presetRow()),
       group('文字', tintNote, fontRow(), weightRow(), toggleRow(KEYWORD_COLORS), toggleRow(INTRO_TITLE), ...TEXT_RANGES.map(rangeRow)),
       group('布局', ...LAYOUT_RANGES.map(rangeRow), neighborRow()),
       group('背景', toggleRow(BG_FOLLOW), ...BG_COLORS.map(colorRow), ...BG_RANGES.map(rangeRow)),
-      group('流星', ...METEOR_RANGES.map(rangeRow)),
-      group('粒子', ...PARTICLE_RANGES.map(rangeRow)),
+      group(
+        '流星',
+        effectPresetRow(
+          'streak',
+          '流星预设',
+          '一键换一组流星手感：条数、亮度、速度、拖尾、粗细；点完仍可继续拖动下面各项微调。',
+          STREAK_PRESETS,
+        ),
+        ...METEOR_RANGES.map(rangeRow),
+      ),
+      group(
+        '粒子',
+        effectPresetRow(
+          'particle',
+          '粒子预设',
+          '一键换一组光点气质：数量、大小、亮度、速度、漂移；点完仍可继续拖动下面各项微调。',
+          PARTICLE_PRESETS,
+        ),
+        ...PARTICLE_RANGES.map(rangeRow),
+      ),
       group('地毯', toggleRow(RUG_VISIBLE), toggleRow(RUG_FOLLOW), colorRow(RUG_COLOR), ...RUG_RANGES.map(rangeRow)),
       group('镜头', ...CAMERA_RANGES.map(rangeRow)),
       group('动效', toggleRow(ENTRANCE), ...MOTION_RANGES.map(rangeRow)),
     );
+    refreshEffectChips();
   };
 
   /* ── 底部按钮 ─────────────────────────────────────────────── */
