@@ -99,7 +99,14 @@ import { HomeView } from './home';
 import { DiscoverView } from './discover';
 import { openSongInfo, setSongInfoView, songInfoView } from './songInfo';
 import { createUpNextToast, type UpNextToastHandle } from './upNextToast';
-import { fetchDownloads, startDownload } from '../online/download';
+import {
+  beginQueueDownload,
+  closeDownloadPanel,
+  createDownloadEntryButton,
+  disposeDownloadQueue,
+  initDownloadQueue,
+  isDownloadPanelOpen,
+} from './downloadQueue';
 import type { PlayScope } from './home';
 import type { HomeCollection, HomeData } from './home';
 import { openLyricPicker } from './lyricPicker';
@@ -317,6 +324,7 @@ export class App {
     this.watchSegments();
     // 调试/自动化用：暴露只读播放状态，便于真机验证。
     (window as unknown as { __ziluxPlayer?: typeof playerState }).__ziluxPlayer = playerState;
+    initDownloadQueue();
     this.playerDispose = onPlayer((state) => this.syncPlayer(state));
     this.localDispose = onLocalLibraryChange(() => {
       if (this.wall.kind === 'local') {
@@ -1972,42 +1980,13 @@ export class App {
     if (changed && !this.wallHost.classList.contains('is-hidden')) this.syncSearchLiked();
   }
 
-  /** 下载一首在线歌曲到本地（默认 Windows 音乐目录，可在设置里改）。 */
+  /** 下载一首在线歌曲到本地（统一走下载队列面板，默认 Windows 音乐目录，可在设置里改）。 */
   private async beginDownload(track: OnlineTrack): Promise<void> {
     if (track.source === 'local') {
       toast('本地歌曲不需要下载');
       return;
     }
-    try {
-      const quality = getSettings().downloads?.quality ?? 'high';
-      const result = await startDownload(track, quality);
-      const label = quality === 'lossless' ? '无损' : quality === 'high' ? '高品质' : '标准';
-      toast(`开始下载：${track.title}（${label}）`);
-      void this.watchDownload(result.job.id, track.title, result.directory);
-    } catch (error) {
-      toast(`下载失败：${error instanceof Error ? error.message : String(error)}`, 'error');
-    }
-  }
-
-  private async watchDownload(jobId: string, title: string, directory: string): Promise<void> {
-    for (let attempt = 0; attempt < 160; attempt += 1) {
-      await new Promise((resolve) => window.setTimeout(resolve, 1200));
-      try {
-        const list = await fetchDownloads();
-        const job = list.jobs.find((item) => item.id === jobId);
-        if (!job) return;
-        if (job.state === 'done') {
-          toast(`已下载：${title} → ${directory}`);
-          return;
-        }
-        if (job.state === 'error') {
-          toast(`下载失败：${job.error ?? '未知错误'}`, 'error');
-          return;
-        }
-      } catch {
-        return;
-      }
-    }
+    await beginQueueDownload(track, getSettings().downloads?.quality ?? 'high');
   }
 
   /** 搜索结果行：封面 + 歌名/作者 + VIP + 平台角标 + 下载 + 收藏。 */
@@ -3406,14 +3385,15 @@ export class App {
       { passive: false },
     );
 
+    const downloadBtn = createDownloadEntryButton();
     const bar = h(
       'div',
       { class: 'playerbar' },
       this.pbCoverWrap,
       this.pbMeta,
       h('div', { class: 'pb-controls' }, prevBtn, this.pbPlayBtn, nextBtn),
-      // 播放模式 / 收藏常驻显示，不随播放条收起而隐藏
-      h('div', { class: 'pb-actions' }, this.pbModeBtn, this.pbLikeBtn),
+      // 播放模式 / 收藏 / 下载队列常驻显示，不随播放条收起而隐藏
+      h('div', { class: 'pb-actions' }, this.pbModeBtn, this.pbLikeBtn, downloadBtn),
       h('div', { class: 'pb-progress' }, this.pbCur, track, this.pbDur),
       h(
         'div',
@@ -4787,6 +4767,7 @@ export class App {
     this.settingsDispose?.();
     this.updatesDispose?.();
     this.updatesDispose = null;
+    disposeDownloadQueue();
     this.disposers.dispose();
     this.closeLyrics();
     this.sheet?.close();
@@ -4883,6 +4864,10 @@ export class App {
     }
     if (this.upnextOpen) {
       this.closeUpNext();
+      return;
+    }
+    if (isDownloadPanelOpen()) {
+      closeDownloadPanel();
       return;
     }
     if (this.loginOverlay) {

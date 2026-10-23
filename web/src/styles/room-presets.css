@@ -1,0 +1,58 @@
+/* 房间设置面板「粒子 / 流星」快捷预设 chips。
+   面板其余样式在 app.css（.ts-* 那些），这里只补预设行的布局和胶囊按钮，
+   由 roomSettingsPanel.ts 直接 import，不动 app.css / index.html。 */
+
+.room-preset-row {
+  gap: 8px;
+}
+
+.room-preset-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.room-preset-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 27px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: rgb(var(--overlay-rgb) / 0.05);
+  color: var(--text-soft);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 560;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background 0.18s var(--ease),
+    border-color 0.18s var(--ease),
+    color 0.18s var(--ease),
+    transform 0.16s var(--ease);
+}
+
+.room-preset-chip:hover {
+  border-color: var(--line-strong);
+  background: rgb(var(--overlay-rgb) / 0.1);
+  color: var(--text);
+}
+
+.room-preset-chip:active {
+  transform: scale(0.96);
+}
+
+.room-preset-chip:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 2px;
+}
+
+/* 当前数值正好等于这个预设时的高亮 */
+.room-preset-chip.is-active {
+  border-color: color-mix(in srgb, var(--accent) 52%, transparent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-weight: 650;
+}

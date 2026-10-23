@@ -323,6 +323,8 @@ internal sealed class WebViewHost : IDisposable
 
         _disposed = true;
         _updates?.Dispose();
+        // 先停本地目录监听，避免 WebView2 销毁后还有后台扫描往页面推消息。
+        _localMusic.Dispose();
         DetachAudio();
         if (_media is not null)
         {

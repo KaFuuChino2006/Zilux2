@@ -244,6 +244,162 @@ export const ROOM_STYLE_PRESETS: ReadonlyArray<RoomStylePreset> = [
   },
 ];
 
+/** 粒子快捷预设能覆盖的五个数值字段。 */
+export type ParticleEffectKey =
+  | 'particleCount'
+  | 'particleSize'
+  | 'particleBrightness'
+  | 'particleSpeed'
+  | 'particleDrift';
+
+/** 流星快捷预设能覆盖的五个数值字段。 */
+export type StreakEffectKey =
+  | 'streakStrength'
+  | 'streakCount'
+  | 'streakSpeed'
+  | 'streakLength'
+  | 'streakWidth';
+
+/** 效果快捷预设可以覆盖的全部数值字段（粒子 + 流星）。 */
+export type RoomEffectKey = ParticleEffectKey | StreakEffectKey;
+
+/** 粒子快捷预设：只换光点手感，颜色/背景等其它设置保持当前值。 */
+export interface ParticlePreset {
+  id: string;
+  name: string;
+  /** 一句话说明（同时用作按钮 title 提示）。 */
+  hint: string;
+  effect: 'particle';
+  patch: Pick<RoomStyleSettings, ParticleEffectKey>;
+}
+
+/** 流星快捷预设：只换光痕手感。 */
+export interface StreakPreset {
+  id: string;
+  name: string;
+  hint: string;
+  effect: 'streak';
+  patch: Pick<RoomStyleSettings, StreakEffectKey>;
+}
+
+/** 效果快捷预设（两组共用，面板按 effect 分排渲染）。 */
+export type RoomEffectPreset = ParticlePreset | StreakPreset;
+
+/**
+ * 粒子快捷预设：一键换漂浮光点的数量/大小/亮度/速度/漂移。
+ * 数值都在 normalizeRoomSettings 的合法区间内，点完仍可拖动滑杆继续微调。
+ */
+export const PARTICLE_PRESETS: ReadonlyArray<ParticlePreset> = [
+  {
+    id: 'stardust',
+    name: '星尘',
+    hint: '默认观感：微亮的小光点，数量适中',
+    effect: 'particle',
+    patch: {
+      particleCount: 36,
+      particleSize: 1,
+      particleBrightness: 1,
+      particleSpeed: 1,
+      particleDrift: 1,
+    },
+  },
+  {
+    id: 'firefly',
+    name: '萤火',
+    hint: '更多更亮的光点，慢慢横向飘',
+    effect: 'particle',
+    patch: {
+      particleCount: 64,
+      particleSize: 1.3,
+      particleBrightness: 1.2,
+      particleSpeed: 0.55,
+      particleDrift: 1.6,
+    },
+  },
+  {
+    id: 'snow',
+    name: '雪点',
+    hint: '细密的小亮点，缓缓漂浮',
+    effect: 'particle',
+    patch: {
+      particleCount: 72,
+      particleSize: 0.55,
+      particleBrightness: 1.9,
+      particleSpeed: 0.4,
+      particleDrift: 2.2,
+    },
+  },
+  {
+    id: 'hush',
+    name: '静谧',
+    hint: '极少数又大又暗的光点，画面安静下来',
+    effect: 'particle',
+    patch: {
+      particleCount: 12,
+      particleSize: 2.2,
+      particleBrightness: 0.45,
+      particleSpeed: 0.3,
+      particleDrift: 0.6,
+    },
+  },
+];
+
+/** 流星快捷预设：一键换光痕的亮度/条数/速度/拖尾/粗细。 */
+export const STREAK_PRESETS: ReadonlyArray<StreakPreset> = [
+  {
+    id: 'default',
+    name: '默认',
+    hint: '默认观感：七条中等亮度的流星',
+    effect: 'streak',
+    patch: {
+      streakStrength: 1,
+      streakCount: 7,
+      streakSpeed: 1,
+      streakLength: 0.28,
+      streakWidth: 1,
+    },
+  },
+  {
+    id: 'rain',
+    name: '流星雨',
+    hint: '多而快、细密的流星雨',
+    effect: 'streak',
+    patch: {
+      streakStrength: 0.85,
+      streakCount: 12,
+      streakSpeed: 2.2,
+      streakLength: 0.2,
+      streakWidth: 0.55,
+    },
+  },
+  {
+    id: 'comet',
+    name: '长拖尾',
+    hint: '少而亮，拖着长长的尾巴',
+    effect: 'streak',
+    patch: {
+      streakStrength: 1,
+      streakCount: 3,
+      streakSpeed: 0.75,
+      streakLength: 0.72,
+      streakWidth: 1.6,
+    },
+  },
+  {
+    id: 'glow',
+    name: '微光',
+    hint: '稀疏、缓慢的微光划痕',
+    effect: 'streak',
+    patch: {
+      streakStrength: 0.4,
+      streakCount: 5,
+      streakSpeed: 0.25,
+      streakLength: 0.5,
+      streakWidth: 1.8,
+    },
+  },
+];
+
 function clamp(value: number, min: number, max: number): number {
   return value < min ? min : value > max ? max : value;
 }
@@ -381,4 +537,22 @@ export function applyRoomPreset(
   preset: RoomStylePreset,
 ): RoomStyleSettings {
   return normalizeRoomSettings({ ...base, ...preset.patch });
+}
+
+/** 把某个效果快捷预设合进当前设置（只覆盖它声明的字段，其它设置保持当前值）。 */
+export function applyRoomEffectPreset(base: RoomStyleSettings, preset: RoomEffectPreset): RoomStyleSettings {
+  const patch: Partial<RoomStyleSettings> = preset.patch;
+  const next = normalizeRoomSettings({ ...base, ...patch });
+  // 粒子全关掉时点预设会像没反应，兜底留一点点。
+  if (preset.effect === 'particle' && next.particleCount < 1) next.particleCount = 8;
+  return next;
+}
+
+/** 当前设置是否正好等于某个效果预设（用于 chips 高亮，容忍滑杆的浮点误差）。 */
+export function roomEffectPresetMatches(base: RoomStyleSettings, preset: RoomEffectPreset): boolean {
+  const patch: Partial<Record<RoomEffectKey, number>> = preset.patch;
+  return (Object.keys(patch) as RoomEffectKey[]).every((key) => {
+    const want = patch[key];
+    return typeof want !== 'number' || Math.abs(base[key] - want) <= 1e-6;
+  });
 }
