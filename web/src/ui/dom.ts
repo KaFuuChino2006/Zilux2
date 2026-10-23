@@ -72,6 +72,10 @@ const ICONS: Record<string, string> = {
   search: '<circle cx="11" cy="11" r="6.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M15.6 15.6L20 20" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
   sparkle:
     '<path d="M12 4l1.8 4.7L18.5 10.5l-4.7 1.8L12 17l-1.8-4.7L5.5 10.5l4.7-1.8z" fill="currentColor" stroke="none"/><path d="M17.8 15.4l.9 2.3 2.3.9-2.3.9-.9 2.3-.9-2.3-2.3-.9 2.3-.9z" fill="currentColor" stroke="none" opacity=".7"/>',
+  sliders:
+    '<path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="9.5" cy="7" r="2.4" fill="currentColor"/><circle cx="15" cy="12" r="2.4" fill="currentColor"/><circle cx="7.5" cy="17" r="2.4" fill="currentColor"/>',
+  equalizer:
+    '<path d="M8 4.2v15.6M12 4.2v15.6M16 4.2v15.6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="8" cy="15" r="2.4" fill="currentColor"/><circle cx="12" cy="8.5" r="2.4" fill="currentColor"/><circle cx="16" cy="13" r="2.4" fill="currentColor"/>',
   settings:
     '<circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 3.6v2.2M12 18.2v2.2M4.6 12H6.8M17.2 12h2.2M6.7 6.7l1.6 1.6M15.7 15.7l1.6 1.6M17.3 6.7l-1.6 1.6M8.3 15.7l-1.6 1.6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>',
   folder:
