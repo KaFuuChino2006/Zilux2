@@ -187,6 +187,8 @@ export class App {
   /** 快捷设置「投送」页里的内嵌面板（懒创建，切页时挂载/停扫）。 */
   private airplayQuickPanel: AirplayPanelHandle | null = null;
   private airplayQuickActive = false;
+  /** 分段控件（.seg）滑动胶囊的增强观察器。 */
+  private segObserver?: MutationObserver;
   private playerbar!: HTMLDivElement;
   /** 顶部「即将播放下一首」预告条。 */
   private upNextToast: UpNextToastHandle | null = null;
@@ -308,6 +310,7 @@ export class App {
 
   mount(container: HTMLElement): void {
     container.append(this.root);
+    this.watchSegments();
     // 调试/自动化用：暴露只读播放状态，便于真机验证。
     (window as unknown as { __ziluxPlayer?: typeof playerState }).__ziluxPlayer = playerState;
     this.playerDispose = onPlayer((state) => this.syncPlayer(state));
@@ -4638,7 +4641,93 @@ export class App {
   /* 生命周期                                                            */
   /* ------------------------------------------------------------------ */
 
+  /**
+   * 给所有分段控件（.seg）装上可滑动的白色胶囊滑块。
+   * 观察 DOM 增删，覆盖设置页、曲库筛选、快捷设置等所有动态创建的分段控件；
+   * 选中项变化时滑块带弹簧缓动滑过去，并做一次 Q 弹缩放。
+   */
+  private watchSegments(): void {
+    // 设置/歌词等弹层挂在 body 上（不在 this.root 内），所以观察整个 body。
+    this.enhanceSegs(document.body);
+    this.segObserver = new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of Array.from(record.addedNodes)) {
+          if (node instanceof HTMLElement) this.enhanceSegs(node);
+        }
+      }
+    });
+    this.segObserver.observe(document.body, { childList: true, subtree: true });
+  }
+
+  private enhanceSegs(root: ParentNode): void {
+    if (root instanceof HTMLElement && root.classList.contains('seg')) this.enhanceSeg(root);
+    root.querySelectorAll<HTMLElement>('.seg').forEach((seg) => this.enhanceSeg(seg));
+  }
+
+  private enhanceSeg(seg: HTMLElement): void {
+    if (seg.dataset.segThumb === 'ready') return;
+    seg.dataset.segThumb = 'ready';
+    const thumb = h('div', { class: 'seg-thumb' });
+    seg.prepend(thumb);
+    const buttons = Array.from(seg.querySelectorAll<HTMLElement>('.seg-btn'));
+    let lastActive: HTMLElement | null = null;
+    let animating = false;
+    let animTimer = 0;
+    const place = (animate: boolean): void => {
+      const active = seg.querySelector<HTMLElement>('.seg-btn.is-on');
+      if (!active) {
+        thumb.style.opacity = '0';
+        lastActive = null;
+        return;
+      }
+      // 动画进行中不要被尺寸观察者二次定位打断（否则会瞬间吸附到终点）。
+      if (!animate && animating) return;
+      const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const moving = animate && !reduce && lastActive !== null && lastActive !== active;
+      // 一次点击会触发多条 class 变更回调：进入动画后，后续同目标回调直接忽略。
+      if (animating && !moving) return;
+      thumb.style.transition = moving
+        ? 'left .38s cubic-bezier(.34,1.56,.64,1), width .38s cubic-bezier(.34,1.56,.64,1), opacity .18s ease'
+        : 'none';
+      thumb.style.left = `${active.offsetLeft}px`;
+      thumb.style.width = `${active.offsetWidth}px`;
+      thumb.style.opacity = '1';
+      if (moving) {
+        animating = true;
+        window.clearTimeout(animTimer);
+        animTimer = window.setTimeout(() => {
+          animating = false;
+        }, 420);
+        thumb.classList.remove('is-pop');
+        void thumb.offsetWidth;
+        thumb.classList.add('is-pop');
+      }
+      lastActive = active;
+    };
+    // 首次挂载时等一帧拿到布局尺寸再定位（不播动画）。
+    requestAnimationFrame(() => requestAnimationFrame(() => place(false)));
+    // 点击兜底：即使外部只改 class 不触发观察回调，也确保有滑动动画。
+    seg.addEventListener(
+      'click',
+      () => {
+        window.setTimeout(() => place(true), 0);
+      },
+      true,
+    );
+    const resize = new ResizeObserver(() => {
+      // 选中项变了（可能先于观察回调发生）→ 触发滑动；否则只做无动画校正。
+      const active = seg.querySelector<HTMLElement>('.seg-btn.is-on');
+      if (active && active !== lastActive) place(true);
+      else if (!animating) place(false);
+    });
+    resize.observe(seg);
+    const watcher = new MutationObserver(() => place(true));
+    buttons.forEach((btn) => watcher.observe(btn, { attributes: true, attributeFilter: ['class'] }));
+  }
+
   destroy(): void {
+    this.segObserver?.disconnect();
+    this.segObserver = undefined;
     this.upNextToast?.dispose();
     this.upNextToast = null;
     this.playerDispose?.();
