@@ -46,6 +46,7 @@ import {
 } from '../online/sources';
 import { onlineArtwork } from '../online/artwork';
 import { confirmDialog } from './confirmDialog';
+import { createEqCurve } from './eqCurve';
 import { localArtists, type LocalArtist } from './localArtists';
 import {
   EXPERIMENTAL_SOURCES,
@@ -2223,6 +2224,33 @@ export class App {
     });
   }
 
+  /** 统一开关控件：白底金色双段胶囊（关 / 开），与快捷设置 tab 的选中样式一致。 */
+  private pillSwitch(
+    value: boolean,
+    onChange: (next: boolean) => void,
+  ): { root: HTMLDivElement; setValue: (next: boolean) => void } {
+    const root = h('div', { class: `pill-switch${value ? ' is-on' : ''}` });
+    const offBtn = h('button', { class: `pill-switch-btn${value ? '' : ' is-on'}`, type: 'button', text: '关' });
+    const onBtn = h('button', { class: `pill-switch-btn${value ? ' is-on' : ''}`, type: 'button', text: '开' });
+    const setValue = (next: boolean): void => {
+      root.classList.toggle('is-on', next);
+      offBtn.classList.toggle('is-on', !next);
+      onBtn.classList.toggle('is-on', next);
+    };
+    offBtn.addEventListener('click', () => {
+      if (!root.classList.contains('is-on')) return;
+      setValue(false);
+      onChange(false);
+    });
+    onBtn.addEventListener('click', () => {
+      if (root.classList.contains('is-on')) return;
+      setValue(true);
+      onChange(true);
+    });
+    root.append(h('div', { class: 'pill-switch-thumb' }), offBtn, onBtn);
+    return { root, setValue };
+  }
+
   private openSettingsSheet(): void {
     this.setRailActive('settings');
     // 设置改用居中大弹窗（和效果设置一致的观感），其他 sheet 仍是右侧滑出。
@@ -2235,13 +2263,8 @@ export class App {
         return wrap;
       };
       const toggleField = (label: string, hint: string, value: boolean, onChange: (next: boolean) => void): HTMLDivElement => {
-        const sw = h('button', { class: `switch${value ? ' is-on' : ''}` });
-        sw.addEventListener('click', () => {
-          const nextValue = !sw.classList.contains('is-on');
-          sw.classList.toggle('is-on', nextValue);
-          onChange(nextValue);
-        });
-        return h('div', { class: 'field' }, h('div', {}, h('div', { class: 'field-label', text: label }), h('div', { class: 'field-hint', text: hint })), sw);
+        const sw = this.pillSwitch(value, onChange);
+        return h('div', { class: 'field' }, h('div', {}, h('div', { class: 'field-label', text: label }), h('div', { class: 'field-hint', text: hint })), sw.root);
       };
       const segField = <T extends string>(label: string, options: Array<{ value: T; label: string }>, value: T, onChange: (next: T) => void, hint?: string): HTMLDivElement => {
         const seg = h('div', { class: 'seg' });
@@ -2410,28 +2433,33 @@ export class App {
       const experimental = section('实验功能');
       for (const info of Object.values(EXPERIMENTAL_SOURCES)) {
         const on = experimentalSourceEnabled(info.id);
-        const sw = h('button', { class: `switch${on ? ' is-on' : ''}`, title: on ? '点击关闭' : '点击开启' });
-        sw.addEventListener('click', () => {
-          const next = !sw.classList.contains('is-on');
-          const apply = (on: boolean): void => {
-            sw.classList.toggle('is-on', on);
-            setExperimentalSourceEnabled(info.id, on);
-            if (!on && this.searchSource === (info.id as OnlineSource)) this.searchSource = 'all';
-            this.renderSearchTabs();
-            toast(on ? `已开启实验来源「${info.label}」，搜索页可见` : `已关闭实验来源「${info.label}」`);
-          };
-          if (!next) {
-            apply(false);
-            return;
-          }
-          void confirmDialog({
-            title: `启用「${info.label}」`,
-            message: '这是一个来自第三方站点的实验来源，接口可能随时失效、改动或被封禁。',
-            detail: info.confirm,
-            confirmText: '我已了解，开启',
-            tone: 'default',
-          }).then((ok) => {
-            if (ok) apply(true);
+        const sw = this.pillSwitch(on, () => {});
+        const apply = (next: boolean): void => {
+          sw.setValue(next);
+          setExperimentalSourceEnabled(info.id, next);
+          if (!next && this.searchSource === (info.id as OnlineSource)) this.searchSource = 'all';
+          this.renderSearchTabs();
+          toast(next ? `已开启实验来源「${info.label}」，搜索页可见` : `已关闭实验来源「${info.label}」`);
+        };
+        const root = sw.root;
+        root.querySelectorAll('.pill-switch-btn').forEach((node, index) => {
+          node.addEventListener('click', () => {
+            const wantsOn = index === 1;
+            if (!wantsOn) {
+              if (experimentalSourceEnabled(info.id)) apply(false);
+              return;
+            }
+            if (experimentalSourceEnabled(info.id)) return;
+            void confirmDialog({
+              title: `启用「${info.label}」`,
+              message: '这是一个来自第三方站点的实验来源，接口可能随时失效、改动或被封禁。',
+              detail: info.confirm,
+              confirmText: '我已了解，开启',
+              tone: 'default',
+            }).then((ok) => {
+              if (!ok) sw.setValue(false);
+              else apply(true);
+            });
           });
         });
         const head = h(
@@ -2443,7 +2471,7 @@ export class App {
             h('div', { class: 'field-label', text: `${info.label}（实验来源）` }),
             h('div', { class: 'field-hint', text: info.summary }),
           ),
-          sw,
+          sw.root,
         );
         const risk = h(
           'div',
@@ -2503,12 +2531,36 @@ export class App {
       let eqEnabled = settings.playback.eqEnabled;
       const eqValueLabels: HTMLDivElement[] = [];
       const eqSliders: HTMLInputElement[] = [];
-      const eqSw = h('button', { class: 'switch' });
       const eqBands = h('div', { class: 'eq-bands' });
       const presetSeg = h('div', { class: 'seg eq-presets' });
+      const eqCurve = createEqCurve({
+        height: 150,
+        interactive: true,
+        onChange: (nextGains) => {
+          nextGains.forEach((gain, index) => {
+            eqGains[index] = gain;
+            paintEqGain(index);
+          });
+          presetSeg.querySelectorAll('.seg-btn').forEach((node) => node.classList.remove('is-on'));
+          if (!eqEnabled) {
+            eqEnabled = true;
+            paintEqEnabled();
+          }
+        },
+        onCommit: (nextGains) => {
+          patchSettings({ playback: { eqEnabled: true, eqGains: [...nextGains] } });
+        },
+      });
+      eqCurve.setGains(eqGains);
+      const eqSwitch = this.pillSwitch(eqEnabled, (next) => {
+        eqEnabled = next;
+        paintEqEnabled();
+        patchSettings({ playback: { eqEnabled } });
+      });
       const paintEqEnabled = (): void => {
-        eqSw.classList.toggle('is-on', eqEnabled);
+        eqSwitch.setValue(eqEnabled);
         eqBands.classList.toggle('is-disabled', !eqEnabled);
+        eqCurve.setEnabled(eqEnabled);
       };
       const paintEqGain = (index: number): void => {
         const gain = eqGains[index] ?? 0;
@@ -2528,6 +2580,7 @@ export class App {
         slider.addEventListener('input', () => {
           eqGains[index] = Number(slider.value);
           paintEqGain(index);
+          eqCurve.setGains(eqGains);
           presetSeg.querySelectorAll('.seg-btn').forEach((node) => node.classList.remove('is-on'));
           if (!eqEnabled) {
             eqEnabled = true;
@@ -2553,6 +2606,7 @@ export class App {
           eqGains[index] = gain;
         });
         eqSliders.forEach((_slider, index) => paintEqGain(index));
+        eqCurve.setGains(eqGains);
         presetSeg.querySelectorAll('.seg-btn').forEach((node) => {
           node.classList.toggle('is-on', node.getAttribute('data-preset') === preset);
         });
@@ -2566,17 +2620,13 @@ export class App {
         btn.addEventListener('click', () => applyEqPreset(preset));
         presetSeg.append(btn);
       });
-      eqSw.addEventListener('click', () => {
-        eqEnabled = !eqEnabled;
-        paintEqEnabled();
-        patchSettings({ playback: { eqEnabled } });
-      });
       const eqReset = h('button', { class: 'btn', text: '恢复默认' });
       eqReset.addEventListener('click', () => {
         EQ_PRESETS.flat.forEach((gain, index) => {
           eqGains[index] = gain;
         });
         eqSliders.forEach((_slider, index) => paintEqGain(index));
+        eqCurve.setGains(eqGains);
         presetSeg.querySelectorAll('.seg-btn').forEach((node) => {
           node.classList.toggle('is-on', node.getAttribute('data-preset') === 'flat');
         });
@@ -2594,9 +2644,15 @@ export class App {
             h('div', { class: 'field-label', text: '启用均衡器' }),
             h('div', { class: 'field-hint', text: '10 段音频增益；关闭时声音直通。手动调节会自动开启。' }),
           ),
-          eqSw,
+          eqSwitch.root,
         ),
         h('div', { class: 'field is-stacked' }, h('div', { class: 'field-label', text: '预设' }), presetSeg),
+        h(
+          'div',
+          { class: 'eq-curve-card' },
+          eqCurve.canvas,
+          h('div', { class: 'eq-curve-hint', text: '拖动曲线上的节点即可调节对应频段，滑块与曲线双向同步。' }),
+        ),
         eqBands,
         h(
           'div',
@@ -2608,8 +2664,41 @@ export class App {
 
       const downloadsSection = this.buildDownloadsSection(section, segField);
       const updatesSection = this.buildUpdatesSection(section, toggleField, segField);
-      body.append(general, appearance, playback, eqSection, downloadsSection, updatesSection, accountSection, tools);
-      if (hasExperimentalSources()) body.append(experimental);
+
+      // 两栏设置：左侧导航 + 右侧内容（与快捷设置的 tab 选中样式一致）
+      type SettingsEntry = { key: string; label: string; node: HTMLElement };
+      const entries: SettingsEntry[] = [
+        { key: 'general', label: '通用', node: general },
+        { key: 'appearance', label: '外观', node: appearance },
+        { key: 'playback', label: '播放', node: playback },
+        { key: 'eq', label: '均衡器', node: eqSection },
+        { key: 'downloads', label: '下载', node: downloadsSection },
+        { key: 'updates', label: '更新', node: updatesSection },
+        { key: 'account', label: '账号', node: accountSection },
+        { key: 'data', label: '数据', node: tools },
+      ];
+      if (hasExperimentalSources()) entries.push({ key: 'experimental', label: '实验功能', node: experimental });
+      const nav = h('div', { class: 'settings-nav' });
+      const content = h('div', { class: 'settings-content' });
+      const panes = new Map<string, HTMLElement>();
+      const navBtns = new Map<string, HTMLButtonElement>();
+      const activate = (key: string): void => {
+        navBtns.forEach((btn, name) => btn.classList.toggle('is-on', name === key));
+        panes.forEach((pane, name) => {
+          pane.hidden = name !== key;
+        });
+      };
+      entries.forEach((entry, index) => {
+        const pane = h('div', { class: 'settings-pane' }, entry.node);
+        pane.hidden = index !== 0;
+        panes.set(entry.key, pane);
+        content.append(pane);
+        const btn = h('button', { class: `settings-nav-btn${index === 0 ? ' is-on' : ''}`, type: 'button', text: entry.label });
+        btn.addEventListener('click', () => activate(entry.key));
+        navBtns.set(entry.key, btn);
+        nav.append(btn);
+      });
+      body.append(h('div', { class: 'settings-layout' }, nav, content));
     });
   }
 
@@ -4019,17 +4108,26 @@ export class App {
         h('div', { class: 'quick-cell-title', text: title }),
         ...children,
       );
-    // 音频效果：均衡器预设（快捷）+ 播放渐变开关；逐段调节在完整设置里。
-    const quickEqOn = h('button', {
-      class: `switch${getSettings().playback.eqEnabled ? ' is-on' : ''}`,
-    });
-    quickEqOn.addEventListener('click', () => {
-      const next = !quickEqOn.classList.contains('is-on');
-      quickEqOn.classList.toggle('is-on', next);
+    // 音频效果：可视化 EQ 曲线（可拖拽节点）+ 预设 + 播放渐变开关。
+    const quickEqSwitch = this.pillSwitch(getSettings().playback.eqEnabled, (next) => {
       patchSettings({ playback: { eqEnabled: next } });
+      quickEqCurve.setEnabled(next);
     });
     const quickPresetSeg = h('div', { class: 'quick-seg-slider quick-eq-presets' });
     const quickPresetBtns: HTMLButtonElement[] = [];
+    const quickEqCurve = createEqCurve({
+      height: 104,
+      interactive: true,
+      onChange: () => {
+        quickPresetBtns.forEach((node) => node.classList.remove('is-on'));
+        quickEqSwitch.setValue(true);
+      },
+      onCommit: (nextGains) => {
+        patchSettings({ playback: { eqEnabled: true, eqGains: [...nextGains] } });
+      },
+    });
+    quickEqCurve.setGains(getSettings().playback.eqGains);
+    quickEqCurve.setEnabled(getSettings().playback.eqEnabled);
     EQ_PRESET_IDS.forEach((preset) => {
       const btn = h('button', {
         class: `quick-seg-btn${getSettings().playback.eqPreset === preset ? ' is-on' : ''}`,
@@ -4042,18 +4140,14 @@ export class App {
       });
       btn.addEventListener('click', () => {
         quickPresetBtns.forEach((node) => node.classList.toggle('is-on', node === btn));
-        quickEqOn.classList.add('is-on');
+        quickEqSwitch.setValue(true);
+        quickEqCurve.setGains(EQ_PRESETS[preset]);
         patchSettings({ playback: { eqEnabled: true, eqPreset: preset, eqGains: [...EQ_PRESETS[preset]] } });
       });
       quickPresetBtns.push(btn);
       quickPresetSeg.append(btn);
     });
-    const quickFadeOn = h('button', {
-      class: `switch${getSettings().playback.fadeEnabled ? ' is-on' : ''}`,
-    });
-    quickFadeOn.addEventListener('click', () => {
-      const next = !quickFadeOn.classList.contains('is-on');
-      quickFadeOn.classList.toggle('is-on', next);
+    const quickFadeSwitch = this.pillSwitch(getSettings().playback.fadeEnabled, (next) => {
       patchSettings({ playback: { fadeEnabled: next } });
     });
     body.append(
@@ -4066,10 +4160,11 @@ export class App {
         cell(
           '均衡器',
           true,
-          h('div', { class: 'quick-cell-head' }, h('span', { class: 'quick-cell-hint', text: '10 段增益 · 预设立即生效' }), quickEqOn),
+          h('div', { class: 'quick-cell-head' }, h('span', { class: 'quick-cell-hint', text: '拖动曲线节点 · 10 段实时调节' }), quickEqSwitch.root),
+          h('div', { class: 'quick-eq-curve' }, quickEqCurve.canvas),
           quickPresetSeg,
         ),
-        cell('播放/暂停渐变', false, quickFadeOn),
+        cell('播放/暂停渐变', false, quickFadeSwitch.root),
       ),
       h('div', {
         class: 'quick-hint',
