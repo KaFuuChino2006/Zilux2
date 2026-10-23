@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>Zilux2-Setup</AssemblyName>
+    <RootNamespace>Zilux2.Installer</RootNamespace>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <!-- Version comes from Directory.Build.props so setup exe and app exe always agree. -->
+    <Product>Zilux2 沉浸式音乐空间</Product>
+    <Company>Zilux2</Company>
+    <Description>Zilux2 安装程序</Description>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>false</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SatelliteResourceLanguages>zh-Hans</SatelliteResourceLanguages>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="payload.zip" LogicalName="payload.zip" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="app.ico" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

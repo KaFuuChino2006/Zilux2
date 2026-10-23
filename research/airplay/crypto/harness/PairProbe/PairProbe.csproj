@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Zilux2 AirPlay 2 / HAP 配对真机探针（独立 console，不属于主工程）。
+
+    目的：在真实 AirPlay 2 设备（HomePod mini 192.168.31.183）上验证：
+      1. 瞬态 pair-setup M1 → M2（拿到 SRP salt/B）；
+      2. 本地算 A/proof → M3 → M4（设备是否接受瞬态 SRP）；
+      3. 用 SRP 会话密钥派生控制通道密钥 → HAP 加密帧 → 加密的 GET /info。
+
+    关键实现点：整个配对流程必须复用同一条 TCP 长连接（HAP 状态与连接绑定）。
+    运行： dotnet run -c Release（默认 192.168.31.183:7000），或在工程后追加主机与端口参数
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AssemblyName>PairProbe</AssemblyName>
+    <RootNamespace>Zilux2.AirPlay.Crypto.Probe</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- PairProbe 在 research/airplay/crypto/harness/PairProbe 下 → 5 个 .. 回到仓库根 -->
+    <Compile Include="..\..\..\..\..\src\Zilux2\AirPlay\Crypto\*.cs" Link="Crypto\%(Filename)%(Extension)" />
+  </ItemGroup>
+
+</Project>

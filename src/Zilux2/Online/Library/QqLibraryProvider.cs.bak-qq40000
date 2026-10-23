@@ -1,0 +1,530 @@
+using System.Net.Http;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using Zilux2.Online.Account;
+
+namespace Zilux2.Online.Library;
+
+// QQ side of docs/zilux2-library.md §6.
+//
+// Verified against the live upstream (2026-10-18): musicu modules
+// music.musicasset.PlaylistBaseRead/GetPlaylistByUin and music.musicasset.SongFavRead/GetSongFav
+// exist (anonymous calls answer 80030 / 1000 = not logged in), and
+// music.srfDissInfo.DissInfo/CgiGetDiss works for public playlists but only when "disstid" is a
+// JSON number (a string disstid answers -100008 param error). PlaylistBaseRead/SongFavRead field
+// names could not be observed anonymously, so their parsing is tolerant and logs key warnings.
+internal sealed class QqLibraryProvider
+{
+    private const string Name = "qq";
+    private const string MusicuEndpoint = "https://u.y.qq.com/cgi-bin/musicu.fcg";
+    private const string SingleSongEndpoint = "https://c.y.qq.com/v8/fcg-bin/fcg_play_single_song.fcg";
+    private const int MaxPlaylists = 60;
+    private const int MaxEnrichments = 60;
+
+    private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10);
+
+    private readonly AccountService? _accounts;
+
+    public QqLibraryProvider(AccountService? accounts) => _accounts = accounts;
+
+    private string MusicuCookie => _accounts?.CookieHeader(Name, "u.y.qq.com") ?? string.Empty;
+
+    private string WebCookie => _accounts?.CookieHeader(Name, "c.y.qq.com") ?? string.Empty;
+
+    private bool IsLoggedIn => _accounts?.IsLoggedIn(Name) == true;
+
+    internal async Task<LibrarySnapshot> GetSnapshotAsync(CancellationToken cancellationToken)
+    {
+        var uin = _accounts?.GetUserId(Name);
+        if (string.IsNullOrEmpty(uin))
+        {
+            throw new OnlineUpstreamException("没有 QQ 音乐账号的 uin，请重新登录", 401);
+        }
+
+        var body = new JsonObject
+        {
+            ["comm"] = new JsonObject { ["ct"] = 24, ["cv"] = 0, ["uin"] = uin },
+            ["req_1"] = new JsonObject
+            {
+                ["module"] = "music.musicasset.PlaylistBaseRead",
+                ["method"] = "GetPlaylistByUin",
+                ["param"] = new JsonObject { ["uin"] = uin },
+            },
+        };
+
+        var root = await PostMusicuAsync(body, "qq/library playlists", cancellationToken).ConfigureAwait(false);
+        var data = ReadRequestData(root);
+        if (data is null)
+        {
+            throw new OnlineUpstreamException("QQ 音乐歌单列表返回异常", 502);
+        }
+
+        var entries = FindArray(data.Value, "v_playlist", "playlist", "list");
+        LibraryPlaylist? liked = null;
+        var others = new List<LibraryPlaylist>();
+        foreach (var item in entries)
+        {
+            var id = ReadId(item, "tid", "dissid", "dirId", "id");
+            if (id.Length == 0)
+            {
+                continue;
+            }
+
+            var title = ReadString(item, "dirName", "name", "title", "dissname");
+            var count = ReadInt(item, "songnum", "song_num", "song_cnt", "songCount", "count", "total_song_num");
+            var coverKey = TryNormalizeCover(ReadString(item, "picurl", "picUrl", "cover", "imgurl"));
+            if (title.Contains("我喜欢", StringComparison.Ordinal))
+            {
+                liked = new LibraryPlaylist
+                {
+                    Source = Name,
+                    Id = "liked",
+                    Title = "我喜欢的音乐",
+                    Count = count,
+                    Special = "liked",
+                    CoverKey = coverKey,
+                };
+                continue;
+            }
+
+            if (others.Count >= MaxPlaylists)
+            {
+                continue;
+            }
+
+            others.Add(new LibraryPlaylist
+            {
+                Source = Name,
+                Id = id,
+                Title = title.Length == 0 ? "未命名歌单" : title,
+                Count = count,
+                CoverKey = coverKey,
+            });
+        }
+
+        // QQ keeps 我喜欢 outside the playlist folder, so synthesize the card from the fav folder.
+        var fav = await GetFavoritesAsync(0, 1, cancellationToken).ConfigureAwait(false);
+        liked ??= new LibraryPlaylist
+        {
+            Source = Name,
+            Id = "liked",
+            Title = "我喜欢的音乐",
+            Count = fav.Total,
+            Special = "liked",
+            CoverKey = fav.Tracks.FirstOrDefault()?.CoverKey,
+        };
+
+        OnlineHttp.Info(
+            $"GET qq/library playlists uin={uin} ok {others.Count} playlists " +
+            $"likedCount={liked.Count} {fav.TookMs}ms");
+        return new LibrarySnapshot(liked, others);
+    }
+
+    internal async Task<LibraryDetail> GetPlaylistAsync(string id, int offset, int limit, CancellationToken cancellationToken)
+    {
+        if (string.Equals(id, "liked", StringComparison.OrdinalIgnoreCase))
+        {
+            var fav = await GetFavoritesAsync(offset, limit, cancellationToken).ConfigureAwait(false);
+            var likedMeta = new LibraryPlaylist
+            {
+                Source = Name,
+                Id = "liked",
+                Title = "我喜欢的音乐",
+                Count = fav.Total,
+                Special = "liked",
+                CoverKey = fav.Tracks.FirstOrDefault()?.CoverKey,
+            };
+            return new LibraryDetail(likedMeta, fav.Tracks, offset + fav.Tracks.Count < fav.Total);
+        }
+
+        if (!long.TryParse(id, out var disstid) || disstid <= 0)
+        {
+            throw new OnlineUpstreamException("QQ 歌单 id 非法", 400);
+        }
+
+        var uin = _accounts?.GetUserId(Name) ?? "0";
+        var body = new JsonObject
+        {
+            ["comm"] = new JsonObject { ["ct"] = 24, ["cv"] = 0, ["uin"] = uin },
+            ["req_1"] = new JsonObject
+            {
+                ["module"] = "music.srfDissInfo.DissInfo",
+                ["method"] = "CgiGetDiss",
+                // Numeric disstid matters: the upstream answers param error for string ids.
+                ["param"] = new JsonObject
+                {
+                    ["disstid"] = disstid,
+                    ["dirid"] = 0,
+                    ["song_begin"] = offset,
+                    ["song_num"] = limit,
+                    ["onlysong"] = 0,
+                },
+            },
+        };
+
+        var root = await PostMusicuAsync(body, "qq/library playlist", cancellationToken).ConfigureAwait(false);
+        var data = ReadRequestData(root) ?? throw new OnlineUpstreamException("QQ 歌单详情返回异常", 502);
+        var dirinfo = data.TryGetProperty("dirinfo", out var dirinfoElement) && dirinfoElement.ValueKind == JsonValueKind.Object
+            ? dirinfoElement
+            : default;
+        var total = ReadInt(data, "total_song_num");
+        if (total <= 0 && dirinfo.ValueKind == JsonValueKind.Object)
+        {
+            total = ReadInt(dirinfo, "songnum");
+        }
+
+        var songs = FindArray(data, "songlist", "songs");
+        var tracks = new List<OnlineTrack>();
+        foreach (var song in songs)
+        {
+            var track = ParseSong(song);
+            if (track is not null)
+            {
+                tracks.Add(track);
+            }
+        }
+
+        tracks = await EnrichTracksAsync(tracks, cancellationToken).ConfigureAwait(false);
+
+        var meta = new LibraryPlaylist
+        {
+            Source = Name,
+            Id = id,
+            Title = dirinfo.ValueKind == JsonValueKind.Object ? FallbackTitle(ReadString(dirinfo, "title")) : "QQ 歌单",
+            Count = total > 0 ? total : tracks.Count,
+            Creator = dirinfo.ValueKind == JsonValueKind.Object ? ReadNestedString(dirinfo, "creator", "nick") : string.Empty,
+            CoverKey = dirinfo.ValueKind == JsonValueKind.Object
+                ? TryNormalizeCover(ReadString(dirinfo, "picurl", "picUrl"))
+                : string.Empty,
+        };
+
+        var hasMore = ReadInt(data, "hasmore") == 1 || offset + tracks.Count < meta.Count;
+        OnlineHttp.Info($"GET qq/library playlist id={id} ok {tracks.Count}/{meta.Count} tracks offset={offset}");
+        return new LibraryDetail(meta, tracks, hasMore);
+    }
+
+    private sealed record FavoritePage(List<OnlineTrack> Tracks, int Total, long TookMs);
+
+    private async Task<FavoritePage> GetFavoritesAsync(int offset, int limit, CancellationToken cancellationToken)
+    {
+        var uin = _accounts?.GetUserId(Name) ?? "0";
+        var body = new JsonObject
+        {
+            ["comm"] = new JsonObject { ["ct"] = 24, ["cv"] = 0, ["uin"] = uin },
+            ["req_1"] = new JsonObject
+            {
+                ["module"] = "music.musicasset.SongFavRead",
+                ["method"] = "GetSongFav",
+                ["param"] = new JsonObject { ["uin"] = uin, ["offset"] = offset, ["limit"] = limit },
+            },
+        };
+
+        var root = await PostMusicuAsync(body, "qq/library favorites", cancellationToken).ConfigureAwait(false);
+        var data = ReadRequestData(root) ?? throw new OnlineUpstreamException("QQ 我喜欢列表返回异常", 502);
+        var items = FindArray(data, "songlist", "songs", "v_fav", "list");
+        var total = ReadInt(data, "total", "songlist_size", "total_song_num", "count", "song_num");
+
+        var tracks = new List<OnlineTrack>();
+        foreach (var item in items)
+        {
+            var track = ParseSong(item);
+            if (track is not null)
+            {
+                tracks.Add(track);
+            }
+        }
+
+        tracks = await EnrichTracksAsync(tracks, cancellationToken).ConfigureAwait(false);
+        if (total <= 0)
+        {
+            total = offset + tracks.Count;
+        }
+
+        if (tracks.Count == 0 && items.Count > 0)
+        {
+            OnlineHttp.Warn($"qq/library favorites could not parse {items.Count} favorite entries");
+        }
+
+        return new FavoritePage(tracks, total, 0);
+    }
+
+    // SongFavRead may return only mids (shape unverified); resolve the missing metadata through the
+    // public single-song endpoint rather than handing the UI blank rows. Capped per request.
+    private async Task<List<OnlineTrack>> EnrichTracksAsync(List<OnlineTrack> tracks, CancellationToken cancellationToken)
+    {
+        var pending = tracks.Where(track => string.IsNullOrEmpty(track.Title)).Take(MaxEnrichments).ToList();
+        if (pending.Count == 0)
+        {
+            return tracks;
+        }
+
+        var byId = new Dictionary<string, OnlineTrack>(StringComparer.Ordinal);
+        foreach (var track in pending)
+        {
+            try
+            {
+                var url = $"{SingleSongEndpoint}?songmid={Uri.EscapeDataString(track.Id)}&format=json";
+                var upstream = await OnlineHttp
+                    .FetchTextAsync(url, QqProvider.RefererUrl, Timeout, cancellationToken, cookie: WebCookie)
+                    .ConfigureAwait(false);
+                using var document = JsonDocument.Parse(upstream.Body);
+                if (document.RootElement.TryGetProperty("data", out var data) &&
+                    data.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var song in data.EnumerateArray())
+                    {
+                        var enriched = ParseSong(song);
+                        if (enriched is not null)
+                        {
+                            byId[track.Id] = enriched;
+                            break;
+                        }
+                    }
+                }
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+            {
+                OnlineHttp.Warn($"GET qq/library song detail mid={track.Id} failed: {OnlineHttp.Describe(exception)}");
+            }
+        }
+
+        if (byId.Count == 0)
+        {
+            return tracks;
+        }
+
+        OnlineHttp.Info($"GET qq/library song detail enriched {byId.Count}/{pending.Count} tracks");
+        return tracks.Select(track => byId.TryGetValue(track.Id, out var enriched) ? enriched : track).ToList();
+    }
+
+    private OnlineTrack? ParseSong(JsonElement song)
+    {
+        var mid = ReadString(song, "mid", "songmid");
+        if (mid.Length == 0)
+        {
+            return null;
+        }
+
+        var singers = new List<string>();
+        if (song.TryGetProperty("singer", out var singerElement) && singerElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var singer in singerElement.EnumerateArray())
+            {
+                var name = ReadString(singer, "name", "title");
+                if (name.Length > 0)
+                {
+                    singers.Add(name);
+                }
+            }
+        }
+
+        var albumName = string.Empty;
+        var albumMid = string.Empty;
+        if (song.TryGetProperty("album", out var album) && album.ValueKind == JsonValueKind.Object)
+        {
+            albumName = ReadString(album, "name", "title");
+            albumMid = ReadString(album, "mid", "pmid");
+        }
+        else
+        {
+            albumName = ReadString(song, "albumname");
+            albumMid = ReadString(song, "albummid");
+        }
+
+        var payPlay = ReadPayPlay(song);
+        return new OnlineTrack
+        {
+            Source = Name,
+            Id = mid,
+            Mid = mid,
+            Title = ReadString(song, "name", "title", "songname"),
+            Artist = string.Join(" / ", singers),
+            Album = albumName,
+            DurationMs = ReadDurationMs(song),
+            Playable = payPlay == 0 || (payPlay > 0 && IsLoggedIn),
+            CoverKey = albumMid.Length > 0 ? albumMid : null,
+        };
+    }
+
+    private static long ReadDurationMs(JsonElement song)
+    {
+        // musicu endpoints report "interval" in seconds; a few web endpoints report milliseconds.
+        if (song.TryGetProperty("interval", out var interval) && interval.TryGetInt32(out var seconds))
+        {
+            return seconds * 1000L;
+        }
+
+        var duration = ReadInt(song, "duration");
+        return duration > 1000 ? duration : duration * 1000L;
+    }
+
+    private static int ReadPayPlay(JsonElement song)
+    {
+        if (song.TryGetProperty("pay", out var pay) && pay.ValueKind == JsonValueKind.Object)
+        {
+            if (pay.TryGetProperty("pay_play", out var payPlay) && payPlay.TryGetInt32(out var value))
+            {
+                return value;
+            }
+
+            if (pay.TryGetProperty("payplay", out var legacy) && legacy.TryGetInt32(out var legacyValue))
+            {
+                return legacyValue;
+            }
+        }
+
+        if (song.TryGetProperty("payplay", out var flat) && flat.TryGetInt32(out var flatValue))
+        {
+            return flatValue;
+        }
+
+        // Unknown pay data: assume a free track instead of hiding it; the player surfaces real failures.
+        return 0;
+    }
+
+    private async Task<JsonElement> PostMusicuAsync(JsonObject body, string label, CancellationToken cancellationToken)
+    {
+        var upstream = await OnlineHttp
+            .FetchTextAsync(
+                MusicuEndpoint,
+                QqProvider.RefererUrl,
+                Timeout,
+                cancellationToken,
+                HttpMethod.Post,
+                body.ToJsonString(),
+                MusicuCookie)
+            .ConfigureAwait(false);
+
+        using var document = JsonDocument.Parse(upstream.Body);
+        var root = document.RootElement.Clone();
+        if (root.TryGetProperty("req_1", out var request) &&
+            request.TryGetProperty("code", out var code) &&
+            code.TryGetInt32(out var codeValue) &&
+            codeValue != 0)
+        {
+            var message = codeValue switch
+            {
+                1000 or 80030 => "QQ 音乐登录态已失效，请重新登录",
+                10004 => "QQ 音乐歌单数据异常，请稍后重试",
+                _ => $"QQ 音乐接口返回 code={codeValue}",
+            };
+            throw new OnlineUpstreamException(message, codeValue is 1000 or 80030 ? 401 : 502);
+        }
+
+        OnlineHttp.Info($"POST {label} ok {upstream.TookMs}ms");
+        return root;
+    }
+
+    private static JsonElement? ReadRequestData(JsonElement root) =>
+        root.TryGetProperty("req_1", out var request) &&
+        request.TryGetProperty("data", out var data) &&
+        data.ValueKind == JsonValueKind.Object
+            ? data
+            : null;
+
+    private static List<JsonElement> FindArray(JsonElement data, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (data.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Array)
+            {
+                return value.EnumerateArray().ToList();
+            }
+        }
+
+        return [];
+    }
+
+    private static string ReadId(JsonElement element, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (!element.TryGetProperty(name, out var value))
+            {
+                continue;
+            }
+
+            var text = value.ValueKind switch
+            {
+                JsonValueKind.Number => value.ToString(),
+                JsonValueKind.String => value.GetString() ?? string.Empty,
+                _ => string.Empty,
+            };
+            if (text.Length > 0)
+            {
+                return text;
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private static string ReadString(JsonElement element, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String)
+            {
+                var text = value.GetString() ?? string.Empty;
+                if (text.Length > 0)
+                {
+                    return text;
+                }
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private static string ReadNestedString(JsonElement element, string objectName, string name) =>
+        element.TryGetProperty(objectName, out var nested) && nested.ValueKind == JsonValueKind.Object
+            ? ReadString(nested, name)
+            : string.Empty;
+
+    private static int ReadInt(JsonElement element, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (element.TryGetProperty(name, out var value))
+            {
+                if (value.TryGetInt32(out var number))
+                {
+                    return number;
+                }
+
+                if (value.ValueKind == JsonValueKind.String && int.TryParse(value.GetString(), out var parsed))
+                {
+                    return parsed;
+                }
+            }
+        }
+
+        return 0;
+    }
+
+    private static string FallbackTitle(string title) => title.Length == 0 ? "QQ 歌单" : title;
+
+    // QQ image hosts are whitelisted so the /api/cover proxy never fetches arbitrary URLs.
+    private static string TryNormalizeCover(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return string.Empty;
+        }
+
+        var normalized = value.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            ? "https://" + value[7..]
+            : value;
+        if (!Uri.TryCreate(normalized, UriKind.Absolute, out var uri) ||
+            !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+        {
+            return string.Empty;
+        }
+
+        var host = uri.Host;
+        var allowed = host.EndsWith(".qq.com", StringComparison.OrdinalIgnoreCase) ||
+                      host.EndsWith(".gtimg.cn", StringComparison.OrdinalIgnoreCase) ||
+                      host.EndsWith(".gtimg.com", StringComparison.OrdinalIgnoreCase);
+        return allowed ? normalized : string.Empty;
+    }
+}

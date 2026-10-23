@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Zilux2 settings probe</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #07080b; color: #d5d9e4; }
+  body { font: 13px/1.5 "Segoe UI", system-ui, sans-serif; padding: 24px; }
+  h1 { font-size: 15px; font-weight: 600; letter-spacing: .04em; margin: 0 0 6px; }
+  #scenario { color: #7ee0c8; }
+  #log { margin-top: 14px; white-space: pre-wrap; word-break: break-all; color: #8b93a7; font-family: Consolas, monospace; font-size: 12px; }
+  #bridge { color: #c9a451; }
+</style>
+</head>
+<body>
+<h1>settings probe · scenario=<span id="scenario"></span></h1>
+<div id="bridge"></div>
+<div id="log"></div>
+<script>
+  // __SCENARIO__ is replaced by tools/settings-selftest.ps1 with a quoted string literal.
+  const scenario = __SCENARIO__;
+  const bridge = window.chrome && window.chrome.webview;
+  const logEl = document.getElementById('log');
+  document.getElementById('scenario').textContent = scenario;
+  document.getElementById('bridge').textContent = bridge ? 'bridge: present' : 'bridge: missing (plain browser)';
+
+  let snapshots = 0;
+  const log = (message) => {
+    const line = '[' + new Date().toISOString().slice(11, 23) + '] ' + message;
+    logEl.textContent += line + '\n';
+    if (bridge) bridge.postMessage({ v: 1, type: 'log', level: 'info', message: message });
+  };
+
+  if (!bridge) {
+    log('settingsprobe no bridge, scenarios are inert');
+  } else {
+    bridge.addEventListener('message', (event) => {
+      const data = event.data || {};
+      if (data.type === 'host' && data.event === 'settings') {
+        snapshots += 1;
+        log('settingsprobe snapshot #' + snapshots + ' ' + JSON.stringify(data.state));
+      } else if (data.type === 'host' && data.event === 'online') {
+        // Never echo the token: host.log must stay free of credentials.
+        const payload = data.payload || {};
+        log('settingsprobe online port=' + payload.port + ' sources=' + (payload.sources || []).join(',') + ' tokenLen=' + ((payload.token || '').length));
+      } else {
+        log('settingsprobe hostmsg ' + JSON.stringify(data));
+      }
+    });
+
+    // Contract section 3.1: the request must be answerable before `ready` (the page fires it
+    // during bootstrap and only waits 900 ms), so send it first and ready a tick later.
+    log('settingsprobe request sent scenario=' + scenario);
+    bridge.postMessage({ v: 1, type: 'settings', action: 'request' });
+
+    setTimeout(() => {
+      log('settingsprobe ready sent');
+      bridge.postMessage({ v: 1, type: 'ready' });
+    }, 50);
+
+    if (scenario === 'patch') {
+      setTimeout(() => {
+        const patch = { appearance: { reduceMotion: true, theme: 'midnight' }, playback: { volume: 0.5 }, general: { startMaximized: false } };
+        log('settingsprobe patch sent ' + JSON.stringify(patch));
+        bridge.postMessage({ v: 1, type: 'settings', action: 'patch', patch: patch });
+      }, 400);
+    }
+
+    if (scenario === 'invalid') {
+      setTimeout(() => {
+        const patch = { playback: { volume: 'loud', searchLimit: 999 }, appearance: { theme: 'neon', lyricsSize: 'huge' } };
+        log('settingsprobe invalid patch sent ' + JSON.stringify(patch));
+        bridge.postMessage({ v: 1, type: 'settings', action: 'patch', patch: patch });
+      }, 400);
+    }
+
+    if (scenario === 'reset') {
+      setTimeout(() => {
+        log('settingsprobe patch-before-reset sent');
+        bridge.postMessage({ v: 1, type: 'settings', action: 'patch', patch: { appearance: { glow: false }, playback: { searchLimit: 30 } } });
+      }, 400);
+      setTimeout(() => {
+        log('settingsprobe reset sent');
+        bridge.postMessage({ v: 1, type: 'settings', action: 'reset' });
+      }, 1400);
+    }
+
+    if (scenario === 'baseline') {
+      // Regression guard for the milestone-1 window flow: maximize then restore via the page.
+      setTimeout(() => { log('settingsprobe toggleMaximize sent'); bridge.postMessage({ v: 1, type: 'window', action: 'toggleMaximize' }); }, 1000);
+      setTimeout(() => { log('settingsprobe restore sent'); bridge.postMessage({ v: 1, type: 'window', action: 'toggleMaximize' }); }, 1800);
+    }
+  }
+</script>
+</body>
+</html>

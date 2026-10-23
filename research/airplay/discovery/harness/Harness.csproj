@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    独立的 mDNS 发现验证/自测工程（不属于主工程，不会被 Zilux2.sln 引用）。
+    它把 src/Zilux2/AirPlay/Discovery/ 下的源码「链接」进来编译，因此：
+      · 不需要复制文件，改一处两边同时生效；
+      · 主工程构建失败时也能单独验证发现模块。
+    运行：
+       dotnet run [参数写法见 Program.cs 顶部注释，自测模式用 selftest，真实发现用 discover]
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>DiscoveryHarness</AssemblyName>
+    <RootNamespace>Zilux2.AirPlay.Discovery.Harness</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- harness -> research/airplay/discovery/harness，仓库根需要 4 层 ..
+         harness -> discovery -> airplay -> research -> <repo> -> src/Zilux2/... -->
+    <Compile Include="..\..\..\..\src\Zilux2\AirPlay\Discovery\*.cs" Link="Linked\Discovery\%(Filename)%(Extension)" />
+    <!-- AirPlayDiscovery 实现了宿主契约 IAirPlayDeviceDiscovery，harness 需要一起链接进来 -->
+    <Compile Include="..\..\..\..\src\Zilux2\AirPlay\IDeviceDiscovery.cs" Link="Linked\AirPlay\IDeviceDiscovery.cs" />
+  </ItemGroup>
+
+</Project>

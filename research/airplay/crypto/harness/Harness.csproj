@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Zilux2 AirPlay 加密模块测试向量 harness（独立 console 工程）。
+
+    用途：把主工程 src/Zilux2/AirPlay/Crypto/*.cs 以“链接源码”的方式编进本工程
+    （不复制、不引用 WPF 工程），在控制台里跑 RFC 测试向量，打印 PASS/FAIL。
+    运行： dotnet run  在 harness 目录下执行即可。
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- 允许不安全代码用不到，这里保持默认 -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 链接主工程的加密源码（相对本 csproj：research/airplay/crypto/harness → 仓库根） -->
+    <Compile Include="..\..\..\..\src\Zilux2\AirPlay\Crypto\*.cs" Link="Crypto\%(Filename)%(Extension)" />
+    <!-- Probe/ 与 PairProbe/ 是独立的真机配对探针工程（有自己的 csproj 和 obj），不能编进 harness -->
+    <Compile Remove="Probe\**" />
+    <None Remove="Probe\**" />
+    <Compile Remove="PairProbe\**" />
+    <None Remove="PairProbe\**" />
+  </ItemGroup>
+
+</Project>

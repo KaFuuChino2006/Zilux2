@@ -1,0 +1,40 @@
+# 统一换行：仓库内一律存 LF，检出时按平台/类型转换。
+# 注释本身用中文，文件保持 UTF-8（无 BOM）。
+* text=auto
+
+# Windows 脚本必须 CRLF，Windows PowerShell 5.1 / cmd.exe 才稳定
+*.ps1 text eol=crlf
+*.psm1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# 解决方案 / 项目文件：文本，但保留原有换行风格
+*.sln text eol=crlf
+*.csproj text
+*.props text
+*.targets text
+
+# 二进制资产：不要做换行/文本转换，也不要显示 diff
+*.exe binary
+*.dll binary
+*.pdb binary
+*.ico binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.svg text
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.zip binary
+*.tar.gz binary
+*.tgz binary
+*.7z binary
+*.rar binary
+*.pdf binary
+
+# Release 页面/更新日志由 GitHub 渲染，标记为文本
+*.md text

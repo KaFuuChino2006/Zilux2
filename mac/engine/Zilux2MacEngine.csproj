@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Zilux2 在线音乐回环引擎（macOS 版 / Windows 联调版）。
+    这是 src/Zilux2/Online/** 的跨平台宿主：不引用 WPF / WebView2 / NAudio / Windows TFM。
+    只读复用 Windows 版源码，绝不修改 src/ 下任何文件。
+
+    两个文件因为绑定平台 API 而无法直接复用，由 mac/engine/tools/port_sources.py 从原文件
+    逐行复制并只改平台相关部分生成：
+      - MacLocalMusicServer.cs  ← src/Zilux2/Online/LocalMusicServer.cs（原文件用 WPF 位图解码做取色）
+      - MacAccountStore.cs      ← src/Zilux2/Online/Account/AccountStore.cs（原文件用 DPAPI 加密 cookie）
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>Zilux2MacEngine</AssemblyName>
+    <RootNamespace>Zilux2MacEngine</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <!-- 打包时只带英文卫星资源，减少 publish 体积；不影响功能。 -->
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="MacLocalMusicServer.cs" />
+    <Compile Include="MacAccountStore.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 只读复用：Windows 版 Online 子系统的全部源码。 -->
+    <Compile Include="../../src/Zilux2/Online/**/*.cs"
+             Exclude="../../src/Zilux2/Online/LocalMusicServer.cs;../../src/Zilux2/Online/Account/AccountStore.cs;../../src/Zilux2/Online/**/*.bak-*" />
+    <!-- HostFolders / HostLog 被 Online 代码大量引用，本身与 UI 无关。 -->
+    <Compile Include="../../src/Zilux2/HostLog.cs" Link="Reused/HostLog.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Windows 上沿用 DPAPI(CurrentUser) 加密 cookie（与原宿主兼容）；macOS 分支不会调用它。 -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.0" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,13 @@
+import { readFileSync } from 'node:fs';
+const here = new URL('./web/', 'file:///E:/Zilux2%E5%BC%80%E5%8F%91/');
+const { decryptQrc } = await import(new URL('node_modules/qrc-decoder/dist/qrc_codec.mjs', here).href);
+const hex = readFileSync('E:/Zilux2开发/research/qa/qrc-hex.txt', 'utf8').trim();
+const xml = decryptQrc(hex);
+console.log('decrypted len', xml.length);
+const m = xml.match(/LyricContent="([\s\S]*?)"\s*\/>/);
+let content = m ? m[1] : xml;
+content = content.replace(/&quot;/g, '"').replace(/&#10;|&amp;#10;/g, '\n').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+const lines = content.split(/\r?\n/).filter(Boolean);
+console.log('lines', lines.length);
+console.log('line0 raw:', JSON.stringify(lines[0]).slice(0, 300));
+console.log('line1 raw:', JSON.stringify(lines[1]).slice(0, 300));

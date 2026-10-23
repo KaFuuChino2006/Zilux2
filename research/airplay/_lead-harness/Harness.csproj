@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <RootNamespace>LeadHarness</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="..\..\..\src\Zilux2\HostLog.cs" />
+    <Compile Include="..\..\..\src\Zilux2\Audio\LoopbackCapture.cs" />
+    <Compile Include="..\..\..\src\Zilux2\AirPlay\Protocol\*.cs" />
+    <Compile Include="..\..\..\src\Zilux2\AirPlay\Audio\*.cs" />
+    <Compile Include="..\..\..\src\Zilux2\AirPlay\Ap2\*.cs" />
+    <Compile Include="..\..\..\src\Zilux2\AirPlay\Crypto\*.cs" />
+    <Compile Include="..\..\..\src\Zilux2\AirPlay\Alac\AlacEncoder.cs" />
+  </ItemGroup>
+
+</Project>

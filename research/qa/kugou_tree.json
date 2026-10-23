@@ -1,0 +1,2320 @@
+{
+  "sha": "514f870db7e60ca37bc5535be5da36d32b571c6f",
+  "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/trees/514f870db7e60ca37bc5535be5da36d32b571c6f",
+  "tree": [
+    {
+      "path": ".dockerignore",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5840756eb43329ea353244724b14a6ea6da93ab4",
+      "size": 142,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/5840756eb43329ea353244724b14a6ea6da93ab4"
+    },
+    {
+      "path": ".env.example",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "64e22988ebc21340e61b840afa38f75eb88781d5",
+      "size": 508,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/64e22988ebc21340e61b840afa38f75eb88781d5"
+    },
+    {
+      "path": ".github",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "a0e69d229a9f6ebb9afc0d1929e19ee7a87a4a24",
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/trees/a0e69d229a9f6ebb9afc0d1929e19ee7a87a4a24"
+    },
+    {
+      "path": ".github/workflows",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "406bdb71027feb068d6d604e8b816f19bd03740d",
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/trees/406bdb71027feb068d6d604e8b816f19bd03740d"
+    },
+    {
+      "path": ".github/workflows/build.yml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5927f3f9310b404e5ad8db62f2833d520c383a2f",
+      "size": 4044,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/5927f3f9310b404e5ad8db62f2833d520c383a2f"
+    },
+    {
+      "path": ".github/workflows/static.yml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f3b9bcf30e961e442ab075934d89cc53f617b3c4",
+      "size": 1255,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/f3b9bcf30e961e442ab075934d89cc53f617b3c4"
+    },
+    {
+      "path": ".gitignore",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8af652e4cd029ee27860a8a8aa9a7105ea782732",
+      "size": 268,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/8af652e4cd029ee27860a8a8aa9a7105ea782732"
+    },
+    {
+      "path": ".prettierrc.json",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "084e99f0ec76a04cd62dbd493ae48b6296461086",
+      "size": 452,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/084e99f0ec76a04cd62dbd493ae48b6296461086"
+    },
+    {
+      "path": "CLAUDE.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "78b591b92bc73966f87d0bc0b76eff7f82e3d4bc",
+      "size": 6756,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/78b591b92bc73966f87d0bc0b76eff7f82e3d4bc"
+    },
+    {
+      "path": "Dockerfile",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0a3af8c2fb751e88efacc977c6fa3a38c8530803",
+      "size": 343,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/0a3af8c2fb751e88efacc977c6fa3a38c8530803"
+    },
+    {
+      "path": "LICENSE",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a75e629d17dcd4a4331176d8f0dd8810457d30a8",
+      "size": 1063,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/a75e629d17dcd4a4331176d8f0dd8810457d30a8"
+    },
+    {
+      "path": "README.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "84fc2d7c9f5495447c3458a6f16aff7d505f7d9e",
+      "size": 8375,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/84fc2d7c9f5495447c3458a6f16aff7d505f7d9e"
+    },
+    {
+      "path": "app.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "cfa367c1e88b3cdcfd205e70aab5410f105b3569",
+      "size": 172,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/cfa367c1e88b3cdcfd205e70aab5410f105b3569"
+    },
+    {
+      "path": "docs",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "71b5b9ee275761587c8bdddaab831217f92d494a",
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/trees/71b5b9ee275761587c8bdddaab831217f92d494a"
+    },
+    {
+      "path": "docs/.nojekyll",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "size": 0,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    },
+    {
+      "path": "docs/README.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "990b87b0af6eebf0d94c067258cd534b70410765",
+      "size": 124627,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/990b87b0af6eebf0d94c067258cd534b70410765"
+    },
+    {
+      "path": "docs/_coverpage.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "eb9bf4ea95d4956c719f6101243eebc0fe6b3ac2",
+      "size": 223,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/eb9bf4ea95d4956c719f6101243eebc0fe6b3ac2"
+    },
+    {
+      "path": "docs/index.html",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0fc14ea22c4d4dbb3694d54e853d02faf6f78a48",
+      "size": 751,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/0fc14ea22c4d4dbb3694d54e853d02faf6f78a48"
+    },
+    {
+      "path": "index.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4cd59214a2866959fd0a43c53437efbce4876f66",
+      "size": 18,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/4cd59214a2866959fd0a43c53437efbce4876f66"
+    },
+    {
+      "path": "interface.d.ts",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ff597758dea379d91115b135b352b19b3c7e5193",
+      "size": 87172,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/ff597758dea379d91115b135b352b19b3c7e5193"
+    },
+    {
+      "path": "main.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c9e3e97813af39b231d5d826ea9afccb8401fee0",
+      "size": 5054,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/c9e3e97813af39b231d5d826ea9afccb8401fee0"
+    },
+    {
+      "path": "module",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "1a5f409ff5c73bf0402e6355bf200f29b7d566d5",
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/trees/1a5f409ff5c73bf0402e6355bf200f29b7d566d5"
+    },
+    {
+      "path": "module/.gitignore",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "size": 0,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    },
+    {
+      "path": "module/_comment.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "082931f5d12d6bdcf7bf978ffb37cbcd0448f355",
+      "size": 8219,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/082931f5d12d6bdcf7bf978ffb37cbcd0448f355"
+    },
+    {
+      "path": "module/_listen_together_common.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "86f2c4b37b4256a921dc732f767a1280835fa361",
+      "size": 2389,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/86f2c4b37b4256a921dc732f767a1280835fa361"
+    },
+    {
+      "path": "module/ai_recommend.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "dba7a07c095d0e0af7b8ee178ec913c5a372d6c2",
+      "size": 896,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/dba7a07c095d0e0af7b8ee178ec913c5a372d6c2"
+    },
+    {
+      "path": "module/ai_recommend_song.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7343d8d3f24475706d33771473e43c2f3f3ee743",
+      "size": 336,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/7343d8d3f24475706d33771473e43c2f3f3ee743"
+    },
+    {
+      "path": "module/album.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f20fca8786b5c10c5e55b358aad3e8d6a290ced3",
+      "size": 1025,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/f20fca8786b5c10c5e55b358aad3e8d6a290ced3"
+    },
+    {
+      "path": "module/album_detail.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "eb169289457c0b04cfdb6ef5982fbecbce29d1c0",
+      "size": 512,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/eb169289457c0b04cfdb6ef5982fbecbce29d1c0"
+    },
+    {
+      "path": "module/album_dycover.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "11509a08ac68cea09f22c87afbbe3f3c4114928e",
+      "size": 2243,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/11509a08ac68cea09f22c87afbbe3f3c4114928e"
+    },
+    {
+      "path": "module/album_shop.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e6f84dd646c4b77312611b9f05940924bd5d263b",
+      "size": 224,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/e6f84dd646c4b77312611b9f05940924bd5d263b"
+    },
+    {
+      "path": "module/album_songs.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e127b0a820b465a2a5c529965c34077a9a953125",
+      "size": 444,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/e127b0a820b465a2a5c529965c34077a9a953125"
+    },
+    {
+      "path": "module/artist_albums.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6a2473cdc12a9e98803acf67511d4b45914cb814",
+      "size": 519,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/6a2473cdc12a9e98803acf67511d4b45914cb814"
+    },
+    {
+      "path": "module/artist_audios.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "90ac65b70ef9477e89ac9e5db28b206b174ed2a5",
+      "size": 819,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/90ac65b70ef9477e89ac9e5db28b206b174ed2a5"
+    },
+    {
+      "path": "module/artist_audios_new.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b61a25edeb88d8a91e1c4b330366ba3fb5c6abc0",
+      "size": 786,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/b61a25edeb88d8a91e1c4b330366ba3fb5c6abc0"
+    },
+    {
+      "path": "module/artist_detail.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "20f6db4565519c0aba1bd2153745d0d6d598074d",
+      "size": 295,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/20f6db4565519c0aba1bd2153745d0d6d598074d"
+    },
+    {
+      "path": "module/artist_follow.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a18a2a94e174e45f3178e003c7086750fe9814ca",
+      "size": 769,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/a18a2a94e174e45f3178e003c7086750fe9814ca"
+    },
+    {
+      "path": "module/artist_follow_newsongs.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "80393fd29273a087af927fc2c2aa12c03373e261",
+      "size": 501,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/80393fd29273a087af927fc2c2aa12c03373e261"
+    },
+    {
+      "path": "module/artist_honour.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "026bc0ed1269291094e646006d9f049b3ca950d2",
+      "size": 358,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/026bc0ed1269291094e646006d9f049b3ca950d2"
+    },
+    {
+      "path": "module/artist_lists.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d8eed457f3c2f7494e7a511e4c1eced65cc474df",
+      "size": 419,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/d8eed457f3c2f7494e7a511e4c1eced65cc474df"
+    },
+    {
+      "path": "module/artist_unfollow.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f1a22cdf2faaa1d8aaac72bf53ffa5c597c94755",
+      "size": 729,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/f1a22cdf2faaa1d8aaac72bf53ffa5c597c94755"
+    },
+    {
+      "path": "module/artist_videos.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "90e439b052db5778bd016f2cecb351cd467b41a9",
+      "size": 621,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/90e439b052db5778bd016f2cecb351cd467b41a9"
+    },
+    {
+      "path": "module/audio.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ea5016593fec228b115f4eaa19a3aeb08ee70a6b",
+      "size": 958,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/ea5016593fec228b115f4eaa19a3aeb08ee70a6b"
+    },
+    {
+      "path": "module/audio_accompany_matching.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a40a6e3a07a4f901cc834ba1e3f3346a14dd001b",
+      "size": 894,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/a40a6e3a07a4f901cc834ba1e3f3346a14dd001b"
+    },
+    {
+      "path": "module/audio_ktv_total.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "83f542e40bd7f97e7a082f4e4feb39ef972a3674",
+      "size": 898,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/83f542e40bd7f97e7a082f4e4feb39ef972a3674"
+    },
+    {
+      "path": "module/audio_match.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "fcc8d0711d73027af4378698e60fa5eaa7eaf04c",
+      "size": 543,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/fcc8d0711d73027af4378698e60fa5eaa7eaf04c"
+    },
+    {
+      "path": "module/audio_related.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "75c6299958a2adce91647b969d969744cbabc3cb",
+      "size": 1261,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/75c6299958a2adce91647b969d969744cbabc3cb"
+    },
+    {
+      "path": "module/blacklist.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2874fb4159eb8b7e613ea1331471a75bf34189ac",
+      "size": 2702,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/2874fb4159eb8b7e613ea1331471a75bf34189ac"
+    },
+    {
+      "path": "module/blacklist_list.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "16c222579219a8fae190aa207708fd5c2b940708",
+      "size": 1816,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/16c222579219a8fae190aa207708fd5c2b940708"
+    },
+    {
+      "path": "module/brush.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "73d903be4eb926fc23c4b2bcd4bbb747a4fcc874",
+      "size": 1297,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/73d903be4eb926fc23c4b2bcd4bbb747a4fcc874"
+    },
+    {
+      "path": "module/captcha_sent.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a566a9cebab2d997be00be0d2ad4798c6a8ea0e3",
+      "size": 380,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/a566a9cebab2d997be00be0d2ad4798c6a8ea0e3"
+    },
+    {
+      "path": "module/comment_album.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5127c9ee965106e65578cee1a9694611e49db742",
+      "size": 520,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/5127c9ee965106e65578cee1a9694611e49db742"
+    },
+    {
+      "path": "module/comment_album_send.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f1f3b8f4fd2cc7bb37e6273270d068f765b252f6",
+      "size": 929,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/f1f3b8f4fd2cc7bb37e6273270d068f765b252f6"
+    },
+    {
+      "path": "module/comment_count.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "87a269c1fdd338ec7b7e95eac5db5b41f9a413e4",
+      "size": 543,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/87a269c1fdd338ec7b7e95eac5db5b41f9a413e4"
+    },
+    {
+      "path": "module/comment_floor.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e85a05207e4b8daabf272ab2abd4c984d74b4b64",
+      "size": 1686,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/e85a05207e4b8daabf272ab2abd4c984d74b4b64"
+    },
+    {
+      "path": "module/comment_floor_send.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a7e38fa5147985360beb2946602bd8c438c09f9d",
+      "size": 1689,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/a7e38fa5147985360beb2946602bd8c438c09f9d"
+    },
+    {
+      "path": "module/comment_music.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "aae9e0563449ad2ac0935c2252651c53de8b93cc",
+      "size": 577,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/aae9e0563449ad2ac0935c2252651c53de8b93cc"
+    },
+    {
+      "path": "module/comment_music_classify.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "451a4426047f1c313277de1af030f2f8974b3bf1",
+      "size": 563,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/451a4426047f1c313277de1af030f2f8974b3bf1"
+    },
+    {
+      "path": "module/comment_music_del.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "aa35611e260d7bb3728e93956bc61520c2a413d9",
+      "size": 1132,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/aa35611e260d7bb3728e93956bc61520c2a413d9"
+    },
+    {
+      "path": "module/comment_music_hotword.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d1c89f392f0c0148bde03ef9a130601e8e9ae5fd",
+      "size": 496,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/d1c89f392f0c0148bde03ef9a130601e8e9ae5fd"
+    },
+    {
+      "path": "module/comment_music_send.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "43ff643defbb6020497eb6797d60441fb2e35bcc",
+      "size": 1221,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/43ff643defbb6020497eb6797d60441fb2e35bcc"
+    },
+    {
+      "path": "module/comment_playlist.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5d4d2b614981f209d123715668c618a621b09a4a",
+      "size": 552,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/5d4d2b614981f209d123715668c618a621b09a4a"
+    },
+    {
+      "path": "module/comment_playlist_send.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d51c57eb7a676c5646ae6cf59d44167946eda883",
+      "size": 962,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/d51c57eb7a676c5646ae6cf59d44167946eda883"
+    },
+    {
+      "path": "module/effects_artist.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2ee252987855d268b68941125521d1440a65889a",
+      "size": 475,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/2ee252987855d268b68941125521d1440a65889a"
+    },
+    {
+      "path": "module/effects_brand.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2131e451dcff7d6851fb09c04a8525f1fe8995d4",
+      "size": 420,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/2131e451dcff7d6851fb09c04a8525f1fe8995d4"
+    },
+    {
+      "path": "module/effects_brand_detail.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "72f7d6f7cd0f18f19c78886692ed1cdb19fa38c5",
+      "size": 443,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/72f7d6f7cd0f18f19c78886692ed1cdb19fa38c5"
+    },
+    {
+      "path": "module/effects_car_brand.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "633dda2b87090ffe9a2aace7e7c7cdfb4fd0c77a",
+      "size": 292,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/633dda2b87090ffe9a2aace7e7c7cdfb4fd0c77a"
+    },
+    {
+      "path": "module/effects_car_brand_lists.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c7afa690bfa09b4c5aa17db248c518813e1b5792",
+      "size": 514,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/c7afa690bfa09b4c5aa17db248c518813e1b5792"
+    },
+    {
+      "path": "module/effects_match.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "65e005978950f910cc235384bbda3f5d3a01564e",
+      "size": 380,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/65e005978950f910cc235384bbda3f5d3a01564e"
+    },
+    {
+      "path": "module/everyday_friend.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ad3b279839ff0bbece53afc433ec2888d81ab3bf",
+      "size": 715,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/ad3b279839ff0bbece53afc433ec2888d81ab3bf"
+    },
+    {
+      "path": "module/everyday_history.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "988158c7cdcd27013eac7308d070c9151e5781da",
+      "size": 526,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/988158c7cdcd27013eac7308d070c9151e5781da"
+    },
+    {
+      "path": "module/everyday_recommend.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "20538fa9fad373a16654afccc696b14c8be560f0",
+      "size": 303,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/20538fa9fad373a16654afccc696b14c8be560f0"
+    },
+    {
+      "path": "module/everyday_style_recommend.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e56b695a9b77ffb0dc78febe5282c7beffc65f9b",
+      "size": 334,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/e56b695a9b77ffb0dc78febe5282c7beffc65f9b"
+    },
+    {
+      "path": "module/favorite_count.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f628d8946da10fdc37fea0a05f726358543c32ca",
+      "size": 239,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/f628d8946da10fdc37fea0a05f726358543c32ca"
+    },
+    {
+      "path": "module/fm_class.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "934c25ac986119ec83326dc52bd5e6299b00adde",
+      "size": 657,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/934c25ac986119ec83326dc52bd5e6299b00adde"
+    },
+    {
+      "path": "module/fm_image.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "47681f8ed172f819654ef833d604daa9510d8a69",
+      "size": 934,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/47681f8ed172f819654ef833d604daa9510d8a69"
+    },
+    {
+      "path": "module/fm_recommend.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4411632d043b516a4cb8b4052b80e09cfb3503f8",
+      "size": 643,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/4411632d043b516a4cb8b4052b80e09cfb3503f8"
+    },
+    {
+      "path": "module/fm_songs.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e271c9c30bf582c0260a0c9d3ccccd793eddeff2",
+      "size": 1209,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/e271c9c30bf582c0260a0c9d3ccccd793eddeff2"
+    },
+    {
+      "path": "module/get_mode_info.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1e8c11ce492d367297376706d1f0d2e815cf2e29",
+      "size": 572,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/1e8c11ce492d367297376706d1f0d2e815cf2e29"
+    },
+    {
+      "path": "module/get_model.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "95808e1000bdc9a0bfd616d84a38d50379593091",
+      "size": 452,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/95808e1000bdc9a0bfd616d84a38d50379593091"
+    },
+    {
+      "path": "module/get_verify_info.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1c822beeac24decda28ffdd40057df97419c0008",
+      "size": 481,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/1c822beeac24decda28ffdd40057df97419c0008"
+    },
+    {
+      "path": "module/home_discover.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "77edd5a1cc07111e55c58287471fae34fc3b897a",
+      "size": 1937,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/77edd5a1cc07111e55c58287471fae34fc3b897a"
+    },
+    {
+      "path": "module/images.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d558b7586b6fbc9ca6fe8086837c1ab23377458a",
+      "size": 1244,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/d558b7586b6fbc9ca6fe8086837c1ab23377458a"
+    },
+    {
+      "path": "module/images_audio.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a3f172c1194c9aa67e7c466376b3b2ba9c9b28c7",
+      "size": 1367,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/a3f172c1194c9aa67e7c466376b3b2ba9c9b28c7"
+    },
+    {
+      "path": "module/import_playlist.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2003c0bb6dd2b99eea989ab2eb62c289daf70ed9",
+      "size": 3472,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/2003c0bb6dd2b99eea989ab2eb62c289daf70ed9"
+    },
+    {
+      "path": "module/ip.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2fa69411d2f252ec0901af2be13cd53c40d69dfb",
+      "size": 542,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/2fa69411d2f252ec0901af2be13cd53c40d69dfb"
+    },
+    {
+      "path": "module/ip_dateil.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "fb528a540aaa4cebe48a2cd6f925755d0ee56bd7",
+      "size": 345,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/fb528a540aaa4cebe48a2cd6f925755d0ee56bd7"
+    },
+    {
+      "path": "module/ip_playlist.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "30e910cbeab1b5fd9a38dc32d027068db1e2f259",
+      "size": 369,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/30e910cbeab1b5fd9a38dc32d027068db1e2f259"
+    },
+    {
+      "path": "module/ip_zone.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "430261e4c704ff031669de9f6f21c0371b6b86a3",
+      "size": 1052,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/430261e4c704ff031669de9f6f21c0371b6b86a3"
+    },
+    {
+      "path": "module/ip_zone_home.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a289ef349c4476da1264024bfeb07a5c575db560",
+      "size": 360,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/a289ef349c4476da1264024bfeb07a5c575db560"
+    },
+    {
+      "path": "module/kmr_audio_mv.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "20dc37c4a9e4f6fc12f4f236eafde6cb59992918",
+      "size": 558,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/20dc37c4a9e4f6fc12f4f236eafde6cb59992918"
+    },
+    {
+      "path": "module/krm_audio.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f0362659d691adba6854ceef744caff28a3cac05",
+      "size": 537,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/f0362659d691adba6854ceef744caff28a3cac05"
+    },
+    {
+      "path": "module/lastest_songs_listen.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "548ef94fc01bfdfda3361b9e03785bcc02ce6bf8",
+      "size": 557,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/548ef94fc01bfdfda3361b9e03785bcc02ce6bf8"
+    },
+    {
+      "path": "module/listen_together_chat.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "979afe6654029b5cf10fd30834b231658cc7d5fe",
+      "size": 864,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/979afe6654029b5cf10fd30834b231658cc7d5fe"
+    },
+    {
+      "path": "module/listen_together_discovery.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "76c427a69aa900e6115aea53e9a5e639d2ed8b8d",
+      "size": 1628,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/76c427a69aa900e6115aea53e9a5e639d2ed8b8d"
+    },
+    {
+      "path": "module/listen_together_music.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "bc27a477c59f198f4f69bb58ac4cf528390aeed6",
+      "size": 5815,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/bc27a477c59f198f4f69bb58ac4cf528390aeed6"
+    },
+    {
+      "path": "module/listen_together_room.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5fee3b9d11b3dca2c43b6bf75ab4a2e3bc9d07c2",
+      "size": 2727,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/5fee3b9d11b3dca2c43b6bf75ab4a2e3bc9d07c2"
+    },
+    {
+      "path": "module/listen_together_study.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "77f16cea1832f6670ad32f0e9e6382c39cb41ee6",
+      "size": 3087,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/77f16cea1832f6670ad32f0e9e6382c39cb41ee6"
+    },
+    {
+      "path": "module/login.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b4270ba9ef624d8206715a57952b381c409481a3",
+      "size": 2376,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/b4270ba9ef624d8206715a57952b381c409481a3"
+    },
+    {
+      "path": "module/login_cellphone.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "25c1f6da7e953d878fcc60362e6bdd7c814e56a0",
+      "size": 2855,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/25c1f6da7e953d878fcc60362e6bdd7c814e56a0"
+    },
+    {
+      "path": "module/login_device.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "95984f641af59c60fcca95acd4131e6567b93cc3",
+      "size": 671,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/95984f641af59c60fcca95acd4131e6567b93cc3"
+    },
+    {
+      "path": "module/login_device_kick.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2b769275ad4fce93dc0f92a566d7e675e5d57640",
+      "size": 2366,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/2b769275ad4fce93dc0f92a566d7e675e5d57640"
+    },
+    {
+      "path": "module/login_openplat.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ecd892f6f858ebf532731895c64fdfab21721115",
+      "size": 3308,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/ecd892f6f858ebf532731895c64fdfab21721115"
+    },
+    {
+      "path": "module/login_qq.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e68d5a6f8578c045c0d71d737977e0123b1f545b",
+      "size": 2837,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/e68d5a6f8578c045c0d71d737977e0123b1f545b"
+    },
+    {
+      "path": "module/login_qq_qr_check.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "20fa243c74102782d594730986c95472ef459733",
+      "size": 8721,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/20fa243c74102782d594730986c95472ef459733"
+    },
+    {
+      "path": "module/login_qq_qr_create.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3aa82e7e52e630490d5a22d3f12279c99c86d2ef",
+      "size": 4463,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/3aa82e7e52e630490d5a22d3f12279c99c86d2ef"
+    },
+    {
+      "path": "module/login_qr_authorize.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a8835fa78f5daaf8ec1661cb6cea2d0c6b2c78a6",
+      "size": 2915,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/a8835fa78f5daaf8ec1661cb6cea2d0c6b2c78a6"
+    },
+    {
+      "path": "module/login_qr_check.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c3e32f9068edc4a324d1af4d01603da05e3b9937",
+      "size": 904,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/c3e32f9068edc4a324d1af4d01603da05e3b9937"
+    },
+    {
+      "path": "module/login_qr_create.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "af78fea22fdd744719c6f30d34c819c989e1602a",
+      "size": 463,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/af78fea22fdd744719c6f30d34c819c989e1602a"
+    },
+    {
+      "path": "module/login_qr_key.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c2e46e77d110320c2a4010f1369f3af9136ada49",
+      "size": 503,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/c2e46e77d110320c2a4010f1369f3af9136ada49"
+    },
+    {
+      "path": "module/login_token.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "de593aac0c5ca0eadba019747194e97b72c0e75f",
+      "size": 2828,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/de593aac0c5ca0eadba019747194e97b72c0e75f"
+    },
+    {
+      "path": "module/login_wx_check.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "166770c72634da72f9fcf11921d0e56564d67ad8",
+      "size": 532,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/166770c72634da72f9fcf11921d0e56564d67ad8"
+    },
+    {
+      "path": "module/login_wx_create.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f108d886945f25c5e4c4ec0ce2f117b9627c07f0",
+      "size": 2360,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/f108d886945f25c5e4c4ec0ce2f117b9627c07f0"
+    },
+    {
+      "path": "module/longaudio_album_audios.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3073b0b9e513657e2f7beb1a21474d96c34e7c65",
+      "size": 414,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/3073b0b9e513657e2f7beb1a21474d96c34e7c65"
+    },
+    {
+      "path": "module/longaudio_album_detail.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4e10c69dc74fc433a69775c51d72759c5faa88f9",
+      "size": 493,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/4e10c69dc74fc433a69775c51d72759c5faa88f9"
+    },
+    {
+      "path": "module/longaudio_album_list.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9b48a666dfeb29b4ac565eeab9f708aebbc67737",
+      "size": 1273,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/9b48a666dfeb29b4ac565eeab9f708aebbc67737"
+    },
+    {
+      "path": "module/longaudio_daily_recommend.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1e7497ea6e639be4b03513584100d9854b08ee93",
+      "size": 286,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/1e7497ea6e639be4b03513584100d9854b08ee93"
+    },
+    {
+      "path": "module/longaudio_rank_recommend.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "bb738ffbcc7eb3d903b6ddc22170b50cc36581a0",
+      "size": 237,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/bb738ffbcc7eb3d903b6ddc22170b50cc36581a0"
+    },
+    {
+      "path": "module/longaudio_search.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8742810a4ff43966794351c6c8dc9ad0cfa6ada1",
+      "size": 1306,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/8742810a4ff43966794351c6c8dc9ad0cfa6ada1"
+    },
+    {
+      "path": "module/longaudio_tag_list.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "88723851ca1bff85c6e0ca42addc1b06044d1a68",
+      "size": 751,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/88723851ca1bff85c6e0ca42addc1b06044d1a68"
+    },
+    {
+      "path": "module/longaudio_vip_recommend.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "de5fe911af4e40889f3b8554117f2d4bdc4a2f5b",
+      "size": 287,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/de5fe911af4e40889f3b8554117f2d4bdc4a2f5b"
+    },
+    {
+      "path": "module/longaudio_week_recommend.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2a610f8ce76e42a8d21f8ac01d876ea3dd01936e",
+      "size": 277,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/2a610f8ce76e42a8d21f8ac01d876ea3dd01936e"
+    },
+    {
+      "path": "module/lyric.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b7d247fe3a84a5f890055744a435dc9da28e8cb5",
+      "size": 942,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/b7d247fe3a84a5f890055744a435dc9da28e8cb5"
+    },
+    {
+      "path": "module/mv_collect.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f74cc64887d0f647a4c69efb187cf4dbab99a0f4",
+      "size": 1892,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/f74cc64887d0f647a4c69efb187cf4dbab99a0f4"
+    },
+    {
+      "path": "module/mv_collect_del.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "dbf3f7a80999a29c02a376f7f830b0dc4b3d8f76",
+      "size": 1901,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/dbf3f7a80999a29c02a376f7f830b0dc4b3d8f76"
+    },
+    {
+      "path": "module/pc_diantai.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d2cd1c482f7193c16b5597ec5e46755bd4313abd",
+      "size": 390,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/d2cd1c482f7193c16b5597ec5e46755bd4313abd"
+    },
+    {
+      "path": "module/personal_fm.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d600205ebb4f42d41612481e873fa170302da674",
+      "size": 1516,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/d600205ebb4f42d41612481e873fa170302da674"
+    },
+    {
+      "path": "module/playhistory_upload.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ac9086e1009ae36fb499434edfdee52c074ac0df",
+      "size": 573,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/ac9086e1009ae36fb499434edfdee52c074ac0df"
+    },
+    {
+      "path": "module/playlist_add.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "59acccbd647fc56dc7d29ba82e59908f43f87f58",
+      "size": 948,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/59acccbd647fc56dc7d29ba82e59908f43f87f58"
+    },
+    {
+      "path": "module/playlist_del.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5c246231a31f158fc2b21602d2eed483dda0795a",
+      "size": 1521,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/5c246231a31f158fc2b21602d2eed483dda0795a"
+    },
+    {
+      "path": "module/playlist_detail.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6b27f6b7cb5ece71e10f8ebf0216f2168b1e6fe3",
+      "size": 513,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/6b27f6b7cb5ece71e10f8ebf0216f2168b1e6fe3"
+    },
+    {
+      "path": "module/playlist_effect.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b79a45dd8cfb553a4ee2f78e0e29f2f1fae5158b",
+      "size": 334,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/b79a45dd8cfb553a4ee2f78e0e29f2f1fae5158b"
+    },
+    {
+      "path": "module/playlist_pic.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "33e57a782869677f8a10665cb5ec9ecb4e44e78b",
+      "size": 1135,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/33e57a782869677f8a10665cb5ec9ecb4e44e78b"
+    },
+    {
+      "path": "module/playlist_pic_upload.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f40444094946999637cec6226577e17e82ed3d7f",
+      "size": 2224,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/f40444094946999637cec6226577e17e82ed3d7f"
+    },
+    {
+      "path": "module/playlist_similar.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8a5326b0009ecc1584cc6386f66409a9d705c1c7",
+      "size": 630,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/8a5326b0009ecc1584cc6386f66409a9d705c1c7"
+    },
+    {
+      "path": "module/playlist_sort.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "42d4a6d02ceacd75ebb1f547f0160fd22186ea2f",
+      "size": 893,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/42d4a6d02ceacd75ebb1f547f0160fd22186ea2f"
+    },
+    {
+      "path": "module/playlist_tags.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "192460a023e98091afe119ef57342abf34592bfa",
+      "size": 320,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/192460a023e98091afe119ef57342abf34592bfa"
+    },
+    {
+      "path": "module/playlist_track_all.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f8f6fb98ff3eef42affeb773dc471021cccd3624",
+      "size": 681,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/f8f6fb98ff3eef42affeb773dc471021cccd3624"
+    },
+    {
+      "path": "module/playlist_track_all_new.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0afe28e9d204921122b16bb911af2085e73165d1",
+      "size": 740,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/0afe28e9d204921122b16bb911af2085e73165d1"
+    },
+    {
+      "path": "module/playlist_tracks_add.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0fdfa1bfaed6b3bae83e002f59eeea054562fbff",
+      "size": 1020,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/0fdfa1bfaed6b3bae83e002f59eeea054562fbff"
+    },
+    {
+      "path": "module/playlist_tracks_del.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f264e8a6c6b357e1ac4c227a90886a9e79407735",
+      "size": 629,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/f264e8a6c6b357e1ac4c227a90886a9e79407735"
+    },
+    {
+      "path": "module/playlist_tracks_sort.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e2bf5c559b8ffa1aec4ebabb0e87faffa4b8d805",
+      "size": 935,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/e2bf5c559b8ffa1aec4ebabb0e87faffa4b8d805"
+    },
+    {
+      "path": "module/playlist_update.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b7328728c75eeaa2b27bbe3742d2ebdd727d76e0",
+      "size": 1095,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/b7328728c75eeaa2b27bbe3742d2ebdd727d76e0"
+    },
+    {
+      "path": "module/privilege_lite.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e1a308f11fdf4cd5ee89166f15aef0d0e812b84f",
+      "size": 10198,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/e1a308f11fdf4cd5ee89166f15aef0d0e812b84f"
+    },
+    {
+      "path": "module/rank_audio.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4efb403be76d0a64fe131db9fbae2da676f02dcd",
+      "size": 541,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/4efb403be76d0a64fe131db9fbae2da676f02dcd"
+    },
+    {
+      "path": "module/rank_info.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a5ddbfdde9020efb772c991be9b8ae3b5beab145",
+      "size": 394,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/a5ddbfdde9020efb772c991be9b8ae3b5beab145"
+    },
+    {
+      "path": "module/rank_list.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0eda2d88179742405005ed32dff8bd29ce198b8c",
+      "size": 326,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/0eda2d88179742405005ed32dff8bd29ce198b8c"
+    },
+    {
+      "path": "module/rank_top.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b1ad88991e2324c2fef62b21e5c8b7b6765f1612",
+      "size": 236,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/b1ad88991e2324c2fef62b21e5c8b7b6765f1612"
+    },
+    {
+      "path": "module/rank_vol.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c31516021889ab05e045f06f8cb84c4e0592bc50",
+      "size": 370,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/c31516021889ab05e045f06f8cb84c4e0592bc50"
+    },
+    {
+      "path": "module/recommend_songs.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b25d26ee1e8a6d07122a7679a527eb5029a7533c",
+      "size": 425,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/b25d26ee1e8a6d07122a7679a527eb5029a7533c"
+    },
+    {
+      "path": "module/register_dev.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9b1f3f4c50e7cf3c0ae27acb2c0d972669b57157",
+      "size": 4574,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/9b1f3f4c50e7cf3c0ae27acb2c0d972669b57157"
+    },
+    {
+      "path": "module/scene_audio_list.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9fb1882e795c1c5f3db81e307ffd9b835ba56dc1",
+      "size": 602,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/9fb1882e795c1c5f3db81e307ffd9b835ba56dc1"
+    },
+    {
+      "path": "module/scene_collection_list.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "79b8b457a9b4a0b7f5337f6f9cd12cae9a55810f",
+      "size": 588,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/79b8b457a9b4a0b7f5337f6f9cd12cae9a55810f"
+    },
+    {
+      "path": "module/scene_lists.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3541a2a029d2ff1482372b12752140caa05a52f5",
+      "size": 184,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/3541a2a029d2ff1482372b12752140caa05a52f5"
+    },
+    {
+      "path": "module/scene_lists_v2.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6eaba4a9546046751ff1293530c8d624bfe0380e",
+      "size": 525,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/6eaba4a9546046751ff1293530c8d624bfe0380e"
+    },
+    {
+      "path": "module/scene_module.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "db4e213acb9eef1561398e8262ae2887cc10c009",
+      "size": 224,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/db4e213acb9eef1561398e8262ae2887cc10c009"
+    },
+    {
+      "path": "module/scene_module_info.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ad049d08f9763d2e488dede5d507031414788b02",
+      "size": 257,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/ad049d08f9763d2e488dede5d507031414788b02"
+    },
+    {
+      "path": "module/scene_music.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "84008f6c85ad6d648be759d9dfc2acd49cba1081",
+      "size": 323,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/84008f6c85ad6d648be759d9dfc2acd49cba1081"
+    },
+    {
+      "path": "module/scene_video_list.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "59ef124fd270382bc611563b929c784ac1a18314",
+      "size": 583,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/59ef124fd270382bc611563b929c784ac1a18314"
+    },
+    {
+      "path": "module/search.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "cc44a08a69443f8479cfe9c034416d8fa10ec3dc",
+      "size": 2354,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/cc44a08a69443f8479cfe9c034416d8fa10ec3dc"
+    },
+    {
+      "path": "module/search_complex.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5a026611aae7d55b28e79810942ffaadecc61586",
+      "size": 436,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/5a026611aae7d55b28e79810942ffaadecc61586"
+    },
+    {
+      "path": "module/search_default.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "642b050b144485bd90b0d41d15b18d06ebed06a0",
+      "size": 665,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/642b050b144485bd90b0d41d15b18d06ebed06a0"
+    },
+    {
+      "path": "module/search_hot.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2169651af1a96c574919d500f1b23427cc6ec5d9",
+      "size": 317,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/2169651af1a96c574919d500f1b23427cc6ec5d9"
+    },
+    {
+      "path": "module/search_lyric.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "06e0d4506c96c1bc4d9e5ab4684cde9f36dd2d42",
+      "size": 599,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/06e0d4506c96c1bc4d9e5ab4684cde9f36dd2d42"
+    },
+    {
+      "path": "module/search_mixed.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f1637706820108ed0b8d52664bbd10968ac6fcf1",
+      "size": 1575,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/f1637706820108ed0b8d52664bbd10968ac6fcf1"
+    },
+    {
+      "path": "module/search_suggest.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9f269c5c07e8236e2a570eb4fe72152eb96c6f10",
+      "size": 497,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/9f269c5c07e8236e2a570eb4fe72152eb96c6f10"
+    },
+    {
+      "path": "module/server_now.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "195a7b6eb2dedf71357a2e4133e8d437d5f218f3",
+      "size": 438,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/195a7b6eb2dedf71357a2e4133e8d437d5f218f3"
+    },
+    {
+      "path": "module/sheet_collection.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3185129853e08478123b1d72a11d1f1028d02982",
+      "size": 363,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/3185129853e08478123b1d72a11d1f1028d02982"
+    },
+    {
+      "path": "module/sheet_detail.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f64fd90db43cb65487902afc941ee586d9989543",
+      "size": 275,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/f64fd90db43cb65487902afc941ee586d9989543"
+    },
+    {
+      "path": "module/sheet_explore.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "054e11ffd1935d9d90f6a896b1054a89b4045349",
+      "size": 582,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/054e11ffd1935d9d90f6a896b1054a89b4045349"
+    },
+    {
+      "path": "module/sheet_rank.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3670597c254e0f2c529ba5157456a256e7a6736b",
+      "size": 570,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/3670597c254e0f2c529ba5157456a256e7a6736b"
+    },
+    {
+      "path": "module/sheet_song.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4bc1ba7d74089f7cb3a06bd8c2892eeb129d3b5e",
+      "size": 536,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/4bc1ba7d74089f7cb3a06bd8c2892eeb129d3b5e"
+    },
+    {
+      "path": "module/sheet_tags.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "095e12a10bcd3d7f5db0a5324dd888008fe2d4bf",
+      "size": 209,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/095e12a10bcd3d7f5db0a5324dd888008fe2d4bf"
+    },
+    {
+      "path": "module/sidedt.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "cf1a8ec75f0f030df38350fa7e80aeb5bae0755e",
+      "size": 1115,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/cf1a8ec75f0f030df38350fa7e80aeb5bae0755e"
+    },
+    {
+      "path": "module/singer_list.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b99d36024068e15206ad18e1f31e1756d8e6e553",
+      "size": 373,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/b99d36024068e15206ad18e1f31e1756d8e6e553"
+    },
+    {
+      "path": "module/song_auth.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ebdb0f48c4caff605a81c722cb0cb4de0ba7ed9f",
+      "size": 651,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/ebdb0f48c4caff605a81c722cb0cb4de0ba7ed9f"
+    },
+    {
+      "path": "module/song_barrage.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1e02a76d55ae9978a420da6424348c43a061852c",
+      "size": 529,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/1e02a76d55ae9978a420da6424348c43a061852c"
+    },
+    {
+      "path": "module/song_barrage_send.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "49a2f09820934ac03c2de2e0e192977739c0a1d6",
+      "size": 1203,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/49a2f09820934ac03c2de2e0e192977739c0a1d6"
+    },
+    {
+      "path": "module/song_climax.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "482bfd579412d0a1d3732693201129317c219455",
+      "size": 385,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/482bfd579412d0a1d3732693201129317c219455"
+    },
+    {
+      "path": "module/song_ranking.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6194228032a55a01e7eb045aa8162ac01e12e375",
+      "size": 284,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/6194228032a55a01e7eb045aa8162ac01e12e375"
+    },
+    {
+      "path": "module/song_ranking_filter.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6d09b41f5430b208d4300940cd5af8972f8ccb62",
+      "size": 343,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/6d09b41f5430b208d4300940cd5af8972f8ccb62"
+    },
+    {
+      "path": "module/song_url.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "464136c4b1a01b83114dde32aaa8130bdf5b8df9",
+      "size": 1447,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/464136c4b1a01b83114dde32aaa8130bdf5b8df9"
+    },
+    {
+      "path": "module/song_url_auth.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5935157f61eb1cd64e981bf703429d5409c4f872",
+      "size": 1448,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/5935157f61eb1cd64e981bf703429d5409c4f872"
+    },
+    {
+      "path": "module/song_url_auth_merge.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5adfebc37e0affcd801f210e9d58ea4dd2073773",
+      "size": 1122,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/5adfebc37e0affcd801f210e9d58ea4dd2073773"
+    },
+    {
+      "path": "module/song_url_new.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1dd131237734364daee27f886d9d676b80ed6119",
+      "size": 1904,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/1dd131237734364daee27f886d9d676b80ed6119"
+    },
+    {
+      "path": "module/team_history.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "128a69e63c48e9df9776b4c8a4c8fd4c84dd62af",
+      "size": 1782,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/128a69e63c48e9df9776b4c8a4c8fd4c84dd62af"
+    },
+    {
+      "path": "module/team_join.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "fcaae175ead6623df66ed91863502de74f75249b",
+      "size": 2188,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/fcaae175ead6623df66ed91863502de74f75249b"
+    },
+    {
+      "path": "module/team_my.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e19c72c18a9ed6ff8efe89b2e6dfbf8575ed989d",
+      "size": 2181,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/e19c72c18a9ed6ff8efe89b2e6dfbf8575ed989d"
+    },
+    {
+      "path": "module/team_my_info.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6d3ff07f1a5694f24cb7bb632ed6e2c62cd26bce",
+      "size": 1743,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/6d3ff07f1a5694f24cb7bb632ed6e2c62cd26bce"
+    },
+    {
+      "path": "module/team_my_status.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c7b31520cc86ca45fabc8b157024db9f53d538e2",
+      "size": 1772,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/c7b31520cc86ca45fabc8b157024db9f53d538e2"
+    },
+    {
+      "path": "module/team_period_info.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b93a9c1652475460b55e01c3d9233770ef792844",
+      "size": 1703,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/b93a9c1652475460b55e01c3d9233770ef792844"
+    },
+    {
+      "path": "module/theme_music.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "dae8f2e8f6eb01aad34787e13d0294dc8b4f0ed4",
+      "size": 478,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/dae8f2e8f6eb01aad34787e13d0294dc8b4f0ed4"
+    },
+    {
+      "path": "module/theme_music_detail.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5dc85b0b4b86e5434306bf27b4f6d8ef79ba7a7d",
+      "size": 503,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/5dc85b0b4b86e5434306bf27b4f6d8ef79ba7a7d"
+    },
+    {
+      "path": "module/theme_playlist.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "de8f0cd48855f679af9924b479b330abfdbdcf7f",
+      "size": 509,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/de8f0cd48855f679af9924b479b330abfdbdcf7f"
+    },
+    {
+      "path": "module/theme_playlist_track.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e76d13d374df3a366cdef60c910175f59956196c",
+      "size": 566,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/e76d13d374df3a366cdef60c910175f59956196c"
+    },
+    {
+      "path": "module/top_album.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9729a92ca3ac3ec8195ba6eb3d4d2f9d99a6cdb2",
+      "size": 456,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/9729a92ca3ac3ec8195ba6eb3d4d2f9d99a6cdb2"
+    },
+    {
+      "path": "module/top_card.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2a50075aa20656f60b1a12205488440447feea1b",
+      "size": 1189,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/2a50075aa20656f60b1a12205488440447feea1b"
+    },
+    {
+      "path": "module/top_card_youth.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ae2a65bcf86d5a43a9119dba8fdfa131ae30320a",
+      "size": 723,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/ae2a65bcf86d5a43a9119dba8fdfa131ae30320a"
+    },
+    {
+      "path": "module/top_ip.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d62fb811c06a5669e8c803f3df4250b1517807a6",
+      "size": 1127,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/d62fb811c06a5669e8c803f3df4250b1517807a6"
+    },
+    {
+      "path": "module/top_playlist.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "110387c53dc372bc2dcb0bf08d2d94149b22d69b",
+      "size": 1144,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/110387c53dc372bc2dcb0bf08d2d94149b22d69b"
+    },
+    {
+      "path": "module/top_song.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "fda015ea3f1fce933a75e8b538da1d0e1ccf47c5",
+      "size": 454,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/fda015ea3f1fce933a75e8b538da1d0e1ccf47c5"
+    },
+    {
+      "path": "module/top_tag_card_youth.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "cb01c5fb899689a1917dd57acd5b5f6175a53c65",
+      "size": 420,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/cb01c5fb899689a1917dd57acd5b5f6175a53c65"
+    },
+    {
+      "path": "module/user_batch_union_vipinfo.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a8b27bfcc86834f0deb6b1e53a3ad1b3b1667c67",
+      "size": 1996,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/a8b27bfcc86834f0deb6b1e53a3ad1b3b1667c67"
+    },
+    {
+      "path": "module/user_cloud.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0a02d396cba964ab8a4b74691f30d53578f505b3",
+      "size": 1612,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/0a02d396cba964ab8a4b74691f30d53578f505b3"
+    },
+    {
+      "path": "module/user_cloud_del.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "069438830560483328099fe41b3ebb1a1aad4558",
+      "size": 3234,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/069438830560483328099fe41b3ebb1a1aad4558"
+    },
+    {
+      "path": "module/user_cloud_match.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ce7e232ad8f29fcc8a08b85c79cd1540472486da",
+      "size": 3626,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/ce7e232ad8f29fcc8a08b85c79cd1540472486da"
+    },
+    {
+      "path": "module/user_cloud_upload.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "64b61923106ef409e05b9a04fbf010f6c14cc777",
+      "size": 12596,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/64b61923106ef409e05b9a04fbf010f6c14cc777"
+    },
+    {
+      "path": "module/user_cloud_url.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7cb7eaac5a5fb3fde26838900f886cd8b8a43858",
+      "size": 683,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/7cb7eaac5a5fb3fde26838900f886cd8b8a43858"
+    },
+    {
+      "path": "module/user_detail.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8ccd2337504476c0c3b6703a359eaec82e26898b",
+      "size": 699,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/8ccd2337504476c0c3b6703a359eaec82e26898b"
+    },
+    {
+      "path": "module/user_fans.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "63919969484d7a0dc7b06b53305b51f32818e91e",
+      "size": 1482,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/63919969484d7a0dc7b06b53305b51f32818e91e"
+    },
+    {
+      "path": "module/user_follow.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c47e40041120cfb273a94aec1db96ebb00aabecc",
+      "size": 770,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/c47e40041120cfb273a94aec1db96ebb00aabecc"
+    },
+    {
+      "path": "module/user_follow_add.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "de90484c6554a2ba71559a2a8d05e81405b914cb",
+      "size": 2269,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/de90484c6554a2ba71559a2a8d05e81405b914cb"
+    },
+    {
+      "path": "module/user_follow_chat.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6e604834901eeb906bd1fc01b0c3f74de77b082c",
+      "size": 11805,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/6e604834901eeb906bd1fc01b0c3f74de77b082c"
+    },
+    {
+      "path": "module/user_follow_del.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a80e68e689f90d6365156a058d7d31220e43af24",
+      "size": 2066,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/a80e68e689f90d6365156a058d7d31220e43af24"
+    },
+    {
+      "path": "module/user_follow_message.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8782025ea4135c6d774b268ecb0298b8a507f600",
+      "size": 1018,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/8782025ea4135c6d774b268ecb0298b8a507f600"
+    },
+    {
+      "path": "module/user_friends.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ae6ef5677c78b51c95ba6c4c3f148592ca1600d0",
+      "size": 1479,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/ae6ef5677c78b51c95ba6c4c3f148592ca1600d0"
+    },
+    {
+      "path": "module/user_grade_info.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8e0fb40c7cc0f61966ee54c988898036ef5e323f",
+      "size": 3086,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/8e0fb40c7cc0f61966ee54c988898036ef5e323f"
+    },
+    {
+      "path": "module/user_history.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "31eec66201f7f925cca49adcb7b6f309c5d0f27e",
+      "size": 494,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/31eec66201f7f925cca49adcb7b6f309c5d0f27e"
+    },
+    {
+      "path": "module/user_info.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "00dadd6b7a3885149c220de8cd312023cf6652e6",
+      "size": 914,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/00dadd6b7a3885149c220de8cd312023cf6652e6"
+    },
+    {
+      "path": "module/user_listen.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2238fcbfb716b09374b75a1abce95f273faa59b2",
+      "size": 711,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/2238fcbfb716b09374b75a1abce95f273faa59b2"
+    },
+    {
+      "path": "module/user_listen_report.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d538c33b89507e77f11ae9c324cede045411f4e3",
+      "size": 11111,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/d538c33b89507e77f11ae9c324cede045411f4e3"
+    },
+    {
+      "path": "module/user_playlist.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f4fed8a16de563e3886e09969de6e795eaab364b",
+      "size": 609,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/f4fed8a16de563e3886e09969de6e795eaab364b"
+    },
+    {
+      "path": "module/user_preference.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c7482049225c17a58a123bba1488983b345579bd",
+      "size": 1678,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/c7482049225c17a58a123bba1488983b345579bd"
+    },
+    {
+      "path": "module/user_preference_update.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "959e168ff390dff9c03209732774d992f36cd72d",
+      "size": 2631,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/959e168ff390dff9c03209732774d992f36cd72d"
+    },
+    {
+      "path": "module/user_purchased_albums.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "34d54bbffd25e5031773f7cfefafb3b754cd2068",
+      "size": 546,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/34d54bbffd25e5031773f7cfefafb3b754cd2068"
+    },
+    {
+      "path": "module/user_purchased_songs.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "bbc1a5beeb112adc534c5d3692ca5ea69fdb8c17",
+      "size": 590,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/bbc1a5beeb112adc534c5d3692ca5ea69fdb8c17"
+    },
+    {
+      "path": "module/user_update.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e33e6fa277e4f91d9f46559e8ce1f5a68f5f56ed",
+      "size": 2351,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/e33e6fa277e4f91d9f46559e8ce1f5a68f5f56ed"
+    },
+    {
+      "path": "module/user_update_avatar.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e4085d2ff53ba46c5c595cc01d64fb4b32ef58ae",
+      "size": 3775,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/e4085d2ff53ba46c5c595cc01d64fb4b32ef58ae"
+    },
+    {
+      "path": "module/user_verify.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "bf47a34468464fdbf586b7ba713f04b1ec283c21",
+      "size": 963,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/bf47a34468464fdbf586b7ba713f04b1ec283c21"
+    },
+    {
+      "path": "module/user_video_collect.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6acbe669c107debca7905bfbfdc3a85b207e6bf4",
+      "size": 581,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/6acbe669c107debca7905bfbfdc3a85b207e6bf4"
+    },
+    {
+      "path": "module/user_video_love.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "afec6ba666f2b9dfb1c49e0965e391cf9da2efdb",
+      "size": 515,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/afec6ba666f2b9dfb1c49e0965e391cf9da2efdb"
+    },
+    {
+      "path": "module/user_vip_detail.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "661db25ce5a75530e544d157dc48e347f6ecd0ab",
+      "size": 260,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/661db25ce5a75530e544d157dc48e347f6ecd0ab"
+    },
+    {
+      "path": "module/user_visitors.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "cf920a52478d603120d24d2da22ab7de90beac18",
+      "size": 2945,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/cf920a52478d603120d24d2da22ab7de90beac18"
+    },
+    {
+      "path": "module/verify_user_info.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e4636957e1cdf730b7beff901dbd00ffd89c358d",
+      "size": 1299,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/e4636957e1cdf730b7beff901dbd00ffd89c358d"
+    },
+    {
+      "path": "module/video_barrage.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f23504de78c32f9de141a7177a9b1078ef788d34",
+      "size": 505,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/f23504de78c32f9de141a7177a9b1078ef788d34"
+    },
+    {
+      "path": "module/video_barrage_send.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c904e24693e0d74dda341b9a648d21a752b43aed",
+      "size": 1192,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/c904e24693e0d74dda341b9a648d21a752b43aed"
+    },
+    {
+      "path": "module/video_detail.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ba6b0c60551389bb960e3f960747f53da810651d",
+      "size": 973,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/ba6b0c60551389bb960e3f960747f53da810651d"
+    },
+    {
+      "path": "module/video_privilege.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "639a53d1e6e34dab5f3378b9e375b4c5eca0ea25",
+      "size": 791,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/639a53d1e6e34dab5f3378b9e375b4c5eca0ea25"
+    },
+    {
+      "path": "module/video_url.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7aaeaf39b7a0129081c26fb79f55174e659f00fd",
+      "size": 407,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/7aaeaf39b7a0129081c26fb79f55174e659f00fd"
+    },
+    {
+      "path": "module/youth_channel_all.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "aba1e92af5bcb6d9d3e206c752d92f079b74582b",
+      "size": 273,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/aba1e92af5bcb6d9d3e206c752d92f079b74582b"
+    },
+    {
+      "path": "module/youth_channel_amway.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "bb56835edcb5397a10466a1b704c77e830639f8e",
+      "size": 250,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/bb56835edcb5397a10466a1b704c77e830639f8e"
+    },
+    {
+      "path": "module/youth_channel_detail.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "94399166d699e0dd26191fc509e4985d0fc5cdfe",
+      "size": 324,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/94399166d699e0dd26191fc509e4985d0fc5cdfe"
+    },
+    {
+      "path": "module/youth_channel_similar.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "963ac9f496fb119c22924caea15fca8f73ed5fb5",
+      "size": 395,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/963ac9f496fb119c22924caea15fca8f73ed5fb5"
+    },
+    {
+      "path": "module/youth_channel_song.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "bfdb15718888165b1cc5774b915430286264bc6f",
+      "size": 393,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/bfdb15718888165b1cc5774b915430286264bc6f"
+    },
+    {
+      "path": "module/youth_channel_song_detail.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d1d71e0b632a62e395236d2ff5dd38bd5a24d50d",
+      "size": 315,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/d1d71e0b632a62e395236d2ff5dd38bd5a24d50d"
+    },
+    {
+      "path": "module/youth_channel_song_list.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "51ce16a4e87208d14797feea66656a879bbef568",
+      "size": 448,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/51ce16a4e87208d14797feea66656a879bbef568"
+    },
+    {
+      "path": "module/youth_channel_sub.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e06658c4e4c4522a5da74760621f0cf0bbcb4434",
+      "size": 350,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/e06658c4e4c4522a5da74760621f0cf0bbcb4434"
+    },
+    {
+      "path": "module/youth_day_vip.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e84a37db30365fa342a0755d9cf867ae9faf7451",
+      "size": 420,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/e84a37db30365fa342a0755d9cf867ae9faf7451"
+    },
+    {
+      "path": "module/youth_day_vip_upgrade.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a06e457035a1d8862566a5aa5695f7e7b4432ccc",
+      "size": 392,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/a06e457035a1d8862566a5aa5695f7e7b4432ccc"
+    },
+    {
+      "path": "module/youth_dynamic.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "25480bcad0b814f12675626d35d043975b425ee5",
+      "size": 185,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/25480bcad0b814f12675626d35d043975b425ee5"
+    },
+    {
+      "path": "module/youth_dynamic_recent.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9691609b9c9da0fa7a6306f27e5969c33b44d39a",
+      "size": 188,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/9691609b9c9da0fa7a6306f27e5969c33b44d39a"
+    },
+    {
+      "path": "module/youth_listen_song.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "62f7123565daaf45d664b968665ade1b358b424f",
+      "size": 508,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/62f7123565daaf45d664b968665ade1b358b424f"
+    },
+    {
+      "path": "module/youth_month_vip_record.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "369841de073bfd553fbeec56bdb6da9bde872c1c",
+      "size": 234,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/369841de073bfd553fbeec56bdb6da9bde872c1c"
+    },
+    {
+      "path": "module/youth_union_vip.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "eb1a93a24c38074c6b97e2475045d6688794f9c6",
+      "size": 374,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/eb1a93a24c38074c6b97e2475045d6688794f9c6"
+    },
+    {
+      "path": "module/youth_user_song.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0aaa6477e1e8fa56203270eb07f1e00b0534458e",
+      "size": 394,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/0aaa6477e1e8fa56203270eb07f1e00b0534458e"
+    },
+    {
+      "path": "module/youth_vip.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b5a66d19d99f1653d111e7d17b25086cf9aa9d1d",
+      "size": 355,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/b5a66d19d99f1653d111e7d17b25086cf9aa9d1d"
+    },
+    {
+      "path": "module/yueku.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1e97fb9eaba36a4e3669f8ddb5be7b44dd6ba9ad",
+      "size": 354,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/1e97fb9eaba36a4e3669f8ddb5be7b44dd6ba9ad"
+    },
+    {
+      "path": "module/yueku_banner.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f4298427fa44c625b9c993131f2d55f14a762f05",
+      "size": 493,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/f4298427fa44c625b9c993131f2d55f14a762f05"
+    },
+    {
+      "path": "module/yueku_fm.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "420a102b55fac31e521fa9707d9788132a6d8698",
+      "size": 335,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/420a102b55fac31e521fa9707d9788132a6d8698"
+    },
+    {
+      "path": "nodemon.json",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "74f5df8e4f86c395992ef33a8e1ec6645a2dba17",
+      "size": 350,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/74f5df8e4f86c395992ef33a8e1ec6645a2dba17"
+    },
+    {
+      "path": "package.json",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1e84bd825a298dde872831791a5be71fbf5979b8",
+      "size": 1765,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/1e84bd825a298dde872831791a5be71fbf5979b8"
+    },
+    {
+      "path": "pnpm-lock.yaml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "449eaba56ccf853717c8b08788403cde58653557",
+      "size": 85423,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/449eaba56ccf853717c8b08788403cde58653557"
+    },
+    {
+      "path": "public",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "5182ee027984bd0f26e0b4032c758a791ccfda8c",
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/trees/5182ee027984bd0f26e0b4032c758a791ccfda8c"
+    },
+    {
+      "path": "public/.gitignore",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "fac30cb469e13ac40e189038a4865eaf16d83b2f",
+      "size": 16,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/fac30cb469e13ac40e189038a4865eaf16d83b2f"
+    },
+    {
+      "path": "public/audio_match.html",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d2af19dadab862acdb35bee32ce9e92d5186ad19",
+      "size": 13259,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/d2af19dadab862acdb35bee32ce9e92d5186ad19"
+    },
+    {
+      "path": "public/fingerprint.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c1aaae6a6c5c4baabc5b1d78fc3dc420d0c63439",
+      "size": 13008,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/c1aaae6a6c5c4baabc5b1d78fc3dc420d0c63439"
+    },
+    {
+      "path": "public/index.html",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0702504296fd3834dfc2ddd3f7f7435169e4d95c",
+      "size": 4451,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/0702504296fd3834dfc2ddd3f7f7435169e4d95c"
+    },
+    {
+      "path": "public/login_captcha.html",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6f801f9ffd696e68e037fd00a7610bb49d9f2564",
+      "size": 16157,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/6f801f9ffd696e68e037fd00a7610bb49d9f2564"
+    },
+    {
+      "path": "public/login_captcha_simulate.html",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f56d13bb9967e073fcd63ce47bfb8995f2c03844",
+      "size": 17678,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/f56d13bb9967e073fcd63ce47bfb8995f2c03844"
+    },
+    {
+      "path": "public/sid_edt_generator.html",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b29686dd8fb71540dba0e2e2ca8850d9a13b5265",
+      "size": 14446,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/b29686dd8fb71540dba0e2e2ca8850d9a13b5265"
+    },
+    {
+      "path": "public/verify-pkg",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "60069ed44d49ed61a524db20f096a72e6e74e38b",
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/trees/60069ed44d49ed61a524db20f096a72e6e74e38b"
+    },
+    {
+      "path": "public/verify-pkg/verifycode.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3f7d32d3cef90cb5c6c61747e416353a817800ea",
+      "size": 29991,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/3f7d32d3cef90cb5c6c61747e416353a817800ea"
+    },
+    {
+      "path": "public/verify-pkg/verifycode_bg.wasm",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c3f08b6b923c4328ab963a0620241300ed36d2a8",
+      "size": 135585,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/c3f08b6b923c4328ab963a0620241300ed36d2a8"
+    },
+    {
+      "path": "public/verify-pkg/verifycode_bg_ios.wasm",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c3f08b6b923c4328ab963a0620241300ed36d2a8",
+      "size": 135585,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/c3f08b6b923c4328ab963a0620241300ed36d2a8"
+    },
+    {
+      "path": "public/verifySlide.html",
+      "mode": "100755",
+      "type": "blob",
+      "sha": "6b37b42e17943d9401ae5b0d70f9544257484e66",
+      "size": 24055,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/6b37b42e17943d9401ae5b0d70f9544257484e66"
+    },
+    {
+      "path": "server.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c815f9be0df04b836476c15c72351b826f0eb837",
+      "size": 20037,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/c815f9be0df04b836476c15c72351b826f0eb837"
+    },
+    {
+      "path": "tsconfig.json",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e665e4ebf19d534dbc12626fdd33b11e67f11541",
+      "size": 563,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/e665e4ebf19d534dbc12626fdd33b11e67f11541"
+    },
+    {
+      "path": "tsdown.config.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "585e60062a1b495c4d80336f66903504611da768",
+      "size": 308,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/585e60062a1b495c4d80336f66903504611da768"
+    },
+    {
+      "path": "util",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "f4a7c7a43cff6cdc63f4eee1c5ffb2a6cada6547",
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/trees/f4a7c7a43cff6cdc63f4eee1c5ffb2a6cada6547"
+    },
+    {
+      "path": "util/apicache.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "97925054ef68d9ce9747bebc00f3ea242a6d37e2",
+      "size": 32861,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/97925054ef68d9ce9747bebc00f3ea242a6d37e2"
+    },
+    {
+      "path": "util/config.json",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b72aea1c9fc2c1747e343a74120fd731b959394a",
+      "size": 365,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/b72aea1c9fc2c1747e343a74120fd731b959394a"
+    },
+    {
+      "path": "util/crypto.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f51bfb865eb8c8e804b178463e096feabeade5ef",
+      "size": 9141,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/f51bfb865eb8c8e804b178463e096feabeade5ef"
+    },
+    {
+      "path": "util/generate_simulate.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1a5e15709f626ddfdafb0d8cbbf3c0a53486262f",
+      "size": 14174,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/1a5e15709f626ddfdafb0d8cbbf3c0a53486262f"
+    },
+    {
+      "path": "util/helper.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ba68d448530551f3037b1ea97fd45950195eb8c6",
+      "size": 6772,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/ba68d448530551f3037b1ea97fd45950195eb8c6"
+    },
+    {
+      "path": "util/index.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "519cfb5ef1c406b68929d2f33033d510b0ca9ca4",
+      "size": 4761,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/519cfb5ef1c406b68929d2f33033d510b0ca9ca4"
+    },
+    {
+      "path": "util/memory-cache.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "547c73790cec93b978ab1733fc84fe81ea44795c",
+      "size": 2668,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/547c73790cec93b978ab1733fc84fe81ea44795c"
+    },
+    {
+      "path": "util/request.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "052dd537406da62e0ab862962c0d41cd458a51d4",
+      "size": 17069,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/052dd537406da62e0ab862962c0d41cd458a51d4"
+    },
+    {
+      "path": "util/runtime.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5b8acbdd66e4290935c68f9d4f32acd34be69c38",
+      "size": 5348,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/5b8acbdd66e4290935c68f9d4f32acd34be69c38"
+    },
+    {
+      "path": "util/util.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5d3af015b29def8acf29ef4a1afdb2224c2c1542",
+      "size": 10161,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/5d3af015b29def8acf29ef4a1afdb2224c2c1542"
+    },
+    {
+      "path": "vercel.json",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "40bdd5ed2741578d1cb35c023bcbeb34ecc350f3",
+      "size": 175,
+      "url": "https://api.github.com/repos/MakcRe/KuGouMusicApi/git/blobs/40bdd5ed2741578d1cb35c023bcbeb34ecc350f3"
+    }
+  ],
+  "truncated": false
+}
