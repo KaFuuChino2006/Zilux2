@@ -12,8 +12,9 @@
     <Version>1.0.0</Version>
 
     <!-- GitHub repository (owner/name) used by the built-in update channel.
-         Empty means "the channel is disabled"; CI replaces the placeholder with the real repo. -->
-    <ZiluxUpdateRepo Condition="'$(ZiluxUpdateRepo)' == ''">zilux2/Zilux2</ZiluxUpdateRepo>
+         Local builds default to the real repo below; CI overrides it with
+         -p:ZiluxUpdateRepo=${{ github.repository }}. Empty disables the channel. -->
+    <ZiluxUpdateRepo Condition="'$(ZiluxUpdateRepo)' == ''">KaFuuChino2006/Zilux2</ZiluxUpdateRepo>
   </PropertyGroup>
 
   <!-- Baked into the assembly so the host can report the repo without a config file. -->

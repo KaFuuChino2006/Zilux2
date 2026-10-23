@@ -14,7 +14,7 @@
 <Project>
   <PropertyGroup>
     <Version>1.0.0</Version>
-    <ZiluxUpdateRepo Condition="'$(ZiluxUpdateRepo)' == ''">zilux2/Zilux2</ZiluxUpdateRepo>
+    <ZiluxUpdateRepo Condition="'$(ZiluxUpdateRepo)' == ''">KaFuuChino2006/Zilux2</ZiluxUpdateRepo>
   </PropertyGroup>
 </Project>
 ```

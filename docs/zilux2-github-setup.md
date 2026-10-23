@@ -169,6 +169,27 @@ git remote add origin git@github.com:<owner>/Zilux2.git
 git push -u origin main
 ```
 
+### 4.3 本机当前的实际配置：SSH over 443（HTTPS 被网络阻断）
+
+`KaFuuChino2006/Zilux2` 已建好并完成首次推送（**private**，只推了 `main`，tag `v1.0.0` 仍只在本地，
+未触发 Actions/Release）。本机到 `github.com:443`（HTTPS）会连接重置/超时，但 `api.github.com` 与
+`ssh.github.com:443` 可用，因此 `origin` 走 **SSH over 443**：
+
+```text
+ssh://git@ssh.github.com:443/KaFuuChino2006/Zilux2.git
+```
+
+仓库本地已写入（`core.sshCommand`，路径必须用正斜杠，否则 git 会吞掉反斜杠）：
+
+```powershell
+git config core.sshCommand "ssh -i C:/Users/13329/.ssh/zilux2_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=C:/Users/13329/.ssh/known_hosts_zilux2 -p 443"
+```
+
+密钥文件 `C:\Users\13329\.ssh\zilux2_deploy`（对应仓库 Settings → Deploy keys 里的 `zilux2-push`，
+有写权限）。以后在这台机器上 `git push` / `git pull` 可直接用。
+> 换机器：重新生成密钥，把公钥加到仓库 Deploy keys（或用自己的账号 SSH key），再
+> `git remote set-url origin ssh://git@ssh.github.com:443/<owner>/<repo>.git`。
+
 ---
 
 ## 5. 发布第一个版本：打 tag，让 CI 自动构建 Release
@@ -213,10 +234,10 @@ git push origin v1.0.0
 
 ---
 
-## 6. 把更新源从占位 `zilux2/Zilux2` 改成自己的 `<owner>/Zilux2`
+## 6. 更新源（默认 `KaFuuChino2006/Zilux2`）
 
-代码里编译期的默认更新源是占位值 `zilux2/Zilux2`（见根 `Directory.Build.props` 的
-`<ZiluxUpdateRepo>`，协议见 `docs/zilux2-update-channel.md` §1）。有**两种**改法，推荐 A。
+编译期默认更新源是 `KaFuuChino2006/Zilux2`（见根 `Directory.Build.props` 的
+`<ZiluxUpdateRepo>`，协议见 `docs/zilux2-update-channel.md` §1）。仓库改名或换 owner 时有**两种**改法，推荐 A。
 
 ### 方式 A（推荐）：CI 自动注入 `github.repository`
 
@@ -236,8 +257,8 @@ powershell -NoProfile -File tools/publish.ps1 -SkipWebBuild -Version $ver -Updat
   powershell -NoProfile -ExecutionPolicy Bypass -File tools\publish.ps1 -Version 1.0.0 -UpdateRepo <owner>/Zilux2
   powershell -NoProfile -ExecutionPolicy Bypass -File tools\make-installer.ps1 -Version 1.0.0
   ```
-- 想连本地默认构建也指向自己仓库，把 `Directory.Build.props` 里 `<ZiluxUpdateRepo>` 的
-  `zilux2/Zilux2` 改成 `<owner>/Zilux2`（这是宿主源码配置修改，按项目分工由宿主负责人改）。
+- 本地默认构建已指向 `KaFuuChino2006/Zilux2`；仓库改名后同步改 `Directory.Build.props` 的
+  `<ZiluxUpdateRepo>` 即可。
 
 ### 方式 B：用户在设置里覆盖 `updates.repo`
 
