@@ -87,10 +87,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\build.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\publish.ps1
 
 # 安装包（Version 缺省时读取 Directory.Build.props）
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\make-installer.ps1 -Version 1.1.2
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\make-installer.ps1 -Version 1.1.3
 ```
 
-当前版本：**1.1.2**，唯一来源为根目录 `Directory.Build.props` 的 `<Version>`；宿主、安装器、Release 与更新检查均读取该值（CI 通过 `-p:Version=<tag>` 覆盖）。
+当前版本：**1.1.3**，唯一来源为根目录 `Directory.Build.props` 的 `<Version>`；宿主、安装器、Release 与更新检查均读取该值（CI 通过 `-p:Version=<tag>` 覆盖）。
 
 ## 运行与自测
 
@@ -127,8 +127,8 @@ Start-Process 'E:\Zilux2开发\dist\Zilux2\Zilux2.exe'
 ```powershell
 # 1) 修改 Directory.Build.props 中的 <Version>
 # 2) 提交后执行发版脚本（本地构建 + 打 tag + 推送）
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\release.ps1 -Version 1.1.2
-# 或手动：git tag v1.1.2 && git push origin v1.1.2
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\release.ps1 -Version 1.1.3
+# 或手动：git tag v1.1.3 && git push origin v1.1.3
 ```
 
 推送 `v*` tag 后，`.github/workflows/release.yml` 将在 `windows-latest` 上构建并发布 Release，产物包括：

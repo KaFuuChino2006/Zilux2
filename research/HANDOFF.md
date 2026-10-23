@@ -1,6 +1,6 @@
 # Zilux2 上下文交接（HANDOFF）
 
-> 更新时间：2026-10-24（播放渐变增强 v1.1.2 完成）
+> 更新时间：2026-10-24（播放渐变增强 v1.1.3 完成）
 > 当前版本：**1.0.0**（唯一来源：根目录 `Directory.Build.props`；安装包 `dist/Zilux2-Setup-1.0.0.exe`）
 > 代码仓库：`KaFuuChino2006/Zilux2`（**private**，已推送 `main`；tag `v1.0.0` 仅本地、未发布，等将来公开仓库再推）
 > 本文件给下一个接手的 AI / 开发者：读完即可继续开发。
@@ -137,8 +137,8 @@ powershell -File tools/release.ps1 -DryRun   # 演练；去掉 -DryRun 真发版
 
 ## 8. 当前状态
 
-- 版本号统一由 `Directory.Build.props` 控制（当前 **1.1.2**）；`%LOCALAPPDATA%\Programs\Zilux2` 装的是最近一次构建（自动更新会改装到更新版本）。
-- 本窗口（1.1.2）：播放/暂停渐变增强——淡出/淡入时长分开（`playback.fadeOutMs` / `playback.fadeInMs`）、曲线可选（`playback.fadeCurve`: smooth/linear/exponential）、新增「人声保留淡出」（`playback.fadeVocal` / `playback.fadeVocalTailMs`，暂停时压低低频/高频让人声多留一会儿）；快捷设置新增人声保留开关；设置契约与 README 同步。
+- 版本号统一由 `Directory.Build.props` 控制（当前 **1.1.3**）；`%LOCALAPPDATA%\Programs\Zilux2` 装的是最近一次构建（自动更新会改装到更新版本）。
+- 本窗口（1.1.3）：播放/暂停渐变增强——淡出/淡入时长分开（`playback.fadeOutMs` / `playback.fadeInMs`）、曲线可选（`playback.fadeCurve`: smooth/linear/exponential）、新增「人声保留淡出」（`playback.fadeVocal` / `playback.fadeVocalTailMs`，暂停时压低低频/高频让人声多留一会儿）；快捷设置新增人声保留开关；设置契约与 README 同步。
 - 上一窗口（1.1.0）：设置改为居中大弹窗（效果设置同款）；新增 10 段均衡器（7 预设 + 手动增益，Web Audio BiquadFilter 链）；播放/暂停渐变（`playback.fadeEnabled/fadeMs`，默认关）；快捷设置新增「均衡器 / 播放暂停渐变」；修复宿主 settings patch 会重置同 section 其它字段的 bug（`SettingsService.ApplyKnownValues` 的 fallback 改为保留当前值）。
 - 更新通道（本窗口完成）：GitHub Releases 自动检查 → 后台下载 → 提示安装 → 静默安装并重启；设置页「更新」分区；GitHub Actions 自动发版。已用本地 mock Release 真机实测 1.0.0 → 1.0.1 全链路。
 - 代码已推到私有仓库 `KaFuuChino2006/Zilux2`（`main` 含完整历史；`v1.0.0` tag 仅本地，尚未发布 Release）。`origin` 为 SSH over 443，见 §9。

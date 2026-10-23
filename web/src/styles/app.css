@@ -3487,13 +3487,13 @@ body,
 /* ── 歌词「文字设置」面板 ─────────────────────────────────────────────
    和「匹配歌词」同一套大弹窗：底部居中的面板，左边调参数、右边一整格独立预览画面。 */
 .sheet.text-sheet {
-  inset: auto 0 0;
+  inset: 0;
   align-items: flex-end;
   justify-content: center;
   padding: 0 18px calc(var(--player-h) + 10px);
-  background: rgb(var(--ink-rgb) / 0.16);
-  backdrop-filter: none;
-  animation: none;
+  background: rgb(var(--ink-rgb) / 0.42);
+  backdrop-filter: blur(10px) saturate(1.05);
+  animation: fade-in 0.24s var(--ease);
 }
 
 .text-sheet .ts-panel {
