@@ -79,6 +79,34 @@ internal sealed class PlaybackSettings
     // Visualizer source: host-side WASAPI features. Not in the frozen settings contract yet -
     // appended after volume so the persisted layout stays stable for older files.
     public bool AudioReactive { get; set; } = true;
+
+    // 10 段均衡器（页面侧 Web Audio peaking 滤波器）：默认关闭、全 0dB，
+    // 保证旧 settings.json 行为不变。EqGains 顺序对应前端 EQ_BAND_FREQS。
+    public const string EqPresetFlat = "flat";
+    public const string EqPresetPop = "pop";
+    public const string EqPresetRock = "rock";
+    public const string EqPresetJazz = "jazz";
+    public const string EqPresetClassical = "classical";
+    public const string EqPresetVocal = "vocal";
+    public const string EqPresetBass = "bass";
+
+    internal static readonly string[] EqPresets =
+    {
+        EqPresetFlat, EqPresetPop, EqPresetRock, EqPresetJazz, EqPresetClassical, EqPresetVocal, EqPresetBass,
+    };
+
+    internal const int EqBandCount = 10;
+
+    public bool EqEnabled { get; set; }
+
+    public string EqPreset { get; set; } = EqPresetFlat;
+
+    public int[] EqGains { get; set; } = new int[EqBandCount];
+
+    // 播放/暂停音量渐变：默认关闭，保持原有的瞬时暂停。
+    public bool FadeEnabled { get; set; }
+
+    public int FadeMs { get; set; } = 450;
 }
 
 internal sealed class DownloadSettings

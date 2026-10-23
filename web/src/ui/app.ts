@@ -18,7 +18,19 @@ import {
 } from '../core/account';
 import { fetchLibraryOverview, fetchPlaylist, refreshLibrary } from '../core/library';
 import type { LibraryPlaylist } from '../core/library';
-import { getSettings, onSettingsChange, patchSettings } from '../core/settings';
+import {
+  EQ_BAND_FREQS,
+  EQ_GAIN_MAX,
+  EQ_GAIN_MIN,
+  EQ_PRESET_IDS,
+  EQ_PRESET_LABELS,
+  EQ_PRESETS,
+  FADE_MS,
+  getSettings,
+  onSettingsChange,
+  patchSettings,
+  type EqPreset,
+} from '../core/settings';
 import { addLikedTrack, checkLikedMany, clearMvmp3Cache, fetchFeed, fetchHotPlaylists, fetchMvmp3Cache, fetchRecentMerged, onlineEndpoint, onlineReady, qualityForSource, removeLikedTrack, searchOnline, setQualityForSource } from '../online/client';
 import type { OnlineSource, OnlineTrack, StreamQuality } from '../online/types';
 import { SOURCE_LABEL } from '../online/types';
@@ -1678,10 +1690,15 @@ export class App {
     );
   }
 
+  /** 下一次 openSheet 是否走「居中弹窗」形态（由设置页使用；一次生效后自动复位）。 */
+  private centerNextSheet = false;
+
   private openSheet(title: string, build: (body: HTMLDivElement) => void): void {
     // 换面板时上一个直接移除，避免两层遮罩叠着淡出
     this.sheet?.root.remove();
     this.sheet = null;
+    const centered = this.centerNextSheet;
+    this.centerNextSheet = false;
     const body = h('div', { class: 'sheet-body' });
     const closeBtn = h('button', { class: 'icon-btn', title: '关闭' }, icon('close', 16));
     const panel = h(
@@ -1690,7 +1707,7 @@ export class App {
       h('div', { class: 'sheet-head' }, h('div', { class: 'sheet-title', text: title }), closeBtn),
       body,
     );
-    const root = h('div', { class: 'sheet' }, panel);
+    const root = h('div', { class: `sheet${centered ? ' is-center' : ''}` }, panel);
     const close = (): void => {
       if (this.sheet?.root === root) this.sheet = null;
       if (root.classList.contains('is-leaving')) return;
@@ -2208,6 +2225,8 @@ export class App {
 
   private openSettingsSheet(): void {
     this.setRailActive('settings');
+    // 设置改用居中大弹窗（和效果设置一致的观感），其他 sheet 仍是右侧滑出。
+    this.centerNextSheet = true;
     this.openSheet('设置', (body) => {
       const settings = getSettings();
       const section = (title: string, ...children: HTMLElement[]): HTMLDivElement => {
@@ -2303,6 +2322,12 @@ export class App {
         sliderField('音量', 0, 100, 1, Math.round(settings.playback.volume * 100), (value) => {
           setVolume(value / 100);
           patchSettings({ playback: { volume: value / 100 } });
+        }),
+        toggleField('播放/暂停渐变', '开启后暂停淡出、播放淡入；关闭则瞬时切换', settings.playback.fadeEnabled, (value) => {
+          patchSettings({ playback: { fadeEnabled: value } });
+        }),
+        sliderField('渐变时长', FADE_MS.min, FADE_MS.max, FADE_MS.step, settings.playback.fadeMs, (value) => {
+          patchSettings({ playback: { fadeMs: value } });
         }),
         sliderField('搜索结果条数', 10, 50, 5, settings.playback.searchLimit, (value) => {
           patchSettings({ playback: { searchLimit: value } });
@@ -2473,9 +2498,117 @@ export class App {
         }
       }
 
+      // 均衡器：10 段增益（-12..12dB），预设按钮与滑块双向同步。
+      const eqGains = [...settings.playback.eqGains];
+      let eqEnabled = settings.playback.eqEnabled;
+      const eqValueLabels: HTMLDivElement[] = [];
+      const eqSliders: HTMLInputElement[] = [];
+      const eqSw = h('button', { class: 'switch' });
+      const eqBands = h('div', { class: 'eq-bands' });
+      const presetSeg = h('div', { class: 'seg eq-presets' });
+      const paintEqEnabled = (): void => {
+        eqSw.classList.toggle('is-on', eqEnabled);
+        eqBands.classList.toggle('is-disabled', !eqEnabled);
+      };
+      const paintEqGain = (index: number): void => {
+        const gain = eqGains[index] ?? 0;
+        eqValueLabels[index].textContent = gain > 0 ? `+${gain}` : String(gain);
+        if (eqSliders[index].value !== String(gain)) eqSliders[index].value = String(gain);
+      };
+      EQ_BAND_FREQS.forEach((freq, index) => {
+        const valueLabel = h('div', { class: 'eq-band-value', text: '0' });
+        const slider = h('input', {
+          class: 'slider eq-slider',
+          type: 'range',
+          min: String(EQ_GAIN_MIN),
+          max: String(EQ_GAIN_MAX),
+          step: '1',
+          value: String(eqGains[index] ?? 0),
+        }) as HTMLInputElement;
+        slider.addEventListener('input', () => {
+          eqGains[index] = Number(slider.value);
+          paintEqGain(index);
+          presetSeg.querySelectorAll('.seg-btn').forEach((node) => node.classList.remove('is-on'));
+          if (!eqEnabled) {
+            eqEnabled = true;
+            paintEqEnabled();
+          }
+          patchSettings({ playback: { eqEnabled: true, eqGains: [...eqGains] } });
+        });
+        eqValueLabels.push(valueLabel);
+        eqSliders.push(slider);
+        eqBands.append(
+          h(
+            'div',
+            { class: 'eq-band' },
+            valueLabel,
+            slider,
+            h('div', { class: 'eq-band-freq', text: freq >= 1000 ? `${freq / 1000}k` : String(freq) }),
+          ),
+        );
+      });
+      const applyEqPreset = (preset: EqPreset): void => {
+        const gains = EQ_PRESETS[preset];
+        gains.forEach((gain, index) => {
+          eqGains[index] = gain;
+        });
+        eqSliders.forEach((_slider, index) => paintEqGain(index));
+        presetSeg.querySelectorAll('.seg-btn').forEach((node) => {
+          node.classList.toggle('is-on', node.getAttribute('data-preset') === preset);
+        });
+        eqEnabled = true;
+        paintEqEnabled();
+        patchSettings({ playback: { eqEnabled: true, eqPreset: preset, eqGains: [...eqGains] } });
+      };
+      EQ_PRESET_IDS.forEach((preset) => {
+        const btn = h('button', { class: `seg-btn${settings.playback.eqPreset === preset ? ' is-on' : ''}`, text: EQ_PRESET_LABELS[preset] });
+        btn.setAttribute('data-preset', preset);
+        btn.addEventListener('click', () => applyEqPreset(preset));
+        presetSeg.append(btn);
+      });
+      eqSw.addEventListener('click', () => {
+        eqEnabled = !eqEnabled;
+        paintEqEnabled();
+        patchSettings({ playback: { eqEnabled } });
+      });
+      const eqReset = h('button', { class: 'btn', text: '恢复默认' });
+      eqReset.addEventListener('click', () => {
+        EQ_PRESETS.flat.forEach((gain, index) => {
+          eqGains[index] = gain;
+        });
+        eqSliders.forEach((_slider, index) => paintEqGain(index));
+        presetSeg.querySelectorAll('.seg-btn').forEach((node) => {
+          node.classList.toggle('is-on', node.getAttribute('data-preset') === 'flat');
+        });
+        patchSettings({ playback: { eqPreset: 'flat', eqGains: [...eqGains] } });
+      });
+      paintEqEnabled();
+      const eqSection = section(
+        '均衡器',
+        h(
+          'div',
+          { class: 'field' },
+          h(
+            'div',
+            {},
+            h('div', { class: 'field-label', text: '启用均衡器' }),
+            h('div', { class: 'field-hint', text: '10 段音频增益；关闭时声音直通。手动调节会自动开启。' }),
+          ),
+          eqSw,
+        ),
+        h('div', { class: 'field is-stacked' }, h('div', { class: 'field-label', text: '预设' }), presetSeg),
+        eqBands,
+        h(
+          'div',
+          { class: 'field' },
+          h('div', {}, h('div', { class: 'field-hint', text: '低频（左）→ 高频（右），单位 dB。' })),
+          eqReset,
+        ),
+      );
+
       const downloadsSection = this.buildDownloadsSection(section, segField);
       const updatesSection = this.buildUpdatesSection(section, toggleField, segField);
-      body.append(general, appearance, playback, downloadsSection, updatesSection, accountSection, tools);
+      body.append(general, appearance, playback, eqSection, downloadsSection, updatesSection, accountSection, tools);
       if (hasExperimentalSources()) body.append(experimental);
     });
   }
@@ -3886,6 +4019,43 @@ export class App {
         h('div', { class: 'quick-cell-title', text: title }),
         ...children,
       );
+    // 音频效果：均衡器预设（快捷）+ 播放渐变开关；逐段调节在完整设置里。
+    const quickEqOn = h('button', {
+      class: `switch${getSettings().playback.eqEnabled ? ' is-on' : ''}`,
+    });
+    quickEqOn.addEventListener('click', () => {
+      const next = !quickEqOn.classList.contains('is-on');
+      quickEqOn.classList.toggle('is-on', next);
+      patchSettings({ playback: { eqEnabled: next } });
+    });
+    const quickPresetSeg = h('div', { class: 'quick-seg-slider quick-eq-presets' });
+    const quickPresetBtns: HTMLButtonElement[] = [];
+    EQ_PRESET_IDS.forEach((preset) => {
+      const btn = h('button', {
+        class: `quick-seg-btn${getSettings().playback.eqPreset === preset ? ' is-on' : ''}`,
+        type: 'button',
+        text: EQ_PRESET_LABELS[preset],
+      });
+      btn.addEventListener('pointerdown', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      });
+      btn.addEventListener('click', () => {
+        quickPresetBtns.forEach((node) => node.classList.toggle('is-on', node === btn));
+        quickEqOn.classList.add('is-on');
+        patchSettings({ playback: { eqEnabled: true, eqPreset: preset, eqGains: [...EQ_PRESETS[preset]] } });
+      });
+      quickPresetBtns.push(btn);
+      quickPresetSeg.append(btn);
+    });
+    const quickFadeOn = h('button', {
+      class: `switch${getSettings().playback.fadeEnabled ? ' is-on' : ''}`,
+    });
+    quickFadeOn.addEventListener('click', () => {
+      const next = !quickFadeOn.classList.contains('is-on');
+      quickFadeOn.classList.toggle('is-on', next);
+      patchSettings({ playback: { fadeEnabled: next } });
+    });
     body.append(
       h(
         'div',
@@ -3893,6 +4063,13 @@ export class App {
         cell('音量', false, volumeStepper.root),
         cell('播放模式', false, this.quickModeBtn),
         cell('音质', true, qualitySeg),
+        cell(
+          '均衡器',
+          true,
+          h('div', { class: 'quick-cell-head' }, h('span', { class: 'quick-cell-hint', text: '10 段增益 · 预设立即生效' }), quickEqOn),
+          quickPresetSeg,
+        ),
+        cell('播放/暂停渐变', false, quickFadeOn),
       ),
       h('div', {
         class: 'quick-hint',
