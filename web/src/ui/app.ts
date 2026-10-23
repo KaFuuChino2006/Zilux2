@@ -25,11 +25,15 @@ import {
   EQ_PRESET_IDS,
   EQ_PRESET_LABELS,
   EQ_PRESETS,
-  FADE_MS,
+  FADE_CURVES,
+  FADE_IN_MS,
+  FADE_OUT_MS,
+  FADE_VOCAL_TAIL_MS,
   getSettings,
   onSettingsChange,
   patchSettings,
   type EqPreset,
+  type FadeCurve,
 } from '../core/settings';
 import { addLikedTrack, checkLikedMany, clearMvmp3Cache, fetchFeed, fetchHotPlaylists, fetchMvmp3Cache, fetchRecentMerged, onlineEndpoint, onlineReady, qualityForSource, removeLikedTrack, searchOnline, setQualityForSource } from '../online/client';
 import type { OnlineSource, OnlineTrack, StreamQuality } from '../online/types';
@@ -2352,9 +2356,33 @@ export class App {
         toggleField('播放/暂停渐变', '开启后暂停淡出、播放淡入；关闭则瞬时切换', settings.playback.fadeEnabled, (value) => {
           patchSettings({ playback: { fadeEnabled: value } });
         }),
-        sliderField('渐变时长', FADE_MS.min, FADE_MS.max, FADE_MS.step, settings.playback.fadeMs, (value) => {
-          patchSettings({ playback: { fadeMs: value } });
+        sliderField('暂停淡出时长', FADE_OUT_MS.min, FADE_OUT_MS.max, FADE_OUT_MS.step, settings.playback.fadeOutMs, (value) => {
+          patchSettings({ playback: { fadeOutMs: value } });
         }),
+        sliderField('开始播放淡入时长', FADE_IN_MS.min, FADE_IN_MS.max, FADE_IN_MS.step, settings.playback.fadeInMs, (value) => {
+          patchSettings({ playback: { fadeInMs: value } });
+        }),
+        segField(
+          '渐变曲线',
+          FADE_CURVES.map((item) => ({ value: item.value, label: item.label })),
+          settings.playback.fadeCurve,
+          (value) => patchSettings({ playback: { fadeCurve: value as FadeCurve } }),
+          '平滑：两端缓；线性：匀速；指数：越到后面下降越快（更晚才没声）。',
+        ),
+        toggleField(
+          '人声保留淡出',
+          '暂停时先压低低频与高频（鼓/贝斯/镲片），让人声所在的频段多留一会儿',
+          settings.playback.fadeVocal,
+          (value) => patchSettings({ playback: { fadeVocal: value } }),
+        ),
+        sliderField(
+          '人声尾音',
+          FADE_VOCAL_TAIL_MS.min,
+          FADE_VOCAL_TAIL_MS.max,
+          FADE_VOCAL_TAIL_MS.step,
+          settings.playback.fadeVocalTailMs,
+          (value) => patchSettings({ playback: { fadeVocalTailMs: value } }),
+        ),
         sliderField('搜索结果条数', 10, 50, 5, settings.playback.searchLimit, (value) => {
           patchSettings({ playback: { searchLimit: value } });
         }),
@@ -4172,6 +4200,9 @@ export class App {
     const quickFadeSwitch = this.pillSwitch(getSettings().playback.fadeEnabled, (next) => {
       patchSettings({ playback: { fadeEnabled: next } });
     });
+    const quickVocalSwitch = this.pillSwitch(getSettings().playback.fadeVocal, (next) => {
+      patchSettings({ playback: { fadeVocal: next } });
+    });
     body.append(
       h(
         'div',
@@ -4187,6 +4218,7 @@ export class App {
           quickPresetSeg,
         ),
         cell('播放/暂停渐变', false, quickFadeSwitch.root),
+        cell('人声保留淡出', false, quickVocalSwitch.root),
       ),
       h('div', {
         class: 'quick-hint',

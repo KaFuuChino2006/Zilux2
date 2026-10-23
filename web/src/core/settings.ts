@@ -37,6 +37,20 @@ export const EQ_GAIN_MIN = -12;
 export const EQ_GAIN_MAX = 12;
 export const FADE_MS = { min: 50, max: 3000, step: 10, fallback: 450 } as const;
 
+/** 暂停淡出 / 开始播放淡入可分别设置。 */
+export const FADE_OUT_MS = { min: 100, max: 3000, step: 50, fallback: 450 } as const;
+export const FADE_IN_MS = { min: 100, max: 3000, step: 50, fallback: 450 } as const;
+export const FADE_VOCAL_TAIL_MS = { min: 0, max: 3000, step: 100, fallback: 600 } as const;
+
+/** 渐变曲线；exponential 在尾段下降更快，听感上更晚才「没声」。 */
+export type FadeCurve = 'smooth' | 'linear' | 'exponential';
+export const FADE_CURVES: readonly { value: FadeCurve; label: string }[] = [
+  { value: 'smooth', label: '平滑' },
+  { value: 'linear', label: '线性' },
+  { value: 'exponential', label: '指数' },
+];
+const FADE_CURVE_IDS = FADE_CURVES.map((item) => item.value);
+
 export interface Settings {
   version: 1;
   general: {
@@ -70,8 +84,18 @@ export interface Settings {
     eqGains: number[];
     /** 播放/暂停时做音量淡出淡入；关闭时保持原有的瞬时暂停。 */
     fadeEnabled: boolean;
-    /** 渐变时长（毫秒，50..3000）。 */
+    /** 旧版单一渐变时长（毫秒，50..3000）；新配置分别使用 fadeOutMs / fadeInMs。 */
     fadeMs: number;
+    /** 暂停淡出时长（毫秒，100..3000）。 */
+    fadeOutMs: number;
+    /** 开始播放淡入时长（毫秒，100..3000）。 */
+    fadeInMs: number;
+    /** 渐变曲线：smooth 平滑 / linear 线性 / exponential 指数。 */
+    fadeCurve: FadeCurve;
+    /** 人声保留淡出：暂停时先压低低频与高频，让人声频段多停留一会儿。 */
+    fadeVocal: boolean;
+    /** 人声保留尾音（毫秒，0..3000）；淡出总时长 = fadeOutMs + 该值。 */
+    fadeVocalTailMs: number;
   };
   downloads: {
     /** 下载目录；空字符串表示 Windows「音乐」目录。 */
@@ -121,6 +145,11 @@ export const DEFAULT_SETTINGS: Settings = {
     eqGains: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     fadeEnabled: false,
     fadeMs: FADE_MS.fallback,
+    fadeOutMs: FADE_OUT_MS.fallback,
+    fadeInMs: FADE_IN_MS.fallback,
+    fadeCurve: 'smooth',
+    fadeVocal: false,
+    fadeVocalTailMs: FADE_VOCAL_TAIL_MS.fallback,
   },
   downloads: { directory: '', quality: 'high' },
   updates: { autoCheck: true, mode: 'auto', repo: '' },
@@ -184,10 +213,16 @@ function asEqGains(value: unknown): number[] {
   });
 }
 
+type MsRange = { readonly min: number; readonly max: number; readonly step: number; readonly fallback: number };
+
+function asMs(value: unknown, range: MsRange, fallback = range.fallback): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  const stepped = Math.round(value / range.step) * range.step;
+  return Math.max(range.min, Math.min(range.max, stepped));
+}
+
 function asFadeMs(value: unknown): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_SETTINGS.playback.fadeMs;
-  const stepped = Math.round(value / FADE_MS.step) * FADE_MS.step;
-  return Math.max(FADE_MS.min, Math.min(FADE_MS.max, stepped));
+  return asMs(value, FADE_MS);
 }
 
 /** 深度合并 + 白名单校验：未知字段忽略，非法值回落默认值。 */
@@ -229,6 +264,12 @@ export function normalizeSettings(raw: unknown): Settings {
       eqGains: asEqGains(playback.eqGains),
       fadeEnabled: asBool(playback.fadeEnabled, DEFAULT_SETTINGS.playback.fadeEnabled),
       fadeMs: asFadeMs(playback.fadeMs),
+      // 兼容旧配置：只有 fadeMs 时用它作为淡出/淡入的缺省值。
+      fadeOutMs: asMs(playback.fadeOutMs ?? playback.fadeMs, FADE_OUT_MS),
+      fadeInMs: asMs(playback.fadeInMs ?? playback.fadeMs, FADE_IN_MS),
+      fadeCurve: asEnum(playback.fadeCurve, FADE_CURVE_IDS, DEFAULT_SETTINGS.playback.fadeCurve),
+      fadeVocal: asBool(playback.fadeVocal, DEFAULT_SETTINGS.playback.fadeVocal),
+      fadeVocalTailMs: asMs(playback.fadeVocalTailMs, FADE_VOCAL_TAIL_MS),
     },
     downloads: {
       directory: typeof downloads.directory === 'string' ? downloads.directory.trim() : '',
@@ -266,6 +307,11 @@ export function applySettings(next: Settings): void {
       detail: {
         fadeEnabled: next.playback.fadeEnabled,
         fadeMs: next.playback.fadeMs,
+        fadeOutMs: next.playback.fadeOutMs,
+        fadeInMs: next.playback.fadeInMs,
+        fadeCurve: next.playback.fadeCurve,
+        fadeVocal: next.playback.fadeVocal,
+        fadeVocalTailMs: next.playback.fadeVocalTailMs,
         eqEnabled: next.playback.eqEnabled,
         eqGains: next.playback.eqGains,
       },

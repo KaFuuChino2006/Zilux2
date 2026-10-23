@@ -99,6 +99,14 @@ let eqFilters: BiquadFilterNode[] = [];
 let eqEnabled = false;
 let eqGains: number[] = EQ_FREQS.map(() => 0);
 
+// 人声保留淡出：暂停时压低低频/高频，让中频人声多留一会儿。
+let vocalLow: BiquadFilterNode | null = null;
+let vocalHigh: BiquadFilterNode | null = null;
+/** 0=正常，1=最大程度压低伴奏；由 player.ts 在淡出时推动。 */
+let vocalFadeAmount = 0;
+/** 低频/高频最大衰减量（dB），只压伴奏不碰中频人声。 */
+const VOCAL_FADE_MAX_DB = 36;
+
 /** 记录播放器元素；<audio> 只创建一次，MediaElementAudioSourceNode 也只能建一次。 */
 export function attachAudioTap(element: HTMLAudioElement): void {
   audio = element;
@@ -129,6 +137,15 @@ export function setEqualizer(enabled: boolean, gains: number[] | null | undefine
 }
 
 /**
+ * 人声保留淡出：amount=0 正常，1 时把低频（<220Hz）与高频（>4.2kHz）各压低
+ * VOCAL_FADE_MAX_DB dB，只留下人声所在的中频；图未建立时只记录偏好。
+ */
+export function setVocalFade(amount: number): void {
+  vocalFadeAmount = Number.isFinite(amount) ? Math.max(0, Math.min(1, amount)) : 0;
+  applyVocalFade();
+}
+
+/**
  * 确保均衡器可用的本地音频图：EQ 只能跑在 Web Audio 里，首次调用会把 <audio> 接进
  * AudioContext（此后音量由本地 gain 接管，播放器侧的 applyPlaybackVolume 已兼容）。
  * 返回 false 表示当前还建不了图（例如 <audio> 尚未 attach）。
@@ -142,6 +159,7 @@ export function ensureEqualizerGraph(): boolean {
     // 上下文被策略挂起时，恢复后输出自然生效。
   }
   applyEqGains();
+  applyVocalFade();
   return true;
 }
 
@@ -256,14 +274,26 @@ function buildLocalGraph(ctx: AudioContext): boolean {
       filter.gain.value = 0;
       return filter;
     });
+    // 人声保留用的一对搁架滤波器：只在淡出时介入，平时 0dB。
+    vocalLow = ctx.createBiquadFilter();
+    vocalLow.type = 'lowshelf';
+    vocalLow.frequency.value = 220;
+    vocalLow.gain.value = 0;
+    vocalHigh = ctx.createBiquadFilter();
+    vocalHigh.type = 'highshelf';
+    vocalHigh.frequency.value = 4200;
+    vocalHigh.gain.value = 0;
     let tail: AudioNode = source;
     for (const filter of eqFilters) {
       tail.connect(filter);
       tail = filter;
     }
-    tail.connect(localGain);
+    tail.connect(vocalLow);
+    vocalLow.connect(vocalHigh);
+    vocalHigh.connect(localGain);
     localGain.connect(ctx.destination);
     applyEqGains();
+    applyVocalFade();
   }
   return true;
 }
@@ -356,6 +386,19 @@ function applyEqGains(): void {
       filter.gain.value = gain;
     }
   });
+}
+
+function applyVocalFade(): void {
+  if (!context || !vocalLow || !vocalHigh) return;
+  const now = context.currentTime;
+  const gain = -VOCAL_FADE_MAX_DB * Math.max(0, Math.min(1, vocalFadeAmount));
+  for (const filter of [vocalLow, vocalHigh]) {
+    try {
+      filter.gain.setTargetAtTime(gain, now, 0.03);
+    } catch {
+      filter.gain.value = gain;
+    }
+  }
 }
 
 function handleWorkletBlock(event: MessageEvent): void {

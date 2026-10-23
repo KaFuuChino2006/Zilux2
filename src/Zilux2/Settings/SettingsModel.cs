@@ -106,7 +106,32 @@ internal sealed class PlaybackSettings
     // 播放/暂停音量渐变：默认关闭，保持原有的瞬时暂停。
     public bool FadeEnabled { get; set; }
 
+    // 旧版单一渐变时长；新版本分别使用 FadeOutMs / FadeInMs，读取旧配置时作为两者缺省值。
     public int FadeMs { get; set; } = 450;
+
+    /// <summary>暂停淡出时长（毫秒，100..5000）。</summary>
+    public int FadeOutMs { get; set; } = 450;
+
+    /// <summary>开始播放淡入时长（毫秒，100..5000）。</summary>
+    public int FadeInMs { get; set; } = 450;
+
+    public const string FadeCurveSmooth = "smooth";
+    public const string FadeCurveLinear = "linear";
+    public const string FadeCurveExponential = "exponential";
+
+    internal static readonly string[] FadeCurves =
+    {
+        FadeCurveSmooth, FadeCurveLinear, FadeCurveExponential,
+    };
+
+    /// <summary>渐变曲线：smooth=平滑（默认）/ linear=线性 / exponential=指数（尾段更快）。</summary>
+    public string FadeCurve { get; set; } = FadeCurveSmooth;
+
+    /// <summary>人声保留淡出：暂停时先压低低频与高频，让人声所在的频段多停留一会儿。</summary>
+    public bool FadeVocal { get; set; }
+
+    /// <summary>人声保留尾音（毫秒，0..3000）：淡出总时长 = FadeOutMs + 该值。</summary>
+    public int FadeVocalTailMs { get; set; } = 600;
 }
 
 internal sealed class DownloadSettings

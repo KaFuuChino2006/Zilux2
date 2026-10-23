@@ -372,3 +372,77 @@
   box-shadow: 0 2px 10px rgb(var(--ink-rgb) / .14);
 }
 
+
+/* ---- 歌曲信息「整页详情」：居中浮窗（与设置弹窗同一层） ---- */
+.sd-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 72;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 34px 28px;
+  background: rgb(var(--ink-rgb) / 0.22);
+  backdrop-filter: blur(16px) saturate(1.15);
+  animation: sheet-fade-in 0.2s var(--ease, ease);
+}
+
+.sd-modal-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(880px, 94vw);
+  max-height: min(86vh, 900px);
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.38);
+  animation: sheet-center-in 0.28s var(--ease, ease);
+}
+
+.sd-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px 14px;
+  flex: none;
+}
+
+.sd-modal-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.sd-modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 28px 30px;
+}
+
+.sd-modal .song-detail {
+  max-width: none;
+  gap: 22px;
+}
+
+.sd-modal .sd-bar {
+  display: none;
+}
+
+.sd-modal .sd-cover {
+  --sd-cover-size: 148px;
+  border-radius: 18px;
+}
+
+.sd-modal .sd-hero {
+  gap: 24px;
+}
+
+@keyframes sheet-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}

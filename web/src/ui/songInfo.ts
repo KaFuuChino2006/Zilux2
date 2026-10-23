@@ -221,25 +221,47 @@ function buildArtistLine(song: DiscoverSong, handlers: SongInfoHandlers): HTMLEl
   return line;
 }
 
-/** 挂载整页详情到 host（host 一般是 app 的 .stage），返回卸载函数。 */
-export function mountSongInfoPage(host: HTMLElement, target: SongInfoTarget, handlers: SongInfoHandlers = {}): () => void {
-  const layer = h('div', { class: 'sd-layer' });
-  const loading = h('div', { class: 'sd-loading', text: '正在读取歌曲信息…' });
-  layer.append(loading);
-  host.append(layer);
+/** 挂载「整页详情」为居中浮窗（与设置弹窗同层），返回卸载函数。 */
+export function mountSongInfoPage(target: SongInfoTarget, handlers: SongInfoHandlers = {}): () => void {
+  const root = h('div', { class: 'sd-modal' });
+  const panel = h('div', { class: 'sd-modal-panel' });
+  const body = h('div', { class: 'sd-modal-body' });
+  let closed = false;
+
   const dispose = (): void => {
-    layer.remove();
+    if (closed) return;
+    closed = true;
+    document.removeEventListener('keydown', onKey);
+    root.remove();
     handlers.onClose?.();
   };
+
+  const onKey = (event: KeyboardEvent): void => {
+    if (event.key === 'Escape') dispose();
+  };
+
+  const close = h('button', { class: 'icon-btn', type: 'button', title: '关闭' }, icon('close', 16));
+  close.addEventListener('click', dispose);
+
+  panel.append(h('div', { class: 'sd-modal-head' }, h('div', { class: 'sd-modal-title', text: '歌曲信息' }), close), body);
+  root.append(panel);
+  root.addEventListener('pointerdown', (event) => {
+    if (event.target === root) dispose();
+  });
+  document.addEventListener('keydown', onKey);
+
+  const loading = h('div', { class: 'sd-loading', text: '正在读取歌曲信息…' });
+  body.append(loading);
+  document.body.append(root);
 
   void fetchSongInfo(target.source, target.id)
     .then((song) => {
       loading.remove();
-      layer.append(renderPage(song, { ...handlers, onClose: dispose }));
+      body.append(renderPage(song, { ...handlers, onClose: dispose }));
     })
     .catch((err: unknown) => {
       loading.remove();
-      layer.append(
+      body.append(
         h(
           'div',
           { class: 'sd-error' },
@@ -341,7 +363,7 @@ export interface SongInfoOpenOptions extends SongInfoHandlers {
   host?: HTMLElement;
 }
 
-/** 按用户设置分发到整页详情 / 列表内展开。返回卸载函数。 */
+/** 按用户设置分发到整页详情（居中浮窗）/ 列表内展开。返回卸载函数。 */
 export function openSongInfo(target: SongInfoTarget, options: SongInfoOpenOptions = {}): () => void {
   const handlers: SongInfoHandlers = {
     onArtist: options.onArtist,
@@ -351,8 +373,5 @@ export function openSongInfo(target: SongInfoTarget, options: SongInfoOpenOption
   if (songInfoView() === 'inline' && options.row) {
     return mountSongInfoInline(options.row, target, handlers);
   }
-  if (options.host) {
-    return mountSongInfoPage(options.host, target, handlers);
-  }
-  return () => undefined;
+  return mountSongInfoPage(target, handlers);
 }

@@ -325,7 +325,8 @@ internal sealed class SettingsService : IDisposable
         "general" => name is "splash" or "startMaximized",
         "appearance" => name is "theme" or "reduceMotion" or "glow" or "heroAutoRotate" or "lyricsSize",
         "playback" => name is "defaultSource" or "searchLimit" or "lyricsAutoOpen" or "volume" or "audioReactive"
-            or "eqEnabled" or "eqPreset" or "eqGains" or "fadeEnabled" or "fadeMs",
+            or "eqEnabled" or "eqPreset" or "eqGains" or "fadeEnabled" or "fadeMs"
+            or "fadeOutMs" or "fadeInMs" or "fadeCurve" or "fadeVocal" or "fadeVocalTailMs",
         "downloads" => name is "directory" or "quality",
         "updates" => name is "autoCheck" or "mode" or "repo",
         _ => false,
@@ -450,7 +451,27 @@ internal sealed class SettingsService : IDisposable
             }
 
             state.Playback.FadeEnabled = ReadBool(playback, "fadeEnabled", state.Playback.FadeEnabled, "playback.fadeEnabled", keys);
-            state.Playback.FadeMs = ReadIntInRange(playback, "fadeMs", 50, 3000, state.Playback.FadeMs, "playback.fadeMs", keys);
+
+            // 旧版只有一个 fadeMs：加载旧配置时把它作为淡出/淡入的缺省值，实现平滑迁移。
+            var legacyFadeMs = state.Playback.FadeMs;
+            var hasLegacyFadeMs = playback.TryGetProperty("fadeMs", out _);
+            if (hasLegacyFadeMs)
+            {
+                legacyFadeMs = ReadIntInRange(playback, "fadeMs", 50, 3000, state.Playback.FadeMs, "playback.fadeMs", keys);
+                state.Playback.FadeMs = legacyFadeMs;
+            }
+
+            state.Playback.FadeOutMs = playback.TryGetProperty("fadeOutMs", out _)
+                ? ReadIntInRange(playback, "fadeOutMs", 100, 5000, state.Playback.FadeOutMs, "playback.fadeOutMs", keys)
+                : (hasLegacyFadeMs ? legacyFadeMs : state.Playback.FadeOutMs);
+            state.Playback.FadeInMs = playback.TryGetProperty("fadeInMs", out _)
+                ? ReadIntInRange(playback, "fadeInMs", 100, 5000, state.Playback.FadeInMs, "playback.fadeInMs", keys)
+                : (hasLegacyFadeMs ? legacyFadeMs : state.Playback.FadeInMs);
+            state.Playback.FadeCurve = ReadEnum(
+                playback, "fadeCurve", PlaybackSettings.FadeCurves, state.Playback.FadeCurve, "playback.fadeCurve", keys);
+            state.Playback.FadeVocal = ReadBool(playback, "fadeVocal", state.Playback.FadeVocal, "playback.fadeVocal", keys);
+            state.Playback.FadeVocalTailMs = ReadIntInRange(
+                playback, "fadeVocalTailMs", 0, 3000, state.Playback.FadeVocalTailMs, "playback.fadeVocalTailMs", keys);
         }
 
         if (TryGetObject(document, "downloads", out var downloads))
