@@ -567,7 +567,7 @@ export class App {
     const settingsBtn = h(
       'button',
       { class: 'rail-btn', title: '设置', 'aria-label': '设置' },
-      h('span', { class: 'rail-icon' }, icon('settings', 20)),
+      h('span', { class: 'rail-icon' }, icon('sliders', 20)),
       h('span', { class: 'rail-label', text: '设置' }),
     );
     settingsBtn.addEventListener('click', () => this.openSettingsSheet());
@@ -2287,10 +2287,28 @@ export class App {
         if (hint) field.append(h('div', { class: 'field-hint', text: hint }));
         return field;
       };
-      const sliderField = (label: string, min: number, max: number, step: number, value: number, onChange: (next: number) => void): HTMLDivElement => {
+      const sliderField = (
+        label: string,
+        min: number,
+        max: number,
+        step: number,
+        value: number,
+        onChange: (next: number) => void,
+        format: (next: number) => string = (next) => String(next),
+      ): HTMLDivElement => {
+        const valueLabel = h('span', { class: 'field-slider-value', text: format(value) });
         const input = h('input', { class: 'slider', type: 'range', min: String(min), max: String(max), step: String(step), value: String(value) });
-        input.addEventListener('input', () => onChange(Number(input.value)));
-        return h('div', { class: 'field' }, h('div', { class: 'field-label', text: label }), input);
+        input.addEventListener('input', () => {
+          const next = Number(input.value);
+          valueLabel.textContent = format(next);
+          onChange(next);
+        });
+        return h(
+          'div',
+          { class: 'field field-slider' },
+          h('div', { class: 'field-label', text: label }),
+          h('div', { class: 'field-slider-control' }, valueLabel, input),
+        );
       };
 
       // 通用
@@ -2352,16 +2370,16 @@ export class App {
         sliderField('音量', 0, 100, 1, Math.round(settings.playback.volume * 100), (value) => {
           setVolume(value / 100);
           patchSettings({ playback: { volume: value / 100 } });
-        }),
+        }, (value) => `${value}%`),
         toggleField('播放/暂停渐变', '开启后暂停淡出、播放淡入；关闭则瞬时切换', settings.playback.fadeEnabled, (value) => {
           patchSettings({ playback: { fadeEnabled: value } });
         }),
         sliderField('暂停淡出时长', FADE_OUT_MS.min, FADE_OUT_MS.max, FADE_OUT_MS.step, settings.playback.fadeOutMs, (value) => {
           patchSettings({ playback: { fadeOutMs: value } });
-        }),
+        }, (value) => `${value} ms`),
         sliderField('开始播放淡入时长', FADE_IN_MS.min, FADE_IN_MS.max, FADE_IN_MS.step, settings.playback.fadeInMs, (value) => {
           patchSettings({ playback: { fadeInMs: value } });
-        }),
+        }, (value) => `${value} ms`),
         segField(
           '渐变曲线',
           FADE_CURVES.map((item) => ({ value: item.value, label: item.label })),
@@ -2382,10 +2400,11 @@ export class App {
           FADE_VOCAL_TAIL_MS.step,
           settings.playback.fadeVocalTailMs,
           (value) => patchSettings({ playback: { fadeVocalTailMs: value } }),
+          (value) => (value === 0 ? '关闭' : `${value} ms`),
         ),
         sliderField('搜索结果条数', 10, 50, 5, settings.playback.searchLimit, (value) => {
           patchSettings({ playback: { searchLimit: value } });
-        }),
+        }, (value) => `${value} 条`),
       );
 
       // 账号
@@ -3610,7 +3629,7 @@ export class App {
       this.quickBody,
       tabs,
     );
-    const trigger = h('button', { class: 'pb-quick', title: '快捷设置', 'aria-label': '快捷设置' }, icon('settings', 17));
+    const trigger = h('button', { class: 'pb-quick', title: '快捷设置', 'aria-label': '快捷设置' }, icon('equalizer', 17));
     trigger.addEventListener('click', () => {
       if (this.quickPanelOpen) this.closeQuick();
       else this.openQuick();

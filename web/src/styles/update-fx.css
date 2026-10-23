@@ -446,3 +446,26 @@
     opacity: 1;
   }
 }
+
+/* ---- 设置页滑块：右侧数值显示 ---- */
+.field-slider-control {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+}
+
+.field-slider-value {
+  min-width: 62px;
+  text-align: right;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent-strong, var(--accent));
+  white-space: nowrap;
+}
+
+.field-slider .slider {
+  flex: none;
+}
+
