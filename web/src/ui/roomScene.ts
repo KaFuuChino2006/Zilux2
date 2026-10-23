@@ -1077,7 +1077,6 @@ export function createRoomScene(options: RoomSceneOptions = {}): RoomScene {
     const halfW = cfg.rugWidth;
     const nearY = projectWorld(0, 0, nearZ).y;
     const farY = projectWorld(0, 0, farZ).y;
-    const farCenter = projectWorld(0, 0, farZ);
     ctx.save();
 
     // 毯体：近处实、远处淡，最后化进薄荷绿里。
@@ -1147,20 +1146,16 @@ export function createRoomScene(options: RoomSceneOptions = {}): RoomScene {
       ctx.stroke();
     }
 
-    // 远端化进空气：用背景薄荷色把毯子尽头盖掉，避免出现一条生硬的横切口。
-    const fogRadius = width * 0.09;
-    const fogGradient = ctx.createRadialGradient(0, 0, 0, 0, 0, fogRadius);
+    // 远端化进空气：沿织纹方向做线性渐隐（裁切在地毯形状内），避免出现一块突兀的椭圆色斑。
     const haze = mixHex(skyTop(), skyBottom(), 0.45);
-    fogGradient.addColorStop(0, rgba(haze, 0.92));
-    fogGradient.addColorStop(0.45, rgba(haze, 0.55));
-    fogGradient.addColorStop(1, rgba(haze, 0));
+    const dissolve = ctx.createLinearGradient(0, farY, 0, farY + (nearY - farY) * 0.26);
+    dissolve.addColorStop(0, rgba(haze, 0.96));
+    dissolve.addColorStop(0.4, rgba(haze, 0.58));
+    dissolve.addColorStop(1, rgba(haze, 0));
     ctx.save();
-    ctx.translate(farCenter.x, farCenter.y);
-    ctx.scale(1, 0.46);
-    ctx.fillStyle = fogGradient;
-    ctx.beginPath();
-    ctx.arc(0, 0, fogRadius, 0, TAU);
-    ctx.fill();
+    ctx.clip(body);
+    ctx.fillStyle = dissolve;
+    ctx.fillRect(Math.min(leftFar.x, leftNear.x) - 2, farY - 40, Math.abs(rightFar.x - leftFar.x) + 4, nearY - farY + 80);
     ctx.restore();
     ctx.restore();
   };
