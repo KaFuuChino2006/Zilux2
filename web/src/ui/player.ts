@@ -12,7 +12,7 @@ import { onMediaControl, reportMedia, type MediaControl } from '../core/bridge';
 import { fetchStreamInfo, onlineInfo, qualityForSource, streamUrl, checkLiked, addLikedTrack, removeLikedTrack, recordRecent } from '../online/client';
 import type { OnlineTrack } from '../online/types';
 import { getSettings } from '../core/settings';
-import { attachAudioTap, audioTapGraphActive, ensureEqualizerGraph, setAudioTapVolume, setEqualizer } from '../core/audioTap';
+import { attachAudioTap, audioTapGraphActive, ensureEqualizerGraph, setAudioTapVolume, setEqualizer, setVocalFade } from '../core/audioTap';
 
 export type PlayMode = 'list' | 'single' | 'shuffle';
 
@@ -65,15 +65,28 @@ audio.crossOrigin = 'anonymous';
 interface PlaybackFx {
   fadeEnabled: boolean;
   fadeMs: number;
+  fadeOutMs: number;
+  fadeInMs: number;
+  fadeCurve: string;
+  fadeVocal: boolean;
+  fadeVocalTailMs: number;
   eqEnabled: boolean;
   eqGains: number[];
 }
 
+const FADE_FALLBACK_MS = 450;
+
 function readPlaybackFx(): PlaybackFx {
   const playback = getSettings().playback;
+  const legacy = typeof playback.fadeMs === 'number' ? playback.fadeMs : FADE_FALLBACK_MS;
   return {
     fadeEnabled: playback.fadeEnabled,
-    fadeMs: playback.fadeMs,
+    fadeMs: legacy,
+    fadeOutMs: typeof playback.fadeOutMs === 'number' ? playback.fadeOutMs : legacy,
+    fadeInMs: typeof playback.fadeInMs === 'number' ? playback.fadeInMs : legacy,
+    fadeCurve: typeof playback.fadeCurve === 'string' ? playback.fadeCurve : 'smooth',
+    fadeVocal: playback.fadeVocal === true,
+    fadeVocalTailMs: typeof playback.fadeVocalTailMs === 'number' ? playback.fadeVocalTailMs : 600,
     eqEnabled: playback.eqEnabled,
     eqGains: playback.eqGains,
   };
@@ -84,6 +97,8 @@ let fx = readPlaybackFx();
 let fadeScale = 1;
 let fadeRaf = 0;
 let fadeToken = 0;
+/** 暂停结束时保留的人声保留量（0=无，1=最大）；恢复播放时从这里平滑回到 0。 */
+let vocalHold = 0;
 
 function applyEq(): void {
   setEqualizer(fx.eqEnabled, fx.eqGains);
@@ -105,8 +120,24 @@ function cancelFade(): void {
   }
 }
 
-/** 平滑改变渐变倍率；token 变化（切歌/停止/重新开始渐变）时立即中止。 */
-function fadeTo(target: number, ms: number, token: number): Promise<void> {
+/** 渐变曲线：smooth 两端缓、linear 匀速、exponential 越到后面下降越快。 */
+function easeFade(progress: number, curve: string): number {
+  if (curve === 'linear') return progress;
+  if (curve === 'exponential') return progress * progress;
+  return progress * progress * (3 - 2 * progress);
+}
+
+/**
+ * 平滑改变渐变倍率；token 变化（切歌/停止/重新开始渐变）时立即中止。
+ * onProgress 收到原始进度 0..1，供人声保留淡出同步压低伴奏。
+ */
+function fadeTo(
+  target: number,
+  ms: number,
+  token: number,
+  curve: string,
+  onProgress?: (progress: number) => void,
+): Promise<void> {
   const total = Math.max(1, ms);
   const from = fadeScale;
   const startedAt = performance.now();
@@ -117,8 +148,9 @@ function fadeTo(target: number, ms: number, token: number): Promise<void> {
         return;
       }
       const progress = Math.min(1, (performance.now() - startedAt) / total);
-      const eased = progress * progress * (3 - 2 * progress);
+      const eased = easeFade(progress, curve);
       fadeScale = from + (target - from) * eased;
+      onProgress?.(progress);
       applyPlaybackVolume();
       if (progress >= 1) {
         fadeRaf = 0;
@@ -134,8 +166,8 @@ function fadeTo(target: number, ms: number, token: number): Promise<void> {
 }
 
 function applyPlaybackVolume(): void {
-  // 均衡器需要 Web Audio 图；开启时保证图已建立，音量随之交给本地 gain。
-  if (fx.eqEnabled && !audioTapGraphActive()) ensureEqualizerGraph();
+  // 均衡器 / 人声保留淡出都需要 Web Audio 图；开启时保证图已建立，音量随之交给本地 gain。
+  if ((fx.eqEnabled || fx.fadeVocal) && !audioTapGraphActive()) ensureEqualizerGraph();
   const volume = state.volume * fadeScale;
   if (audioTapGraphActive()) {
     audio.volume = 1;
@@ -485,8 +517,10 @@ function load(index: number, autoplay = true): void {
   if (autoplay) {
     cancelFade();
     const token = fadeToken;
-    const fade = fx.fadeEnabled ? Math.max(0, fx.fadeMs) : 0;
+    const fade = fx.fadeEnabled ? Math.max(0, fx.fadeInMs) : 0;
     fadeScale = fade > 0 ? 0 : 1;
+    vocalHold = 0;
+    setVocalFade(0);
     applyPlaybackVolume();
     void audio
       .play()
@@ -496,7 +530,7 @@ function load(index: number, autoplay = true): void {
         setState({ playing: true, loading: false });
         scheduleTick();
         void recordRecent(track);
-        if (fade > 0) void fadeTo(1, fade, token);
+        if (fade > 0) void fadeTo(1, fade, token, fx.fadeCurve);
       })
       .catch((err: unknown) => {
         console.warn('[player] play failed', err);
@@ -601,12 +635,23 @@ export function toggle(): void {
   }
 }
 
-/** 开始播放：渐变开启时先把音量压到 0 再淡入。 */
+/** 开始播放：渐变开启时先把音量压到 0，再按设置曲线淡入；人声保留则同步从暂停状态恢复。 */
 function startPlayback(): Promise<void> {
   cancelFade();
   const token = fadeToken;
-  const fade = fx.fadeEnabled ? Math.max(0, fx.fadeMs) : 0;
+  const fade = fx.fadeEnabled ? Math.max(0, fx.fadeInMs) : 0;
   fadeScale = fade > 0 ? 0 : 1;
+  const hold = vocalHold;
+  if (fade > 0) {
+    // 延续上次暂停的伴奏衰减状态：保持压低，淡入过程中再抬回正常。
+    if (hold > 0) {
+      ensureEqualizerGraph();
+      setVocalFade(hold);
+    }
+  } else {
+    setVocalFade(0);
+    vocalHold = 0;
+  }
   applyPlaybackVolume();
   return audio
     .play()
@@ -614,7 +659,15 @@ function startPlayback(): Promise<void> {
       if (token !== fadeToken) return;
       setState({ playing: true });
       scheduleTick();
-      if (fade > 0) void fadeTo(1, fade, token);
+      if (fade > 0) {
+        void fadeTo(1, fade, token, fx.fadeCurve, (progress) => {
+          if (hold > 0) setVocalFade(hold * (1 - easeFade(progress, fx.fadeCurve)));
+        }).then(() => {
+          if (token !== fadeToken) return;
+          setVocalFade(0);
+          vocalHold = 0;
+        });
+      }
     })
     .catch(() => {
       fadeScale = 1;
@@ -623,20 +676,36 @@ function startPlayback(): Promise<void> {
     });
 }
 
-/** 暂停：渐变开启时先淡出再真正暂停。 */
+/**
+ * 暂停：渐变开启时先淡出再真正暂停。
+ * 人声保留开启时，伴奏（低频/高频）在暂停淡出阶段先压下去，音量再拖尾 fadeVocalTailMs，
+ * 听感上人声会比伴奏多留一会儿；暂停结束后保留该衰减状态，恢复播放时再平滑接回去。
+ */
 function pausePlayback(): void {
   cancelFade();
   const token = fadeToken;
-  const fade = fx.fadeEnabled ? Math.max(0, fx.fadeMs) : 0;
+  const fadeOut = fx.fadeEnabled ? Math.max(0, fx.fadeOutMs) : 0;
+  const vocalTail = fx.fadeEnabled && fx.fadeVocal ? Math.max(0, fx.fadeVocalTailMs) : 0;
+  const total = fadeOut + vocalTail;
+  if (vocalTail > 0) ensureEqualizerGraph();
   const finish = (): void => {
     if (token !== fadeToken) return;
     audio.pause();
+    vocalHold = vocalTail > 0 ? 1 : 0;
+    if (vocalHold === 0) setVocalFade(0);
     setState({ playing: false });
     fadeScale = 1;
     applyPlaybackVolume();
   };
-  if (fade > 0) void fadeTo(0, fade, token).then(finish);
-  else finish();
+  if (total > 0) {
+    void fadeTo(0, total, token, fx.fadeCurve, (progress) => {
+      if (vocalTail <= 0) return;
+      const vocalProgress = fadeOut > 0 ? Math.min(1, (progress * total) / fadeOut) : 1;
+      setVocalFade(vocalProgress);
+    }).then(finish);
+  } else {
+    finish();
+  }
 }
 
 function advance(): void {
@@ -711,6 +780,8 @@ export function setVolume(value: number): void {
 
 export function stop(): void {
   cancelFade();
+  vocalHold = 0;
+  setVocalFade(0);
   fadeScale = 1;
   audio.pause();
   audio.removeAttribute('src');

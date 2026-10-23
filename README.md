@@ -15,7 +15,7 @@ Zilux2 是一款面向 Windows 的桌面音乐播放器。宿主采用 .NET 10 /
 | 在线音乐 | 网易云音乐 / QQ 音乐搜索、播放、歌词（原文与翻译）、歌单；扫码登录与 Cookie 导入兜底 |
 | 本地音乐 | 本地目录扫描、音频标签读取、封面提取、与下载曲目合并展示 |
 | 播放体验 | 自定义播放条、滚动歌词面板、沉浸播放页（3D 歌词舞台）、Windows 媒体会话（SMTC）与媒体键 |
-| 音效 | 10 段图形均衡器（7 个预设 + 频响曲线拖拽）、播放/暂停淡入淡出（50–3000 ms，可关闭）、实时频谱响应 |
+| 音效 | 10 段图形均衡器（7 个预设 + 频响曲线拖拽）；播放/暂停渐变可分别设置淡出/淡入时长、曲线（平滑/线性/指数）与「人声保留淡出」（暂停时先压低伴奏、人声多留一会儿）；实时频谱响应 |
 | 投送 | AirPlay 2 与经典 RAOP；支持 HomePod、Mac 接收器；多设备同步投送与独立音量控制 |
 | 界面 | 白色磨砂设计体系、设置居中弹窗与左侧导航、快捷设置面板、分段控件弹簧动画 |
 | 下载 | 统一多平台下载、音质选择（标准 / 高品质 / 无损）、下载目录配置 |
@@ -87,10 +87,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\build.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\publish.ps1
 
 # 安装包（Version 缺省时读取 Directory.Build.props）
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\make-installer.ps1 -Version 1.1.0
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\make-installer.ps1 -Version 1.1.1
 ```
 
-当前版本：**1.1.0**，唯一来源为根目录 `Directory.Build.props` 的 `<Version>`；宿主、安装器、Release 与更新检查均读取该值（CI 通过 `-p:Version=<tag>` 覆盖）。
+当前版本：**1.1.1**，唯一来源为根目录 `Directory.Build.props` 的 `<Version>`；宿主、安装器、Release 与更新检查均读取该值（CI 通过 `-p:Version=<tag>` 覆盖）。
 
 ## 运行与自测
 
@@ -127,8 +127,8 @@ Start-Process 'E:\Zilux2开发\dist\Zilux2\Zilux2.exe'
 ```powershell
 # 1) 修改 Directory.Build.props 中的 <Version>
 # 2) 提交后执行发版脚本（本地构建 + 打 tag + 推送）
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\release.ps1 -Version 1.1.0
-# 或手动：git tag v1.1.0 && git push origin v1.1.0
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\release.ps1 -Version 1.1.1
+# 或手动：git tag v1.1.1 && git push origin v1.1.1
 ```
 
 推送 `v*` tag 后，`.github/workflows/release.yml` 将在 `windows-latest` 上构建并发布 Release，产物包括：

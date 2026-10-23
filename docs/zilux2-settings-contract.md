@@ -37,7 +37,17 @@
     "defaultSource": "netease",
     "searchLimit": 20,
     "lyricsAutoOpen": true,
-    "volume": 0.72
+    "volume": 0.72,
+    "eqEnabled": false,
+    "eqPreset": "flat",
+    "eqGains": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    "fadeEnabled": false,
+    "fadeMs": 450,
+    "fadeOutMs": 450,
+    "fadeInMs": 450,
+    "fadeCurve": "smooth",
+    "fadeVocal": false,
+    "fadeVocalTailMs": 600
   },
   "updates": {
     "autoCheck": true,
@@ -60,6 +70,16 @@
 | `playback.searchLimit` | int | `20` | `10` / `20` / `30` | 每次搜索返回条数 |
 | `playback.lyricsAutoOpen` | bool | `true` | — | 在线播放时自动展开歌词面板 |
 | `playback.volume` | number | `0.72` | `0.0 ~ 1.0`（保留两位） | 播放器默认音量 |
+| `playback.eqEnabled` | bool | `false` | — | 10 段均衡器总开关；关闭时全部频段 0dB 直通 |
+| `playback.eqPreset` | enum | `"flat"` | `flat` / `pop` / `rock` / `jazz` / `classical` / `vocal` / `bass` | 均衡器预设 |
+| `playback.eqGains` | int[10] | 全 `0` | 每段 `-12 ~ 12` dB | 各频段增益（31Hz…16kHz） |
+| `playback.fadeEnabled` | bool | `false` | — | 播放/暂停音量渐变总开关；关闭时瞬时暂停/播放 |
+| `playback.fadeMs` | int | `450` | `50 ~ 3000`（旧版单一渐变时长，作为 fadeOutMs/fadeInMs 的迁移缺省值） | 兼容字段 |
+| `playback.fadeOutMs` | int | `450` | `100 ~ 3000` 毫秒 | 暂停淡出时长 |
+| `playback.fadeInMs` | int | `450` | `100 ~ 3000` 毫秒 | 开始播放淡入时长 |
+| `playback.fadeCurve` | enum | `"smooth"` | `smooth` / `linear` / `exponential` | 渐变曲线；指数在尾段下降更快 |
+| `playback.fadeVocal` | bool | `false` | — | 人声保留淡出：暂停时压低低频/高频，让人声频段多留一会儿 |
+| `playback.fadeVocalTailMs` | int | `600` | `0 ~ 3000` 毫秒 | 人声保留尾音时长（淡出总时长 = fadeOutMs + 该值） |
 | `updates.autoCheck` | bool | `true` | — | 启动后自动检查更新，并每 4 小时轮询 |
 | `updates.mode` | enum | `"auto"` | `auto` / `notify` | `auto`=自动下载并提示安装；`notify`=只提示新版本 |
 | `updates.repo` | string | `""` | `owner/repo` 或空 | 覆盖编译期默认更新源；空=用内置默认值 |
