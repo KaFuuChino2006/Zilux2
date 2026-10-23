@@ -333,20 +333,28 @@
   transition: transform .34s cubic-bezier(.34, 1.56, .64, 1), width .34s cubic-bezier(.34, 1.56, .64, 1), left .34s cubic-bezier(.34, 1.56, .64, 1);
 }
 
-/* ---- 统一胶囊形状：所有选中滑块 / 轨道都使用完整胶囊圆角 + 同一白底阴影 ---- */
+/* ---- 统一胶囊形状：所有选中滑块 / 轨道都用「圆角带点方形」的造型 + 同一白底阴影 ---- */
 .pill-switch,
-.pill-switch-thumb,
 .seg,
-.seg-thumb,
-.seg .seg-btn,
 .quick-tabs,
-.quick-tab,
+.quick-seg-slider {
+  border-radius: 10px;
+}
+
+.pill-switch-thumb,
+.seg-thumb,
 .quick-thumb,
-.quick-seg-slider,
+.settings-nav-thumb,
+.seg .seg-btn,
+.quick-tab,
 .quick-seg-btn,
+.settings-nav-btn {
+  border-radius: 8px;
+}
+
 .settings-nav-thumb,
 .settings-nav-btn {
-  border-radius: var(--radius-pill);
+  border-radius: 9px;
 }
 
 .pill-switch,
