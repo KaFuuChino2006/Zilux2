@@ -118,10 +118,10 @@ export function audioTapGraphActive(): boolean {
   return mediaSource !== null;
 }
 
-/** 同步播放器音量：取流图存在时元素音量固定 1，音量为本地 gain。 */
-export function setAudioTapVolume(value: number): void {
+/** 同步播放器音量：取流图存在时元素音量固定 1，音量为本地 gain。immediate 时不做平滑，用于消除恢复播放的首帧爆音。 */
+export function setAudioTapVolume(value: number, immediate = false): void {
   localVolume = Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 1;
-  applyLocalGain();
+  applyLocalGain(immediate);
 }
 
 /**
@@ -355,11 +355,16 @@ function ensureScriptProcessor(ctx: AudioContext): boolean {
   }
 }
 
-function applyLocalGain(): void {
+function applyLocalGain(immediate = false): void {
   if (!context || !localGain) return;
   const target = running ? 0 : localVolume;
   try {
-    localGain.gain.setTargetAtTime(target, context.currentTime, 0.02);
+    if (immediate) {
+      localGain.gain.cancelScheduledValues(context.currentTime);
+      localGain.gain.setValueAtTime(target, context.currentTime);
+    } else {
+      localGain.gain.setTargetAtTime(target, context.currentTime, 0.02);
+    }
   } catch {
     localGain.gain.value = target;
   }

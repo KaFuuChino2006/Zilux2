@@ -165,13 +165,13 @@ function fadeTo(
   });
 }
 
-function applyPlaybackVolume(): void {
+function applyPlaybackVolume(immediate = false): void {
   // 均衡器 / 人声保留淡出都需要 Web Audio 图；开启时保证图已建立，音量随之交给本地 gain。
   if ((fx.eqEnabled || fx.fadeVocal) && !audioTapGraphActive()) ensureEqualizerGraph();
   const volume = state.volume * fadeScale;
   if (audioTapGraphActive()) {
     audio.volume = 1;
-    setAudioTapVolume(volume);
+    setAudioTapVolume(volume, immediate);
   } else {
     audio.volume = volume;
   }
@@ -521,7 +521,7 @@ function load(index: number, autoplay = true): void {
     fadeScale = fade > 0 ? 0 : 1;
     vocalHold = 0;
     setVocalFade(0);
-    applyPlaybackVolume();
+    applyPlaybackVolume(true);
     void audio
       .play()
       .then(() => {
@@ -652,7 +652,7 @@ function startPlayback(): Promise<void> {
     setVocalFade(0);
     vocalHold = 0;
   }
-  applyPlaybackVolume();
+  applyPlaybackVolume(true);
   return audio
     .play()
     .then(() => {
@@ -694,8 +694,9 @@ function pausePlayback(): void {
     vocalHold = vocalTail > 0 ? 1 : 0;
     if (vocalHold === 0) setVocalFade(0);
     setState({ playing: false });
-    fadeScale = 1;
-    applyPlaybackVolume();
+    // 保持 0 音量直到下次恢复播放，避免恢复瞬间 gain 从正常值回落的「首帧爆音」。
+    fadeScale = fx.fadeEnabled ? 0 : 1;
+    applyPlaybackVolume(true);
   };
   if (total > 0) {
     void fadeTo(0, total, token, fx.fadeCurve, (progress) => {
