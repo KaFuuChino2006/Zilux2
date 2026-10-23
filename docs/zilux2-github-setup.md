@@ -202,8 +202,10 @@ git config core.sshCommand "ssh -i C:/Users/13329/.ssh/zilux2_deploy -o Identiti
 Select-String -Path Directory.Build.props -Pattern '<Version>'
 ```
 
-当前是 `1.0.0`，对应 tag `v1.0.0`。**tag 去掉 `v` 必须等于 `<Version>`**，
+当前是 `1.1.3`，对应 tag `v1.1.3`。**tag 去掉 `v` 必须等于 `<Version>`**，
 否则 CI 会在「解析并校验版本号」步骤直接失败（这是故意加的 fail-fast）。
+
+> **发版节奏约定**：累计修复 / 优化超过 5 处，或新增功能累计 3 个以上，才递增 patch 版本并发 Release；不足门槛时只提交推送 `main`，不改版本、不打 tag。
 
 ### 5.2 打 tag 并推送
 
@@ -307,6 +309,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\release.ps1 -Version 1
 
 ## 8. 日常发版清单（TL;DR）
 
+0. 确认已达到发版门槛（修复/优化累计 >5 处，或新功能累计 ≥3 个）；否则只提交推送，不发版；
 1. 改 `Directory.Build.props` → `<Version>X.Y.Z</Version>`；
 2. 提交并推 `main`；
 3. `git tag -a vX.Y.Z -m "Zilux2 X.Y.Z"`；
