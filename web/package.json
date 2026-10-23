@@ -3,11 +3,6 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild"
-    ]
-  },
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
@@ -17,6 +12,7 @@
     "@chenglou/pretext": "1.0.0",
     "bidi-js": "^1.1.0",
     "pixi.js": "8.22.0",
+    "qrc-decoder": "^1.0.2",
     "qrcode": "^1.5.4",
     "require-from-string": "^2.0.2",
     "three": "^0.180.0",

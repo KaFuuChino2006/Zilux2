@@ -59,11 +59,11 @@ jobs:
           dotnet-version: 10.0.x
 
       # setup-node 的 pnpm 缓存需要先装好 pnpm，所以先跑 pnpm/action-setup。
-      # web/package.json 没有 packageManager 字段，这里显式指定 pnpm 9。
+      # 固定为本地开发所用版本，保证 pnpm-lock.yaml 与安装行为一致。
       - name: 安装 pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 11.28.5
 
       - name: 安装 Node.js 22（缓存 pnpm 依赖）
         uses: actions/setup-node@v4
