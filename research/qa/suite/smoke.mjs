@@ -69,21 +69,14 @@ await runSuite('smoke', '冒烟：应用基座 + 主要页面 + 控制台零错�
     return `正文 ${state.textLen} 字符`;
   });
 
-  await suite.step(`搜索「${SEARCH_KEYWORD}」：边打边搜 + Enter 出结果墙`, async () => {
-    const state = await openSearch(cdp, SEARCH_KEYWORD, { timeoutMs: 30000 });
-    // 结果墙先挂壳后填充（subtitle 先「加载中…」再出数字），多等几秒再统计行数
-    await cdp
-      .waitFor(`document.querySelectorAll('.wall .track-row').length > 0`, {
-        desc: '搜索结果行 .wall .track-row 出现',
-        timeoutMs: 25000,
-        intervalMs: 300,
-      })
-      .catch(() => {});
-    searchRows = (await wallState(cdp)).rows;
+  await suite.step(`搜索「${SEARCH_KEYWORD}」：竞态回归（input 后立即 Enter，12s 内出结果墙）`, async () => {
+    const state = await openSearch(cdp, SEARCH_KEYWORD);
+    searchRows = state.rows;
     suite.assert(state.title === `搜索「${SEARCH_KEYWORD}」`, `结果墙标题不符：${state.title}`);
     suite.assert(state.sub.length > 0, '结果墙 subtitle 为空');
+    suite.assert(state.rows > 0, '结果墙行数为 0');
     await suite.shot('search');
-    return `title=${state.title} | sub=${state.sub} | rows=${searchRows}`;
+    return `title=${state.title} | sub=${state.sub} | rows=${state.rows} | ${state.elapsedMs}ms`;
   });
 
   await suite.step('搜索结果行 / 下载按钮', async () => {

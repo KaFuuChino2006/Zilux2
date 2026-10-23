@@ -71,10 +71,17 @@ export async function wallState(cdp) {
 }
 
 /**
- * 打开搜索并提交关键词，等到结果墙（title = 搜索「kw」且 subtitle 不再是「搜索中」）。
- * 返回 { title, sub }。
+ * 打开搜索并提交关键词，等到结果墙完成：
+ * title = 搜索「kw」、副标题含「首」、不含「加载中」/「搜索中」、且 `.wall .track-row` 行数 > 0。
+ * 返回 { title, sub, rows, elapsedMs }。
+ *
+ * 这是**真实竞态路径**的回归用例（task-8）：input 事件后同一轮 JS 立即（<50ms）派发 Enter。
+ * 2026-10 曾因此让「边打边搜」preview 的 220ms 防抖在 commitSearch 之后 ++searchSeq，
+ * 把提交的流式 onUpdate / 最终墙面赋值全部作废 → 墙面永久卡在「已找到 N 首 · 加载中…」。
+ * 产品修复（commitSearch 开头 clearTimeout(searchTimer)）后应在 12s 内完成；
+ * 若这里超时/仍含「加载中」→ 竞态回归，直接当产品 bug 报 Lead（附截图 + host.log）。
  */
-export async function openSearch(cdp, keyword, { timeoutMs = 30000, settleMs = 200 } = {}) {
+export async function openSearch(cdp, keyword, { timeoutMs = 12000, settleMs = 150 } = {}) {
   if (!(await cdp.eval(`document.querySelector('.search-dock') && document.querySelector('.search-dock').dataset.open === 'true'`))) {
     await cdp.click(SEL.searchDock, { desc: '搜索框 .search-dock' });
   }
@@ -82,6 +89,9 @@ export async function openSearch(cdp, keyword, { timeoutMs = 30000, settleMs = 2
     desc: '搜索面板展开（data-open=true）',
     timeoutMs: 8000,
   });
+  const submittedAt = Date.now();
+  // 关键：input 与 Enter 在同一个 eval 里连续派发，两次事件间隔 ≈0ms（<50ms），
+  // 故意让「边打边搜」的 220ms 防抖定时器在产品 commitSearch 之后才到期，覆盖竞态。
   await cdp.eval(`(() => {
     const input = document.querySelector('.search-dock input');
     if (!input) return false;
@@ -96,12 +106,18 @@ export async function openSearch(cdp, keyword, { timeoutMs = 30000, settleMs = 2
     `(() => {
       const t = (document.querySelector('.wall-title') && document.querySelector('.wall-title').textContent || '').trim();
       const s = (document.querySelector('.wall-sub') && document.querySelector('.wall-sub').textContent || '').trim();
-      return t === ${JSON.stringify(wantTitle)} && s.indexOf('搜索中') === -1 ? { title: t, sub: s } : null;
+      if (t !== ${JSON.stringify(wantTitle)}) return null;
+      if (s.indexOf('加载中') !== -1 || s.indexOf('搜索中') !== -1) return null;
+      if (s.indexOf('首') === -1) return null;
+      const rows = document.querySelectorAll('.wall .track-row').length;
+      if (rows === 0) return null;
+      return { title: t, sub: s, rows };
     })()`,
-    { desc: `搜索结果墙「${keyword}」`, timeoutMs, intervalMs: 300 },
+    { desc: `搜索结果墙「${keyword}」（input 后立即 Enter，12s 内完成）`, timeoutMs, intervalMs: 150 },
   );
+  const elapsedMs = Date.now() - submittedAt;
   await sleep(settleMs);
-  return state;
+  return { ...state, elapsedMs };
 }
 
 /** 读取 localStorage（字符串，null 表示不存在）。 */
