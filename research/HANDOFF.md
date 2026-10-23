@@ -2,6 +2,7 @@
 
 > 更新时间：2026-10-23（更新通道 v1.0.0 完成）
 > 当前版本：**1.0.0**（唯一来源：根目录 `Directory.Build.props`；安装包 `dist/Zilux2-Setup-1.0.0.exe`）
+> 代码仓库：`KaFuuChino2006/Zilux2`（**private**，已推送 `main`；tag `v1.0.0` 仅本地、未发布，等将来公开仓库再推）
 > 本文件给下一个接手的 AI / 开发者：读完即可继续开发。
 
 ## 1. 项目是什么
@@ -138,6 +139,7 @@ powershell -File tools/release.ps1 -DryRun   # 演练；去掉 -DryRun 真发版
 
 - 版本号统一由 `Directory.Build.props` 控制（当前 **1.0.0**）；`%LOCALAPPDATA%\Programs\Zilux2` 装的是最近一次构建（自动更新会改装到更新版本）。
 - 更新通道（本窗口完成）：GitHub Releases 自动检查 → 后台下载 → 提示安装 → 静默安装并重启；设置页「更新」分区；GitHub Actions 自动发版。已用本地 mock Release 真机实测 1.0.0 → 1.0.1 全链路。
+- 代码已推到私有仓库 `KaFuuChino2006/Zilux2`（`main` 含完整历史；`v1.0.0` tag 仅本地，尚未发布 Release）。`origin` 为 SSH over 443，见 §9。
 - 本窗口已完成：房间效果系列（歌词颜色跟随/流星/粒子 3D/自定义）、发现页全量能力、歌曲信息、本地标签歌手 + 歌手页、本地曲库管理、统一下载 + 音质、顶部预期条、首页双收藏卡、应用内确认框、窗口动画设置。
 - 详细更新清单：`research/UPDATES-2026-10-23.md`。
 
@@ -145,11 +147,12 @@ powershell -File tools/release.ps1 -DryRun   # 演练；去掉 -DryRun 真发版
 
 - 设计/协议/发版说明：`docs/zilux2-update-channel.md`；建仓与首发步骤：`docs/zilux2-github-setup.md`。
 - 版本唯一来源：根目录 `Directory.Build.props` 的 `<Version>`（宿主/安装器继承；改它即改版本号）。
-- 默认更新源：编译期注入 `ZiluxUpdateRepo`（默认占位 `zilux2/Zilux2`，CI 用 `github.repository` 覆盖）；运行时设置 `updates.repo` 可覆盖。
+- 默认更新源：编译期注入 `ZiluxUpdateRepo`（`Directory.Build.props` 默认 `KaFuuChino2006/Zilux2`，CI 用 `github.repository` 覆盖）；运行时设置 `updates.repo` 可覆盖。
 - 资产：`Zilux2-Setup-<version>.exe`；宿主下载到 `%LOCALAPPDATA%\Zilux2\updates\`，校验 GitHub `digest`（sha256）后以 `--silent --no-shortcuts --launch --dir <安装目录>` 静默安装并重启。
 - 默认 `updates.mode="auto"`（自动下载+提示安装），可切 `"notify"`（只提示）；`updates.autoCheck` 控制启动检查 + 每 4 小时轮询。
 - 发版：改 props 版本 → 提交 → `tools\release.ps1`（或 push tag `v<version>`，Actions 自动构建发布）。
 - 仓库可见性：应用内更新走未认证 GitHub API，**只有公开仓库的 Release 可见**；开发期可先建私有仓库存代码（先不推 tag），要发布更新时把仓库切 public 再推 tag。客户端对 404 的提示为「仓库不存在、未公开，或还没发布 Release」。
+- 本机网络：`github.com:443`（HTTPS）被重置/超时，`origin` 走 **SSH over 443**：`ssh://git@ssh.github.com:443/KaFuuChino2006/Zilux2.git`，deploy key 在 `C:\Users\13329\.ssh\zilux2_deploy`，仓库本地已配 `core.sshCommand`；细节见 `docs/zilux2-github-setup.md` §4.3。
 - 注意：更新包未做代码签名（SmartScreen 会提示，属预期）。
 
 ## 10. 已知限制 / TODO

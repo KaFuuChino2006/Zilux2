@@ -82,7 +82,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\make-installer.ps1 -Ve
 
 - 应用内更新：宿主检查 GitHub Releases 最新版 → 自动后台下载 → 提示「立即安装并重启」→ 静默安装并重启；设置 → 更新 可切「仅提示」或改更新源。
 - 版本号唯一来源：根目录 `Directory.Build.props` 的 `<Version>`；发版只改这里，然后 `tools\release.ps1` 或 push tag `v1.0.0` 触发 Actions 自动构建发布。
-- 更新源默认占位 `zilux2/Zilux2`，仓库建好后 CI 自动注入真实 `owner/repo`；也可在 设置 → 更新源 覆盖。
+- 更新源默认 `KaFuuChino2006/Zilux2`（见根 `Directory.Build.props`），CI 会用 `github.repository` 注入真实 `owner/repo`；也可在 设置 → 更新源 覆盖。
 - 建仓/首发步骤见 `docs/zilux2-github-setup.md`，协议见 `docs/zilux2-update-channel.md`。仓库需为 public。
 - **私有仓库模式**：可以先把代码 push 到 private 仓库（先不推 tag）；等要正式发布更新时，把仓库切成 public 再推 tag 触发 Release。匿名 GitHub API 查不到私有仓库的 Release，应用内更新会提示「未找到可用版本」。
 
