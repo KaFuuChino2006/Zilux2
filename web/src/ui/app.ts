@@ -106,6 +106,7 @@ import {
   disposeDownloadQueue,
   initDownloadQueue,
   isDownloadPanelOpen,
+  toggleDownloadPanel,
 } from './downloadQueue';
 import type { PlayScope } from './home';
 import type { HomeCollection, HomeData } from './home';
@@ -558,6 +559,7 @@ export class App {
       { key: 'discover', label: '发现', iconName: 'compass', onClick: () => void this.showDiscover() },
       { key: 'playlists', label: '我的歌单', iconName: 'list', onClick: () => void this.openPlaylistSheet() },
       { key: 'local', label: '本地曲库', iconName: 'folder', onClick: () => this.showLocal() },
+      { key: 'downloads', label: '下载队列', iconName: 'download', onClick: () => toggleDownloadPanel() },
       { key: 'airplay', label: '投送', iconName: 'airplay', onClick: () => this.toggleAirplayPop() },
     ];
     for (const item of items) {
@@ -1912,6 +1914,10 @@ export class App {
   /** 确认（Enter / 查看全部）：渐变过渡成普通墙面列表。 */
   private async commitSearch(): Promise<void> {
     this.wallPager = null;
+    // 取消尚未触发的「边打边搜」预览：否则它会在本方法 ++searchSeq 之后才执行并再 ++searchSeq，
+    // 把本次提交的流式 onUpdate / 最终结果全部判为过期丢弃，墙面会永久停在「加载中…」。
+    window.clearTimeout(this.searchTimer);
+    this.searchTimer = 0;
     const keyword = this.searchInput.value.trim();
     if (!keyword) {
       toast('先输入要搜索的歌曲或歌手');
