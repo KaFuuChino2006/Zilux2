@@ -48,8 +48,11 @@ export function createEqCurve(options: EqCurveOptions = {}): EqCurve {
   const xForFreq = (freq: number, width: number): number =>
     ((Math.log10(freq) - Math.log10(MIN_FREQ)) / (Math.log10(MAX_FREQ) - Math.log10(MIN_FREQ))) * width;
 
+  // 注意：这里不能复用 clampGain（它会取整），否则平滑曲线会被量化成台阶。
   const yForGain = (gain: number, height: number): number => {
-    const ratio = (clampGain(gain) - EQ_GAIN_MIN) / (EQ_GAIN_MAX - EQ_GAIN_MIN);
+    const raw = Number.isFinite(gain) ? gain : 0;
+    const value = Math.max(EQ_GAIN_MIN, Math.min(EQ_GAIN_MAX, raw));
+    const ratio = (value - EQ_GAIN_MIN) / (EQ_GAIN_MAX - EQ_GAIN_MIN);
     return height - PADDING_Y - ratio * (height - PADDING_Y * 2);
   };
 
@@ -58,21 +61,69 @@ export function createEqCurve(options: EqCurveOptions = {}): EqCurve {
     return clampGain(EQ_GAIN_MIN + ratio * (EQ_GAIN_MAX - EQ_GAIN_MIN));
   };
 
-  /** 在对数频率轴上，按相邻节点线性插值，得到任意频点的 dB。 */
-  const gainAtFreq = (freq: number): number => {
-    const first = EQ_BAND_FREQS[0] ?? 31;
-    const last = EQ_BAND_FREQS[EQ_BAND_FREQS.length - 1] ?? 16000;
-    if (freq <= first) return gains[0] ?? 0;
-    if (freq >= last) return gains[gains.length - 1] ?? 0;
-    for (let i = 0; i < EQ_BAND_FREQS.length - 1; i += 1) {
-      const a = EQ_BAND_FREQS[i] ?? first;
-      const b = EQ_BAND_FREQS[i + 1] ?? last;
-      if (freq >= a && freq <= b) {
-        const t = (Math.log10(freq) - Math.log10(a)) / (Math.log10(b) - Math.log10(a) || 1);
-        return (gains[i] ?? 0) + ((gains[i + 1] ?? 0) - (gains[i] ?? 0)) * t;
+  /**
+   * 在对数频率轴上做单调三次插值（Fritsch–Carlson / PCHIP），得到穿过各节点、
+   * 且不会在节点之间产生过冲的平滑频响曲线。
+   */
+  const logFreqs = EQ_BAND_FREQS.map((freq) => Math.log10(freq));
+  const slopes: number[] = new Array(EQ_BAND_FREQS.length).fill(0);
+
+  const computeSlopes = (): void => {
+    const n = EQ_BAND_FREQS.length;
+    if (n < 2) return;
+    const delta: number[] = new Array(n - 1);
+    for (let i = 0; i < n - 1; i += 1) {
+      const dx = (logFreqs[i + 1] ?? 0) - (logFreqs[i] ?? 0) || 1;
+      delta[i] = ((gains[i + 1] ?? 0) - (gains[i] ?? 0)) / dx;
+    }
+    slopes[0] = delta[0] ?? 0;
+    slopes[n - 1] = delta[n - 2] ?? 0;
+    for (let i = 1; i < n - 1; i += 1) {
+      const prev = delta[i - 1] ?? 0;
+      const next = delta[i] ?? 0;
+      if (prev * next <= 0) {
+        slopes[i] = 0;
+      } else {
+        const average = (prev + next) / 2;
+        const limit = 3 * Math.min(Math.abs(prev), Math.abs(next));
+        slopes[i] = Math.max(-limit, Math.min(limit, average));
       }
     }
-    return 0;
+    const clampEndpoint = (i: number, dIndex: number): void => {
+      const m = slopes[i] ?? 0;
+      const d = delta[dIndex] ?? 0;
+      if (m * d <= 0) slopes[i] = 0;
+      else if (Math.abs(m) > 3 * Math.abs(d)) slopes[i] = 3 * d;
+    };
+    clampEndpoint(0, 0);
+    clampEndpoint(n - 1, n - 2);
+  };
+
+  /** 任意频点的增益（dB），平滑插值穿过 10 个节点。 */
+  const gainAtFreq = (freq: number): number => {
+    const n: number = EQ_BAND_FREQS.length;
+    if (n === 0) return 0;
+    const first = EQ_BAND_FREQS[0] ?? 31;
+    const last = EQ_BAND_FREQS[n - 1] ?? 16000;
+    if (freq <= first) return gains[0] ?? 0;
+    if (freq >= last) return gains[n - 1] ?? 0;
+    const x = Math.log10(freq);
+    for (let i = 0; i < n - 1; i += 1) {
+      const x0 = logFreqs[i] ?? 0;
+      const x1 = logFreqs[i + 1] ?? x0;
+      if (x < x0 || x > x1) continue;
+      const h = x1 - x0 || 1;
+      const t = (x - x0) / h;
+      const t2 = t * t;
+      const t3 = t2 * t;
+      const y0 = gains[i] ?? 0;
+      const y1 = gains[i + 1] ?? 0;
+      const m0 = slopes[i] ?? 0;
+      const m1 = slopes[i + 1] ?? 0;
+      return (2 * t3 - 3 * t2 + 1) * y0 + (t3 - 2 * t2 + t) * h * m0
+        + (-2 * t3 + 3 * t2) * y1 + (t3 - t2) * h * m1;
+    }
+    return gains[n - 1] ?? 0;
   };
 
   const draw = (): void => {
@@ -117,8 +168,9 @@ export function createEqCurve(options: EqCurveOptions = {}): EqCurve {
       ctx.stroke();
     }
 
-    // 曲线采样（对数频率轴）
-    const samples = Math.max(80, Math.floor(width / 3));
+    // 曲线采样（对数频率轴，单调三次插值，穿过各节点）
+    computeSlopes();
+    const samples = Math.max(120, Math.floor(width / 2));
     const points: Array<{ x: number; y: number }> = [];
     for (let i = 0; i <= samples; i += 1) {
       const t = i / samples;
@@ -146,6 +198,7 @@ export function createEqCurve(options: EqCurveOptions = {}): EqCurve {
     ctx.strokeStyle = accent;
     ctx.lineWidth = 2;
     ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
     ctx.stroke();
 
     // 节点
