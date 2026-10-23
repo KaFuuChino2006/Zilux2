@@ -268,3 +268,24 @@
 .quick-eq-curve .eq-curve + .eq-curve-hint {
   margin-top: 4px;
 }
+
+/* 统一所有分段控件（seg）选中态：白底金字的胶囊，与快捷设置 tab / 胶囊开关一致 */
+.seg .seg-btn.is-on,
+.seg-btn.is-on {
+  background: var(--panel-strong, #fff);
+  color: var(--accent-strong, var(--accent));
+  font-weight: 600;
+  border-radius: var(--radius-pill);
+  box-shadow: 0 2px 8px rgb(var(--ink-rgb) / .13);
+}
+
+.seg .seg-btn.is-on:hover,
+.seg-btn.is-on:hover {
+  color: var(--accent-strong, var(--accent));
+}
+
+/* 分段控件轨道统一为浅色凹槽，选中项浮起 */
+.seg {
+  background: rgb(var(--overlay-rgb) / .055);
+}
+
