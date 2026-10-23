@@ -88,3 +88,164 @@
 .quick-eq-presets::-webkit-scrollbar {
   display: none;
 }
+
+/* ---- 设置两栏布局：左侧导航 + 右侧内容（选中项为白底金色 pill，与快捷设置 tab 一致） ---- */
+
+.sheet.is-center .sheet-body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0 24px 22px;
+}
+
+.settings-layout {
+  display: flex;
+  gap: 18px;
+  flex: 1;
+  min-height: 0;
+}
+
+.settings-nav {
+  width: 164px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border-radius: 14px;
+  background: rgb(var(--overlay-rgb) / .05);
+  overflow: auto;
+}
+
+.settings-nav-btn {
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 9px;
+  text-align: left;
+  font-size: 13px;
+  color: var(--text-soft);
+  transition: background .18s var(--ease), color .18s var(--ease), box-shadow .18s var(--ease);
+}
+
+.settings-nav-btn:hover {
+  color: var(--text);
+}
+
+.settings-nav-btn.is-on {
+  background: var(--panel-strong, #fff);
+  color: var(--accent-strong, var(--accent));
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .16);
+}
+
+.settings-content {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: 4px 6px 24px 2px;
+}
+
+.settings-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.settings-pane[hidden] {
+  display: none;
+}
+
+/* 左侧导航已经显示分区名，pane 内不再重复大标题 */
+.settings-pane > .section > .section-title {
+  display: none;
+}
+
+/* ---- 统一开关：关 / 开 双段胶囊，白色滑块 + 金色文字 ---- */
+
+.pill-switch {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  padding: 3px;
+  border-radius: 10px;
+  background: rgb(var(--overlay-rgb) / .06);
+}
+
+.pill-switch-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: calc(50% - 3px);
+  height: calc(100% - 6px);
+  border-radius: 8px;
+  background: var(--panel-strong, #fff);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .18);
+  transition: transform .22s var(--ease);
+}
+
+.pill-switch.is-on .pill-switch-thumb {
+  transform: translateX(100%);
+}
+
+.pill-switch-btn {
+  position: relative;
+  z-index: 1;
+  min-width: 40px;
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+  color: var(--muted);
+  transition: color .18s var(--ease);
+}
+
+.pill-switch-btn.is-on {
+  color: var(--accent-strong, var(--accent));
+  font-weight: 600;
+}
+
+/* ---- 均衡器曲线卡片 ---- */
+
+.eq-curve-card {
+  margin: 2px 0 6px;
+  padding: 10px 12px 8px;
+  border-radius: 14px;
+  background: rgb(var(--overlay-rgb) / .04);
+  border: 1px solid var(--line);
+}
+
+.eq-curve {
+  display: block;
+  width: 100%;
+  height: 150px;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.eq-curve.is-disabled {
+  opacity: .55;
+  cursor: default;
+}
+
+.eq-curve-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+/* 快捷设置里的迷你曲线 */
+.quick-eq-curve {
+  margin: 8px 0 2px;
+  border-radius: 10px;
+  background: rgb(var(--overlay-rgb) / .04);
+  padding: 6px;
+}
+
+.quick-eq-curve .eq-curve {
+  height: 104px;
+}
+
+.quick-eq-curve .eq-curve + .eq-curve-hint {
+  margin-top: 4px;
+}
