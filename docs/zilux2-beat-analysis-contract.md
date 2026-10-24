@@ -47,9 +47,11 @@ GET http://127.0.0.1:<port>/api/analysis?source=local&rel=<rel>&token=<token>
   "title": "歌名",
   "artist": "歌手",
   "durationMs": 214500,
+  "audibleEndMs": 208400,
+  "tailSilenceMs": 6100,
   "cached": false,
   "elapsedMs": 1834,
-  "analyzer": "p0-1",
+  "analyzer": "p0-4",
   "analysis": {
     "bpm": 128.0,
     "bpmConfidence": 0.87,
@@ -72,6 +74,8 @@ GET http://127.0.0.1:<port>/api/analysis?source=local&rel=<rel>&token=<token>
 
 | 字段 | 含义 |
 |---|---|
+| `audibleEndMs` | **响应顶层字段**。「可听结尾」位置（ms，相对音频文件起点，`0..durationMs`）：排除尾部静音后最后一个可听样本的结束位置（向上取整到 ms）。没有有效尾部静音时等于 `durationMs`。供无缝衔接把交叉淡化终点对齐到音乐结束。 |
+| `tailSilenceMs` | **响应顶层字段**。尾端静音长度 = `durationMs - audibleEndMs`；尾部静音不足阈值（300 ms）时为 `0`。 |
 | `beatIntervalMs` | 平均拍间隔（毫秒，浮点）；P0 假设全曲恒定速度 |
 | `firstBeatMs` | 第一拍的时间（相对音频文件起点） |
 | `firstDownbeatMs` | 第一小节强拍时间，`(firstDownbeatMs-firstBeatMs)/beatIntervalMs` 是整数相位 |
@@ -83,6 +87,14 @@ GET http://127.0.0.1:<port>/api/analysis?source=local&rel=<rel>&token=<token>
 
 时间基准：**相对音频文件起点**。本地 CUE 分轨（`track.startAt > 0`）时，页面用
 `positionMs + startAt` 对齐到文件时间轴后使用。
+
+尾端静音检测（analyzer `p0-4` 起，宿主在解码重采样后的单声道 PCM 上计算）：
+
+- 阈值 `-50 dBFS`（RMS）；按 20 ms 窗口从尾部向前扫描，连续静音 ≥300 ms 才视为有效尾部静音；
+- 至少保留 10% 时长（防止把整首/近乎整首误判成静音）；结果钳制在 `0..durationMs`；
+- 无有效尾部静音（含尾部静音 <300 ms）时 `audibleEndMs = durationMs`、`tailSilenceMs = 0`；
+- 全静音音频按「至少保留 10%」返回 `audibleEndMs ≈ durationMs*10%`；
+- 字段放在响应顶层（与 `durationMs` 同级），不改动 `analysis` 子对象已有字段语义。
 
 ### 2.2 失败响应
 
@@ -103,7 +115,8 @@ GET http://127.0.0.1:<port>/api/analysis?source=local&rel=<rel>&token=<token>
 
 - 解码：宿主 `MediaFoundationReader`（mp3/flac/wav/m4a，Windows 内置解码器）；不支持格式返回 `decode-failed`。
 - 分析：单声道 22050 Hz 重采样 → 谱通量 onset → 自相关/tempogram 求 BPM →
-  动态规划拍点跟踪 → 强拍相位选择 → 小节级 novelty 求乐句。C# 实现，复用/参考
+  动态规划拍点跟踪 → 强拍相位选择 → 小节级 novelty 求乐句；解码后的 PCM 上另做尾端静音
+  检测（§2.1 的 `audibleEndMs`/`tailSilenceMs`）。C# 实现，复用/参考
   `src/Zilux2/Audio/AudioFeatures.cs` 的 radix-2 FFT。
 - 目标耗时：4 分钟曲目 < 2 s（不含在线下载）；在线下载取决于网络。
 - 线程：分析在后台线程池执行，禁止阻塞 UI 线程；HTTP 处理器里 await。
