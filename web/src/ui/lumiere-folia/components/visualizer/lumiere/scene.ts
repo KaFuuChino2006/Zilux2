@@ -11,6 +11,7 @@ import { createMotes, type MotesLayer } from './light/motes';
 import { MAX_BEAMS, resolveBeams, type LightRig, type ResolvedBeam } from './light/rig';
 import { createStarfall, starfallIgnition } from './light/starfall';
 import type { LightSprites } from './light/sprites';
+import { resolveTextBeams } from './light/textBeams';
 import { createLineArt, showLineArtLayer, type LineArtLayer } from './lineart/lineArt';
 import { buildShotIconArts } from './lineart/themeIcons';
 import { keywordBurstColor, prepareLumiereKeywords } from './text/keywordColors';
@@ -438,33 +439,34 @@ export const createLumiereScene = (pixi: PixiModule, options: LumiereSceneOption
             color: palette.light,
             local: time - shots[shotIndex]!.startTime,
         });
-        let beams: ResolvedBeam[] = resolveBeams(rigs[index]!, time, aspect, drive(index, handoff));
-        let rig = rigs[index]!;
-        if (handoff < 1) {
-            const previous = resolveBeams(rigs[index - 1]!, time, aspect, drive(index - 1, 1 - handoff));
-            beams = [...beams, ...previous].sort((a, b) => b.intensity - a.intensity).slice(0, MAX_BEAMS);
-        }
-        if (handoff < 1 || glareK < 1) rig = blendRig(rigs[index - 1]!, rigs[index]!, handoff, glareK);
         // 仅显示歌词文字（textOnly）：图形组默认不画；纯字档开了「背景光柱」时只更新光场与雾。
         const beamsOnly = tuning.textOnly && tuning.textBeams === true;
+        let beams: ResolvedBeam[];
+        let rig: LightRig = rigs[index]!;
+        if (beamsOnly) {
+            // 纯字档的背景光柱由 Zilux2 自己布置（见 light/textBeams.ts）：固定构图 + 缓慢摆动/呼吸，
+            // 不再用 folia 光位里那套为绘光舞台设计的光束；「文字设置」的粗细与左右、上下微调照旧生效。
+            beams = resolveTextBeams({
+                time,
+                aspect,
+                color: palette.light,
+                intensity: intensity * tuning.lightIntensity * (1 + boost),
+                bass: Math.min(1, audio.bass) * response,
+                scale: tuning.textBeamScale,
+                offsetX: tuning.textBeamOffsetX,
+                offsetY: tuning.textBeamOffsetY,
+            });
+        } else {
+            // 光位：当前镜头的光束渐强、上一个镜头的渐弱，两套都进光场（超过上限时留最亮的）。
+            beams = resolveBeams(rigs[index]!, time, aspect, drive(index, handoff));
+            if (handoff < 1) {
+                const previous = resolveBeams(rigs[index - 1]!, time, aspect, drive(index - 1, 1 - handoff));
+                beams = [...beams, ...previous].sort((a, b) => b.intensity - a.intensity).slice(0, MAX_BEAMS);
+            }
+            if (handoff < 1 || glareK < 1) rig = blendRig(rigs[index - 1]!, rigs[index]!, handoff, glareK);
+        }
         // 残影回声：碎片的明暗与漂移跟着光束走，纯字档（有没有光柱）都要更新，否则碎片停在出生帧。
         echo?.update({ time, beams, color: lightHex, intensity: smooth(local / 1.2) * exit });
-        if (beamsOnly) {
-            // 纯字档的「背景光柱」可单独调粗细/长度与左右、上下位置：只改这一帧送进光场与字照明的光束数据。
-            const beamScale = tuning.textBeamScale;
-            const shiftX = tuning.textBeamOffsetX * aspect;
-            const shiftY = tuning.textBeamOffsetY;
-            if (beamScale !== 1 || shiftX !== 0 || shiftY !== 0) {
-                beams = beams.map(beam => ({
-                    ...beam,
-                    ox: beam.ox + shiftX,
-                    oy: beam.oy + shiftY,
-                    halfWidth: beam.halfWidth * beamScale,
-                    tanSpread: beam.tanSpread * beamScale,
-                    length: beam.length * beamScale,
-                }));
-            }
-        }
         if (!tuning.textOnly || beamsOnly) {
             field.update({
                 beams,
