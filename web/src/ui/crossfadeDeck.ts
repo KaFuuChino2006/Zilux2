@@ -26,23 +26,23 @@ import { h, toast, type Disposers } from './dom';
 /* 设置（localStorage）                                                */
 /* ------------------------------------------------------------------ */
 
-export type CrossfadeLength = 'auto' | '5' | '7' | '10';
+export type CrossfadeLength = 'auto' | number;
 
 export interface CrossfadeSettings {
   enabled: boolean;
-  /** auto = 按当前歌曲 4 小节自动决定（夹在 5–10 秒）；5/7/10 = 固定秒数 */
+  /** auto = 按当前歌曲 4 小节自动决定（夹在 5–10 秒）；3–30 的整数 = 固定秒数 */
   length: CrossfadeLength;
 }
 
 export const CROSSFADE_STORAGE_KEY = 'zilux2.crossfade';
 
+/** 手动过渡时长可选档位（秒）：覆盖 3–30 秒，并留「自动」。 */
+export const CROSSFADE_LENGTH_CHOICES: number[] = [3, 5, 8, 10, 15, 20, 30];
+const LENGTH_MIN_SEC = 3;
+const LENGTH_MAX_SEC = 30;
+
 const DEFAULT_SETTINGS: CrossfadeSettings = { enabled: true, length: 'auto' };
-const LENGTH_VALUES: CrossfadeLength[] = ['5', '7', '10', 'auto'];
-const FIXED_LENGTH_MS: Record<Exclude<CrossfadeLength, 'auto'>, number> = {
-  '5': 5_000,
-  '7': 7_000,
-  '10': 10_000,
-};
+const LENGTH_VALUES: CrossfadeLength[] = [...CROSSFADE_LENGTH_CHOICES, 'auto'];
 
 /** auto 长度 = 4 小节（按 A 的拍号与拍间隔），再夹在这个范围内。用户反馈过渡太短，保守取 5–10 秒。 */
 const AUTO_BARS = 4;
@@ -50,9 +50,9 @@ const AUTO_MIN_MS = 5_000;
 const AUTO_MAX_MS = 10_000;
 const AUTO_FALLBACK_MS = 7_000;
 
-/** 淡化太短听不出、太长会盖住半首歌，都夹住。 */
+/** 淡化太短听不出、太长会盖住半首歌，都夹住。上限按手动 30 秒留余量。 */
 const MIN_FADE_MS = 1_200;
-const MAX_FADE_MS = 12_000;
+const MAX_FADE_MS = 32_000;
 
 /** tick 到点前的提前量（rAF 约 16 ms 一帧，留一帧余量）。 */
 const TRIGGER_LEAD_MS = 120;
@@ -60,11 +60,13 @@ const TRIGGER_LEAD_MS = 120;
 const MISS_TOLERANCE_MS = 900;
 
 function normalizeLength(value: unknown): CrossfadeLength {
-  if (value === 'auto' || value === '5' || value === '7' || value === '10') return value;
-  // 旧版档位（4/6/8 秒）迁移到新的 5/7/10 秒档，避免 localStorage 里残留旧值被当成默认。
-  if (value === '4') return '5';
-  if (value === '6') return '7';
-  if (value === '8') return '10';
+  if (value === 'auto') return 'auto';
+  // 数字或数字字符串（旧版档位 4/5/6/7/8/10 秒同此路径）；夹在 3–30 秒。
+  const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : Number.NaN;
+  if (Number.isFinite(parsed)) {
+    const seconds = Math.round(parsed);
+    if (seconds >= LENGTH_MIN_SEC && seconds <= LENGTH_MAX_SEC) return seconds;
+  }
   return DEFAULT_SETTINGS.length;
 }
 
@@ -316,10 +318,10 @@ function pickDownbeatAtOrAfter(analysis: BeatAnalysis, fromFileMs: number, limit
   return best;
 }
 
-/** 本次淡化目标时长：固定值 或 auto（A 的 4 小节，夹 5–10 秒）。 */
+/** 本次淡化目标时长：手动秒数 或 auto（A 的 4 小节，夹 5–10 秒）。 */
 function resolveFadeLength(options: CrossfadePrepareOptions): number {
   const settings = readCrossfadeSettings();
-  if (settings.length !== 'auto') return FIXED_LENGTH_MS[settings.length];
+  if (settings.length !== 'auto') return settings.length * 1000;
   const analysis = options.currentAnalysis.analysis;
   const beat = analysis.beatIntervalMs > 0 ? analysis.beatIntervalMs : 500;
   const meter = analysis.meter >= 2 && analysis.meter <= 16 ? analysis.meter : 4;
@@ -800,7 +802,7 @@ export function buildCrossfadeSection(scope: Disposers | null): HTMLElement {
         class: 'analysis-toggle',
         type: 'button',
         'data-qa': 'crossfade-length',
-        'data-length': value,
+        'data-length': String(value),
         'aria-pressed': 'false',
         title:
           value === 'auto'
@@ -872,7 +874,7 @@ export function buildCrossfadeSection(scope: Disposers | null): HTMLElement {
           'div',
           {},
           h('div', { class: 'field-label', text: '过渡时长' }),
-          h('div', { class: 'field-hint', text: '自动 = 当前歌曲 4 小节（5–10 秒）' }),
+          h('div', { class: 'field-hint', text: '自动 = 当前歌曲 4 小节（5–10 秒）；手动可选 3–30 秒' }),
         ),
         lengthRow,
       ),
