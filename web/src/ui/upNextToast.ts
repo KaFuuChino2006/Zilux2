@@ -7,6 +7,8 @@ import type { PlayerState } from './player';
  * 顶部「正在播放 / 即将播放」预告条（单框形态）。
  *
  *   - 一个玻璃胶囊里始终只有一份内容：预告阶段显示「即将播放」的下一首 + 倒计时；
+ *   - 无缝衔接（B 版 Phase 1）淡化进行中时，同一框内改为「正在无缝过渡到」下一首，
+ *     进度条显示淡化进度、隐藏倒计时；
  *   - 切歌后同一个框内切换为「正在播放」并展示新歌曲，约 2.6 秒后收起；
  *   - 内容切换使用淡入淡出，倒计时数字用透明度渐变（不做弹跳）；
  *   - 点击框（预告阶段）立即切到下一首。
@@ -23,6 +25,24 @@ const MIN_REMAIN_MS = 250;
 const LINGER_MS = 2_600;
 /** 框内内容切换的淡出/写入时序。 */
 const SWAP_OUT_MS = 130;
+
+type ToastLabel = '即将播放' | '正在播放' | '正在无缝过渡到';
+type ToastPhase = 'hidden' | 'preview' | 'current' | 'transition';
+
+/** 交叉淡化进行中的快照（由 crossfadeDeck 挂在 window.__ziluxCrossfade 上）。 */
+interface CrossfadeSnapshotLike {
+  phase?: string;
+  progress?: number;
+  nextTitle?: string;
+}
+
+const readCrossfadeSnapshot = (): CrossfadeSnapshotLike | null => {
+  const holder = window as unknown as {
+    __ziluxCrossfade?: { snapshot?: () => CrossfadeSnapshotLike | null };
+  };
+  const bridge = holder.__ziluxCrossfade;
+  return bridge && typeof bridge.snapshot === 'function' ? bridge.snapshot() : null;
+};
 
 export function createUpNextToast(onSkip: () => void): UpNextToastHandle {
   const cover = h('img', { class: 'unt-cover', alt: '' }) as HTMLImageElement;
@@ -47,24 +67,32 @@ export function createUpNextToast(onSkip: () => void): UpNextToastHandle {
   let lastTrackKey = '';
   let lastPreviewKey = '';
   let lingerUntil = 0;
-  let phase: 'hidden' | 'preview' | 'current' = 'hidden';
+  let phase: ToastPhase = 'hidden';
   let secondsTarget = '';
   let secondsTimer = 0;
   let swapTimer = 0;
   let kickerTimer = 0;
   let currentSrc = '';
   let contentKey = '';
+  let lastTransitionKey = '';
 
   const trackKeyOf = (state: PlayerState): string =>
     state.track ? `${state.track.source}:${state.track.id}` : '';
 
-  const setPhase = (nextPhase: 'hidden' | 'preview' | 'current'): void => {
+  const setPhase = (nextPhase: ToastPhase): void => {
     if (phase === nextPhase) return;
     phase = nextPhase;
     element.classList.toggle('is-current', nextPhase === 'current');
+    element.classList.toggle('is-transition', nextPhase === 'transition');
     element.setAttribute(
       'aria-label',
-      nextPhase === 'current' ? '正在播放' : nextPhase === 'preview' ? '即将播放下一首' : '',
+      nextPhase === 'current'
+        ? '正在播放'
+        : nextPhase === 'preview'
+          ? '即将播放下一首'
+          : nextPhase === 'transition'
+            ? '正在无缝过渡到下一首'
+            : '',
     );
     if (nextPhase !== 'preview') {
       fill.style.width = '0%';
@@ -94,7 +122,7 @@ export function createUpNextToast(onSkip: () => void): UpNextToastHandle {
   };
 
   /** 在同一个框内淡出→换内容→淡入，避免两个独立框并列。 */
-  const swapContent = (track: OnlineTrack | null, label: '即将播放' | '正在播放'): void => {
+  const swapContent = (track: OnlineTrack | null, label: ToastLabel): void => {
     if (!track) return;
     const key = `${label}:${track.source}:${track.id}`;
     if (key === contentKey) return;
@@ -120,7 +148,7 @@ export function createUpNextToast(onSkip: () => void): UpNextToastHandle {
     state.mode === 'list' ? state.queue[state.index + 1] ?? null : null;
 
   /** 只把 kicker 文案渐变过去（预告 → 正在播放时，标题/封面是同一个人，不需要整体重播动画）。 */
-  const swapKicker = (label: '即将播放' | '正在播放'): void => {
+  const swapKicker = (label: ToastLabel): void => {
     if (kicker.textContent === label) return;
     window.clearTimeout(kickerTimer);
     kicker.classList.add('is-swapping');
@@ -130,6 +158,24 @@ export function createUpNextToast(onSkip: () => void): UpNextToastHandle {
     }, 140);
   };
 
+  /** 无缝衔接淡化进行中：同一框内显示「正在无缝过渡到」+ 淡化进度，隐藏倒计时。 */
+  const renderTransition = (snapshot: CrossfadeSnapshotLike, state: PlayerState): void => {
+    const next = upcoming(state);
+    if (next) {
+      lastTransitionKey = `${next.source}:${next.id}`;
+      swapContent(next, '正在无缝过渡到');
+    } else {
+      const nextTitle = (snapshot.nextTitle ?? '').trim();
+      if (kicker.textContent !== '正在无缝过渡到') swapKicker('正在无缝过渡到');
+      if (nextTitle.length > 0 && title.textContent !== nextTitle) title.textContent = nextTitle;
+      contentKey = `transition:${nextTitle}`;
+    }
+    setPhase('transition');
+    const progress = Math.min(1, Math.max(0, snapshot.progress ?? 0));
+    fill.style.width = `${(progress * 100).toFixed(1)}%`;
+    setVisible(true);
+  };
+
   const enterCurrent = (track: OnlineTrack | null, cameFromPreview: boolean): void => {
     setPhase('current');
     lingerUntil = Date.now() + LINGER_MS;
@@ -137,6 +183,11 @@ export function createUpNextToast(onSkip: () => void): UpNextToastHandle {
     const key = `${track.source}:${track.id}`;
     if (cameFromPreview && key === lastPreviewKey) {
       // 预告的那首已经变成当前曲目：原地把「即将播放 + 倒计时」过渡成「正在播放」，不重放整体动画。
+      swapKicker('正在播放');
+      return;
+    }
+    if (key === lastTransitionKey) {
+      // 无缝过渡的那首已经变成当前曲目：内容不变，只把 kicker 换回「正在播放」。
       swapKicker('正在播放');
       return;
     }
@@ -162,6 +213,14 @@ export function createUpNextToast(onSkip: () => void): UpNextToastHandle {
       setVisible(true);
       return;
     }
+
+    // 无缝衔接淡化进行中：顶部预告条改为「正在无缝过渡到 …」。
+    const crossfade = readCrossfadeSnapshot();
+    if (crossfade && crossfade.phase === 'fading') {
+      renderTransition(crossfade, state);
+      return;
+    }
+    if (phase === 'transition') setPhase('hidden');
 
     const previewable =
       state.track && state.playing && !state.loading && state.mode === 'list' ? upcoming(state) : null;

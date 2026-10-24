@@ -5745,6 +5745,15 @@ body,
   opacity: 0;
   transform: translateX(6px);
 }
+/* 无缝过渡进行中：隐藏倒计时，kicker 用强调色，进度条显示淡化进度 */
+.upnext-toast.is-transition .unt-count {
+  max-width: 0;
+  opacity: 0;
+  transform: translateX(6px);
+}
+.upnext-toast.is-transition .unt-kicker {
+  color: var(--accent);
+}
 .unt-progress {
   position: absolute;
   left: 14px;
