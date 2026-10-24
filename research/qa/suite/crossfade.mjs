@@ -2,7 +2,7 @@
  * Zilux2 QA 套件 —— B 版 Phase 1「无缝衔接（crossfade）」回归（task-20）。
  *
  * 覆盖：
- *   1. 设置 → 播放页存在 `[data-qa="crossfade-section"]`；开关/时长选项（data-length=5|7|10|auto）与
+ *   1. 设置 → 播放页存在 `[data-qa="crossfade-section"]`；开关/时长选项（data-length=3|5|8|10|15|20|30|auto）与
  *      localStorage `zilux2.crossfade` 双向一致。
  *   2. 时长切换（5/7/10/auto）与开关切换：localStorage、UI（aria-pressed/文本）、调试快照三处同步。
  *   3. 播放链路（task-23）：本地曲库首曲播放后分析成功 → window.__ziluxCrossfade 进入 prepared；
@@ -30,7 +30,16 @@ import { CROSSFADE, CROSSFADE_TRIGGER_TIMEOUT_MS, PLAYERBAR_HOVER, LOCAL_FOLDER_
 
 const LOCAL_RAIL = '本地曲库';
 const FAVORITES_RAIL = '我喜欢的音乐';
-const LENGTH_LABELS = { '5': '5 秒', '7': '7 秒', '10': '10 秒', auto: '自动' };
+const LENGTH_LABELS = {
+  auto: '自动',
+  3: '3 秒',
+  5: '5 秒',
+  8: '8 秒',
+  10: '10 秒',
+  15: '15 秒',
+  20: '20 秒',
+  30: '30 秒',
+};
 /** task-23：web 按宿主 p0-4 的 audibleEndMs 调度淡化，fadeStartPosMs + fadeMs 应等于可听结尾（±200ms）。 */
 const AUDIBLE_END_TOLERANCE_MS = 200;
 

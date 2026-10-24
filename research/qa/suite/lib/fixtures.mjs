@@ -256,7 +256,8 @@ export function dirExists(dir) {
 export const CROSSFADE = {
   storageKey: 'zilux2.crossfade',
   defaults: { enabled: true, length: 'auto' },
-  lengths: ['5', '7', '10', 'auto'],
+  /** 手动档位可选 3–30 秒（2026-10-25 放宽），另加 auto。 */
+  lengths: ['auto', '3', '5', '8', '10', '15', '20', '30'],
   section: '[data-qa="crossfade-section"]',
   sectionTitle: '[data-qa="crossfade-section"] .section-title',
   toggle: '[data-qa="crossfade-toggle"]',
