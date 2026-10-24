@@ -11,7 +11,7 @@ import { createMotes, type MotesLayer } from './light/motes';
 import { MAX_BEAMS, resolveBeams, type LightRig, type ResolvedBeam } from './light/rig';
 import { createStarfall, starfallIgnition } from './light/starfall';
 import type { LightSprites } from './light/sprites';
-import { resolveTextBeams } from './light/textBeams';
+import { resolveTextBeams, textClock, TEXT_FOG_LOOP, TEXT_FOG_RIG } from './light/textBeams';
 import { createLineArt, showLineArtLayer, type LineArtLayer } from './lineart/lineArt';
 import { buildShotIconArts } from './lineart/themeIcons';
 import { keywordBurstColor, prepareLumiereKeywords } from './text/keywordColors';
@@ -441,13 +441,16 @@ export const createLumiereScene = (pixi: PixiModule, options: LumiereSceneOption
         });
         // 仅显示歌词文字（textOnly）：图形组默认不画；纯字档开了「背景光柱」时只更新光场与雾。
         const beamsOnly = tuning.textOnly && tuning.textBeams === true;
+        // 纯字档的光柱与雾动画走墙钟上的无缝循环（见 light/textBeams.ts），与播放进度无关：
+        // 拖动进度、重播、换歌都不会让光柱和雾跳变。
+        const beamClock = textClock();
         let beams: ResolvedBeam[];
         let rig: LightRig = rigs[index]!;
         if (beamsOnly) {
-            // 纯字档的背景光柱由 Zilux2 自己布置（见 light/textBeams.ts）：固定构图 + 缓慢摆动/呼吸，
-            // 不再用 folia 光位里那套为绘光舞台设计的光束；「文字设置」的粗细与左右、上下微调照旧生效。
+            // 纯字档的背景光柱由 Zilux2 自己布置（见 light/textBeams.ts）：固定构图 + 无缝循环的摆动/呼吸，
+            // 不再用 folia 光位里那套为绘光舞台设计的光束；「文字设置」的样式、粗细与左右、上下微调照旧生效。
             beams = resolveTextBeams({
-                time,
+                clock: beamClock,
                 aspect,
                 color: palette.light,
                 intensity: intensity * tuning.lightIntensity * (1 + boost),
@@ -455,7 +458,10 @@ export const createLumiereScene = (pixi: PixiModule, options: LumiereSceneOption
                 scale: tuning.textBeamScale,
                 offsetX: tuning.textBeamOffsetX,
                 offsetY: tuning.textBeamOffsetY,
+                style: tuning.textBeamStyle,
             });
+            // 纯字档的雾用固定光位 + 42 秒无缝循环，不再跟随 folia 镜头切换换参数。
+            rig = TEXT_FOG_RIG;
         } else {
             // 光位：当前镜头的光束渐强、上一个镜头的渐弱，两套都进光场（超过上限时留最亮的）。
             beams = resolveBeams(rigs[index]!, time, aspect, drive(index, handoff));
@@ -471,7 +477,8 @@ export const createLumiereScene = (pixi: PixiModule, options: LumiereSceneOption
             field.update({
                 beams,
                 rig,
-                time,
+                // 纯字档用循环时钟：雾按 42 秒无缝循环漂移，与播放进度脱钩。
+                time: beamsOnly ? beamClock : time,
                 // 整体响度让烟雾浓一点（最多 +20%）。
                 fogScale: tuning.fogDensity * (1 + boost * 0.5) * (1 + 0.2 * Math.min(1, audio.power) * response),
                 color: palette.light,
@@ -479,6 +486,7 @@ export const createLumiereScene = (pixi: PixiModule, options: LumiereSceneOption
                 glareScale: beamsOnly ? 0 : intensity * tuning.lightIntensity * (1 + boost * 1.5 + ignite),
                 dark: LUMIERE_SHADER_NO_DARK,
                 octaves: tuning.fogOctaves,
+                fogLoop: beamsOnly ? TEXT_FOG_LOOP : undefined,
                 // 字排在领头光位的文字区里（整个单元一份）。
                 textRegion: lead.region,
             });

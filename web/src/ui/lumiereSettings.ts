@@ -3,6 +3,7 @@
  * 数值存本机（localStorage），保存后由舞台实时应用；面板里的每一次拖动都走同一套应用逻辑做实时预览。
  */
 import { DEFAULT_LUMIERE_TUNING, type LumiereRenderQuality, type LumiereTuning } from './lumiere-folia/types';
+import type { TextBeamStyle } from './lumiere-folia/components/visualizer/lumiere/types';
 
 /** 文字设置可调的字段（是 LumiereTuning 的子集，外加画质档）。 */
 export interface LyricTextSettings {
@@ -25,6 +26,8 @@ export interface LyricTextSettings {
   renderQuality: LumiereRenderQuality;
   // 光柱（纯字档的画在文字后面的光柱与雾）
   beams: boolean;
+  /** 光柱样式：静光 / 缓息 / 流幕 / 聚光（见 lumiere-folia 的 light/textBeams.ts）。 */
+  beamStyle: TextBeamStyle;
   /** 光柱粗细与长度倍数（1 = 原始）。 */
   beamScale: number;
   /** 光柱整体左右偏移（按画面宽的比例，负左正右）。 */
@@ -53,6 +56,7 @@ export const DEFAULT_TEXT_SETTINGS: LyricTextSettings = {
   bloom: DEFAULT_LUMIERE_TUNING.bloom,
   renderQuality: DEFAULT_LUMIERE_TUNING.renderQuality,
   beams: true,
+  beamStyle: 'calm',
   beamScale: 1,
   beamOffsetX: 0,
   beamOffsetY: 0,
@@ -77,6 +81,8 @@ export function normalizeTextSettings(raw: Partial<LyricTextSettings> | null | u
   const bool = (value: unknown, fallback: boolean): boolean => (typeof value === 'boolean' ? value : fallback);
   const quality = (value: unknown, fallback: LumiereRenderQuality): LumiereRenderQuality =>
     value === 'full' || value === 'balanced' || value === 'low' ? value : fallback;
+  const beamStyle = (value: unknown, fallback: TextBeamStyle): TextBeamStyle =>
+    value === 'calm' || value === 'breathe' || value === 'curtain' || value === 'focus' ? value : fallback;
   return {
     unlitOpacity: num(raw.unlitOpacity, base.unlitOpacity, 0.05, 0.6),
     textBloom: num(raw.textBloom, base.textBloom, 0, 2),
@@ -93,6 +99,7 @@ export function normalizeTextSettings(raw: Partial<LyricTextSettings> | null | u
     bloom: num(raw.bloom, base.bloom, 0, 2),
     renderQuality: quality(raw.renderQuality, base.renderQuality),
     beams: bool(raw.beams, base.beams),
+    beamStyle: beamStyle(raw.beamStyle, base.beamStyle),
     beamScale: num(raw.beamScale, base.beamScale, 0.2, 3),
     beamOffsetX: num(raw.beamOffsetX, base.beamOffsetX, -0.8, 0.8),
     beamOffsetY: num(raw.beamOffsetY, base.beamOffsetY, -0.8, 0.8),
@@ -143,6 +150,7 @@ export function textSettingsToTuning(base: LumiereTuning, settings: LyricTextSet
     bloom: settings.bloom,
     renderQuality: settings.renderQuality,
     textBeams: settings.beams,
+    textBeamStyle: settings.beamStyle,
     textBeamScale: settings.beamScale,
     textBeamOffsetX: settings.beamOffsetX,
     textBeamOffsetY: settings.beamOffsetY,
