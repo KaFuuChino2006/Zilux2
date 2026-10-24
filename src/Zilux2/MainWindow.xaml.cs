@@ -1,10 +1,12 @@
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
 using Zilux2.AirPlay;
 using Zilux2.Audio;
+using Zilux2.Hotkeys;
 using Zilux2.Interop;
 using Zilux2.Media;
 using Zilux2.Settings;
@@ -56,37 +58,13 @@ public partial class MainWindow : Window
     private bool _pendingHideToTray;
     private readonly List<int> _registeredHotkeys = new();
 
-    // 全局热键：id 是 RegisterHotKey 的标识，action 与页面 command / 托盘菜单共用一套语义。
-    // 每组按顺序尝试候选组合，第一个注册成功的生效：不同机器上 Ctrl+Alt+Left/Right 可能被输入法/
-    // 显卡驱动/远程桌面占用（真机实测 error=1409），带候选兜底才能保证「上一首/下一首」总有热键。
-    private const uint HotkeyCtrlAlt = NativeMethods.ModControl | NativeMethods.ModAlt;
-    private const uint HotkeyCtrlAltShift = HotkeyCtrlAlt | NativeMethods.ModShift;
-
-    private readonly record struct HotkeyCandidate(uint Modifiers, uint VirtualKey, string Key);
-
-    private static readonly (int Id, string Action, HotkeyCandidate[] Candidates)[] HotkeySpecs =
-    {
-        (1, "togglePlay", new[]
-        {
-            new HotkeyCandidate(HotkeyCtrlAlt, NativeMethods.VkSpace, "Ctrl+Alt+Space"),
-        }),
-        (2, "prev", new[]
-        {
-            new HotkeyCandidate(HotkeyCtrlAlt, NativeMethods.VkLeft, "Ctrl+Alt+Left"),
-            new HotkeyCandidate(HotkeyCtrlAltShift, NativeMethods.VkLeft, "Ctrl+Alt+Shift+Left"),
-            new HotkeyCandidate(HotkeyCtrlAlt, NativeMethods.VkJ, "Ctrl+Alt+J"),
-        }),
-        (3, "next", new[]
-        {
-            new HotkeyCandidate(HotkeyCtrlAlt, NativeMethods.VkRight, "Ctrl+Alt+Right"),
-            new HotkeyCandidate(HotkeyCtrlAltShift, NativeMethods.VkRight, "Ctrl+Alt+Shift+Right"),
-            new HotkeyCandidate(HotkeyCtrlAlt, NativeMethods.VkK, "Ctrl+Alt+K"),
-        }),
-        (4, "toggleWindow", new[]
-        {
-            new HotkeyCandidate(HotkeyCtrlAlt, NativeMethods.VkZ, "Ctrl+Alt+Z"),
-        }),
-    };
+    // 全局热键：配置来自 settings.shortcuts（字符串解析见 HotkeyBinding，默认值/候选链见
+    // HotkeyCatalog）。_lastAppliedShortcuts 记录每个动作上一次注册成功的组合，用于非法配置时
+    // 保留可用注册；_shortcutItems/_shortcutStateJson 是回推页面的生效状态。
+    private readonly Dictionary<string, HotkeyBinding> _lastAppliedShortcuts = new(StringComparer.Ordinal);
+    private readonly List<ShortcutItemState> _shortcutItems = new();
+    private string? _shortcutStateJson;
+    private bool _shortcutsEnabled = true;
 
     internal MainWindow(
         WebContentPlan plan,
@@ -100,6 +78,13 @@ public partial class MainWindow : Window
         _audio = audio;
         _media = media;
         _airplay = airplay;
+        if (_settings is not null)
+        {
+            // 设置面板 patch/reset 改到 shortcuts 段时重新注册全局热键（回调在 UI 线程附近，
+            // OnShortcutsChanged 内部再做一次 Dispatcher 兜底）。
+            _settings.ShortcutsChanged += OnShortcutsChanged;
+        }
+
         InitializeComponent();
         SourceInitialized += OnSourceInitialized;
         Loaded += OnLoaded;
@@ -117,7 +102,7 @@ public partial class MainWindow : Window
     {
         _hwnd = new WindowInteropHelper(this).Handle;
         HwndSource.FromHwnd(_hwnd)?.AddHook(WndProc);
-        RegisterHotkeys();
+        ApplyShortcutSettings("startup");
     }
 
     private void OnLoaded(object? sender, RoutedEventArgs e)
@@ -156,6 +141,11 @@ public partial class MainWindow : Window
 
     private void OnClosed(object? sender, EventArgs e)
     {
+        if (_settings is not null)
+        {
+            _settings.ShortcutsChanged -= OnShortcutsChanged;
+        }
+
         App.ArmShutdownWatchdog();
         HostLog.Info("window.closed dispose begin");
         try
@@ -501,44 +491,182 @@ public partial class MainWindow : Window
         HostLog.Info("app.exit reason=sessionEnding");
     }
 
-    private void RegisterHotkeys()
+    private void OnShortcutsChanged()
     {
-        if (_hwnd == IntPtr.Zero)
+        // 设置 patch 从 WebView2 消息（UI 线程）来，理论上已经在这条线程；仍做一次兜底调度，
+        // 将来若有后台写入设置的路径也不会在非 UI 线程动 HWND。
+        if (!Dispatcher.CheckAccess())
         {
-            HostLog.Warn("hotkey.register skipped: hwnd not ready");
+            Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() => ApplyShortcutSettings("settings")));
             return;
         }
 
-        foreach (var spec in HotkeySpecs)
-        {
-            if (TryRegisterHotkey(spec.Id, spec.Action, spec.Candidates))
-            {
-                _registeredHotkeys.Add(spec.Id);
-            }
-        }
+        ApplyShortcutSettings("settings");
     }
 
     /// <summary>
-    /// 按候选顺序注册同一动作的热键，第一个成功的生效。全部候选都被占用时只记 WARN（不影响其它
-    /// 热键和启动），调用方也不把这个 id 加进待注销列表。
+    /// 设置驱动的热键注册（幂等：每次先全部注销再注册，可在启动、设置变更、reset 后反复调用）。
+    /// - enabled=false：全部关闭；
+    /// - 空字符串：该条关闭；
+    /// - 解析失败：保留该动作上一次注册成功的组合（标记 fallback），不让一次手误把热键弄丢；
+    /// - 仍是默认值的组合：保留候选回落链（Ctrl+Alt+Left 被占用时回落到 Ctrl+Alt+Shift+Left 等）；
+    /// - 用户改过的组合：只注册配置值。
     /// </summary>
-    private bool TryRegisterHotkey(int id, string action, HotkeyCandidate[] candidates)
+    private void ApplyShortcutSettings(string reason)
     {
-        foreach (var candidate in candidates)
+        if (_hwnd == IntPtr.Zero)
         {
-            if (NativeMethods.RegisterHotKey(_hwnd, id, candidate.Modifiers, candidate.VirtualKey))
+            HostLog.Warn($"hotkey.apply skipped reason={reason}: hwnd not ready");
+            return;
+        }
+
+        var settings = _settings?.ShortcutsSnapshot ?? new ShortcutSettings();
+        UnregisterHotkeys();
+        _shortcutItems.Clear();
+        _shortcutsEnabled = settings.Enabled;
+
+        var registeredCount = 0;
+        foreach (var spec in HotkeyCatalog.Actions)
+        {
+            var configured = HotkeyCatalog.ConfiguredValue(settings, spec.SettingKey);
+            HostLog.Info($"hotkey.configured action={spec.Action} value={configured}");
+            var item = new ShortcutItemState
             {
-                HostLog.Info($"hotkey.register id={id} ok action={action} key={candidate.Key}");
-                return true;
+                Id = spec.Id,
+                // 回推页面的 action 用设置键名（playPause/prev/next/toggleWindow），与页面
+                // ShortcutAction 类型一致；命令动作名（togglePlay 等）只用于内部转发页面命令。
+                Action = spec.SettingKey,
+                Configured = configured,
+            };
+
+            if (!settings.Enabled)
+            {
+                item.Error = "disabled";
+                HostLog.Info($"hotkey.register id={spec.Id} skipped action={spec.Action} reason=disabled");
+            }
+            else if (configured.Length == 0)
+            {
+                item.Error = "empty";
+                HostLog.Info($"hotkey.register id={spec.Id} skipped action={spec.Action} reason=empty");
+            }
+            else if (!HotkeyBinding.TryParse(configured, out var binding))
+            {
+                HostLog.Warn(
+                    $"hotkey.configured action={spec.Action} value={configured} invalid: keep previous registration");
+                item.Error = "invalid";
+                if (_lastAppliedShortcuts.TryGetValue(spec.Action, out var previous) &&
+                    TryRegisterHotkey(spec.Id, spec.Action, previous))
+                {
+                    registeredCount++;
+                    item.Ok = true;
+                    item.Applied = previous.Key;
+                    item.Fallback = true;
+                }
+            }
+            else
+            {
+                var candidates = BuildShortcutCandidates(spec, binding);
+                if (TryRegisterHotkeyChain(spec, candidates, out var lastError) is { } applied)
+                {
+                    registeredCount++;
+                    item.Ok = true;
+                    item.Applied = applied.Key;
+                    item.Fallback = !applied.Equals(binding);
+                    _lastAppliedShortcuts[spec.Action] = applied;
+                }
+                else
+                {
+                    item.Error = lastError > 0 ? $"error={lastError}" : "unavailable";
+                }
             }
 
-            HostLog.Warn(
-                $"hotkey.register id={id} candidate={candidate.Key} failed error={Marshal.GetLastWin32Error()}");
+            _shortcutItems.Add(item);
+        }
+
+        HostLog.Info(
+            $"hotkey.apply enabled={(settings.Enabled ? "true" : "false")} count={registeredCount} reason={reason}");
+        BuildShortcutStateJson();
+        PublishShortcutState();
+    }
+
+    /// <summary>默认值组合保留候选回落链；用户改过的组合只注册配置值。</summary>
+    private static List<HotkeyBinding> BuildShortcutCandidates(HotkeyActionSpec spec, HotkeyBinding binding)
+    {
+        var candidates = new List<HotkeyBinding> { binding };
+        if (!HotkeyBinding.TryParse(spec.DefaultValue, out var defaultBinding) || !binding.Equals(defaultBinding))
+        {
+            return candidates;
+        }
+
+        foreach (var fallbackText in spec.FallbackCandidates)
+        {
+            if (HotkeyBinding.TryParse(fallbackText, out var fallback) && !candidates.Contains(fallback))
+            {
+                candidates.Add(fallback);
+            }
+        }
+
+        return candidates;
+    }
+
+    /// <summary>按候选顺序注册同一动作，第一个成功的生效；全部失败时只记 WARN，不影响其它热键。</summary>
+    private HotkeyBinding? TryRegisterHotkeyChain(
+        HotkeyActionSpec spec,
+        List<HotkeyBinding> candidates,
+        out int lastError)
+    {
+        lastError = 0;
+        foreach (var candidate in candidates)
+        {
+            if (TryRegisterHotkey(spec.Id, spec.Action, candidate))
+            {
+                return candidate;
+            }
+
+            lastError = Marshal.GetLastWin32Error();
         }
 
         HostLog.Warn(
-            $"hotkey.register id={id} failed action={action}: all {candidates.Length} candidates unavailable");
+            $"hotkey.register id={spec.Id} failed action={spec.Action}: all {candidates.Count} candidates unavailable");
+        return null;
+    }
+
+    private bool TryRegisterHotkey(int id, string action, HotkeyBinding binding)
+    {
+        if (NativeMethods.RegisterHotKey(_hwnd, id, binding.Modifiers, binding.VirtualKey))
+        {
+            _registeredHotkeys.Add(id);
+            HostLog.Info($"hotkey.register id={id} ok action={action} key={binding.Key}");
+            return true;
+        }
+
+        HostLog.Warn($"hotkey.register id={id} candidate={binding.Key} failed error={Marshal.GetLastWin32Error()}");
         return false;
+    }
+
+    private void BuildShortcutStateJson()
+    {
+        var message = new HostShortcutsMessage
+        {
+            State = new ShortcutState
+            {
+                Enabled = _shortcutsEnabled,
+                Items = _shortcutItems.Select(item => item.Clone()).ToList(),
+            },
+        };
+
+        _shortcutStateJson = JsonSerializer.Serialize(message, HotkeyJsonContext.Default.HostShortcutsMessage);
+    }
+
+    /// <summary>页面 ready 后或设置变更后回推最新热键状态（WebViewHost 在页面未就绪时直接丢弃）。</summary>
+    internal void PublishShortcutState()
+    {
+        if (_shortcutStateJson is null)
+        {
+            return;
+        }
+
+        _host?.PublishShortcuts(_shortcutStateJson);
     }
 
     private void UnregisterHotkeys()

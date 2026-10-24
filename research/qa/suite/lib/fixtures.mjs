@@ -136,6 +136,62 @@ export const PICKER = {
 };
 
 /**
+ * 全局快捷键设置（task-15；web/src/ui/app.ts buildShortcutsSection + core/settings.ts Shortcuts v1）。
+ *
+ * 位置：设置弹窗 → 左侧导航「快捷键」。面板只做设置 patch，宿主注册结果通过 bridge
+ * 的 shortcuts 事件回推，行内状态文案：已生效 / 已回落到 X / 组合被占用 / 未启用 / 未设置。
+ */
+export const SHORTCUTS = {
+  section: '[data-qa="shortcuts-section"]',
+  list: '[data-qa="shortcuts-section"] .shortcut-list',
+  row: '[data-qa="shortcut-row"]',
+  rowAction: (action) => `[data-qa="shortcut-row"][data-action="${action}"]`,
+  label: '.shortcut-label',
+  key: '[data-qa="shortcut-key"]',
+  status: '[data-qa="shortcut-status"]',
+  record: '[data-qa="shortcut-record"]',
+  enabled: '[data-qa="shortcuts-enabled"]',
+  switchRoot: '[data-qa="shortcuts-enabled"] .pill-switch',
+  switchBtn: '[data-qa="shortcuts-enabled"] .pill-switch-btn',
+  reset: '[data-qa="shortcut-reset"]',
+  tip: '[data-qa="shortcuts-section"] .shortcut-tip',
+  /** 设置左侧导航里的按钮文案。 */
+  navLabel: '快捷键',
+};
+
+/** 四条可配置动作（顺序即设置页展示顺序，settings.ts SHORTCUT_ACTIONS）。 */
+export const SHORTCUT_ACTIONS = ['playPause', 'prev', 'next', 'toggleWindow'];
+
+/** 动作 → 设置页行标题（settings.ts SHORTCUT_LABELS.label）。 */
+export const SHORTCUT_LABELS = {
+  playPause: '播放 / 暂停',
+  prev: '上一首',
+  next: '下一首',
+  toggleWindow: '显示 / 隐藏窗口',
+};
+
+/** 默认组合（settings.ts SHORTCUT_DEFAULTS；宿主 Settings/SettingsModel.cs 同值）。 */
+export const SHORTCUT_DEFAULTS = {
+  enabled: true,
+  playPause: 'Ctrl+Alt+Space',
+  prev: 'Ctrl+Alt+Left',
+  next: 'Ctrl+Alt+Right',
+  toggleWindow: 'Ctrl+Alt+Z',
+};
+
+/** 宿主设置持久化文件（SettingsService；页面已不再把设置镜像到 localStorage）。 */
+export const SETTINGS_JSON =
+  process.env.ZILUX2_SETTINGS_PATH ||
+  path.join(
+    process.env.LOCALAPPDATA || path.join(process.env.USERPROFILE || '', 'AppData', 'Local'),
+    'Zilux2',
+    'settings.json',
+  );
+
+/** 动作 → 宿主 RegisterHotKey 的 id（MainWindow.OnHotkey switch）。WM_HOTKEY 测试杠杆用。 */
+export const HOTKEY_IDS = { playPause: 1, prev: 2, next: 3, toggleWindow: 4 };
+
+/**
  * 房间设置「粒子/流星预设」验收数值表 —— 由 Lead 在集成后同步。
  *
  * 每项：

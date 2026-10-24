@@ -210,6 +210,8 @@ function pageQuickPage() {
           active: btn.classList.contains('is-active'),
           on: btn.classList.contains('is-on'),
           selected: btn.getAttribute('aria-selected'),
+          offsetLeft: btn.offsetLeft,
+          offsetWidth: btn.offsetWidth,
           rect: rect(btn),
         }))
       : [],
@@ -967,8 +969,10 @@ await runSuite('downloads', '下载队列（T2）', async (suite) => {
     suite.assert(mid.active === '已完成', `点击后 is-active tab 应为「已完成」，实际「${mid.active}」`);
     suite.assert(mid.on === '已完成', `点击后 is-on tab 应为「已完成」，实际「${mid.on}」`);
     suite.assert(mid.listSwitch === true, `切换后 .dlq-list 应临时带 is-switch，实际 ${mid.listSwitch}`);
-    if (rowsBefore === 0) {
-      suite.assert(mid.rowsCount === 0, `基线无行但切到「已完成」后出现 ${mid.rowsCount} 行`);
+    // 切到「已完成」后按该筛选下的实际行数选择断言分支：
+    // 有 done 行 → 行动画 + stagger；没有 → 空态动画（.dlq-empty.is-switch）。
+    const targetEmpty = mid.rowsCount === 0;
+    if (targetEmpty) {
       suite.assert(mid.emptySwitch === true, `.dlq-empty 应临时带 is-switch，实际 ${mid.emptySwitch}`);
       suite.assert(/dlq-switch-in/.test(mid.emptyAnim), `空态动画名应含 dlq-switch-in，实际「${mid.emptyAnim}」`);
       suite.assert(mid.emptyHidden === false, '切到空 tab 后 .dlq-empty 应可见');
@@ -1420,9 +1424,27 @@ await runSuite('downloads', '下载队列（T2）', async (suite) => {
       activeTab.on && activeTab.selected === 'true',
       `激活 tab 应同时带 is-on + aria-selected=true，实际 classes=${activeTab.classes.join('.')} selected=${activeTab.selected}`,
     );
+    // 快捷面板开合/滑块定位是异步的（enhanceSegs 双 rAF + left 过渡），给 ~2s 收敛窗口：
+    // 用 offsetLeft（布局坐标，不受过渡/缩放影响）判断滑块是否覆盖激活 tab；始终不齐才 FAIL。
+    let segAligned = false;
+    let segSample = { left: page.segThumb.left, offsetLeft: activeTab.offsetLeft, thumbX: page.segThumb.rect.x, tabX: activeTab.rect.x };
+    const segDeadline = Date.now() + 2000;
+    while (Date.now() < segDeadline) {
+      page = await quickPage(cdp);
+      const tab = page.tabs.find((item) => item.active);
+      if (tab) {
+        segSample = { left: page.segThumb.left, offsetLeft: tab.offsetLeft, thumbX: page.segThumb.rect.x, tabX: tab.rect.x };
+        if (Math.abs(page.segThumb.left - tab.offsetLeft) <= 2) {
+          segAligned = true;
+          break;
+        }
+      }
+      await sleep(120);
+    }
     suite.assert(
-      activeTab.rect && Math.abs(page.segThumb.rect.x - activeTab.rect.x) <= 3,
-      `滑块应覆盖激活 tab（滑块 x=${page.segThumb.rect && page.segThumb.rect.x}，tab x=${activeTab.rect && activeTab.rect.x}）`,
+      segAligned,
+      `滑块未覆盖激活 tab（thumb left=${segSample.left}px / active offsetLeft=${segSample.offsetLeft}px；` +
+        `rect x=${segSample.thumbX}/${segSample.tabX}）`,
     );
 
     // 状态文案 / 目录 / 行数 必须与宿主真实队列一致

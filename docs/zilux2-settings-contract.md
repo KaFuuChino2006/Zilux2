@@ -53,6 +53,13 @@
     "autoCheck": true,
     "mode": "auto",
     "repo": ""
+  },
+  "shortcuts": {
+    "enabled": true,
+    "playPause": "Ctrl+Alt+Space",
+    "prev": "Ctrl+Alt+Left",
+    "next": "Ctrl+Alt+Right",
+    "toggleWindow": "Ctrl+Alt+Z"
   }
 }
 ```
@@ -83,8 +90,24 @@
 | `updates.autoCheck` | bool | `true` | — | 启动后自动检查更新，并每 4 小时轮询 |
 | `updates.mode` | enum | `"auto"` | `auto` / `notify` | `auto`=自动下载并提示安装；`notify`=只提示新版本 |
 | `updates.repo` | string | `""` | `owner/repo` 或空 | 覆盖编译期默认更新源；空=用内置默认值 |
+| `shortcuts.enabled` | bool | `true` | — | 全局快捷键总开关；`false` 时宿主注销全部热键 |
+| `shortcuts.playPause` | string | `"Ctrl+Alt+Space"` | 组合键字符串或 `""` | 播放/暂停；空串=关闭该条 |
+| `shortcuts.prev` | string | `"Ctrl+Alt+Left"` | 组合键字符串或 `""` | 上一首；空串=关闭该条；默认值保留候选回落 |
+| `shortcuts.next` | string | `"Ctrl+Alt+Right"` | 组合键字符串或 `""` | 下一首；空串=关闭该条；默认值保留候选回落 |
+| `shortcuts.toggleWindow` | string | `"Ctrl+Alt+Z"` | 组合键字符串或 `""` | 显示/隐藏主窗口；空串=关闭该条 |
+
+> 组合键字符串格式（宿主解析，见 `src/Zilux2/Hotkeys/HotkeyBinding.cs`）：
+> 修饰键 `Ctrl`/`Control`、`Alt`、`Shift`、`Win`/`Meta`（大小写不限、顺序任意）+ 一个键名；
+> 键名支持 `A-Z`、`0-9`、`F1-F24`、`Space`、`Tab`、`Enter`、`Esc`、`Backspace`、`Delete`、
+> `Insert`、`Home`、`End`、`PageUp`、`PageDown`、`Up`、`Down`、`Left`、`Right`。
+> 至少要有 1 个修饰键，或键名是 `F1-F24`（单独 `F5` 合法；单独 `A`、`Space` 非法）。
+> 宿主保存时只校验类型（必须为字符串）与长度（≤64），语法非法由注册阶段处理：
+> **保留该动作上一次注册成功的组合**，不把一次手误变成热键失效。
 
 > v1.2 变更（2026-10-23）：新增 `updates` 段（GitHub 自动更新通道），宿主与前端都已实现；旧版 setting.json 缺该段时按默认值补齐，不影响兼容。
+
+> v1.3 变更（2026-10-25）：新增 `shortcuts` 段（全局快捷键）。与其余设置不同，该段**由宿主解析并注册**
+> （见 §5），页面只负责编辑字符串；旧版 setting.json 缺该段时按默认值补齐，不影响兼容。
 
 未知键：忽略并保留写回（宿主不主动删除不能识别的键，以兼容未来版本）。
 
@@ -95,6 +118,7 @@
 ```json
 { "v": 1, "type": "settings", "action": "request" }
 { "v": 1, "type": "settings", "action": "patch", "patch": { "appearance": { "reduceMotion": true } } }
+{ "v": 1, "type": "settings", "action": "patch", "patch": { "shortcuts": { "prev": "Ctrl+Alt+Shift+Left" } } }
 { "v": 1, "type": "settings", "action": "reset" }
 ```
 
@@ -113,6 +137,30 @@
 - 页面 `ready` 后宿主可再主动推一次（确保首帧前到达；页面需幂等处理）。
 - 页面在 900 ms 内未收到快照 → 使用默认值继续启动（不阻塞、不报错）。
 
+### 3.3 宿主 → 页面：快捷键生效状态（v1.3 新增）
+
+```json
+{ "v": 1, "type": "host", "event": "shortcuts",
+  "state": { "enabled": true, "items": [
+    { "id": 1, "action": "playPause", "configured": "Ctrl+Alt+Space",
+      "applied": "Ctrl+Alt+Space", "ok": true, "fallback": false, "error": "" },
+    { "id": 2, "action": "prev", "configured": "Ctrl+Alt+Left",
+      "applied": "Ctrl+Alt+Shift+Left", "ok": true, "fallback": true, "error": "" }
+  ] } }
+```
+
+- 宿主每次应用 `shortcuts`（启动、`patch`/`reset` 命中该段、页面 `ready` 后补推）都会推送一次；
+  页面可能收到重复状态，需幂等处理。
+- `action`：设置键名（`playPause` / `prev` / `next` / `toggleWindow`），与前端 `ShortcutAction` 一致；
+- `configured`：设置里的原始字符串（`""` 表示该条被关闭）；`applied`：实际注册成功的组合键
+  （规范显示名，未注册为 `""`）；`ok`：是否已生效；`fallback`：实际组合与配置值不同
+  （默认值候选回落，或非法配置保留了上一次可用注册）；`error`：未生效原因，取值
+  `disabled` / `empty` / `invalid` / `error=<win32 错误码>`，成功时为空串。
+- 页面可用它显示「已生效 / 已回落到 X / 被占用 / 未启用」。该事件与 `settings` 快照相互独立：
+  快照给配置值，本事件给宿主的实际注册结果。
+- 日志：`hotkey.apply enabled=.. count=.. reason=..`、`hotkey.configured action=.. value=..`、
+  `hotkey.register id=.. ok|failed ...`。
+
 ## 4. 前端应用规则
 
 启动顺序（`web/src/main.ts`）：
@@ -128,13 +176,21 @@
 ## 5. 宿主应用规则
 
 - `general.startMaximized`：宿主在**下一次**创建主窗口后应用（`WindowState=Maximized` 或等价 `ShowWindow`），并回推 `windowState`。
+- `shortcuts` 段：由宿主解析并注册全局热键（唯一由宿主解释的业务设置，v1.3 新增）：
+  - `enabled=false` → 注销全部热键；某条为 `""` → 只关闭该条；
+  - 组合键语法见 §2；用户改过的组合只注册配置值；
+  - 仍是默认值的 `prev`/`next`（`Ctrl+Alt+Left`/`Ctrl+Alt+Right`）保留候选回落链
+    （`Ctrl+Alt+Shift+Left`/`Right` → `Ctrl+Alt+J`/`K`），避免被输入法/显卡驱动占用后彻底失效；
+  - 重注册幂等（先注销再注册）；非法字符串保留该动作上一次可用注册；
+  - 每次应用后按 §3.3 回推状态。
 - 其余设置只存不解释（前端应用），宿主不做二次校验、不改写用户值。
 - 设置服务随宿主启动创建，早于 WebView2 初始化；不因设置文件损坏而失败退出。
 
 ## 6. 非目标（本版不做）
 
-- 账号 / 云同步、i18n、开机自启、代理配置 UI、快捷键自定义、窗口尺寸记忆（仅 `startMaximized`）。
+- 账号 / 云同步、i18n、开机自启、代理配置 UI、窗口尺寸记忆（仅 `startMaximized`）。
 - 主题包 / 自定义配色（v1.1 起界面固定白色磨砂，无主题选择）。
+- 快捷键的多套方案/按场景切换（v1.3 只做一组全局快捷键）。
 
 ## 7. 验收
 
@@ -147,6 +203,8 @@
 5. `reset` → 文件与快照均为默认值。
 6. 写入损坏 JSON → 启动成功、使用默认值、生成 `.corrupt-*` 备份、日志含 `load failed`。
 7. 设置消息不影响既有 `ready` / `windowState` / 在线服务流程。
+8. `shortcuts`：`patch` 后宿主重新注册热键并回推 `shortcuts` 状态事件；`enabled=false` 后热键全部失效；
+   非法组合保留上一次可用注册且状态 `fallback=true`；`reset` 后恢复默认热键（默认值可回落候选链）。
 
 前端侧（手工/截图验收）：
 

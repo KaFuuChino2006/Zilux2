@@ -1,8 +1,10 @@
+/// <reference types="vite/client" />
 /**
  * 应用外壳：顶栏 / 左 rail / 墙面 / 播放条 / 弹层（搜索、设置、账号、登录）。
  * 新前端只有这一个"页面"，各视图在 stage 内切换。
  */
 
+import '../styles/shortcut-settings.css';
 import QRCode from 'qrcode';
 import {
   accountOf,
@@ -29,11 +31,18 @@ import {
   FADE_IN_MS,
   FADE_OUT_MS,
   FADE_VOCAL_TAIL_MS,
+  formatShortcutForDisplay,
   getSettings,
+  normalizeShortcutBinding,
   onSettingsChange,
   patchSettings,
+  SHORTCUT_ACTIONS,
+  SHORTCUT_DEFAULTS,
+  SHORTCUT_LABELS,
+  shortcutBindingFromEvent,
   type EqPreset,
   type FadeCurve,
+  type ShortcutAction,
 } from '../core/settings';
 import { addLikedTrack, checkLikedMany, clearMvmp3Cache, fetchFeed, fetchHotPlaylists, fetchMvmp3Cache, fetchRecentMerged, onlineEndpoint, onlineReady, qualityForSource, removeLikedTrack, searchOnline, setQualityForSource } from '../online/client';
 import type { OnlineSource, OnlineTrack, StreamQuality } from '../online/types';
@@ -94,7 +103,7 @@ import {
   cycleMode,
   type PlayerState,
 } from './player';
-import { host, hostAvailable, type UpdateSnapshot } from '../core/bridge';
+import { host, hostAvailable, getShortcutsState, onShortcutsState, type UpdateSnapshot } from '../core/bridge';
 import { HomeView } from './home';
 import { DiscoverView } from './discover';
 import { openSongInfo, setSongInfoView, songInfoView } from './songInfo';
@@ -237,6 +246,8 @@ export class App {
   private localArtistFilter: string | null = null;
   private lyrics: LyricsView | null = null;
   private sheet: SheetHandle | null = null;
+  /** 设置弹窗内的订阅集合（换面板 / 关闭弹窗时统一清理）。 */
+  private sheetScope: Disposers | null = null;
   private loginOverlay: HTMLDivElement | null = null;
   private playerDispose: (() => void) | null = null;
   private localDispose: (() => void) | null = null;
@@ -336,6 +347,8 @@ export class App {
     (window as unknown as { __ziluxPlayer?: typeof playerState }).__ziluxPlayer = playerState;
     initDownloadQueue();
     this.bindHostCommands();
+    // 提前绑定快捷键回执：宿主可能在用户打开设置页之前就推送注册结果。
+    this.disposers.add(onShortcutsState(() => {}));
     this.playerDispose = onPlayer((state) => this.syncPlayer(state));
     this.localDispose = onLocalLibraryChange(() => {
       if (this.wall.kind === 'local') {
@@ -1743,6 +1756,8 @@ export class App {
     // 换面板时上一个直接移除，避免两层遮罩叠着淡出
     this.sheet?.root.remove();
     this.sheet = null;
+    this.sheetScope?.dispose();
+    this.sheetScope = new Disposers();
     const centered = this.centerNextSheet;
     this.centerNextSheet = false;
     const body = h('div', { class: 'sheet-body' });
@@ -1755,7 +1770,11 @@ export class App {
     );
     const root = h('div', { class: `sheet${centered ? ' is-center' : ''}` }, panel);
     const close = (): void => {
-      if (this.sheet?.root === root) this.sheet = null;
+      if (this.sheet?.root === root) {
+        this.sheet = null;
+        this.sheetScope?.dispose();
+        this.sheetScope = null;
+      }
       if (root.classList.contains('is-leaving')) return;
       root.classList.add('is-leaving');
       window.setTimeout(() => root.remove(), 220);
@@ -2742,6 +2761,7 @@ export class App {
       );
 
       const downloadsSection = this.buildDownloadsSection(section, segField);
+      const shortcutsSection = this.buildShortcutsSection(section);
       const updatesSection = this.buildUpdatesSection(section, toggleField, segField);
 
       // 两栏设置：左侧导航 + 右侧内容（与快捷设置的 tab 选中样式一致）
@@ -2750,6 +2770,7 @@ export class App {
         { key: 'general', label: '通用', node: general },
         { key: 'appearance', label: '外观', node: appearance },
         { key: 'playback', label: '播放', node: playback },
+        { key: 'shortcuts', label: '快捷键', node: shortcutsSection },
         { key: 'eq', label: '均衡器', node: eqSection },
         { key: 'downloads', label: '下载', node: downloadsSection },
         { key: 'updates', label: '更新', node: updatesSection },
@@ -2856,6 +2877,247 @@ export class App {
       qualityField,
       hint,
     );
+  }
+
+  /**
+   * 设置页「快捷键」：全局开关 + 四条录制行 + 恢复默认。
+   *
+   * 录制只改本地设置（立即 patchSettings），宿主注册结果由 shortcuts 事件回执，
+   * 状态文案据此显示「已生效 / 已回落到 X / 组合被占用」。
+   */
+  private buildShortcutsSection(
+    section: (title: string, ...children: HTMLElement[]) => HTMLElement,
+  ): HTMLElement {
+    type ShortcutRow = {
+      row: HTMLDivElement;
+      key: HTMLSpanElement;
+      record: HTMLButtonElement;
+      status: HTMLDivElement;
+    };
+    const rows = new Map<ShortcutAction, ShortcutRow>();
+    const list = h('div', { class: 'shortcut-list' });
+    let recording: ShortcutAction | null = null;
+    let recordHint = '';
+
+    function applyEnabled(value: boolean): void {
+      patchSettings({ shortcuts: { enabled: value } });
+      toast(value ? '已启用全局快捷键' : '已关闭全局快捷键');
+      paint();
+    }
+
+    const toggles = this.pillSwitch(getSettings().shortcuts.enabled, applyEnabled);
+    const enabledField = h(
+      'div',
+      { class: 'field', 'data-qa': 'shortcuts-enabled' },
+      h(
+        'div',
+        {},
+        h('div', { class: 'field-label', text: '启用全局快捷键' }),
+        h('div', { class: 'field-hint', text: '关闭后宿主会注销全部组合；应用在后台或最小化到托盘时同样生效。' }),
+      ),
+      toggles.root,
+    );
+    // 整行也可点：点开关自身时交给 pill-switch 的按钮处理，避免重复切换。
+    enabledField.addEventListener('click', (event) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest('.pill-switch')) return;
+      applyEnabled(!getSettings().shortcuts.enabled);
+    });
+
+    function patchShortcut(action: ShortcutAction, binding: string): void {
+      if (action === 'playPause') patchSettings({ shortcuts: { playPause: binding } });
+      else if (action === 'prev') patchSettings({ shortcuts: { prev: binding } });
+      else if (action === 'next') patchSettings({ shortcuts: { next: binding } });
+      else patchSettings({ shortcuts: { toggleWindow: binding } });
+    }
+
+    /** 宿主回执里的 action 可能是 play_pause 之类写法，统一成小写字母再比较。 */
+    function sameAction(left: string, right: ShortcutAction): boolean {
+      const normalize = (value: string): string => value.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+      return normalize(left) === normalize(right);
+    }
+
+    function statusOf(action: ShortcutAction): { text: string; kind: string; title: string } {
+      const current = getSettings();
+      if (!current.shortcuts.enabled) return { text: '未启用', kind: 'muted', title: '' };
+      if (!current.shortcuts[action]) return { text: '未设置', kind: 'muted', title: '' };
+      const hostState = getShortcutsState();
+      // 还没收到宿主回执时先按「已生效」显示（宿主会在注册完成后推送真实结果）。
+      if (!hostState) return { text: '已生效', kind: 'ok', title: '' };
+      if (!hostState.enabled) return { text: '未启用', kind: 'muted', title: '' };
+      const item = hostState.items.find((entry) => sameAction(entry.action, action));
+      if (!item) return { text: '已生效', kind: 'ok', title: '' };
+      const title = item.error ?? '';
+      if (item.fallback && item.applied) {
+        return { text: `已回落到 ${formatShortcutForDisplay(item.applied)}`, kind: 'warn', title };
+      }
+      if (item.ok) return { text: '已生效', kind: 'ok', title };
+      return { text: '组合被占用，可换一个', kind: 'warn', title };
+    }
+
+    function paint(): void {
+      const current = getSettings();
+      toggles.setValue(current.shortcuts.enabled);
+      enabledField.dataset.enabled = String(current.shortcuts.enabled);
+      for (const [action, refs] of rows) {
+        const display = formatShortcutForDisplay(current.shortcuts[action]);
+        refs.key.textContent = display || '未设置';
+        refs.key.classList.toggle('is-empty', !display);
+        refs.row.classList.toggle('is-recording', recording === action);
+        refs.record.textContent = recording === action ? '按下新组合…（Esc 取消）' : '重新录制';
+        if (recording === action) {
+          refs.status.textContent = recordHint || '按下组合；Backspace / Delete 清除，Esc 取消';
+          refs.status.dataset.kind = 'recording';
+          refs.status.title = '';
+          continue;
+        }
+        const info = statusOf(action);
+        refs.status.textContent = info.text;
+        refs.status.dataset.kind = info.kind;
+        refs.status.title = info.title;
+      }
+    }
+
+    function isModifierKey(key: string): boolean {
+      return key === 'Control' || key === 'Shift' || key === 'Alt' || key === 'Meta' || key === 'AltGraph';
+    }
+
+    function onRecordKey(event: KeyboardEvent): void {
+      const action = recording;
+      if (!action) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (isModifierKey(event.key)) return;
+      if (event.key === 'Escape') {
+        stopRecording();
+        return;
+      }
+      const noModifier = !event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey;
+      if (noModifier && (event.key === 'Backspace' || event.key === 'Delete')) {
+        patchShortcut(action, '');
+        stopRecording();
+        toast(`已清除「${SHORTCUT_LABELS[action].label}」快捷键`);
+        return;
+      }
+      if (noModifier) {
+        recordHint = '请搭配 Ctrl / Alt / Shift / Win 使用';
+        paint();
+        return;
+      }
+      const combo = shortcutBindingFromEvent(event);
+      const normalized = combo ? normalizeShortcutBinding(combo, '') : '';
+      if (!combo || !normalized) {
+        recordHint = '这个按键不支持，请换一个';
+        paint();
+        return;
+      }
+      const label = SHORTCUT_LABELS[action].label;
+      patchShortcut(action, normalized);
+      stopRecording();
+      toast(`快捷键已更新：${label} → ${formatShortcutForDisplay(normalized)}`);
+    }
+
+    function startRecording(action: ShortcutAction): void {
+      stopRecording();
+      recording = action;
+      recordHint = '';
+      window.addEventListener('keydown', onRecordKey, true);
+      paint();
+    }
+
+    function stopRecording(): void {
+      if (!recording) return;
+      const previous = rows.get(recording);
+      previous?.row.classList.remove('is-recording');
+      recording = null;
+      recordHint = '';
+      window.removeEventListener('keydown', onRecordKey, true);
+      paint();
+    }
+
+    for (const action of SHORTCUT_ACTIONS) {
+      const meta = SHORTCUT_LABELS[action];
+      const key = h('span', { class: 'shortcut-key is-empty', 'data-qa': 'shortcut-key', text: '未设置' });
+      const record = h('button', {
+        class: 'btn shortcut-record',
+        type: 'button',
+        'data-qa': 'shortcut-record',
+        text: '重新录制',
+      });
+      const status = h('div', { class: 'shortcut-status', 'data-qa': 'shortcut-status' });
+      const row = h(
+        'div',
+        { class: 'shortcut-row', 'data-qa': 'shortcut-row', 'data-action': action },
+        h(
+          'div',
+          { class: 'shortcut-main' },
+          h('div', { class: 'shortcut-label', text: meta.label }),
+          h('div', { class: 'shortcut-hint', text: meta.hint }),
+          status,
+        ),
+        h('div', { class: 'shortcut-side' }, key, record),
+      );
+      record.addEventListener('click', () => {
+        if (recording === action) stopRecording();
+        else startRecording(action);
+      });
+      rows.set(action, { row, key, record, status });
+      list.append(row);
+    }
+
+    const reset = h('button', {
+      class: 'btn',
+      type: 'button',
+      'data-qa': 'shortcut-reset',
+      text: '恢复默认',
+    });
+    reset.addEventListener('click', () => {
+      stopRecording();
+      patchSettings({
+        shortcuts: {
+          enabled: true,
+          playPause: SHORTCUT_DEFAULTS.playPause,
+          prev: SHORTCUT_DEFAULTS.prev,
+          next: SHORTCUT_DEFAULTS.next,
+          toggleWindow: SHORTCUT_DEFAULTS.toggleWindow,
+        },
+      });
+      toast('已恢复默认快捷键');
+    });
+
+    const unsubscribeSettings = onSettingsChange(() => paint());
+    const unsubscribeShortcuts = onShortcutsState(() => paint());
+    this.sheetScope?.add(unsubscribeSettings);
+    this.sheetScope?.add(unsubscribeShortcuts);
+    this.sheetScope?.add(() => stopRecording());
+    paint();
+
+    const wrapper = section(
+      '快捷键',
+      enabledField,
+      list,
+      h(
+        'div',
+        { class: 'field' },
+        h(
+          'div',
+          {},
+          h('div', { class: 'field-label', text: '恢复默认组合' }),
+          h('div', { class: 'field-hint', text: '四条都改回 Ctrl + Alt + … 的组合，并重新启用全局快捷键。' }),
+        ),
+        reset,
+      ),
+      h(
+        'div',
+        { class: 'field' },
+        h('div', {
+          class: 'shortcut-tip',
+          text: '全局快捷键在应用后台 / 最小化到托盘时也会生效；组合被系统或其它程序占用时，宿主会回落到默认组合或在行内提示占用；修改后立即生效，仅保存在本机设置里。',
+        }),
+      ),
+    );
+    wrapper.setAttribute('data-qa', 'shortcuts-section');
+    return wrapper;
   }
 
   /**
@@ -4962,6 +5224,8 @@ export class App {
     closeQualityPicker();
     disposeDownloadQueue();
     this.disposers.dispose();
+    this.sheetScope?.dispose();
+    this.sheetScope = null;
     this.closeLyrics();
     this.sheet?.close();
     this.closeLogin();

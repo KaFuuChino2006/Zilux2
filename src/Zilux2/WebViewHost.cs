@@ -342,6 +342,20 @@ internal sealed class WebViewHost : IDisposable
         PostJson("{\"v\":1,\"type\":\"command\",\"action\":\"" + action + "\"}");
     }
 
+    /// <summary>
+    /// 全局快捷键的生效状态（设置驱动的热键注册结果，JSON 由 MainWindow 构建）。页面未就绪时
+    /// 直接丢弃：MainWindow 在收到 ready 后会主动再推一次最新状态，不需要在这里缓存。
+    /// </summary>
+    internal void PublishShortcuts(string json)
+    {
+        if (_disposed || !_pageReady)
+        {
+            return;
+        }
+
+        PostJson(json);
+    }
+
     public void Dispose()
     {
         if (_disposed)
@@ -443,6 +457,8 @@ internal sealed class WebViewHost : IDisposable
                     PostJson(ReadyJson(_window.IsMaximized));
                     PostOnlineInfo();
                     PostSettingsSnapshot();
+                    // 快捷键生效状态（task-13）：启动时 MainWindow 已注册好热键，这里补推一次。
+                    _window.PublishShortcutState();
                     AttachAudio();
                     AttachMedia();
                     PostAirPlayStatus();

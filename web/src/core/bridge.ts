@@ -488,3 +488,109 @@ export function onUpdateState(handler: (snapshot: UpdateSnapshot) => void): () =
     updateHandlers.delete(handler);
   };
 }
+
+/* ---- 全局快捷键（Shortcuts v1，宿主注册结果回执） ---- */
+
+/** 单条快捷键在宿主侧的注册结果。 */
+export interface ShortcutReportItem {
+  /** 宿主内部任务 id（不透明，仅用于排查）。 */
+  id: string;
+  /** playPause / prev / next / toggleWindow（非法值按原样保留，便于排查）。 */
+  action: string;
+  /** 用户配置的组合。 */
+  configured: string;
+  /** 实际注册生效的组合（可能因被占用而回落到默认）。 */
+  applied: string;
+  /** 是否成功注册。 */
+  ok: boolean;
+  /** 是否使用了回落组合（configured 不可用，宿主换成默认组合）。 */
+  fallback: boolean;
+  /** 注册失败原因（宿主给出的人类可读文案）。 */
+  error: string | null;
+}
+
+/** 宿主推送的全局快捷键快照：enabled=false 表示全局已关闭、全部注销。 */
+export interface ShortcutsState {
+  enabled: boolean;
+  items: ShortcutReportItem[];
+}
+
+const shortcutHandlers = new Set<(state: ShortcutsState) => void>();
+let shortcutsBound = false;
+let lastShortcutsState: ShortcutsState | null = null;
+
+function shortcutText(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+/** 归一化宿主回执里的单条记录；缺少关键字段返回 null。 */
+function normalizeShortcutItem(raw: unknown): ShortcutReportItem | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const item = raw as Record<string, unknown>;
+  const action = shortcutText(item.action);
+  if (!action) return null;
+  return {
+    id: shortcutText(item.id),
+    action,
+    configured: shortcutText(item.configured),
+    applied: shortcutText(item.applied),
+    ok: item.ok === true,
+    fallback: item.fallback === true,
+    error: shortcutText(item.error) || null,
+  };
+}
+
+function normalizeShortcutsState(message: HostMessage): ShortcutsState | null {
+  if (!message.state || typeof message.state !== 'object') return null;
+  const state = message.state as Record<string, unknown>;
+  const rawItems = Array.isArray(state.items) ? state.items : [];
+  const items: ShortcutReportItem[] = [];
+  for (const raw of rawItems) {
+    const item = normalizeShortcutItem(raw);
+    if (item) items.push(item);
+  }
+  return {
+    // 宿主没给 enabled 时按「已启用」处理，避免整页误显示为未启用。
+    enabled: state.enabled !== false,
+    items,
+  };
+}
+
+/** 最近一次宿主回执（页面还没收到时为 null）。 */
+export function getShortcutsState(): ShortcutsState | null {
+  return lastShortcutsState;
+}
+
+/**
+ * 订阅宿主推送的全局快捷键注册结果。
+ * 注册时若已收到过快照，会立刻回调一次当前值（便于设置页首次挂载就有状态）。
+ */
+export function onShortcutsState(handler: (state: ShortcutsState) => void): () => void {
+  shortcutHandlers.add(handler);
+  if (!shortcutsBound) {
+    shortcutsBound = true;
+    host.onMessage((message) => {
+      if (message.type !== 'host' || message.event !== 'shortcuts') return;
+      const state = normalizeShortcutsState(message);
+      if (!state) return;
+      lastShortcutsState = state;
+      shortcutHandlers.forEach((listener) => {
+        try {
+          listener(state);
+        } catch (err) {
+          console.warn('[bridge] shortcuts handler failed', err);
+        }
+      });
+    });
+  }
+  if (lastShortcutsState) {
+    try {
+      handler(lastShortcutsState);
+    } catch (err) {
+      console.warn('[bridge] shortcuts handler failed', err);
+    }
+  }
+  return () => {
+    shortcutHandlers.delete(handler);
+  };
+}
