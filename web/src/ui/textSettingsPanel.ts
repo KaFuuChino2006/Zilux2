@@ -269,6 +269,22 @@ export function openTextSettingsSheet(): void {
       },
     );
 
+  const beamStyleRow = (): HTMLElement =>
+    segmentedRow(
+      '光柱效果',
+      '换一套背景光柱的构图与动法；四套都走 32 秒无缝循环，看不出头尾',
+      [
+        { id: 'calm', label: '静光' },
+        { id: 'breathe', label: '缓息' },
+        { id: 'curtain', label: '流幕' },
+        { id: 'focus', label: '聚光' },
+      ],
+      draft.beamStyle,
+      (id) => {
+        draft.beamStyle = id === 'breathe' || id === 'curtain' || id === 'focus' ? id : 'calm';
+      },
+    );
+
   const group = (title: string, ...rows: HTMLElement[]): HTMLElement =>
     h('div', { class: 'ts-group' }, h('div', { class: 'ts-group-title', text: title }), ...rows);
 
@@ -280,6 +296,7 @@ export function openTextSettingsSheet(): void {
       group(
         '光柱与光感',
         ...BEAM_TOGGLES.map(toggleRow),
+        beamStyleRow(),
         ...BEAM_RANGES.map(rangeRow),
         ...LIGHT_RANGES.map(rangeRow),
         qualityRow(),

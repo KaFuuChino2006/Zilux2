@@ -53,6 +53,7 @@ uniform vec4 uBeamF[MAX_BEAMS]; // 色散, 射程, 0, 0
 uniform vec4 uFrame;            // width, height, time, beamCount
 uniform vec4 uFogA;             // density, tyndallBase, scale, warp
 uniform vec4 uFogB;             // driftX, driftY, ambient, octaves
+uniform vec4 uFogC;             // 循环雾：x=模式(0 线性 / 1 循环)，y=循环相位，z=摆动幅度x，w=摆动幅度y
 uniform vec3 uFogColor;
 uniform vec4 uGlare;            // x, y, radius, intensity
 uniform vec4 uGlareB;           // streak, 0, 0, 0
@@ -113,12 +114,23 @@ float fbm(vec2 p, float octaves) {
 }
 
 float fog(vec2 p, float t) {
+    // 线性模式（绘光舞台）：漂移沿时间方向匀速走，配着运镜一起看。
     vec2 drift = uFogB.xy * t;
+    vec2 flowA = vec2(0.0, t * 0.07);
+    vec2 flowB = vec2(t * 0.05, 0.0);
+    if (uFogC.x > 0.5) {
+        // 循环模式（纯字档）：漂移与两处次级流动都换成循环相位的正弦摆动，
+        // 一个周期（42 秒）走完整数圈，接缝处看不出「头尾」。
+        float phase = uFogC.y;
+        drift = vec2(uFogC.z, uFogC.w) * vec2(sin(phase), cos(phase));
+        flowA = vec2(0.0, sin(phase * 2.0) * 0.55);
+        flowB = vec2(cos(phase * 3.0) * 0.42, 0.0);
+    }
     vec2 q = (p - drift) * uFogA.z;
     float octaves = uFogB.w;
     vec2 w = vec2(
-        fbm(q + vec2(0.0, t * 0.07), 3.0),
-        fbm(q + vec2(5.2, 1.3) - vec2(t * 0.05, 0.0), 3.0)
+        fbm(q + flowA, 3.0),
+        fbm(q + vec2(5.2, 1.3) - flowB, 3.0)
     );
     float n = fbm(q + uFogA.w * (w - 0.5) * 2.0, octaves);
     // 拉开对比：烟是一缕一缕的，不是均匀的灰。
@@ -300,6 +312,8 @@ export interface LightFieldFrame {
     dark: [number, number, number, number];
     /** 烟雾倍频数（画质档）。 */
     octaves: number;
+    /** 烟雾的无缝循环参数：给定后雾的漂移按循环相位正弦摆动（42 秒一轮），不露接缝。 */
+    fogLoop?: { period: number; driftX: number; driftY: number };
     /** 文字区（画面比例的中心与宽高），干涉条纹在这里压暗。 */
     textRegion?: { cx: number; cy: number; w: number; h: number };
 }
@@ -335,6 +349,7 @@ export const createLightField = (pixi: PixiModule, width: number, height: number
         uFrame: { value: new Float32Array([width, height, 0, 0]), type: 'vec4<f32>' },
         uFogA: { value: new Float32Array(4), type: 'vec4<f32>' },
         uFogB: { value: new Float32Array(4), type: 'vec4<f32>' },
+        uFogC: { value: new Float32Array(4), type: 'vec4<f32>' },
         uFogColor: { value: new Float32Array(3), type: 'vec3<f32>' },
         uGlare: { value: new Float32Array(4), type: 'vec4<f32>' },
         uGlareB: { value: new Float32Array(4), type: 'vec4<f32>' },
@@ -383,6 +398,12 @@ export const createLightField = (pixi: PixiModule, width: number, height: number
         u.uFogB[1] = fog.driftY;
         u.uFogB[2] = fog.ambient * frame.fogScale;
         u.uFogB[3] = frame.octaves;
+        // 循环雾：漂移幅度与循环相位由场景给出（纯字档），线性模式下保持原样。
+        const fogLoop = frame.fogLoop;
+        u.uFogC[0] = fogLoop ? 1 : 0;
+        u.uFogC[1] = fogLoop ? (time / Math.max(fogLoop.period, 1e-3)) * Math.PI * 2 : 0;
+        u.uFogC[2] = fogLoop ? fogLoop.driftX : 0;
+        u.uFogC[3] = fogLoop ? fogLoop.driftY : 0;
         u.uFogColor[0] = frame.color[0];
         u.uFogColor[1] = frame.color[1];
         u.uFogColor[2] = frame.color[2];
