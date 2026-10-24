@@ -17,7 +17,10 @@ internal sealed class SettingsService : IDisposable
     private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
     private static readonly JsonSerializerOptions FileJsonOptions = new() { WriteIndented = true };
 
-    private static readonly string[] KnownTopLevelKeys = { "version", "general", "appearance", "playback", "downloads", "updates" };
+    private static readonly string[] KnownTopLevelKeys = { "version", "general", "appearance", "playback", "downloads", "updates", "shortcuts" };
+
+    /// <summary>快捷键字符串的最大长度；超长按非法值回落，避免把垃圾写进 settings.json。</summary>
+    private const int MaxShortcutChars = 64;
 
     private readonly object _gate = new();
     private readonly string _path;
@@ -131,6 +134,24 @@ internal sealed class SettingsService : IDisposable
         }
     }
 
+    /// <summary>快捷键配置的完整副本（UI 线程应用热键时读取，见 MainWindow.ApplyShortcutSettings）。</summary>
+    internal ShortcutSettings ShortcutsSnapshot
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _state.Shortcuts.Clone();
+            }
+        }
+    }
+
+    /// <summary>
+    /// <c>shortcuts</c> 段被 patch/reset 后触发（其它设置的变化不触发，避免拖动音量等操作反复
+    /// 注销/注册全局热键）。回调可能来自 UI 线程；MainWindow 负责再切一次 Dispatcher。
+    /// </summary>
+    internal event Action? ShortcutsChanged;
+
     internal static string ResolveDefaultPath()
     {
         var overridePath = Environment.GetEnvironmentVariable(PathOverrideEnvironmentVariable);
@@ -161,6 +182,7 @@ internal sealed class SettingsService : IDisposable
             return;
         }
 
+        var shortcutsChanged = false;
         lock (_gate)
         {
             if (_disposed)
@@ -177,6 +199,14 @@ internal sealed class SettingsService : IDisposable
 
             HostLog.Info($"[settings] patch keys={string.Join(",", keys)}");
             MarkDirtyLocked();
+            shortcutsChanged = keys.Exists(key => key.StartsWith("shortcuts.", StringComparison.Ordinal));
+        }
+
+        // 回调放到锁外：监听方（MainWindow）会回头读 ShortcutsSnapshot 并注销/注册热键，
+        // 在锁内通知会让保存定时器的线程与 UI 线程互相等待。
+        if (shortcutsChanged)
+        {
+            RaiseShortcutsChanged();
         }
     }
 
@@ -194,6 +224,9 @@ internal sealed class SettingsService : IDisposable
             HostLog.Info("[settings] reset");
             MarkDirtyLocked();
         }
+
+        // reset 一定会把 shortcuts 段恢复成默认值，所以无条件通知重新注册。
+        RaiseShortcutsChanged();
     }
 
     public void Dispose()
@@ -221,6 +254,25 @@ internal sealed class SettingsService : IDisposable
         }
 
         HostLog.Info("[settings] disposed");
+    }
+
+    private void RaiseShortcutsChanged()
+    {
+        var handler = ShortcutsChanged;
+        if (handler is null)
+        {
+            return;
+        }
+
+        try
+        {
+            handler();
+        }
+        catch (Exception exception)
+        {
+            // 热键重注册失败不能影响设置保存/页面 ACK，只记日志。
+            HostLog.Error("[settings] shortcuts changed handler failed", exception);
+        }
     }
 
     private void MarkDirtyLocked()
@@ -329,6 +381,7 @@ internal sealed class SettingsService : IDisposable
             or "fadeOutMs" or "fadeInMs" or "fadeCurve" or "fadeVocal" or "fadeVocalTailMs",
         "downloads" => name is "directory" or "quality",
         "updates" => name is "autoCheck" or "mode" or "repo",
+        "shortcuts" => name is "enabled" or "playPause" or "prev" or "next" or "toggleWindow",
         _ => false,
     };
 
@@ -496,6 +549,18 @@ internal sealed class SettingsService : IDisposable
             }
         }
 
+        // 快捷键字符串只做「类型 + 长度」校验后原样保存：语法解析在 MainWindow 注册热键时进行，
+        // 非法组合由宿主保留上一次可用注册（见 MainWindow.ApplyShortcutSettings）。
+        if (TryGetObject(document, "shortcuts", out var shortcuts))
+        {
+            state.Shortcuts.Enabled = ReadBool(shortcuts, "enabled", state.Shortcuts.Enabled, "shortcuts.enabled", keys);
+            state.Shortcuts.PlayPause = ReadShortcut(shortcuts, "playPause", state.Shortcuts.PlayPause, "shortcuts.playPause", keys);
+            state.Shortcuts.Prev = ReadShortcut(shortcuts, "prev", state.Shortcuts.Prev, "shortcuts.prev", keys);
+            state.Shortcuts.Next = ReadShortcut(shortcuts, "next", state.Shortcuts.Next, "shortcuts.next", keys);
+            state.Shortcuts.ToggleWindow = ReadShortcut(
+                shortcuts, "toggleWindow", state.Shortcuts.ToggleWindow, "shortcuts.toggleWindow", keys);
+        }
+
         return keys;
     }
 
@@ -529,6 +594,31 @@ internal sealed class SettingsService : IDisposable
         }
 
         HostLog.Warn($"[settings] invalid key={key} expected=bool fallback={fallback.ToString().ToLowerInvariant()}");
+        return fallback;
+    }
+
+    /// <summary>
+    /// 快捷键字符串：非字符串/超长按非法值回落当前值（保留上一次注册），空字符串是合法值
+    /// （表示关闭该条热键，见 docs/zilux2-settings-contract.md §2）。
+    /// </summary>
+    private static string ReadShortcut(JsonElement parent, string name, string fallback, string key, List<string> keys)
+    {
+        if (!parent.TryGetProperty(name, out var value))
+        {
+            return fallback;
+        }
+
+        keys.Add(key);
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            var text = (value.GetString() ?? string.Empty).Trim();
+            if (text.Length <= MaxShortcutChars)
+            {
+                return text;
+            }
+        }
+
+        HostLog.Warn($"[settings] invalid key={key} expected=shortcut fallback={fallback}");
         return fallback;
     }
 

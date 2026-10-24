@@ -28,6 +28,8 @@
 3. 校验端口：`curl http://127.0.0.1:9223/json/list`，应有 `url` 以 `https://zilux2.local` 开头的 `page`。
 4. Node：`C:\Users\13329\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\bin\node.exe`（v24+）。
    下文 `node` 指该可执行文件。
+5. （可选）`shortcuts.mjs` 的 WM_HOTKEY 步骤需要 `research/tmp/wh3.ps1` 与宿主 pwsh；
+   没有时设 `ZILUX2_QA_WM_HOTKEY=0` 跳过该步，或让它自动记 SKIP。
 
 > 本环境禁止用管道捕获 GUI 相关子进程输出：套件/`run-all` 对 Node 子进程一律用 `stdio:'inherit'`，
 > 不要改成 `pipe`。
@@ -65,6 +67,8 @@ node research/qa/suite/update-channel.mjs
 | `ZILUX2_DOWNLOAD_TIMEOUT_MS` | `90000` | 等下载任务落到 done 的上限 |
 | `ZILUX2_QA_CLICK_REVEAL` | 未设置 | 设为 `1` 才真的点 `.dlq-reveal`（会弹资源管理器） |
 | `ZILUX2_EXPECT_HOST_VERSION` | `1.1.6` | tray-and-downloads 断言的宿主版本（`host.start version=`）；换构建时改这一处（或临时用环境变量覆盖） |
+| `ZILUX2_QA_WM_HOTKEY` | 未设置 | 设为 `0` 跳过 `shortcuts.mjs` 的 WM_HOTKEY 真机投递（无需 `research/tmp/wh3.ps1` / 宿主 pwsh 时） |
+| `ZILUX2_SETTINGS_PATH` | `%LOCALAPPDATA%\Zilux2\settings.json` | 宿主设置文件路径；`shortcuts.mjs` 用它断言 `shortcuts` 段落盘 |
 
 ## 3. 输出与产物
 
@@ -90,6 +94,7 @@ research/shots/suite-YYYYMMDD/
 | `downloads.mjs` | 下载队列入口迁移 + 音质浮层 + 真实下载 | 入口 `[data-qa="download-entry"]`、**rail 不再有下载入口**（`.rail .rail-btn[aria-label="下载队列"]` 不存在）、播放条入口 toggle/点外/Esc、`.dlq-panel.is-open`、`.dlq-row[data-state]`、`.dlq-bar>.dlq-fill`（宽度随进度变化）、`.dlq-pct/.dlq-status`、done/error 行按钮显隐、`.dlq-summary .dlq-sum-item[data-kind]` 计数、筛选 tab、刷新、关闭重开状态保持、落盘文件存在且非空；**分段控件** `.dlq-tabs.seg` + `.seg-btn.dlq-tab`、激活双类 `is-active`/`is-on`、`.seg-thumb` 白色滑块定位；**切换动画** `.is-switch`（30ms 内）/ `dlq-switch-in`（空态与真实行）/ 24ms stagger / 700ms 移除 / 滑块位移；**音质浮层** `.dlqp-overlay`/`.dlqp-panel[data-qa="download-picker"]`（默认项=设置音质、取消/Esc/点外关闭、不产生任务）；**快捷设置第 5 页** `[data-qa="quick-downloads-page"]`（4 筛选可切、状态/目录/行数与真值一致、切走再切回不重复渲染）；选「高品质」→ `job.quality=high` 且 `.dlq-meta` 显示高品质、不回写全局设置；无损下载 done 时断言 `.flac` 落盘（源站不提供则 SKIP）；真值同时读 `window.__zilux2DownloadQueue.state()` |
 | `local-watch.mjs` | 本地目录监控 | bridge `restore` 注入测试目录 → 本地页「本地 · N 首」；放 mp3 后 ≤8s 自动 +1、删 mp3 后 ≤8s 回到基线（不刷新/不重进页面）；`host.log` 出现 `[local] watch incremental` / `watch rescan applied` 作为根因证据；结束还原 `zilux2.localFolder` 并删测试目录 |
 | `update-channel.mjs` | 更新通道 | 设置页「更新」分区：`.updates-version`、`.updates-status`（文案与 `web/src/ui/updates.ts` 的 `UPDATE_STATE_TEXT` 对齐）、`.updates-input`、`.updates-actions` 按钮；点「检查更新」→ 状态流转到已知终态 + `host.log` `[update] check repo=…`；进程内 mock 更新服务（`/__ping`、`/repos/*/releases/latest`、`/download/*`）可达且协议形状正确。**不下载、不安装** |
+| `shortcuts.mjs` | 全局快捷键：设置面板 / 录制 / 宿主重注册（task-15） | 设置页「快捷键」分区 `[data-qa="shortcuts-section"]`、4 行 `[data-qa="shortcut-row"][data-action=playPause\|prev\|next\|toggleWindow]`、默认组合、行内状态（已生效 / 已回落到 … / 未启用 / 未设置）、总开关 `[data-qa="shortcuts-enabled"]`、恢复默认 `[data-qa="shortcut-reset"]`；CDP `Input.dispatchKeyEvent` 录制 `Ctrl+Alt+U` → pill / `settings.json shortcuts.prev` / `host.log hotkey.configured`+`hotkey.register id=2 ok`+`hotkey.apply count=4`；Esc 取消不落盘、Backspace 清除（`skipped reason=empty`、`count=3`）、总开关关闭/开启（`enabled=false count=0` / `enabled=true count=3`）、恢复默认（`count=4`）；`WM_HOTKEY id=2`（`ZILUX2_QA_WM_HOTKEY=0` 可跳过）→ `hotkey.fire action=prev` + `web:info command prev`；收尾恢复默认并关面板、console 0 error |
 
 ### 4.1 下载队列 UI 微调断言（seg 滑块 / 切换动画 / rail 入口迁移）
 
@@ -148,9 +153,28 @@ research/shots/suite-YYYYMMDD/
 | 8 | `Ctrl+Alt+Shift+Right` | 下一首 | `hotkey.fire action=next` |
 | 9 | `Ctrl+Alt+Z` | 窗口显示↔隐藏切换 | `hotkey.fire action=toggleWindow` |
 
-> 备注：`WM_HOTKEY` 的模拟投递在沙箱/远程会话里不稳定，套件里记为 SKIP；`tray-and-downloads.mjs` 会读取
-> `%LOCALAPPDATA%\Zilux2\logs\host.log` 里**最后一次 `host.start` 之后**的日志行做断言，换构建后记得同步
-> `ZILUX2_EXPECT_HOST_VERSION`。
+> 备注：`tray-and-downloads.mjs` 会读取 `%LOCALAPPDATA%\Zilux2\logs\host.log` 里**最后一次 `host.start` 之后**的
+> 日志行做断言，换构建后记得同步 `ZILUX2_EXPECT_HOST_VERSION`。托盘交互（第 1-5 项）与真实按键（第 6-9 项）仍需手测；
+> `WM_HOTKEY` 投递在 `shortcuts.mjs` 里已通过 `research/tmp/wh3.ps1` 自动验证（id=2 → `hotkey.fire action=prev`），
+> `tray-and-downloads.mjs` 中仍记 SKIP（避免与 task-15 的录制用例重复，也避免多一次切歌副作用）。
+
+### 4.5 task-15 新断言：全局快捷键（设置面板 / 录制 / 宿主重注册）
+
+设置页左侧导航「快捷键」→ 4 行组合 + 总开关 + 恢复默认；断言细节见 §4 的 `shortcuts.mjs` 行。要点：
+
+| 需求 | 断言 | 关键选择器 / 日志 |
+| --- | --- | --- |
+| 设置面板结构 | 4 行顺序 playPause/prev/next/toggleWindow、默认组合、行内状态、总开关默认开、恢复默认按钮 | `[data-qa="shortcuts-section"]`、`[data-qa="shortcut-row"]`、`[data-qa="shortcut-key"]`、`[data-qa="shortcut-status"]`、`[data-qa="shortcuts-enabled"]`、`[data-qa="shortcut-reset"]` |
+| 录制 / 重注册 | 点「重新录制」→ 行 `is-recording` + 按钮「按下新组合…」→ CDP 发 `Ctrl+Alt+U` → pill/状态/toast/`settings.json`/宿主重注册同步 | CDP `Input.dispatchKeyEvent`（modifiers=3, key u）；`hotkey.configured action=prev value=Ctrl+Alt+U`、`hotkey.register id=2 ok action=prev key=Ctrl+Alt+U`、`hotkey.apply enabled=true count=4 reason=settings` |
+| 取消 / 清除 | Esc 取消不落盘、无 `hotkey.apply`；Backspace 清空 →「未设置」+ `skipped reason=empty` + `count=3` | `.shortcut-key.is-empty`、`hotkey.register id=4 skipped action=toggleWindow reason=empty` |
+| 总开关 | 关闭 → 4 行「未启用」+ `enabled=false count=0`；再开启 → `count=3`（已清空项仍空） | `hotkey.apply enabled=false count=0 reason=settings` |
+| 恢复默认 | 四行回默认 + `count=4`；prev/next 本机 `Ctrl+Alt+Left/Right` 被占用时显示「已回落到 Ctrl + Alt + Shift + Left/Right」 | `hotkey.apply enabled=true count=4 reason=settings` |
+| 宿主动作（测试杠杆） | `research/tmp/wh3.ps1 hotkey 2` 投递 WM_HOTKEY id=2 → `hotkey.fire action=prev` + `web:info command prev`（不校验当前注册组合，属测试手段） | `hotkey.fire action=…`、`web:info command …` |
+| 持久化 | `%LOCALAPPDATA%\Zilux2\settings.json` 的 `shortcuts` 段落盘；关闭弹层重开设置页显示与文件一致 | `settings.json` |
+
+> 注意：①页面不再把设置镜像到 `localStorage`，断言只认宿主 `settings.json`；②`WM_HOTKEY id=2` 会真的切上一首（可能把暂停
+> 带成播放），套件用页面内静音守护并在收尾恢复播放前的暂停状态；③`Page.reload` 未自动化（偶发卡死），reload 后一致性请在
+> 页面内手工刷新确认 4 行显示与 `settings.json` 一致；④真实按键（桌面焦点在应用时按 `Ctrl+Alt+Space` 等）也需按 §4.4 手测。
 
 ## 5. 设计约束（真机 QA 经验，来自 `research/HANDOFF.md` §4）
 
@@ -169,6 +193,9 @@ research/shots/suite-YYYYMMDD/
   终端 note / 本轮报告里会列出文件名、大小与完整路径，确认是测试新增后再手动删。想直接打开目录可临时设
   `ZILUX2_QA_CLICK_REVEAL=1` 点一次 reveal。
 - `tray-and-downloads.mjs` 只读 `host.log`，不写文件；命令通道步骤会临时静音 `<audio>` 并在收尾恢复。
+- `shortcuts.mjs` 会临时修改设置（录制组合、关总开关、清空组合），结束前**恢复默认并确保总开关打开**；
+  `%LOCALAPPDATA%\Zilux2\settings.json` 的 `shortcuts` 段最终应与默认值一致。`WM_HOTKEY id=2` 的自动验证会真实
+  切上一首（可能把暂停带成播放）：套件页面内静音 `<audio>` 并在收尾恢复播放前的暂停状态；若中断，手动恢复播放即可。
 - `local-watch.mjs` 在 `research/qa/suite/tmp-local-watch/` 建临时目录，结束自动删除并还原
   `localStorage.zilux2.localFolder`；中断（Ctrl+C）时可能残留，手动 `rm -rf` 该目录即可。
 - `room-effects.mjs` 会备份并还原 `zilux2.roomStyle` / `zilux2.lumiere`。
@@ -203,6 +230,10 @@ research/shots/suite-YYYYMMDD/
 | 搜索结果墙卡在「融合搜索 · 已找到 N 首 · 加载中…」 | **产品竞态 bug 的回归信号**（2026-10 真机复现，Lead 已修 `commitSearch` 开头 `clearTimeout(searchTimer)`）：`lib/ui.mjs` 的 `openSearch()` 现已按真实竞态路径执行（input 后 <50ms 派发 Enter），断言 12s 内完成且不含「加载中」/「搜索中」；失败即修复回归，把截图 + `host.log` 报给 Lead，不要靠点第二次 Enter 掩盖 |
 | 终端提示 `research/research` 残留 | 旧截图路径 bug 的产物，`rm -rf research/research`（`.gitignore` 未忽略它，会污染提交） |
 | `host.log` 里找不到 `host.start` / `hotkey.register` | 应用是旧构建（task-12 之前）或日志被截断：换装本轮的安装版再跑；`tray-and-downloads.mjs` 只会从最后一次 `host.start` 之后读行 |
+| shortcuts 套件：4 行显示「未启用」但总开关开着 / 状态长期停在「已生效」不刷新 | 宿主没回 `shortcuts` 事件（旧构建缺 `PublishShortcutState`）或 `web/src/core/bridge.ts` 的 `onShortcutsState` 未注册；先确认 `host.log` 有 `hotkey.apply enabled=true reason=startup`，再看页面 console 有无 `[bridge] shortcuts handler failed` |
+| shortcuts 套件：`hotkey.register id=2 skipped action=prev reason=empty` 而预期是 ok | 上一步录制/清除把值写成空串了（`settings.json shortcuts.prev=""`），点「恢复默认」或手改 `settings.json` 后重跑 |
+| shortcuts 套件：WM_HOTKEY 步骤失败/SKIP | 需要 `research/tmp/wh3.ps1` 且宿主 pwsh 可用；该步不可自动化的环境记 SKIP。`ZILUX2_QA_WM_HOTKEY=0` 可显式跳过；id=2 不校验注册组合，只验证宿主 → 页面命令链路 |
+| shortcuts 套件结束但 `settings.json` 不是默认快捷键 | 套件中断（Ctrl+C）；重跑一次或点设置页「恢复默认」按钮（预期 `hotkey.apply enabled=true count=4 reason=settings`） |
 | 找不到 `.dlqp-panel` / 快捷设置没有第 5 个「下载」tab | 前端仍是旧构建（未包含 downloadPicker.ts / quick 下载页），让构建产物随安装版一起更新后再跑 |
 | 无损下载 SKIP | 在线源对「无损」有版权/账号限制，属产品/源站限制：`job.state=error` 时套件记 SKIP 并附错误与 `host.log`，不算回归 |
 | 托盘/热键相关步骤 SKIP | 托盘交互、`WM_HOTKEY` 投递无法在自动回归里稳定模拟，按 §4.4 人工手测清单确认 |
@@ -216,7 +247,7 @@ research/qa/suite/
 ├── lib/cdp.mjs        # CDP 连接、Runtime.evaluate、截图、host.log 读取、Suite 步骤框架
 ├── lib/ui.mjs         # 公共导航/展开/读取 localStorage/关闭弹层
 ├── lib/fixtures.mjs   # 夹具有路径、验收数值表、DLQ/房间预设选择器、超时阈值
-├── smoke.mjs / tray-and-downloads.mjs / room-effects.mjs / downloads.mjs / local-watch.mjs / update-channel.mjs
+├── smoke.mjs / tray-and-downloads.mjs / shortcuts.mjs / room-effects.mjs / downloads.mjs / local-watch.mjs / update-channel.mjs
 ├── run-all.mjs        # 顺序执行 + 汇总表 + 失败明细
 └── README.md
 ```

@@ -18,6 +18,9 @@ internal sealed class SettingsModel
     // 自动更新通道（docs/zilux2-update-channel.md §5）。追加在最后，旧文件顺序不变。
     public UpdateSettings Updates { get; set; } = new();
 
+    // 全局快捷键（docs/zilux2-settings-contract.md §2，宿主解析并注册）。同样追加在最后。
+    public ShortcutSettings Shortcuts { get; set; } = new();
+
     public static SettingsModel CreateDefaults() => new();
 }
 
@@ -170,6 +173,45 @@ internal sealed class UpdateSettings
 
     /// <summary>覆盖仓库（owner/name）；空字符串表示用构建时内置的仓库。</summary>
     public string Repo { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// 全局快捷键（docs/zilux2-settings-contract.md §2）。字符串是 RegisterHotKey 风格的组合键，
+/// 由宿主解析；空字符串表示关闭该条，<see cref="Enabled"/>=false 表示全部关闭。
+/// prev/next 的默认值在部分机器上会被输入法/显卡驱动占用，宿主对「仍是默认值」的组合保留
+/// 候选回落链（见 MainWindow.HotkeyCatalog），用户改过的组合则只注册配置值。
+/// </summary>
+internal sealed class ShortcutSettings
+{
+    public const string DefaultPlayPause = "Ctrl+Alt+Space";
+    public const string DefaultPrev = "Ctrl+Alt+Left";
+    public const string DefaultNext = "Ctrl+Alt+Right";
+    public const string DefaultToggleWindow = "Ctrl+Alt+Z";
+
+    /// <summary>快捷键总开关；false 时宿主注销全部全局热键。</summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>播放/暂停，默认 Ctrl+Alt+Space。</summary>
+    public string PlayPause { get; set; } = DefaultPlayPause;
+
+    /// <summary>上一首，默认 Ctrl+Alt+Left（被占用时宿主回落到候选键）。</summary>
+    public string Prev { get; set; } = DefaultPrev;
+
+    /// <summary>下一首，默认 Ctrl+Alt+Right（被占用时宿主回落到候选键）。</summary>
+    public string Next { get; set; } = DefaultNext;
+
+    /// <summary>显示/隐藏主窗口，默认 Ctrl+Alt+Z。</summary>
+    public string ToggleWindow { get; set; } = DefaultToggleWindow;
+
+    /// <summary>复制一份，避免调用方在锁外直接读写正在被序列化的实例。</summary>
+    public ShortcutSettings Clone() => new()
+    {
+        Enabled = Enabled,
+        PlayPause = PlayPause,
+        Prev = Prev,
+        Next = Next,
+        ToggleWindow = ToggleWindow,
+    };
 }
 
 // Host -> page envelope from contract section 3.2; `state` is the full file document.

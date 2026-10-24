@@ -51,6 +51,171 @@ export const FADE_CURVES: readonly { value: FadeCurve; label: string }[] = [
 ];
 const FADE_CURVE_IDS = FADE_CURVES.map((item) => item.value);
 
+/* ---- 全局快捷键（Shortcuts v1，宿主注册结果走 bridge 的 shortcuts 事件） ---- */
+
+/** 可配置的全局快捷键动作（与宿主 schema 的键名一致）。 */
+export type ShortcutAction = 'playPause' | 'prev' | 'next' | 'toggleWindow';
+
+export interface ShortcutsSettings {
+  /** 全局开关：关闭后宿主注销全部组合。 */
+  enabled: boolean;
+  /** 空字符串表示该条不绑定。 */
+  playPause: string;
+  prev: string;
+  next: string;
+  toggleWindow: string;
+}
+
+/** 四条可配置的全局快捷键（顺序即设置页展示顺序）。 */
+export const SHORTCUT_ACTIONS: readonly ShortcutAction[] = ['playPause', 'prev', 'next', 'toggleWindow'];
+
+/** 设置页展示用的标签与说明。 */
+export const SHORTCUT_LABELS: Record<ShortcutAction, { label: string; hint: string }> = {
+  playPause: { label: '播放 / 暂停', hint: '播放或暂停当前歌曲，应用在后台时也生效' },
+  prev: { label: '上一首', hint: '切到当前播放队列的上一首' },
+  next: { label: '下一首', hint: '切到当前播放队列的下一首' },
+  toggleWindow: { label: '显示 / 隐藏窗口', hint: '窗口最小化到托盘后也能一键呼出' },
+};
+
+/** 默认组合（与宿主 Shortcuts v1 schema 的默认值保持一致）。 */
+export const SHORTCUT_DEFAULTS: ShortcutsSettings = {
+  enabled: true,
+  playPause: 'Ctrl+Alt+Space',
+  prev: 'Ctrl+Alt+Left',
+  next: 'Ctrl+Alt+Right',
+  toggleWindow: 'Ctrl+Alt+Z',
+};
+
+const SHORTCUT_MODIFIERS = ['Ctrl', 'Alt', 'Shift', 'Win'] as const;
+type ShortcutModifier = (typeof SHORTCUT_MODIFIERS)[number];
+
+/** 修饰键别名 → 规范名（宿主 token 大小写不敏感）。 */
+const SHORTCUT_MODIFIER_ALIASES: Record<string, ShortcutModifier> = {
+  ctrl: 'Ctrl',
+  control: 'Ctrl',
+  alt: 'Alt',
+  shift: 'Shift',
+  win: 'Win',
+  meta: 'Win',
+  windows: 'Win',
+};
+
+/** 允许作为主键的 token（与宿主解析器同一套）。 */
+const SHORTCUT_KEY_TOKENS: readonly string[] = [
+  ...Array.from({ length: 26 }, (_, index) => String.fromCharCode(65 + index)),
+  ...Array.from({ length: 10 }, (_, index) => String(index)),
+  ...Array.from({ length: 24 }, (_, index) => `F${index + 1}`),
+  'Space',
+  'Tab',
+  'Enter',
+  'Esc',
+  'Backspace',
+  'Delete',
+  'Insert',
+  'Home',
+  'End',
+  'PageUp',
+  'PageDown',
+  'Up',
+  'Down',
+  'Left',
+  'Right',
+];
+
+const SHORTCUT_KEY_ALIASES: Record<string, string> = {
+  spacebar: 'Space',
+  escape: 'Esc',
+  return: 'Enter',
+  del: 'Delete',
+  ins: 'Insert',
+  pgup: 'PageUp',
+  pgdn: 'PageDown',
+  arrowup: 'Up',
+  arrowdown: 'Down',
+  arrowleft: 'Left',
+  arrowright: 'Right',
+};
+
+const SHORTCUT_KEY_LOOKUP = new Map<string, string>(
+  SHORTCUT_KEY_TOKENS.map((token) => [token.toLowerCase(), token]),
+);
+
+/** 单个 token → 规范主键名；不是合法主键时返回 null。 */
+function shortcutKeyToken(raw: string): string | null {
+  // 空格键的 event.key 就是 ' '，trim 后为空，需要单独识别。
+  if (raw === ' ') return 'Space';
+  const lower = raw.trim().toLowerCase();
+  if (!lower) return null;
+  return SHORTCUT_KEY_ALIASES[lower] ?? SHORTCUT_KEY_LOOKUP.get(lower) ?? null;
+}
+
+/** 宿主设置快照里是否带 shortcuts 段（旧宿主可能还没有）。 */
+function hasShortcutsSection(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object') return false;
+  return Object.prototype.hasOwnProperty.call(raw, 'shortcuts');
+}
+
+/**
+ * 校验并规范化快捷键串：`ctrl+alt+space` → `Ctrl+Alt+Space`。
+ *
+ * 规则（与宿主解析器一致）：
+ * - 空串合法，表示「不绑定」；
+ * - 至少 1 个修饰键（Ctrl/Control/Alt/Shift/Win/Meta）+ 恰好 1 个主键；
+ * - 主键白名单：A-Z、0-9、F1-F24、Space/Tab/Enter/Esc/Backspace/Delete/Insert/Home/End/PageUp/PageDown/Up/Down/Left/Right；
+ * - 修饰键按 Ctrl → Alt → Shift → Win 顺序输出；非法串返回 fallback。
+ */
+export function normalizeShortcutBinding(value: unknown, fallback: string): string {
+  if (typeof value !== 'string') return fallback;
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  if (trimmed.length > 64) return fallback;
+  const parts = trimmed.split('+').map((part) => part.trim()).filter(Boolean);
+  if (parts.length < 2) return fallback;
+  const modifiers = new Set<ShortcutModifier>();
+  let key: string | null = null;
+  for (const part of parts) {
+    const modifier = SHORTCUT_MODIFIER_ALIASES[part.toLowerCase()];
+    if (modifier) {
+      modifiers.add(modifier);
+      continue;
+    }
+    const token = shortcutKeyToken(part);
+    // 未知 token，或出现第二个主键：整条串非法。
+    if (!token || key !== null) return fallback;
+    key = token;
+  }
+  if (!key || modifiers.size === 0) return fallback;
+  return [...SHORTCUT_MODIFIERS.filter((modifier) => modifiers.has(modifier)), key].join('+');
+}
+
+/** 展示用：`Ctrl+Alt+Space` → `Ctrl + Alt + Space`；空串 → 空串。 */
+export function formatShortcutForDisplay(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  return trimmed
+    .split('+')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(' + ');
+}
+
+/**
+ * 把一次浏览器 keydown 转成组合串（供设置页录制使用）。
+ *
+ * 纯修饰键（Control/Alt/Shift/Meta 自身）返回 null；无法识别的主键返回 null。
+ * 是否要求修饰键由调用方决定（这里不强制，便于提示「需要搭配修饰键」）。
+ */
+export function shortcutBindingFromEvent(event: KeyboardEvent): string | null {
+  const key = shortcutKeyToken(event.key);
+  if (!key) return null;
+  const modifiers: string[] = [];
+  if (event.ctrlKey) modifiers.push('Ctrl');
+  if (event.altKey) modifiers.push('Alt');
+  if (event.shiftKey) modifiers.push('Shift');
+  if (event.metaKey) modifiers.push('Win');
+  return [...modifiers, key].join('+');
+}
+
 export interface Settings {
   version: 1;
   general: {
@@ -97,6 +262,7 @@ export interface Settings {
     /** 人声保留尾音（毫秒，0..3000）；淡出总时长 = fadeOutMs + 该值。 */
     fadeVocalTailMs: number;
   };
+  shortcuts: ShortcutsSettings;
   downloads: {
     /** 下载目录；空字符串表示 Windows「音乐」目录。 */
     directory: string;
@@ -117,6 +283,7 @@ export type SettingsPatch = {
   general?: Partial<Settings['general']>;
   appearance?: Partial<Settings['appearance']>;
   playback?: Partial<Settings['playback']>;
+  shortcuts?: Partial<Settings['shortcuts']>;
   downloads?: Partial<Settings['downloads']>;
   updates?: Partial<Settings['updates']>;
 };
@@ -151,6 +318,7 @@ export const DEFAULT_SETTINGS: Settings = {
     fadeVocal: false,
     fadeVocalTailMs: FADE_VOCAL_TAIL_MS.fallback,
   },
+  shortcuts: { ...SHORTCUT_DEFAULTS },
   downloads: { directory: '', quality: 'high' },
   updates: { autoCheck: true, mode: 'auto', repo: '' },
 };
@@ -225,12 +393,23 @@ function asFadeMs(value: unknown): number {
   return asMs(value, FADE_MS);
 }
 
+function asShortcuts(value: Record<string, unknown>): ShortcutsSettings {
+  return {
+    enabled: asBool(value.enabled, SHORTCUT_DEFAULTS.enabled),
+    playPause: normalizeShortcutBinding(value.playPause, SHORTCUT_DEFAULTS.playPause),
+    prev: normalizeShortcutBinding(value.prev, SHORTCUT_DEFAULTS.prev),
+    next: normalizeShortcutBinding(value.next, SHORTCUT_DEFAULTS.next),
+    toggleWindow: normalizeShortcutBinding(value.toggleWindow, SHORTCUT_DEFAULTS.toggleWindow),
+  };
+}
+
 /** 深度合并 + 白名单校验：未知字段忽略，非法值回落默认值。 */
 export function normalizeSettings(raw: unknown): Settings {
   const root = asObject(raw);
   const general = asObject(root.general);
   const appearance = asObject(root.appearance);
   const playback = asObject(root.playback);
+  const shortcuts = asObject(root.shortcuts);
   const downloads = asObject(root.downloads);
   const updates = asObject(root.updates);
 
@@ -271,6 +450,7 @@ export function normalizeSettings(raw: unknown): Settings {
       fadeVocal: asBool(playback.fadeVocal, DEFAULT_SETTINGS.playback.fadeVocal),
       fadeVocalTailMs: asMs(playback.fadeVocalTailMs, FADE_VOCAL_TAIL_MS),
     },
+    shortcuts: asShortcuts(shortcuts),
     downloads: {
       directory: typeof downloads.directory === 'string' ? downloads.directory.trim() : '',
       quality: asEnum(downloads.quality, STREAM_QUALITIES, DEFAULT_SETTINGS.downloads.quality),
@@ -347,6 +527,8 @@ function bindHostListener(): void {
   host.onMessage((msg: HostMessage) => {
     if (msg.type !== 'host' || msg.event !== 'settings' || !msg.state) return;
     const next = normalizeSettings(msg.state);
+    // 兼容还没下发 shortcuts 段的旧宿主：保留页面当前快捷键，别被默认值冲掉。
+    if (!hasShortcutsSection(msg.state)) next.shortcuts = { ...current.shortcuts };
     applySettings(next);
     pendingHostResolve?.(next);
   });
@@ -378,6 +560,10 @@ export async function loadSettings(): Promise<Settings> {
   }
 
   const state = raw ? normalizeSettings(raw) : readLocal();
+  // 旧宿主快照没有 shortcuts 段时，优先保留本地镜像里的快捷键配置。
+  if (raw && !hasShortcutsSection(raw)) {
+    state.shortcuts = { ...readLocal().shortcuts };
+  }
   applySettings(state);
   return state;
 }
@@ -389,6 +575,7 @@ export function patchSettings(patch: SettingsPatch): Settings {
     general: { ...current.general, ...patch.general },
     appearance: { ...current.appearance, ...patch.appearance },
     playback: { ...current.playback, ...patch.playback },
+    shortcuts: { ...current.shortcuts, ...patch.shortcuts },
     downloads: { ...current.downloads, ...patch.downloads },
     updates: { ...current.updates, ...patch.updates },
   };
