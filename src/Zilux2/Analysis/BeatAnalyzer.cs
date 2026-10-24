@@ -10,7 +10,7 @@ namespace Zilux2.Analysis;
 /// </summary>
 internal static class BeatAnalyzer
 {
-    internal const string AnalyzerVersion = "p0-1";
+    internal const string AnalyzerVersion = "p0-3";
 
     private const int WindowSize = 1024;
     private const int HopSize = 512;
@@ -321,6 +321,22 @@ internal static class BeatAnalyzer
         }
 
         bpm = bestFolded;
+        // Zilux2 修正（2026-10-25）：梳状谱在倍速处天然并列（bpm 与 2·bpm 的三次泛音和几乎相等），
+        // 快歌因此常被判成一半速度（节拍器 click 只剩 80 BPM 而实际是 160+）。折叠后补一次
+        // 「半拍位置是否也有明显 onset」校验：若 beatLag/2 处的自相关仍有主拍足够比例强度，说明
+        // 网格漏掉了隔拍的能量，把速度翻倍回真实拍。100~120 BPM 的倍速（200~240 BPM）用更严格的
+        // 比例判定，避免把真正 100~120 BPM 的歌误翻倍。
+        if (bpm > 0 && bpm < 120.0 && bpm * 2.0 <= MaxBpm)
+        {
+            var beatLag2 = 60.0 * fps / bpm;
+            var acBeat2 = Interpolate(ac, beatLag2);
+            var acHalf2 = Interpolate(ac, beatLag2 / 2.0);
+            var threshold = bpm < 100.0 ? 0.55 : 0.78;
+            if (acBeat2 > 1e-9 && acHalf2 >= acBeat2 * threshold)
+            {
+                bpm *= 2.0;
+            }
+        }
         var mean = scoreCount > 0 ? scoreSum / scoreCount : 0;
         var confidence = bestScore <= 1e-12
             ? 0
