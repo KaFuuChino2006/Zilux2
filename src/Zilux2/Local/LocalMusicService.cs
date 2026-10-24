@@ -522,8 +522,11 @@ internal sealed partial class LocalMusicService
         }
     }
 
-    /// <summary>把页面传来的 rel 解析成磁盘路径（越界 / 不存在返回 null）。</summary>
-    private string? ResolveTrackPath(string? rel)
+    /// <summary>
+    /// 把页面传来的 rel 解析成磁盘路径（越界 / 不存在返回 null）。internal 供离线节拍分析
+    /// (/api/analysis) 复用；注意它会触发 EnsureDownloadFolder → RescanDownloads，调用方必须在 UI 线程。
+    /// </summary>
+    internal string? ResolveTrackPath(string? rel)
     {
         if (string.IsNullOrWhiteSpace(rel))
         {
