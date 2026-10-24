@@ -68,8 +68,11 @@ export interface LumiereProfile {
     };
 }
 
-/** Zilux2 扩展：纯字档背景光柱的样式（见 light/textBeams.ts）。 */
-export type TextBeamStyle = 'calm' | 'breathe' | 'curtain' | 'focus';
+/**
+ * Zilux2 扩展：纯字档背景光柱的样式（见 light/textBeams.ts）。
+ * calm/breathe/curtain/focus 是正射构图；diagonal/cross/rise 是多入射角构图；rainbow 是彩虹色散。
+ */
+export type TextBeamStyle = 'calm' | 'breathe' | 'curtain' | 'focus' | 'diagonal' | 'cross' | 'rise' | 'rainbow';
 
 export interface LumiereSceneTuning {
     /** 光强倍率。 */
@@ -120,8 +123,10 @@ export interface LumiereSceneTuning {
     textBeamOffsetX: number;
     /** Zilux2 扩展：纯字档背景光柱上下偏移（按画面高比例）。 */
     textBeamOffsetY: number;
-    /** Zilux2 扩展：纯字档背景光柱的样式（见 light/textBeams.ts：静光 / 缓息 / 流幕 / 聚光）。 */
+    /** Zilux2 扩展：纯字档背景光柱的样式（见 light/textBeams.ts：静光 / 缓息 / 流幕 / 聚光 / 斜光 / 交叉 / 仰光 / 虹光）。 */
     textBeamStyle: TextBeamStyle;
+    /** Zilux2 扩展：纯字档背景光柱是否每隔 32 秒自动换一套样式（衔接平滑）。 */
+    textBeamAuto: boolean;
     /** 关键字着色：主题 wordColors 的关键字点亮时带关键字色（字、光晕、闪点、十字爆闪、背景碎片）。 */
     keywordColors: boolean;
     /** 主题图标：主题 lyricsIcons 的 Lucide 图标画成线稿，散落在文字区外（独立于 lineArt 开关）。 */
@@ -154,6 +159,7 @@ export const DEFAULT_LUMIERE_SCENE_TUNING: LumiereSceneTuning = {
     textBeamOffsetX: 0,
     textBeamOffsetY: 0,
     textBeamStyle: 'calm',
+    textBeamAuto: true,
     keywordColors: true,
     themeIcons: true,
     themeColorMix: 0.3,

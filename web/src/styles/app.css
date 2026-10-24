@@ -3772,6 +3772,16 @@ body,
   background: var(--surface);
 }
 
+/* 纯字档「光柱效果」多套样式：一行放不下时折成两行（每行四个） */
+.ts-seg.is-wrap {
+  flex-wrap: wrap;
+}
+
+.ts-seg.is-wrap .ts-seg-btn {
+  flex: 1 1 calc(25% - 4px);
+  padding: 0 6px;
+}
+
 .ts-seg-btn {
   flex: 1 1 auto;
   height: 26px;
