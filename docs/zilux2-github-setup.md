@@ -44,7 +44,9 @@ node --version       # 需要 Node 22（只在本地构建前端时需要，CI �
 
 1. 浏览器打开 <https://github.com/new>。
 2. **Repository name** 填 `Zilux2`；**Owner** 选你自己的账号（或组织）。
-3. **Description** 随意（例如 `Zilux2 - Windows desktop music player`）。
+3. **Description** 建议直接粘贴（创建后也能在仓库首页 About 旁铅笔修改）：
+   `Zilux2 · 沉浸式 Windows 桌面音乐播放器（.NET 10 WPF + WebView2）。在线双源、本地曲库、3D 歌词舞台、鼓点对齐无缝衔接、AirPlay 投送、可配置全局快捷键、应用内自动更新。全程使用 DeepSeek Harness 的 AI Agent 开发。`
+   **Topics** 建议：`airplay` `desktop-app` `dotnet` `deepseek-harness` `equalizer` `music-player` `seamless-transition` `threejs` `typescript` `vite` `webview2` `windows` `wpf`。
 4. 可见性：
    - `Public`：**推荐**。应用内更新走未认证的 GitHub Releases API，私有仓库会 404，
      除非用户在设置里另外配置 —— 简单起见用公开仓库。
