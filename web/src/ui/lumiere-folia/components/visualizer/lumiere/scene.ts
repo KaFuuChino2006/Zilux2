@@ -459,6 +459,7 @@ export const createLumiereScene = (pixi: PixiModule, options: LumiereSceneOption
                 offsetX: tuning.textBeamOffsetX,
                 offsetY: tuning.textBeamOffsetY,
                 style: tuning.textBeamStyle,
+                auto: tuning.textBeamAuto !== false,
             });
             // 纯字档的雾用固定光位 + 42 秒无缝循环，不再跟随 folia 镜头切换换参数。
             rig = TEXT_FOG_RIG;

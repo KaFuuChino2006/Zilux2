@@ -15,6 +15,7 @@ import {
   saveLyricTextSettings,
   type LyricTextSettings,
 } from './lumiereSettings';
+import { TEXT_BEAM_STYLES } from './lumiere-folia/components/visualizer/lumiere/light/textBeams';
 
 type NumericKey = {
   [K in keyof LyricTextSettings]: LyricTextSettings[K] extends number ? K : never;
@@ -199,6 +200,7 @@ export function openTextSettingsSheet(): void {
     options: Array<{ id: string; label: string }>,
     current: string,
     onPick: (id: string) => void,
+    wrap = false,
   ): HTMLElement => {
     const buttons: HTMLButtonElement[] = options.map((option) => {
       const btn = h('button', {
@@ -221,7 +223,7 @@ export function openTextSettingsSheet(): void {
       'div',
       { class: 'ts-row' },
       h('div', { class: 'ts-row-head' }, h('span', { class: 'ts-label', text: label })),
-      h('div', { class: 'ts-seg' }, ...buttons),
+      h('div', { class: `ts-seg${wrap ? ' is-wrap' : ''}` }, ...buttons),
       h('div', { class: 'ts-hint', text: hint }),
     );
   };
@@ -269,19 +271,47 @@ export function openTextSettingsSheet(): void {
       },
     );
 
-  const beamStyleRow = (): HTMLElement =>
+  const beamStyleRow = (): HTMLElement => {
+    const buttons: HTMLButtonElement[] = TEXT_BEAM_STYLES.map((option) => {
+      const btn = h('button', {
+        class: `ts-seg-btn${option.id === draft.beamStyle ? ' is-on' : ''}`,
+        type: 'button',
+        text: option.label,
+      }) as HTMLButtonElement;
+      btn.addEventListener('pointerdown', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      });
+      btn.addEventListener('click', () => {
+        buttons.forEach((item) => item.classList.toggle('is-on', item === btn));
+        draft.beamStyle = option.id;
+        applyDraft();
+      });
+      return btn;
+    });
+    return h(
+      'div',
+      { class: 'ts-row' },
+      h('div', { class: 'ts-row-head' }, h('span', { class: 'ts-label', text: '光柱效果' })),
+      h('div', { class: 'ts-seg is-wrap' }, ...buttons),
+      h('div', {
+        class: 'ts-hint',
+        text: '正射：静光 / 缓息 / 流幕 / 聚光；多入射角：斜光 / 交叉 / 仰光；彩虹色散：虹光',
+      }),
+    );
+  };
+
+  const beamAutoRow = (): HTMLElement =>
     segmentedRow(
-      '光柱效果',
-      '换一套背景光柱的构图与动法；四套都走 32 秒无缝循环，看不出头尾',
+      '自动轮换',
+      '每隔 16 秒按「静光 → 缓息 → 流幕 → 聚光 → 斜光 → 交叉 → 仰光 → 虹光」换一套构图，切换处 2.4 秒平滑过渡，看不出硬切；关掉后固定当前样式',
       [
-        { id: 'calm', label: '静光' },
-        { id: 'breathe', label: '缓息' },
-        { id: 'curtain', label: '流幕' },
-        { id: 'focus', label: '聚光' },
+        { id: 'on', label: '开' },
+        { id: 'off', label: '关' },
       ],
-      draft.beamStyle,
+      draft.beamAuto ? 'on' : 'off',
       (id) => {
-        draft.beamStyle = id === 'breathe' || id === 'curtain' || id === 'focus' ? id : 'calm';
+        draft.beamAuto = id === 'on';
       },
     );
 
@@ -297,6 +327,7 @@ export function openTextSettingsSheet(): void {
         '光柱与光感',
         ...BEAM_TOGGLES.map(toggleRow),
         beamStyleRow(),
+        beamAutoRow(),
         ...BEAM_RANGES.map(rangeRow),
         ...LIGHT_RANGES.map(rangeRow),
         qualityRow(),

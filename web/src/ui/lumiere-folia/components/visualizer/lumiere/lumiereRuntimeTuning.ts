@@ -102,6 +102,7 @@ export const toLumiereSceneTuning = (
         textOnly: tuning.textOnly,
         textBeams: tuning.textBeams !== false,
         textBeamStyle: tuning.textBeamStyle ?? 'calm',
+        textBeamAuto: tuning.textBeamAuto ?? true,
         textBeamScale: tuning.textBeamScale ?? 1,
         textBeamOffsetX: tuning.textBeamOffsetX ?? 0,
         textBeamOffsetY: tuning.textBeamOffsetY ?? 0,

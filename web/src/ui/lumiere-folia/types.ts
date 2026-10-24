@@ -785,8 +785,10 @@ export interface LumiereTuning {
    * 默认 true；非纯字档忽略。
    */
   textBeams?: boolean;
-  /** Zilux2 扩展：纯字档背景光柱的样式（见 visualizer/lumiere/light/textBeams.ts：静光 / 缓息 / 流幕 / 聚光）。 */
+  /** Zilux2 扩展：纯字档背景光柱的样式（见 visualizer/lumiere/light/textBeams.ts：静光 / 缓息 / 流幕 / 聚光 / 斜光 / 交叉 / 仰光 / 虹光）。 */
   textBeamStyle?: TextBeamStyle;
+  /** Zilux2 扩展：纯字档背景光柱是否每隔 32 秒自动换一套样式（衔接平滑；非纯字档忽略）。 */
+  textBeamAuto?: boolean;
   /** Zilux2 扩展：纯字档背景光柱的粗细/长度倍数（1 = 原始，非纯字档忽略）。 */
   textBeamScale?: number;
   /** Zilux2 扩展：纯字档背景光柱整体左右偏移（按画面宽比例，负左正右）。 */
@@ -825,6 +827,7 @@ export const DEFAULT_LUMIERE_TUNING: LumiereTuning = {
   textOnly: false,
   textBeams: true,
   textBeamStyle: 'calm',
+  textBeamAuto: true,
   textBeamScale: 1,
   textBeamOffsetX: 0,
   textBeamOffsetY: 0,
