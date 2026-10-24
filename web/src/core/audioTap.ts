@@ -83,10 +83,14 @@ let localGain: GainNode | null = null;
 /** 交叉淡化用的混音入口：所有 deck 的 gain 先汇到这里，再统一进 EQ / 本地 gain。 */
 let deckMix: GainNode | null = null;
 /** 已接进图的 deck 源节点缓存（同一元素只能建一次 MediaElementAudioSourceNode）。 */
-const deckNodes = new Map<
-  HTMLAudioElement,
-  { source: MediaElementAudioSourceNode; gain: GainNode }
->();
+interface DeckGraphNodes {
+  source: MediaElementAudioSourceNode;
+  /** 人声/伴奏分离用的低架/高架滤波：过渡时压低伴奏，保留中频人声。 */
+  low: BiquadFilterNode;
+  high: BiquadFilterNode;
+  gain: GainNode;
+}
+const deckNodes = new Map<HTMLAudioElement, DeckGraphNodes>();
 let workletNode: AudioWorkletNode | null = null;
 let processor: ScriptProcessorNode | null = null;
 let silentGain: GainNode | null = null;
@@ -133,6 +137,52 @@ export function audioTapGraphActive(): boolean {
 }
 
 /**
+ * 单个 deck 的图内链路：源 → 低架（伴奏）→ 高架（伴奏）→ deck gain。
+ * 搁架滤波平时 0dB（直通），只在交叉淡化期间用来做人声/伴奏分离。
+ */
+function buildDeckChain(
+  ctx: AudioContext,
+  source: AudioNode,
+): { chain: { low: BiquadFilterNode; high: BiquadFilterNode; gain: GainNode } } | null {
+  try {
+    const low = ctx.createBiquadFilter();
+    low.type = 'lowshelf';
+    low.frequency.value = 180;
+    low.gain.value = 0;
+    const high = ctx.createBiquadFilter();
+    high.type = 'highshelf';
+    high.frequency.value = 4200;
+    high.gain.value = 0;
+    const gain = ctx.createGain();
+    gain.gain.value = 1;
+    source.connect(low);
+    low.connect(high);
+    high.connect(gain);
+    return { chain: { low, high, gain } };
+  } catch (err) {
+    console.warn('[audioTap] buildDeckChain failed', err);
+    return null;
+  }
+}
+
+/** 过渡期间允许把伴奏压低的幅度（dB）。超过这个值听起来会像电话音。 */
+const DECK_TILT_LIMIT_DB = 12;
+
+/** 设置 deck 的伴奏衰减（负值 = 压低低频/高频，中频人声保留）；未接入图时静默忽略。 */
+export function setDeckGraphTilt(element: HTMLAudioElement, lowDb: number, highDb: number): void {
+  const node = deckNodes.get(element);
+  if (!node) return;
+  const clampDb = (value: number): number =>
+    Number.isFinite(value) ? Math.max(-DECK_TILT_LIMIT_DB, Math.min(DECK_TILT_LIMIT_DB, value)) : 0;
+  try {
+    node.low.gain.value = clampDb(lowDb);
+    node.high.gain.value = clampDb(highDb);
+  } catch {
+    /* 忽略 */
+  }
+}
+
+/**
  * 把一个 deck（<audio>）接进本地 Web Audio 图：源 → 该 deck 的 gain → 混音入口（EQ 前）。
  * 图不存在时会先建图（等价于 ensureEqualizerGraph 的效果）。返回 false 表示图建不起来。
  * 注意：同一个 <audio> 元素只能 createMediaElementSource 一次，所以源节点按元素缓存复用。
@@ -153,12 +203,11 @@ export function attachDeckToGraph(element: HTMLAudioElement): boolean {
   }
   try {
     const source = ctx.createMediaElementSource(element);
-    const gain = ctx.createGain();
-    gain.gain.value = 1;
-    source.connect(gain);
-    gain.connect(deckMix);
+    const built = buildDeckChain(ctx, source);
+    if (!built) return false;
+    built.chain.gain.connect(deckMix);
     element.volume = 1;
-    deckNodes.set(element, { source, gain });
+    deckNodes.set(element, { source, ...built.chain });
     return true;
   } catch (err) {
     console.warn('[audioTap] attachDeckToGraph failed', err);
@@ -188,6 +237,9 @@ export function detachDeckFromGraph(element: HTMLAudioElement): void {
   const node = deckNodes.get(element);
   if (!node) return;
   try {
+    // 摘下来时把「人声/伴奏分离」的搁架滤波复位，避免下一首歌继承过渡期的倾斜。
+    node.low.gain.value = 0;
+    node.high.gain.value = 0;
     node.gain.disconnect();
   } catch {
     /* 忽略 */
@@ -345,11 +397,10 @@ function buildLocalGraph(ctx: AudioContext): boolean {
     // 所有 deck 的 gain 先汇到 deckMix，再统一进 EQ：交叉淡化时两首共用同一条 EQ/分析链路。
     deckMix = ctx.createGain();
     deckMix.gain.value = 1;
-    const deckGain = ctx.createGain();
-    deckGain.gain.value = 1;
-    source.connect(deckGain);
-    deckGain.connect(deckMix);
-    deckNodes.set(audio, { source, gain: deckGain });
+    const builtDeck = buildDeckChain(ctx, source);
+    if (!builtDeck) return false;
+    builtDeck.chain.gain.connect(deckMix);
+    deckNodes.set(audio, { source, ...builtDeck.chain });
     // 均衡器始终串在 deckMix 与 localGain 之间：关闭时全部 0dB，等价直通。
     eqFilters = EQ_FREQS.map((freq) => {
       const filter = ctx.createBiquadFilter();

@@ -8,7 +8,11 @@
  *   分析器）时把两个 deck 都接进 deckMix，用各自 deck gain 做等功率曲线，主音量仍由本地 gain
  *   控制——这样歌词页的频谱分析器和均衡器在淡化期间照常工作。
  * - 时间基准统一用「文件毫秒」：CUE 分轨要加上 startAt；曲内位置 = 文件时间 - startAt*1000。
- * - 淡化曲线用等功率：A = cos(p·π/2)、B = sin(p·π/2)，交叉点两首各约 0.707 幅度，听感不塌陷。
+ * - 淡化曲线：A/B 都用等功率（cos/sin），但 B 用更慢的指数进入（声音不会一上来就出来），
+ *   A 稍微留久一点；图内路径还会压低伴奏（低/高架滤波）——听感上像「人声先出现、伴奏慢慢融进来」，
+ *   与暂停淡出的「人声保留淡出」一致。
+ * - 节拍对齐用 WSOLA 变速不变调：把 B 的 playbackRate 设为 A/B 的拍间隔比（±12% 内），
+ *   配合 preservesPitch（Chromium 原生时间拉伸），淡化期间两首鼓点保持同拍，结束后速率平滑回 1。
  */
 
 import {
@@ -17,6 +21,7 @@ import {
   detachDeckFromGraph,
   setAudioTapVolume,
   setDeckGraphGain,
+  setDeckGraphTilt,
 } from '../core/audioTap';
 import type { AnalysisResult, BeatAnalysis } from '../online/analysis';
 import type { OnlineTrack } from '../online/types';
@@ -53,6 +58,18 @@ const AUTO_FALLBACK_MS = 7_000;
 /** 淡化太短听不出、太长会盖住半首歌，都夹住。上限按手动 30 秒留余量。 */
 const MIN_FADE_MS = 1_200;
 const MAX_FADE_MS = 32_000;
+
+/** WSOLA 变速不变调：用原生 preservesPitch 时间拉伸，把 B 的拍间隔拉到与 A 一致（±12% 内才做）。 */
+const TEMPO_RATE_MIN = 0.88;
+const TEMPO_RATE_MAX = 1.12;
+/** 过渡结束后把 B 的播放速率平滑拉回 1 的时长（ms）。 */
+const TEMPO_RETURN_MS = 650;
+
+/** B 淡入曲线指数（>1 = 更晚出声）；A 淡出指数（>1 = 人声/尾音多留一会儿）。 */
+const B_ENTRY_WARP = 1.9;
+const A_EXIT_WARP = 1.15;
+/** 人声/伴奏分离：过渡期间把伴奏（低频/高频）最多压低多少 dB，中频人声保留。 */
+const TILT_MAX_DB = 9;
 
 /** tick 到点前的提前量（rAF 约 16 ms 一帧，留一帧余量）。 */
 const TRIGGER_LEAD_MS = 120;
@@ -134,6 +151,10 @@ export interface CrossfadeDebugState {
   fadeMs: number;
   /** B 的起播位置（文件毫秒） */
   bStartFileMs: number;
+  /** 本次过渡给 B 的播放速率（1 = 不变速；wsola 对齐时 = A/BPM 比） */
+  tempoRate: number;
+  /** 是否做了变速不变调的节拍对齐 */
+  tempoMatched: boolean;
   /** 下一次调度的「开始唱词」位置（曲内毫秒）；0 = 无歌词/未取到 */
   nextVocalStartMs: number;
   /** 本次调度是否按「开始唱词」对齐（true = B 起播点按唱词反推） */
@@ -159,6 +180,8 @@ const debug: CrossfadeDebugState = {
   fadeStartPosMs: 0,
   fadeMs: 0,
   bStartFileMs: 0,
+  tempoRate: 1,
+  tempoMatched: false,
   nextVocalStartMs: 0,
   vocalAligned: false,
   currentAudibleEndMs: 0,
@@ -227,6 +250,8 @@ interface FadeSchedule {
   fadeStartPosMs: number;
   fadeMs: number;
   bStartFileMs: number;
+  /** 本次过渡给 B 的播放速率（1 = 不变速） */
+  tempoRate: number;
   /** A 的可听结尾（曲内毫秒，已排除尾部静音；旧宿主回退为曲内时长） */
   audibleEndPosMs: number;
   /** A 的尾部静音（毫秒）；无静音（含旧宿主回退）为 0 */
@@ -245,6 +270,8 @@ interface ActivePlan {
    * 主音量仍由本地 gain 控制；false = 图未建立，用元素音量淡化（旧路径）。
    */
   graphMode: boolean;
+  /** 本次过渡给 B 的播放速率（WSOLA 节拍对齐；1 = 不变速） */
+  tempoRate: number;
   fadeStartFileMs: number;
   fadeStartPosMs: number;
   fadeMs: number;
@@ -264,6 +291,13 @@ function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
+/** 取模（结果恒为非负），用于拍相位计算。 */
+function mod(value: number, modulo: number): number {
+  if (!(modulo > 0)) return 0;
+  const remainder = value % modulo;
+  return remainder < 0 ? remainder + modulo : remainder;
+}
+
 function setDeckVolume(element: HTMLAudioElement, volume: number): void {
   try {
     element.volume = clamp01(volume);
@@ -272,16 +306,58 @@ function setDeckVolume(element: HTMLAudioElement, volume: number): void {
   }
 }
 
-/** 等功率淡化：A 余弦、B 正弦，交叉点各约 0.707。 */
+function smoothStep(value: number): number {
+  const t = clamp01(value);
+  return t * t * (3 - 2 * t);
+}
+
+/** 设置 deck 播放速率（WSOLA 变速不变调：preservesPitch 保持音高）。 */
+function setDeckPlaybackRate(element: HTMLAudioElement, rate: number): void {
+  try {
+    element.preservesPitch = true;
+    (element as HTMLAudioElement & { webkitPreservesPitch?: boolean }).webkitPreservesPitch = true;
+    element.playbackRate = Math.max(0.5, Math.min(2, rate));
+  } catch {
+    /* 忽略 */
+  }
+}
+
+/** 过渡结束后把 B 的速率平滑拉回 1，避免整首歌带着过渡期的变速继续放。 */
+function returnDeckTempoToNormal(element: HTMLAudioElement, from: number): void {
+  if (!Number.isFinite(from) || Math.abs(from - 1) < 0.001) {
+    setDeckPlaybackRate(element, 1);
+    return;
+  }
+  const started = performance.now();
+  const step = (): void => {
+    const t = Math.min(1, (performance.now() - started) / TEMPO_RETURN_MS);
+    setDeckPlaybackRate(element, from + (1 - from) * smoothStep(t));
+    if (t < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+/**
+ * 等功率淡化 + 人声/伴奏分离：
+ * - B 的进入曲线用 p^1.9 再取正弦 → 前段几乎听不到，避免「下一首一上来就很大声」；
+ * - A 的退出用 p^1.15 余弦 → 人声/尾音多留一点；
+ * - 图内路径同时压低伴奏（低/高架滤波）：A 的伴奏先退、人声后走；B 的伴奏从压低回正，
+ *   于是听感上是「B 的人声先出来，伴奏慢慢融进来」，与暂停淡出的人声保留一致。
+ */
 function applyEqualPowerGains(plan: ActivePlan, progress: number): void {
-  const angle = clamp01(progress) * Math.PI * 0.5;
-  const outGain = Math.cos(angle);
-  const inGain = Math.sin(angle);
+  const p = clamp01(progress);
+  const outGain = Math.cos(Math.pow(p, A_EXIT_WARP) * Math.PI * 0.5);
+  const inGain = Math.sin(Math.pow(p, B_ENTRY_WARP) * Math.PI * 0.5);
   if (plan.graphMode) {
     // 图内：主音量（baseVolume）在本地 gain 上，deck gain 只负责 0~1 的等功率比例。
     setAudioTapVolume(plan.baseVolume, true);
     setDeckGraphGain(plan.options.active, outGain);
     setDeckGraphGain(plan.options.standby, inGain);
+    // 伴奏压低量：A 从 0 到 -TILT_MAX_DB；B 从 -TILT_MAX_DB 回到 0。
+    const outTilt = -TILT_MAX_DB * smoothStep(p * 0.9);
+    const inTilt = -TILT_MAX_DB * (1 - smoothStep(p * 1.35));
+    setDeckGraphTilt(plan.options.active, outTilt, outTilt);
+    setDeckGraphTilt(plan.options.standby, inTilt, inTilt);
     return;
   }
   setDeckVolume(plan.options.active, plan.baseVolume * outGain);
@@ -422,11 +498,38 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
     }
   }
 
+  // ---- WSOLA 节拍对齐：把 B 的播放速率调到与 A 拍间隔一致，再微调 B 起播相位到同拍 ----
+  let tempoRate = 1;
+  const aBpm = analysis.bpm;
+  const bBpm = nextAnalysis.bpm;
+  if (aBpm >= 40 && bBpm >= 40) {
+    const raw = aBpm / bBpm;
+    // 超过 ±12% 会明显听出快/慢，宁可不变速、按原强拍起播。
+    if (raw >= TEMPO_RATE_MIN && raw <= TEMPO_RATE_MAX && Math.abs(raw - 1) >= 0.004) {
+      tempoRate = Math.round(raw * 1000) / 1000;
+    }
+  }
+  if (tempoRate !== 1 && bStartFileMs > 0) {
+    const beatA = analysis.beatIntervalMs > 0 ? analysis.beatIntervalMs : 60_000 / aBpm;
+    const beatB = nextAnalysis.beatIntervalMs > 0 ? nextAnalysis.beatIntervalMs : 60_000 / bBpm;
+    const firstA = currentStartMs + Math.max(0, analysis.firstBeatMs);
+    const firstB = nextStartMs + Math.max(0, nextAnalysis.firstBeatMs);
+    const toNextA = beatA - mod(fadeStartFile - firstA, beatA); // A 到下一拍的真实时间
+    const toNextB = beatB - mod(bStartFileMs - firstB, beatB); // B 文件内到下一拍
+    // B 以 tempoRate 播放：文件偏移 / rate = 真实时间偏移；让两边下一拍落在同一时刻。
+    let shift = toNextB - toNextA * tempoRate;
+    while (shift > beatB / 2) shift -= beatB;
+    while (shift < -beatB / 2) shift += beatB;
+    if (Math.abs(shift) <= 220) bStartFileMs = Math.round(bStartFileMs + shift);
+  }
+  if (nextLimitMs > 0 && bStartFileMs > nextLimitMs) bStartFileMs = nextLimitMs;
+
   return {
     fadeStartFileMs: fadeStartFile,
     fadeStartPosMs: fadeStartFile - currentStartMs,
     fadeMs,
     bStartFileMs,
+    tempoRate,
     audibleEndPosMs: Math.round(audibleEndPosMs),
     tailSilenceMs: Math.round(tailSilenceMs),
     nextVocalStartMs: vocalPosMs,
@@ -439,10 +542,13 @@ function applySchedule(plan: ActivePlan, schedule: FadeSchedule): void {
   plan.fadeStartPosMs = schedule.fadeStartPosMs;
   plan.fadeMs = schedule.fadeMs;
   plan.bStartFileMs = schedule.bStartFileMs;
+  plan.tempoRate = schedule.tempoRate;
   plan.audibleEndPosMs = schedule.audibleEndPosMs;
   debug.fadeStartPosMs = schedule.fadeStartPosMs;
   debug.fadeMs = schedule.fadeMs;
   debug.bStartFileMs = schedule.bStartFileMs;
+  debug.tempoRate = schedule.tempoRate;
+  debug.tempoMatched = Math.abs(schedule.tempoRate - 1) > 0.001;
   debug.currentAudibleEndMs = schedule.audibleEndPosMs;
   debug.tailSilenceMs = schedule.tailSilenceMs;
   debug.nextVocalStartMs = schedule.nextVocalStartMs;
@@ -516,6 +622,7 @@ export function prepareCrossfade(options: CrossfadePrepareOptions): boolean {
     options,
     phase: 'prepared',
     graphMode,
+    tempoRate: 1,
     fadeStartFileMs: 0,
     fadeStartPosMs: 0,
     fadeMs: 0,
@@ -527,6 +634,13 @@ export function prepareCrossfade(options: CrossfadePrepareOptions): boolean {
     raf: 0,
   };
   applySchedule(plan, schedule);
+  // 预先把 B 的速率与伴奏倾斜设置好：淡化开始时不用临时改，避免首帧爆音。
+  if (plan.tempoRate !== 1) setDeckPlaybackRate(options.standby, plan.tempoRate);
+  setDeckPlaybackRate(options.active, 1);
+  if (graphMode) {
+    setDeckGraphTilt(options.active, 0, 0);
+    setDeckGraphTilt(options.standby, -TILT_MAX_DB, -TILT_MAX_DB);
+  }
   activePlan = plan;
   debug.phase = 'prepared';
   debug.reason = '';
@@ -607,10 +721,15 @@ function startFade(plan: ActivePlan): void {
     setAudioTapVolume(base, true);
     setDeckGraphGain(plan.options.active, 1);
     setDeckGraphGain(plan.options.standby, 0);
+    // 起始时 B 的伴奏压到最低（只留中频和人声），随后在淡化中慢慢回到 0dB。
+    setDeckGraphTilt(plan.options.active, 0, 0);
+    setDeckGraphTilt(plan.options.standby, -TILT_MAX_DB, -TILT_MAX_DB);
   } else {
     setDeckVolume(plan.options.active, base);
     setDeckVolume(plan.options.standby, 0);
   }
+  // 准备期间 player 可能重设过 deck 属性，起播前再确保一次 WSOLA 速率。
+  if (plan.tempoRate !== 1) setDeckPlaybackRate(plan.options.standby, plan.tempoRate);
   if (!seekDeck(plan.options.standby, plan.bStartFileMs / 1000)) {
     cancelCrossfade('b-seek-failed');
     return;
@@ -664,11 +783,15 @@ function finishFade(plan: ActivePlan): void {
     setAudioTapVolume(plan.baseVolume, true);
     setDeckGraphGain(plan.options.active, 0);
     setDeckGraphGain(plan.options.standby, 1);
+    setDeckGraphTilt(plan.options.active, 0, 0);
+    setDeckGraphTilt(plan.options.standby, 0, 0);
     detachDeckFromGraph(plan.options.active);
   } else {
     setDeckVolume(plan.options.active, 0);
     setDeckVolume(plan.options.standby, plan.baseVolume);
   }
+  // 变速不变调只用于过渡期间：结束后把 B 的速率在 650ms 内平滑拉回 1，整首歌恢复原速。
+  if (plan.tempoRate !== 1) returnDeckTempoToNormal(plan.options.standby, plan.tempoRate);
   activePlan = null;
   debug.phase = 'done';
   debug.reason = 'fade-done';
@@ -700,6 +823,9 @@ function hardCutToStandby(plan: ActivePlan): void {
     setDeckGraphGain(plan.options.active, 0);
     detachDeckFromGraph(plan.options.standby);
   }
+  // 硬切也把过渡期的变速与伴奏倾斜收掉，避免影响后面的整首播放。
+  if (plan.tempoRate !== 1) setDeckPlaybackRate(plan.options.standby, 1);
+  setDeckPlaybackRate(plan.options.active, 1);
   plan.baseVolume = base;
   activePlan = null;
   debug.phase = 'done';
@@ -728,6 +854,7 @@ export function cancelCrossfade(reason = 'manual'): void {
       setAudioTapVolume(base, true);
       setDeckGraphGain(plan.options.active, 1);
       setDeckGraphGain(plan.options.standby, 0);
+      setDeckGraphTilt(plan.options.active, 0, 0);
       detachDeckFromGraph(plan.options.standby);
     } else {
       setDeckVolume(plan.options.active, base);
@@ -737,6 +864,9 @@ export function cancelCrossfade(reason = 'manual'): void {
     // 只准备未淡化：B 还在图外静音，摘掉即可。
     detachDeckFromGraph(plan.options.standby);
   }
+  // 取消也要把过渡期的变速恢复，否则下一首会继承 B 的播放速率。
+  if (plan.tempoRate !== 1) setDeckPlaybackRate(plan.options.standby, 1);
+  setDeckPlaybackRate(plan.options.active, 1);
   try {
     plan.options.standby.pause();
   } catch {
@@ -851,7 +981,7 @@ export function buildCrossfadeSection(scope: Disposers | null): HTMLElement {
     h('h3', { class: 'section-title', text: '无缝衔接（实验）' }),
     h('p', {
       class: 'analysis-desc',
-      text: '当前歌曲结束前，按鼓点提前开始下一首，并按等功率曲线交叉淡化（A 余弦、B 正弦），避免曲间静音；淡化终点对齐歌曲的可听结尾，自动跳过曲尾静音（需宿主分析支持 audibleEndMs）。淡化结束时机对齐下一首的「开始唱词」（有歌词时）：前奏较长会跳过前奏、从唱词前若干秒切入；前奏较短则把整段前奏当作过渡，结束时正好进入唱词。仅在列表循环、下一首分析成功时生效；均衡器/人声保留淡出等 Web Audio 音效开启时自动改走图内增益淡化，否则回退为原来的硬切。',
+      text: '当前歌曲结束前，按鼓点提前开始下一首，并按等功率曲线交叉淡化（B 用更慢的进入曲线，避免一上来就大声；A 多留一点尾音），避免曲间静音；淡化终点对齐歌曲的可听结尾，自动跳过曲尾静音（需宿主分析支持 audibleEndMs）。淡化结束时机对齐下一首的「开始唱词」（有歌词时）：前奏较长会跳过前奏、从唱词前若干秒切入；前奏较短则把整段前奏当作过渡，结束时正好进入唱词。两首 BPM 不同时会用 WSOLA 变速不变调（±12% 内）把 B 的节拍拉齐，过渡结束后平滑恢复原速；图内路径下 A 的伴奏先退、B 的伴奏慢慢回正，人声先出现、伴奏后融进来。仅在列表循环、下一首分析成功时生效；均衡器/人声保留淡出等 Web Audio 音效开启时自动改走图内增益淡化，否则回退为原来的硬切。',
     }),
     h(
       'div',
@@ -881,7 +1011,7 @@ export function buildCrossfadeSection(scope: Disposers | null): HTMLElement {
     ),
     h('p', {
       class: 'analysis-footnote',
-      text: '切歌后先异步分析当前与下一首（本地约 1–5 秒）并读取下一首歌词首行（本地同名 .lrc / 在线歌词），任一失败则回退为普通淡化或硬切。开启均衡器 / 人声保留淡出 / 歌词页频谱等 Web Audio 音效时，两个 deck 都会接进混音图，用各自增益做等功率淡化（主音量不变）。',
+      text: '切歌后先异步分析当前与下一首（本地约 1–5 秒）并读取下一首歌词首行（本地同名 .lrc / 在线歌词），任一失败则回退为普通淡化或硬切。开启均衡器 / 人声保留淡出 / 歌词页频谱等 Web Audio 音效时，两个 deck 都会接进混音图，用各自增益做等功率淡化（主音量不变），并靠低/高架滤波做「人声先出现、伴奏慢慢融合」；过渡期间用 WSOLA 变速不变调对齐鼓点（preservesPitch），结束后平滑恢复原速。',
     }),
   );
 
