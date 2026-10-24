@@ -181,9 +181,6 @@ jobs:
             | `Zilux2-Portable-${{ steps.version.outputs.version }}.zip` | 便携版，解压即用（不含自动更新安装器） |
             | `Zilux2-Setup-${{ steps.version.outputs.version }}.exe.sha256` | 安装包 SHA-256 校验和 |
 
-            注意：自动更新走 GitHub Releases 匿名 API，仓库需为公开仓库（本仓库已公开）；未签名的
-            安装包首次运行会被 SmartScreen 提示，属正常现象。
-
             完整更新日志见下方。
           generate_release_notes: true
           fail_on_unmatched_files: true

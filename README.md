@@ -163,8 +163,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\release.ps1 -Version 1
 
 客户端「设置 → 更新」可配置自动检查、更新策略（自动安装 / 仅提示）与更新源（默认 `KaFuuChino2006/Zilux2`）。
 
-> 应用内更新通过 GitHub 匿名 API 查询 Release，本仓库已切换为 **公开仓库**，安装版可直接在应用内升级；便携版同样会下载并调用安装器完成升级。详见 `docs/zilux2-update-channel.md`、`docs/zilux2-github-setup.md`。
-
 ## 配置与数据目录
 
 | 路径（`%LOCALAPPDATA%\Zilux2\`） | 内容 |
