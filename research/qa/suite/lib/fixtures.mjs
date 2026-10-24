@@ -37,6 +37,10 @@ export const LUMIERE_KEY = 'zilux2.lumiere';
  */
 export const DLQ = {
   entry: '[data-qa="download-entry"]',
+  /**
+   * rail 上的下载入口已在 task-12 移除（入口迁到快捷设置第 5 页「下载」）。
+   * 保留常量用于断言「不存在」；真正入口是播放条 DLQ.entry 与 QUICK.tabDownload。
+   */
   railEntry: '.rail .rail-btn[aria-label="下载队列"]',
   panel: '.dlq-panel',
   panelOpen: '.dlq-panel.is-open',
@@ -75,6 +79,61 @@ export const DOWNLOAD_UI_SETTLE_MS = Number(process.env.ZILUX2_DLQ_SETTLE_MS || 
 
 /** 是否真的点「在文件夹中显示」（会弹出资源管理器，默认不点）。 */
 export const DOWNLOAD_CLICK_REVEAL = process.env.ZILUX2_QA_CLICK_REVEAL === '1';
+
+/** 设置存储键（web/src/core/settings.ts:158）；用来验证「本次下载音质选择不回写设置」。 */
+export const SETTINGS_KEY = 'zilux2.settings';
+
+/**
+ * 快捷设置（底部快捷面板）与第 5 页「下载」的选择器。
+ *
+ * task-12 把下载入口从 rail 迁到快捷设置第 5 页；同一份下载队列视图同时以
+ * 浮层面板（.dlq-panel）和嵌入页（.dlq-embed[data-qa="quick-downloads-page"]）两种形态存在。
+ */
+export const QUICK = {
+  trigger: '.pb-quick',
+  root: '.quick',
+  open: '.quick.is-open',
+  downloadOpen: '.quick.is-download.is-open',
+  tabs: '.quick-tabs .quick-tab',
+  tabDownload: '.quick-tabs .quick-tab',
+  page: '[data-qa="quick-downloads-page"]',
+  embed: '.dlq-embed',
+  embedTitle: '[data-qa="quick-downloads-page"] .dlq-embed-title',
+  embedStatus: '[data-qa="quick-downloads-page"] .dlq-embed-status',
+  embedRefresh: '[data-qa="quick-downloads-page"] .dlq-embed-refresh',
+  pageTabs: '[data-qa="quick-downloads-page"] .dlq-tab',
+  pageTabsSeg: '[data-qa="quick-downloads-page"] .dlq-tabs',
+  pageSegThumb: '[data-qa="quick-downloads-page"] .dlq-tabs > .seg-thumb',
+  pageList: '[data-qa="quick-downloads-page"] .dlq-list',
+  pageEmpty: '[data-qa="quick-downloads-page"] .dlq-empty',
+  pageRow: '[data-qa="quick-downloads-page"] .dlq-row[data-state]',
+  dirPath: '[data-qa="quick-downloads-page"] .dlq-dir-path',
+  openDir: '[data-qa="quick-downloads-page"] .dlq-open-dir',
+};
+
+/**
+ * 下载音质选择浮层（web/src/ui/downloadPicker.ts）。
+ *
+ * 所有下载入口都先弹它：默认选中设置里的 downloads.quality（默认 high），
+ * 选择只对这次下载生效（不回写设置）；Esc / 点浮层外 / 取消都不入队。
+ */
+export const PICKER = {
+  overlay: '.dlqp-overlay',
+  overlayOpen: '.dlqp-overlay.is-open',
+  panel: '.dlqp-panel[data-qa="download-picker"]',
+  title: '.dlqp-title',
+  track: '.dlqp-track',
+  hint: '.dlqp-hint',
+  options: '.dlqp-option',
+  option: (quality) => `.dlqp-option[data-quality="${quality}"]`,
+  checkedOption: '.dlqp-option[aria-checked="true"]',
+  defaultOption: '.dlqp-option[data-default="true"]',
+  defaultNote: '.dlqp-option-default',
+  check: '.dlqp-check',
+  cancel: '.dlqp-cancel',
+  /** 音质 → 中文文案（浮层选项 label）。 */
+  labels: { standard: '标准', high: '高品质', lossless: '无损' },
+};
 
 /**
  * 房间设置「粒子/流星预设」验收数值表 —— 由 Lead 在集成后同步。

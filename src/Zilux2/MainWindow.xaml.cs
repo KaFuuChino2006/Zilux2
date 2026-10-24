@@ -49,6 +49,45 @@ public partial class MainWindow : Window
     private NativeMethods.Rect _restoreRect;
     private bool _hasRestoreRect;
 
+    // 后台常驻：关闭窗口只隐藏到托盘，进程继续跑（听歌/下载/热键）；只有托盘「退出」或更新安装
+    // 才真正退出。_pendingHideToTray 用于让自绘关闭动画结束后走「隐藏」而不是「关闭」。
+    private bool _isHiddenToTray;
+    private bool _isExiting;
+    private bool _pendingHideToTray;
+    private readonly List<int> _registeredHotkeys = new();
+
+    // 全局热键：id 是 RegisterHotKey 的标识，action 与页面 command / 托盘菜单共用一套语义。
+    // 每组按顺序尝试候选组合，第一个注册成功的生效：不同机器上 Ctrl+Alt+Left/Right 可能被输入法/
+    // 显卡驱动/远程桌面占用（真机实测 error=1409），带候选兜底才能保证「上一首/下一首」总有热键。
+    private const uint HotkeyCtrlAlt = NativeMethods.ModControl | NativeMethods.ModAlt;
+    private const uint HotkeyCtrlAltShift = HotkeyCtrlAlt | NativeMethods.ModShift;
+
+    private readonly record struct HotkeyCandidate(uint Modifiers, uint VirtualKey, string Key);
+
+    private static readonly (int Id, string Action, HotkeyCandidate[] Candidates)[] HotkeySpecs =
+    {
+        (1, "togglePlay", new[]
+        {
+            new HotkeyCandidate(HotkeyCtrlAlt, NativeMethods.VkSpace, "Ctrl+Alt+Space"),
+        }),
+        (2, "prev", new[]
+        {
+            new HotkeyCandidate(HotkeyCtrlAlt, NativeMethods.VkLeft, "Ctrl+Alt+Left"),
+            new HotkeyCandidate(HotkeyCtrlAltShift, NativeMethods.VkLeft, "Ctrl+Alt+Shift+Left"),
+            new HotkeyCandidate(HotkeyCtrlAlt, NativeMethods.VkJ, "Ctrl+Alt+J"),
+        }),
+        (3, "next", new[]
+        {
+            new HotkeyCandidate(HotkeyCtrlAlt, NativeMethods.VkRight, "Ctrl+Alt+Right"),
+            new HotkeyCandidate(HotkeyCtrlAltShift, NativeMethods.VkRight, "Ctrl+Alt+Shift+Right"),
+            new HotkeyCandidate(HotkeyCtrlAlt, NativeMethods.VkK, "Ctrl+Alt+K"),
+        }),
+        (4, "toggleWindow", new[]
+        {
+            new HotkeyCandidate(HotkeyCtrlAlt, NativeMethods.VkZ, "Ctrl+Alt+Z"),
+        }),
+    };
+
     internal MainWindow(
         WebContentPlan plan,
         SettingsService? settings,
@@ -65,6 +104,7 @@ public partial class MainWindow : Window
         SourceInitialized += OnSourceInitialized;
         Loaded += OnLoaded;
         StateChanged += OnStateChanged;
+        Closing += OnClosing;
         Closed += OnClosed;
     }
 
@@ -77,6 +117,7 @@ public partial class MainWindow : Window
     {
         _hwnd = new WindowInteropHelper(this).Handle;
         HwndSource.FromHwnd(_hwnd)?.AddHook(WndProc);
+        RegisterHotkeys();
     }
 
     private void OnLoaded(object? sender, RoutedEventArgs e)
@@ -126,6 +167,15 @@ public partial class MainWindow : Window
             _host = null;
             HostLog.Info("window.closed dispose end");
             HostLog.Info("window.closed");
+        }
+
+        if (!_isExiting)
+        {
+            // 走到这里说明窗口是「真关闭」而不是隐藏（例如托盘不可用时关闭），
+            // OnExplicitShutdown 下必须显式 Shutdown，否则进程会没有窗口地挂着。
+            _isExiting = true;
+            Dispatcher.BeginInvoke(new Action(() => System.Windows.Application.Current?.Shutdown()),
+                DispatcherPriority.Normal);
         }
     }
 
@@ -232,30 +282,317 @@ public partial class MainWindow : Window
         HostLog.Info("window.animate minimize (snapshot)");
     }
 
+    /// <summary>
+    /// 页面标题栏的关闭按钮：隐藏到托盘（后台继续播放），不销毁窗口/WebView2。真正退出只有
+    /// 托盘菜单「退出」和更新安装两条路径（都走 <see cref="ExitApplication"/>）。
+    /// </summary>
     public void CloseFromPage()
     {
         CancelPendingDrag("close");
 
+        if (_isExiting)
+        {
+            Close();
+            return;
+        }
+
         if (_hwnd == IntPtr.Zero || !NativeMethods.GetWindowRect(_hwnd, out var current))
         {
-            // Close from a dispatcher turn: never tear the WebView2 control down inside its own callback.
-            Dispatcher.BeginInvoke(new Action(Close));
+            // Hide from a dispatcher turn: never tear the WebView2 control down inside its own callback.
+            Dispatcher.BeginInvoke(new Action(HideToTray));
             return;
         }
 
         if (NativeWindowAnim)
         {
-            HostLog.Info("window.native close");
-            Close();
+            HostLog.Info("window.native close -> tray");
+            HideToTray();
             return;
         }
 
+        _pendingHideToTray = true;
         if (!PlaySnapshotTransition(current, minimize: false))
         {
-            Dispatcher.BeginInvoke(new Action(Close));
+            _pendingHideToTray = false;
+            Dispatcher.BeginInvoke(new Action(HideToTray));
         }
 
         HostLog.Info("window.animate close (snapshot)");
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // 后台常驻 / 托盘 / 全局热键
+    // ---------------------------------------------------------------------------------------
+
+    /// <summary>窗口当前是否隐藏在托盘（页面不可见，但进程、播放、热键都还在）。</summary>
+    internal bool IsHiddenToTray => _isHiddenToTray;
+
+    /// <summary>第一次隐藏到托盘时触发，托盘服务用它弹一次气泡提示（只弹一次）。</summary>
+    internal event EventHandler? HiddenToTray;
+
+    /// <summary>
+    /// 任意关闭来源（页面按钮、Alt+F4、系统关机除外）都先经过这里：未在真正退出就取消关闭并隐藏。
+    /// </summary>
+    private void OnClosing(object? sender, System.ComponentModel.CancelEventArgs e)
+    {
+        if (_isExiting)
+        {
+            // 真退出路径：此时 HWND 还没销毁，先注销全局热键。
+            UnregisterHotkeys();
+            return;
+        }
+
+        if (App.Tray is null)
+        {
+            // 托盘不可用（初始化失败）：隐藏后就没有找回窗口的入口，直接放行关闭，
+            // OnClosed 再显式 Shutdown，避免留下无窗口进程。
+            HostLog.Warn("tray.unavailable close");
+            return;
+        }
+
+        e.Cancel = true;
+        if (_isHiddenToTray)
+        {
+            return;
+        }
+
+        // 关闭已经在进行中（Closing 期间 Hide 会再触发一轮），丢到 dispatcher 下一拍隐藏。
+        Dispatcher.BeginInvoke(new Action(HideToTray));
+    }
+
+    /// <summary>隐藏主窗口到托盘；UI 线程调用，幂等。</summary>
+    internal void HideToTray()
+    {
+        if (_isExiting || _isHiddenToTray)
+        {
+            return;
+        }
+
+        _isHiddenToTray = true;
+        try
+        {
+            Hide();
+            HostLog.Info("tray.hide");
+        }
+        catch (Exception exception)
+        {
+            _isHiddenToTray = false;
+            HostLog.Error("tray.hide failed", exception);
+            return;
+        }
+
+        HiddenToTray?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>从托盘恢复主窗口：Show + 最小化则还原 + 激活。</summary>
+    internal void ShowFromTray()
+    {
+        if (_isExiting)
+        {
+            return;
+        }
+
+        // 关闭动画还没结束就被托盘/热键叫回来时，别让动画收尾再隐藏一次。
+        _pendingHideToTray = false;
+
+        try
+        {
+            if (WindowState == WindowState.Minimized)
+            {
+                WindowState = WindowState.Normal;
+            }
+
+            Show();
+            Activate();
+            if (_hwnd != IntPtr.Zero)
+            {
+                NativeMethods.SetForegroundWindow(_hwnd);
+            }
+
+            _isHiddenToTray = false;
+            HostLog.Info("tray.show");
+        }
+        catch (Exception exception)
+        {
+            HostLog.Error("tray.show failed", exception);
+        }
+    }
+
+    /// <summary>托盘左键 / Ctrl+Alt+Z：可见就隐藏，隐藏或最小化就显示。</summary>
+    internal void ToggleFromTray()
+    {
+        if (_isExiting)
+        {
+            return;
+        }
+
+        if (_isHiddenToTray || WindowState == WindowState.Minimized)
+        {
+            ShowFromTray();
+        }
+        else
+        {
+            HideToTray();
+        }
+    }
+
+    /// <summary>
+    /// 托盘菜单 / 全局热键播放控制：转成页面 command 消息（togglePlay/prev/next）。
+    /// 页面未就绪时 WebViewHost 只记日志，这里不缓存。
+    /// </summary>
+    internal void SendCommand(string action)
+    {
+        if (action is not ("togglePlay" or "prev" or "next"))
+        {
+            HostLog.Warn($"tray.command ignored action={action}");
+            return;
+        }
+
+        HostLog.Info($"tray.command action={action}");
+        _host?.PostCommand(action);
+    }
+
+    /// <summary>托盘菜单「退出」：真正退出进程（唯一用户可见的退出入口）。</summary>
+    internal void CloseForReal() => ExitApplication("tray");
+
+    /// <summary>
+    /// 真正退出：标记 _isExiting 让 Closing 放行，然后关闭窗口并关闭 Application。
+    /// 更新安装（WebViewHost.RequestShutdownForUpdate）也走这里，否则 OnExplicitShutdown 下
+    /// 直接 Application.Shutdown() 会被关闭拦截逻辑挡住。
+    /// </summary>
+    internal void ExitApplication(string reason)
+    {
+        if (_isExiting)
+        {
+            return;
+        }
+
+        _isExiting = true;
+        HostLog.Info($"app.exit reason={reason}");
+        try
+        {
+            Close();
+        }
+        catch (Exception exception)
+        {
+            HostLog.Error("app.exit close failed", exception);
+        }
+
+        try
+        {
+            System.Windows.Application.Current?.Shutdown();
+        }
+        catch (Exception exception)
+        {
+            HostLog.Error("app.exit shutdown failed", exception);
+        }
+    }
+
+    /// <summary>系统关机/注销时由 App 调用：放行真正的关闭（后台常驻不能拦住会话结束）。</summary>
+    internal void AllowExitForSystemShutdown()
+    {
+        if (_isExiting)
+        {
+            return;
+        }
+
+        _isExiting = true;
+        _pendingHideToTray = false;
+        HostLog.Info("app.exit reason=sessionEnding");
+    }
+
+    private void RegisterHotkeys()
+    {
+        if (_hwnd == IntPtr.Zero)
+        {
+            HostLog.Warn("hotkey.register skipped: hwnd not ready");
+            return;
+        }
+
+        foreach (var spec in HotkeySpecs)
+        {
+            if (TryRegisterHotkey(spec.Id, spec.Action, spec.Candidates))
+            {
+                _registeredHotkeys.Add(spec.Id);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 按候选顺序注册同一动作的热键，第一个成功的生效。全部候选都被占用时只记 WARN（不影响其它
+    /// 热键和启动），调用方也不把这个 id 加进待注销列表。
+    /// </summary>
+    private bool TryRegisterHotkey(int id, string action, HotkeyCandidate[] candidates)
+    {
+        foreach (var candidate in candidates)
+        {
+            if (NativeMethods.RegisterHotKey(_hwnd, id, candidate.Modifiers, candidate.VirtualKey))
+            {
+                HostLog.Info($"hotkey.register id={id} ok action={action} key={candidate.Key}");
+                return true;
+            }
+
+            HostLog.Warn(
+                $"hotkey.register id={id} candidate={candidate.Key} failed error={Marshal.GetLastWin32Error()}");
+        }
+
+        HostLog.Warn(
+            $"hotkey.register id={id} failed action={action}: all {candidates.Length} candidates unavailable");
+        return false;
+    }
+
+    private void UnregisterHotkeys()
+    {
+        if (_hwnd == IntPtr.Zero || _registeredHotkeys.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var id in _registeredHotkeys)
+        {
+            try
+            {
+                if (!NativeMethods.UnregisterHotKey(_hwnd, id))
+                {
+                    HostLog.Warn($"hotkey.unregister id={id} failed error={Marshal.GetLastWin32Error()}");
+                }
+            }
+            catch (Exception exception)
+            {
+                HostLog.Warn($"hotkey.unregister id={id} failed: {exception.Message}");
+            }
+        }
+
+        _registeredHotkeys.Clear();
+    }
+
+    private void OnHotkey(int id)
+    {
+        switch (id)
+        {
+            case 1:
+                FireHotkey("togglePlay");
+                break;
+            case 2:
+                FireHotkey("prev");
+                break;
+            case 3:
+                FireHotkey("next");
+                break;
+            case 4:
+                HostLog.Info("hotkey.fire action=toggleWindow");
+                ToggleFromTray();
+                break;
+            default:
+                HostLog.Warn($"hotkey.fire unknown id={id}");
+                break;
+        }
+    }
+
+    private void FireHotkey(string action)
+    {
+        HostLog.Info($"hotkey.fire action={action}");
+        SendCommand(action);
     }
 
     /// <summary>
@@ -515,6 +852,13 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (_pendingHideToTray)
+        {
+            _pendingHideToTray = false;
+            HideToTray();
+            return;
+        }
+
         Dispatcher.BeginInvoke(new Action(Close));
     }
 
@@ -727,6 +1071,11 @@ public partial class MainWindow : Window
         else if (msg == NativeMethods.WmExitSizeMove)
         {
             ClampWindowToWorkArea();
+        }
+        else if (msg == NativeMethods.WmHotkey)
+        {
+            OnHotkey(wParam.ToInt32());
+            handled = true;
         }
 
         return IntPtr.Zero;

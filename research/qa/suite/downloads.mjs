@@ -1,27 +1,34 @@
 /**
  * Zilux2 真机 QA —— 下载队列（T2）
  *
- * 覆盖本轮新增的下载队列面板：
- *   1. 入口按钮 [data-qa="download-entry"] 与面板开合（.dlq-panel.is-open / aria-hidden）；
- *   2. rail 常驻入口 .rail .rail-btn[aria-label="下载队列"]：存在、点开、再点收起（toggle），
- *      零任务时也能打开（空态 .dlq-empty 可见），点外部 / Esc 均可关闭；
+ * 覆盖本轮新增的下载队列面板（task-7 基线 + task-12 入口迁移/音质浮层）：
+ *   1. 播放条入口 [data-qa="download-entry"] 与面板开合（.dlq-panel.is-open / aria-hidden）；
+ *   2. 入口迁移：rail 上不再有「下载队列」入口（task-12 移除），入口只在播放条；
+ *      面板 toggle、点外部 / Esc 均可关闭，零任务时也能打开（空态 .dlq-empty 可见）；
  *   3. 分段控件：.dlq-tabs 带全局 seg 类、tab 带 seg-btn、激活态 is-active + is-on 双类、
  *      .dlq-tabs > .seg-thumb 白色滑块存在且首开已定位（width>0 / opacity=1 / 对齐激活 tab）；
  *   4. tab 切换动画：切换后 30ms 内 .dlq-list/.dlq-empty 临时带 is-switch，空态 animationName
  *      含 dlq-switch-in（有行时行动画含 dlq-switch-in + 24ms stagger），700ms 后临时类移除、
  *      滑块 left 位移；
  *   5. 面板结构：标题、摘要计数、筛选 tab、目录行、空态、行内 .dlq-bar>.dlq-fill；
- *   6. 从搜索结果点 .track-download 真实发起一次下载（走 app.beginDownload → beginQueueDownload）；
- *   7. 以 ~85ms 采样 running 行：data-state / .dlq-pct / .dlq-fill 宽度；
- *   8. done 行 UI（100%、已保存、.dlq-reveal 可见、.dlq-retry 隐藏、.dlq-actions 可见）；
- *   9. 落盘校验：宿主任务 path 在磁盘上存在且非空；
- *  10. 筛选 tab（已完成/失败/全部，含带行切换动画）与刷新、关闭重开；
- *  11. 全程 console 无 error；收尾关面板 + 回首页。
+ *   6. 音质选择浮层（task-12）：默认项 = 设置 downloads.quality（默认 high）、三档选项结构、
+ *      Esc / 点浮层外 / 取消都不入队且不改设置；
+ *   7. 从搜索结果点 .track-download → 选「高品质」真实发起一次下载（beginDownload→beginQueueDownload），
+ *      job.quality 应为 high；
+ *   8. 无损下载：再选「无损」入队，job.quality=lossless 且 fileName 以 .flac 结尾
+ *      （源站不提供无损时 SKIP 并给出证据，不误报失败）；
+ *   9. 快捷设置第 5 页「下载」（task-12）：.quick.is-download、[data-qa="quick-downloads-page"]、
+ *      4 个筛选可切、.dlq-embed-status 计数与真实任务一致、「打开目录」按钮存在；
+ *  10. 以 ~85ms 采样 running 行：data-state / .dlq-pct / .dlq-fill 宽度；
+ *  11. done 行 UI（100%、已保存、.dlq-reveal 可见、.dlq-retry 隐藏、.dlq-actions 可见）；
+ *  12. 落盘校验：宿主任务 path 在磁盘上存在且非空；
+ *  13. 筛选 tab（已完成/失败/全部，含带行切换动画）与刷新、关闭重开；
+ *  14. 全程 console 无 error；收尾关面板 + 回首页。
  *
  * 说明：
  *   - 数据真值优先取页面调试入口 window.__zilux2DownloadQueue.state()（产品自带），
  *     DOM 断言只依赖可见选择器；两者都写进失败证据。
- *   - 下载写的是真实下载目录（宿主默认 %USERPROFILE%\Music），测试会留下一个音频文件；
+ *   - 下载写的是真实下载目录（宿主默认 %USERPROFILE%\Music），测试会留下音频文件；
  *     QA 侧不删用户目录文件，README 里有清理说明。
  *   - 本套件不点「在文件夹中显示」（会弹出资源管理器）；需要时设 ZILUX2_QA_CLICK_REVEAL=1。
  */
@@ -31,6 +38,9 @@ import { runSuite, sleep, repoRel, hostLogTail } from './lib/cdp.mjs';
 import { goHome, openSearch, closeOverlays, pressEscape } from './lib/ui.mjs';
 import {
   DLQ,
+  QUICK,
+  PICKER,
+  SETTINGS_KEY,
   DOWNLOAD_TIMEOUT_MS,
   DOWNLOAD_SAMPLE_INTERVAL_MS,
   DOWNLOAD_UI_SETTLE_MS,
@@ -135,31 +145,130 @@ function pageDlqSnapshot() {
   };
 }
 
-/** rail 常驻「下载队列」入口 + 面板开合快照。 */
-function pageRailEntry() {
+/**
+ * 入口迁移快照（task-12）：rail 已不再有「下载队列」入口，入口迁到播放条与快捷设置第 5 页。
+ * 同时返回面板开合状态，便于断言 toggle。
+ */
+function pageEntryState() {
   const text = (node) => (node && node.textContent ? node.textContent.trim() : '');
   const rail = document.querySelector('.rail');
-  const btn = document.querySelector('.rail .rail-btn[aria-label="下载队列"]');
-  const panel = document.querySelector('.dlq-panel');
+  const railDownload = document.querySelector('.rail .rail-btn[aria-label="下载队列"]');
   const entry = document.querySelector('[data-qa="download-entry"]');
-  const empty = document.querySelector('.dlq-panel .dlq-empty');
-  const q = window.__zilux2DownloadQueue;
-  const state = q && typeof q.state === 'function' ? q.state() : null;
+  const panel = document.querySelector('.dlq-panel');
   return {
     railBtnCount: rail ? rail.querySelectorAll('.rail-btn').length : 0,
-    exists: !!btn,
-    cls: btn ? String(btn.className || '') : '',
-    title: btn ? btn.title || '' : '',
-    ariaLabel: btn ? btn.getAttribute('aria-label') : null,
-    label: btn ? text(btn.querySelector('.rail-label')) : '',
+    railTitles: rail ? Array.from(rail.querySelectorAll('.rail-btn')).map((n) => n.getAttribute('title') || text(n)) : [],
+    railDownloadExists: !!railDownload,
+    playerEntry: entry
+      ? {
+          exists: true,
+          cls: String(entry.className || ''),
+          title: entry.title || '',
+          haspopup: entry.getAttribute('aria-haspopup'),
+          expanded: entry.getAttribute('aria-expanded'),
+          hidden: entry.hidden,
+        }
+      : { exists: false },
     panelExists: !!panel,
     panelOpen: !!panel && panel.classList.contains('is-open'),
     ariaHidden: panel ? panel.getAttribute('aria-hidden') : null,
-    entryExpanded: entry ? entry.getAttribute('aria-expanded') : null,
-    jobs: state ? state.jobs.length : null,
-    rows: document.querySelectorAll('.dlq-panel .dlq-row').length,
+    quickOpen: !!document.querySelector('.quick.is-open'),
+  };
+}
+
+/** 快捷设置第 5 页「下载」快照（嵌入视图 .dlq-embed[data-qa="quick-downloads-page"]）。 */
+function pageQuickPage() {
+  const text = (node) => (node && node.textContent ? node.textContent.trim() : '');
+  const quick = document.querySelector('.quick');
+  const page = document.querySelector('[data-qa="quick-downloads-page"]');
+  if (!page) return { quickClass: quick ? quick.className : null, exists: false, tabs: [] };
+  const tabsBox = page.querySelector('.dlq-tabs');
+  const thumb = tabsBox ? tabsBox.querySelector(':scope > .seg-thumb') : null;
+  const empty = page.querySelector('.dlq-empty');
+  const rect = (el) => {
+    const r = el.getBoundingClientRect();
+    return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
+  };
+  const rows = Array.from(page.querySelectorAll('.dlq-row')).map((row) => ({
+    id: row.dataset.jobId || '',
+    state: row.dataset.state || '',
+  }));
+  return {
+    quickClass: quick ? quick.className : null,
+    exists: true,
+    pageClass: page.className,
+    qa: page.getAttribute('data-qa'),
+    title: text(page.querySelector('.dlq-embed-title')),
+    status: text(page.querySelector('.dlq-embed-status')),
+    dir: text(page.querySelector('.dlq-dir-path')),
+    hasOpenDir: !!page.querySelector('.dlq-open-dir'),
+    hasRefresh: !!page.querySelector('.dlq-embed-refresh'),
+    tabs: tabsBox
+      ? Array.from(tabsBox.querySelectorAll('.dlq-tab')).map((btn) => ({
+          text: text(btn),
+          classes: Array.from(btn.classList),
+          active: btn.classList.contains('is-active'),
+          on: btn.classList.contains('is-on'),
+          selected: btn.getAttribute('aria-selected'),
+          rect: rect(btn),
+        }))
+      : [],
+    segReady: tabsBox ? tabsBox.dataset.segThumb || '' : '',
+    segThumb: thumb
+      ? {
+          exists: true,
+          left: parseFloat(thumb.style.left || '0') || 0,
+          width: parseFloat(thumb.style.width || '0') || 0,
+          opacity: getComputedStyle(thumb).opacity,
+          rect: rect(thumb),
+        }
+      : { exists: false },
+    rowCount: rows.length,
+    rows,
     emptyHidden: empty ? empty.hidden : null,
     emptyText: text(empty),
+    bodyText: text(page).slice(0, 400),
+  };
+}
+
+/** 下载音质选择浮层快照（.dlqp-overlay / .dlqp-panel[data-qa="download-picker"]）。 */
+function pagePickerState() {
+  const text = (node) => (node && node.textContent ? node.textContent.trim() : '');
+  const overlay = document.querySelector('.dlqp-overlay');
+  const panel = document.querySelector('.dlqp-panel[data-qa="download-picker"]');
+  if (!panel) return { exists: false, overlay: !!overlay };
+  const options = Array.from(panel.querySelectorAll('.dlqp-option')).map((btn) => ({
+    quality: btn.dataset.quality || '',
+    label: text(btn.querySelector('.dlqp-option-label')),
+    note: text(btn.querySelector('.dlqp-option-note')),
+    checked: btn.getAttribute('aria-checked'),
+    classes: Array.from(btn.classList),
+    isChecked: btn.classList.contains('is-checked'),
+    isDefault: btn.dataset.default || null,
+    hasDefaultNote: !!btn.querySelector('.dlqp-option-default'),
+    check: text(btn.querySelector('.dlqp-check')),
+  }));
+  const focused = document.activeElement;
+  return {
+    exists: true,
+    overlay: !!overlay,
+    overlayOpen: overlay ? overlay.classList.contains('is-open') : null,
+    panelCount: document.querySelectorAll('.dlqp-panel[data-qa="download-picker"]').length,
+    panelClass: panel.className,
+    role: panel.getAttribute('role'),
+    modal: panel.getAttribute('aria-modal'),
+    ariaLabel: panel.getAttribute('aria-label'),
+    defaultIndex: panel.dataset.defaultIndex || '',
+    title: text(panel.querySelector('.dlqp-title')),
+    track: text(panel.querySelector('.dlqp-track')),
+    hint: text(panel.querySelector('.dlqp-hint')),
+    hasCancel: !!panel.querySelector('.dlqp-cancel'),
+    cancelText: text(panel.querySelector('.dlqp-cancel')),
+    side: panel.dataset.side || '',
+    options,
+    checkedQuality: options.filter((item) => item.isChecked).map((item) => item.quality),
+    defaultQuality: options.filter((item) => item.isDefault === 'true').map((item) => item.quality),
+    focusedQuality: focused && focused.dataset ? focused.dataset.quality || '' : '',
   };
 }
 
@@ -390,8 +499,72 @@ async function dlqSnapshot(cdp) {
   return cdp.eval(`(${pageDlqSnapshot.toString()})()`);
 }
 
-async function railEntry(cdp) {
-  return cdp.eval(`(${pageRailEntry.toString()})()`);
+async function entryState(cdp) {
+  return cdp.eval(`(${pageEntryState.toString()})()`);
+}
+
+async function quickPage(cdp) {
+  return cdp.eval(`(${pageQuickPage.toString()})()`);
+}
+
+async function pickerState(cdp) {
+  return cdp.eval(`(${pagePickerState.toString()})()`);
+}
+
+/** 等音质浮层出现（本轮所有 .track-download 点击都先弹它）。 */
+async function waitPickerOpen(cdp, { timeoutMs = 8000 } = {}) {
+  await cdp.waitFor(`!!document.querySelector('.dlqp-panel[data-qa="download-picker"]')`, {
+    desc: '音质选择浮层 .dlqp-panel[data-qa="download-picker"]',
+    timeoutMs,
+  });
+  await sleep(80); // 等 rAF 给 .dlqp-overlay 加 is-open
+  return pickerState(cdp);
+}
+
+/** Esc 关闭音质浮层（downloadPicker.ts 在 document keydown capture 里关）。 */
+async function closePickerByEsc(cdp) {
+  await cdp.eval(`(() => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    return true;
+  })()`);
+  await cdp.waitFor(`!document.querySelector('.dlqp-overlay') && !document.querySelector('.dlqp-panel[data-qa="download-picker"]')`, {
+    desc: 'Esc 关闭音质浮层',
+    timeoutMs: 4000,
+  });
+}
+
+/** 点浮层外关闭：.dlqp-overlay 自身的 pointerdown 监听。 */
+async function closePickerByOutside(cdp) {
+  await cdp.eval(`(() => {
+    const ov = document.querySelector('.dlqp-overlay');
+    if (!ov) return false;
+    ov.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+    return true;
+  })()`);
+  await cdp.waitFor(`!document.querySelector('.dlqp-overlay') && !document.querySelector('.dlqp-panel[data-qa="download-picker"]')`, {
+    desc: '点浮层外关闭音质浮层',
+    timeoutMs: 4000,
+  });
+}
+
+/** 在浮层里选一档音质（点击后浮层关闭并触发 onPick → beginQueueDownload）。 */
+async function pickQuality(cdp, quality) {
+  await cdp.click(PICKER.option(quality), { desc: `音质浮层选项「${PICKER.labels[quality] || quality}」` });
+  await cdp.waitFor(`!document.querySelector('.dlqp-overlay')`, { desc: `选完音质（${quality}）后浮层关闭`, timeoutMs: 4000 });
+  await sleep(120);
+}
+
+/** 读设置里的下载音质；未写设置时返回 ''（产品默认 high）。 */
+async function settingsDownloadQuality(cdp) {
+  return cdp.eval(`(() => {
+    try {
+      const raw = window.localStorage.getItem('zilux2.settings');
+      const settings = raw ? JSON.parse(raw) : {};
+      return settings && settings.downloads && settings.downloads.quality ? String(settings.downloads.quality) : '';
+    } catch (err) {
+      return '__error__';
+    }
+  })()`);
 }
 
 async function segSnapshot(cdp) {
@@ -635,56 +808,57 @@ await runSuite('downloads', '下载队列（T2）', async (suite) => {
 
   /* ---------------------------------------------------------------------- */
   /* ---------------------------------------------------------------------- */
-  await suite.step('常驻入口：rail「下载队列」toggle / 无任务也能打开 / 点外与 Esc 关闭', async () => {
-    // 上一结构步骤把面板留成打开态，先收起再验证 rail 入口从零打开。
+  await suite.step('入口迁移：rail 无「下载队列」入口 / 播放条入口 toggle / 点外与 Esc 关闭', async () => {
+    // 上一结构步骤把面板留成打开态，先收起。
     if (await cdp.eval(`!!document.querySelector('.dlq-panel.is-open')`)) {
       await cdp.click(DLQ.close, { desc: '收起下载面板' });
       await cdp.waitFor(`!document.querySelector('.dlq-panel.is-open')`, { desc: '面板收起', timeoutMs: 5000 });
     }
-    await cdp.waitFor(`!!document.querySelector('.rail .rail-btn[aria-label="下载队列"]')`, {
-      desc: 'rail 常驻「下载队列」入口',
-      timeoutMs: 8000,
-    });
-    let snap = await railEntry(cdp);
-    suite.assert(snap.exists, '缺少 rail 常驻入口 .rail .rail-btn[aria-label="下载队列"]');
-    suite.assert(snap.cls.includes('rail-btn'), `rail 下载入口 class 应含 rail-btn，实际「${snap.cls}」`);
-    suite.assert(snap.title === '下载队列', `rail 下载入口 title 应为「下载队列」，实际「${snap.title}」`);
-    suite.assert(snap.ariaLabel === '下载队列', `rail 下载入口 aria-label 应为「下载队列」，实际「${snap.ariaLabel}」`);
-    suite.assert(snap.label === '下载队列', `rail 下载入口文案应为「下载队列」，实际「${snap.label}」`);
+    let state = await entryState(cdp);
+    suite.assert(
+      !state.railDownloadExists,
+      `rail 上不应再有「下载队列」入口（task-12 已迁到快捷设置第 5 页），实际存在 ${DLQ.railEntry}`,
+    );
+    suite.assert(
+      !state.railTitles.some((title) => /下载/.test(title)),
+      `rail 标题里不应出现下载入口，实际 ${JSON.stringify(state.railTitles)}`,
+    );
+    suite.note(`rail 共 ${state.railBtnCount} 个入口：${state.railTitles.join(' / ')}`);
+    suite.assert(state.playerEntry.exists, '播放条缺少下载入口 [data-qa="download-entry"]');
+    suite.assert(
+      state.playerEntry.haspopup === 'dialog',
+      `播放条入口 aria-haspopup 应为 dialog，实际 ${state.playerEntry.haspopup}`,
+    );
+    suite.assert(state.playerEntry.hidden === false, '播放条下载入口不应隐藏');
     const emptySession = baseline.jobs.length === 0;
 
-    // 1) rail 点击 → 打开
-    await cdp.click(DLQ.railEntry, { desc: 'rail「下载队列」常驻入口' });
+    // 1) 播放条入口点击 → 打开（面板是独立队列视图，不依赖当前有没有歌曲）
+    await cdp.click(DLQ.entry, { desc: '播放条下载入口' });
     await cdp.waitFor(`!!document.querySelector('.dlq-panel.is-open')`, {
-      desc: 'rail 入口打开下载面板（.dlq-panel.is-open）',
+      desc: '播放条入口打开下载面板（.dlq-panel.is-open）',
       timeoutMs: 6000,
     });
     await sleep(150);
-    snap = await railEntry(cdp);
-    suite.assert(snap.panelExists, '点击 rail 入口后 .dlq-panel 未创建');
-    suite.assert(snap.panelOpen, '点击 rail 入口后面板未带 .is-open');
-    suite.assert(snap.ariaHidden === 'false', `面板打开时 aria-hidden 应为 false，实际 ${snap.ariaHidden}`);
-    suite.assert(snap.entryExpanded === 'true', `面板打开时播放条入口 aria-expanded 应为 true，实际 ${snap.entryExpanded}`);
-    if (emptySession) {
-      suite.assert(snap.jobs === 0, `基线无任务，但调试入口 jobs=${snap.jobs}`);
-      suite.assert(snap.rows === 0, `无任务时面板不应有 .dlq-row，实际 ${snap.rows} 行`);
-      suite.assert(snap.emptyHidden === false, `无任务时 .dlq-empty 应可见（hidden=false），实际 ${snap.emptyHidden}`);
-      suite.assert(snap.emptyText.length > 0, '无任务时 .dlq-empty 文案为空');
-      suite.note(`零任务会话验证通过：不下载也能打开面板，空态文案「${snap.emptyText}」`);
-    } else {
-      suite.note(`宿主会话已有 ${snap.jobs} 个任务，跳过「零任务空态」断言（冷启动时本步骤已覆盖）`);
-    }
-    await suite.shot('rail-entry-open');
+    state = await entryState(cdp);
+    suite.assert(state.panelExists, '点击播放条入口后 .dlq-panel 未创建');
+    suite.assert(state.panelOpen, '点击播放条入口后面板未带 .is-open');
+    suite.assert(state.ariaHidden === 'false', `面板打开时 aria-hidden 应为 false，实际 ${state.ariaHidden}`);
+    suite.assert(
+      state.playerEntry.expanded === 'true',
+      `面板打开时播放条入口 aria-expanded 应为 true，实际 ${state.playerEntry.expanded}`,
+    );
+    // 零任务会话的空态/文案断言在「面板结构」步骤覆盖；这里只保证入口可用。
+    await suite.shot('entry-player-open');
 
-    // 2) 再点 rail → 收起（toggle，验证 pointerdown 放行没把开关互相抵消）
-    await cdp.click(DLQ.railEntry, { desc: '再次点击 rail「下载队列」入口' });
-    await cdp.waitFor(`!document.querySelector('.dlq-panel.is-open')`, { desc: 'rail 再点收起面板', timeoutMs: 6000 });
-    snap = await railEntry(cdp);
-    suite.assert(!snap.panelOpen, 'rail 再点后面板仍打开（toggle 失效）');
-    suite.assert(snap.ariaHidden === 'true', `收起后 aria-hidden 应为 true，实际 ${snap.ariaHidden}`);
+    // 2) 再点入口 → 收起（toggle）
+    await cdp.click(DLQ.entry, { desc: '再次点击播放条下载入口' });
+    await cdp.waitFor(`!document.querySelector('.dlq-panel.is-open')`, { desc: '播放条入口再点收起面板', timeoutMs: 6000 });
+    state = await entryState(cdp);
+    suite.assert(!state.panelOpen, '再点播放条入口后面板仍打开（toggle 失效）');
+    suite.assert(state.ariaHidden === 'true', `收起后 aria-hidden 应为 true，实际 ${state.ariaHidden}`);
 
     // 3) 点面板外 → 关闭
-    await cdp.click(DLQ.railEntry, { desc: 'rail 入口重新打开面板' });
+    await cdp.click(DLQ.entry, { desc: '播放条入口重新打开面板' });
     await cdp.waitFor(`!!document.querySelector('.dlq-panel.is-open')`, { desc: '面板再次打开', timeoutMs: 6000 });
     await cdp.eval(`(() => {
       const target = document.querySelector('.stage') || document.body;
@@ -694,18 +868,18 @@ await runSuite('downloads', '下载队列（T2）', async (suite) => {
     await cdp.waitFor(`!document.querySelector('.dlq-panel.is-open')`, { desc: '点击面板外收起', timeoutMs: 6000 });
 
     // 4) Esc → 关闭（main.ts 全局快捷键 → app.escapeTopLayer 关下载面板）
-    await cdp.click(DLQ.railEntry, { desc: 'rail 入口再次打开面板（Esc 前）' });
+    await cdp.click(DLQ.entry, { desc: '播放条入口再次打开面板（Esc 前）' });
     await cdp.waitFor(`!!document.querySelector('.dlq-panel.is-open')`, { desc: '面板打开（Esc 前）', timeoutMs: 6000 });
     await pressEscape(cdp);
     await cdp.waitFor(`!document.querySelector('.dlq-panel.is-open')`, { desc: 'Esc 收起下载面板', timeoutMs: 6000 });
 
-    return `rail 入口存在（rail 共 ${snap.railBtnCount} 个按钮）· 点开/再点收/点外/Esc 均正常${emptySession ? ' · 零任务空态可打开' : ''}`;
+    return `rail ${state.railBtnCount} 个入口均无下载 · 播放条入口 toggle/点外/Esc 正常${emptySession ? ' · 零任务可打开' : ''}`;
   });
 
   /* ---------------------------------------------------------------------- */
   await suite.step('分段控件：.seg 类名 / is-on / .seg-thumb 滑块定位', async () => {
     if (!(await cdp.eval(`!!document.querySelector('.dlq-panel.is-open')`))) {
-      await cdp.click(DLQ.railEntry, { desc: 'rail 入口打开下载面板' });
+      await cdp.click(DLQ.entry, { desc: '播放条入口打开下载面板' });
       await cdp.waitFor(`!!document.querySelector('.dlq-panel.is-open')`, { desc: '面板打开', timeoutMs: 6000 });
     }
     // 等 app.ts enhanceSegs 注入 .seg-thumb 并完成首帧定位（rAF×2 + 无动画 place(false)）
@@ -769,7 +943,7 @@ await runSuite('downloads', '下载队列（T2）', async (suite) => {
   /* ---------------------------------------------------------------------- */
   await suite.step('tab 切换动画：is-switch / dlq-switch-in / 700ms 移除 / 滑块位移', async () => {
     if (!(await cdp.eval(`!!document.querySelector('.dlq-panel.is-open')`))) {
-      await cdp.click(DLQ.railEntry, { desc: 'rail 入口打开下载面板' });
+      await cdp.click(DLQ.entry, { desc: '播放条入口打开下载面板' });
       await cdp.waitFor(`!!document.querySelector('.dlq-panel.is-open')`, { desc: '面板打开', timeoutMs: 6000 });
     }
     // 基线筛选复位到「全部」，保证下面的切换一定发生 filter 变化
@@ -832,7 +1006,102 @@ await runSuite('downloads', '下载队列（T2）', async (suite) => {
   });
 
   /* ---------------------------------------------------------------------- */
-  await suite.step('发起下载：搜索 → 点 .track-download → 任务进入队列', async () => {
+  await suite.step('音质浮层：默认项=设置音质 / 取消不下载 / Esc 与点外关闭', async () => {
+    await goHome(cdp);
+    let wall = null;
+    let rows = 0;
+    let lastErr = null;
+    for (let attempt = 1; attempt <= 3 && rows === 0; attempt += 1) {
+      await goHome(cdp);
+      try {
+        wall = await openSearch(cdp, SEARCH_KEYWORD);
+        rows = wall.rows;
+      } catch (err) {
+        lastErr = err;
+        suite.note(`第 ${attempt} 次搜索未完成（${err.message}），收起重试`);
+        await cdp
+          .eval(`(() => { const dock = document.querySelector('.search-dock'); if (dock && dock.dataset.open === 'true') dock.click(); return true; })()`)
+          .catch(() => {});
+        await sleep(400);
+      }
+    }
+    suite.assert(rows > 0, `搜索「${SEARCH_KEYWORD}」没有结果行（最后一次：${wall ? wall.sub : '无'}）${lastErr ? `（${lastErr.message}）` : ''}`);
+
+    const found = await cdp.eval(`(${pageDownloadCandidates.toString()})(1)`);
+    suite.assert(found.candidates && found.candidates.length > 0, '搜索结果里没有可点的 .track-download');
+    const candidate = found.candidates[0];
+    const jobsBefore = ((await dlqDebug(cdp)).jobs || []).length;
+
+    // 1) 打开浮层：结构 / 文案 / 3 档选项
+    await cdp.eval(`(${pageClickRowDownload.toString()})(${JSON.stringify(candidate.key)})`);
+    const snap = await waitPickerOpen(cdp);
+    suite.assert(snap.overlay, '音质浮层根 .dlqp-overlay 不存在');
+    suite.assert(snap.overlayOpen === true, '浮层 .dlqp-overlay 未带 is-open');
+    suite.assert(snap.panelCount === 1, `浮层应单例，实际 ${snap.panelCount} 个 .dlqp-panel`);
+    suite.assert(snap.role === 'dialog', `浮层面板 role 应为 dialog，实际 ${snap.role}`);
+    suite.assert(snap.modal === 'true', `浮层面板 aria-modal 应为 true，实际 ${snap.modal}`);
+    suite.assert(snap.ariaLabel === '选择下载音质', `浮层面板 aria-label 应为「选择下载音质」，实际「${snap.ariaLabel}」`);
+    suite.assert(snap.title === '选择下载音质', `浮层标题应为「选择下载音质」，实际「${snap.title}」`);
+    suite.assert(snap.track.includes(candidate.title), `浮层曲目应含「${candidate.title}」，实际「${snap.track}」`);
+    suite.assert(snap.hint.includes('仅对本次下载生效'), `浮层 hint 文案不符：「${snap.hint}」`);
+    suite.assert(snap.hasCancel && snap.cancelText === '取消', `浮层取消按钮文案应为「取消」，实际「${snap.cancelText}」`);
+    suite.assert(snap.options.length === 3, `音质选项应为 3 档，实际 ${snap.options.length}`);
+    suite.assert(
+      snap.options.map((opt) => opt.quality).join(',') === 'standard,high,lossless',
+      `音质选项顺序不符：${snap.options.map((opt) => opt.quality).join(',')}`,
+    );
+    for (const opt of snap.options) {
+      suite.assert(
+        opt.label === PICKER.labels[opt.quality],
+        `选项 ${opt.quality} 文案应为「${PICKER.labels[opt.quality]}」，实际「${opt.label}」`,
+      );
+      suite.assert(!!opt.note, `选项 ${opt.quality} 缺少说明文案 .dlqp-option-note`);
+    }
+
+    // 2) 默认项 = 设置里的下载音质（未写设置 → 产品默认 high）
+    const settingQuality = await settingsDownloadQuality(cdp);
+    suite.assert(settingQuality !== '__error__', '读取 localStorage(zilux2.settings) 失败');
+    const expected = settingQuality || 'high';
+    const expectedIndex = String(snap.options.findIndex((opt) => opt.quality === expected));
+    suite.assert(
+      snap.checkedQuality.length === 1 && snap.checkedQuality[0] === expected,
+      `浮层默认选中应为设置音质「${expected}」，实际 ${JSON.stringify(snap.checkedQuality)}`,
+    );
+    suite.assert(
+      snap.defaultQuality.join(',') === expected,
+      `默认标记 data-default 应为「${expected}」，实际 ${JSON.stringify(snap.defaultQuality)}`,
+    );
+    suite.assert(snap.defaultIndex === expectedIndex, `面板 data-default-index 应为 ${expectedIndex}，实际 ${snap.defaultIndex}`);
+    const defaultOption = snap.options.find((opt) => opt.quality === expected);
+    suite.assert(defaultOption && defaultOption.hasDefaultNote, `默认项 ${expected} 缺少「默认」角标`);
+    suite.assert(defaultOption && defaultOption.check === '✓', `默认项 ${expected} 缺少 ✓ 标记`);
+    suite.assert(snap.focusedQuality === expected, `打开浮层后应聚焦默认项 ${expected}，实际聚焦「${snap.focusedQuality}」`);
+    suite.note(`设置音质="${settingQuality || '(未设置→high)'}" → 浮层默认 ${expected} ✓`);
+
+    // 3) 取消：关闭且不产生任务
+    await cdp.click(PICKER.cancel, { desc: '浮层「取消」' });
+    await cdp.waitFor(`!document.querySelector('.dlqp-overlay')`, { desc: '取消后浮层关闭', timeoutMs: 4000 });
+    await sleep(250);
+    const afterCancel = (await dlqDebug(cdp)).jobs || [];
+    suite.assert(afterCancel.length === jobsBefore, `点取消不应产生任务（之前 ${jobsBefore}，现在 ${afterCancel.length}）`);
+
+    // 4) Esc 关闭
+    await cdp.eval(`(${pageClickRowDownload.toString()})(${JSON.stringify(candidate.key)})`);
+    await waitPickerOpen(cdp);
+    await closePickerByEsc(cdp);
+
+    // 5) 点浮层外关闭
+    await cdp.eval(`(${pageClickRowDownload.toString()})(${JSON.stringify(candidate.key)})`);
+    await waitPickerOpen(cdp);
+    await closePickerByOutside(cdp);
+    const afterClose = (await dlqDebug(cdp)).jobs || [];
+    suite.assert(afterClose.length === jobsBefore, `Esc/点外关闭不应产生任务（之前 ${jobsBefore}，现在 ${afterClose.length}）`);
+
+    await suite.shot('quality-picker');
+    return `默认 ${expected}（设置 ${settingQuality || '未设置'}）· 取消/Esc/点外均关闭且不产生任务`;
+  });
+
+  await suite.step('发起下载：搜索 → 点 .track-download → 音质浮层选高品质 → 任务进入队列', async () => {
     // 先收起面板，才能验证「首次下载自动弹面板」的行为
     if ((await dlqSnapshot(cdp)).open) {
       await cdp.click(DLQ.close, { desc: '收起面板' });
@@ -863,6 +1132,8 @@ await runSuite('downloads', '下载队列（T2）', async (suite) => {
     );
     suite.assert(rows > 0, `搜索「${SEARCH_KEYWORD}」连续 3 次都没有结果行（最后一次 sub=${wall ? wall.sub : '无'}），疑似音乐源网络问题`);
 
+    // 记录「设置里的默认音质」：浮层选择只对本次下载生效，不应回写设置
+    const settingQualityBefore = await settingsDownloadQuality(cdp);
     const found = await cdp.eval(`(${pageDownloadCandidates.toString()})(8)`);
     suite.assert(
       found.candidates && found.candidates.length > 0,
@@ -878,6 +1149,14 @@ await runSuite('downloads', '下载队列（T2）', async (suite) => {
         attempts.push({ ...candidate, outcome: `点击失败：${clicked ? clicked.reason : '无返回'}` });
         continue;
       }
+      // 点 .track-download 会先弹音质浮层（task-12）；默认项应仍是设置音质，再显式选「高品质」入队
+      const pickerSnap = await waitPickerOpen(cdp);
+      const defaultQuality = (await settingsDownloadQuality(cdp)) || 'high';
+      suite.assert(
+        pickerSnap.checkedQuality.length === 1 && pickerSnap.checkedQuality[0] === defaultQuality,
+        `第 ${attempts.length + 1} 个候选弹层默认项应保持「${defaultQuality}」，实际 ${JSON.stringify(pickerSnap.checkedQuality)}`,
+      );
+      await pickQuality(cdp, 'high');
       const appeared = await waitForNewJob(cdp, candidate.key, baselineIds, { timeoutMs: 20000 });
       if (!appeared) {
         const toastNow = await cdp.eval(
@@ -906,7 +1185,15 @@ await runSuite('downloads', '下载队列（T2）', async (suite) => {
         attempts.map((item) => `- ${item.title} / ${item.artist} → ${item.outcome}${item.error ? `：${item.error}` : ''}`).join('\n'),
     );
     jobId = newJob.id;
-    suite.note(`目标曲目：${targetTrack.title} / ${targetTrack.artist}（key=${targetTrack.key}）→ job ${jobId} 已 done（重试 ${attempts.length - 1} 次）`);
+    suite.assert(newJob.quality === 'high', `浮层选「高品质」入队后 job.quality 应为 high，实际「${newJob.quality}」`);
+    const settingQualityAfter = await settingsDownloadQuality(cdp);
+    suite.assert(
+      (settingQualityAfter || 'high') === (settingQualityBefore || 'high'),
+      `音质浮层选择不应回写全局设置（下载前「${settingQualityBefore || '(未设置→high)'}」，下载后「${settingQualityAfter || '(未设置→high)'}」）`,
+    );
+    suite.note(
+      `目标曲目：${targetTrack.title} / ${targetTrack.artist}（key=${targetTrack.key}）→ job ${jobId} 已 done（quality=${newJob.quality}，候选 ${attempts.length} 个，设置默认值未被修改）`,
+    );
 
     // 首次下载（基线无任务）应自动弹面板
     if (baseline.jobs.length === 0) {
@@ -1036,6 +1323,8 @@ await runSuite('downloads', '下载队列（T2）', async (suite) => {
     const job = debug.jobs.find((item) => item.id === jobId);
     suite.assert(job, `调试状态里找不到 job ${jobId}`);
     suite.assert(job.state === 'done', `任务状态应为 done，实际 ${job.state}`);
+    suite.assert(job.quality === 'high', `本次经音质浮层选「高品质」→ job.quality 应为 high，实际「${job.quality}」`);
+    suite.assert(/高品质/.test(row.meta), `done 行 meta 应显示「高品质」，实际「${row.meta}」`);
     suite.assert(!!job.path, `done 任务应有 path，实际 ${jobSummary(job)}`);
     suite.assert(!!job.fileName, `done 任务应有 fileName，实际 ${jobSummary(job)}`);
 
@@ -1085,6 +1374,188 @@ await runSuite('downloads', '下载队列（T2）', async (suite) => {
     await suite.shot('row-done');
     return `${job.fileName} ${Math.round(stat.size / 1024)}KB → ${job.path}`;
   });
+
+  await suite.step('快捷设置第 5 页「下载」：5 tab / 嵌入队列 / 筛选可切 / 目录与状态一致', async () => {
+    // 收起浮动面板与其它浮层，避免遮挡快捷设置
+    if ((await dlqSnapshot(cdp)).open) {
+      await cdp.click(DLQ.close, { desc: '收起下载面板' });
+      await cdp.waitFor(`!document.querySelector('.dlq-panel.is-open')`, { desc: '面板收起', timeoutMs: 5000 });
+    }
+    await closeOverlays(cdp);
+    await goHome(cdp);
+
+    await cdp.click(QUICK.trigger, { desc: '播放条快捷设置按钮 .pb-quick' });
+    await cdp.waitFor(`!!document.querySelector('.quick.is-open')`, { desc: '快捷设置 .quick.is-open', timeoutMs: 6000 });
+    const tabs = await cdp.eval(
+      `Array.from(document.querySelectorAll('.quick-tabs .quick-tab')).map((btn) => (btn.textContent || '').trim())`,
+    );
+    suite.assert(tabs.length === 5, `快捷设置应有 5 个 tab，实际 ${tabs.length} 个：${tabs.join('/')}`);
+    suite.assert(tabs.join('/') === '封面/歌词/设置/投送/下载', `快捷设置 tab 顺序/文案不符：${tabs.join('/')}`);
+
+    await cdp.clickText(QUICK.tabs, '下载', { desc: '快捷设置第 5 个 tab「下载」' });
+    await cdp.waitFor(`!!document.querySelector('.quick.is-download.is-open')`, {
+      desc: '快捷设置切换到下载页（.quick.is-download.is-open）',
+      timeoutMs: 6000,
+    });
+    await cdp.waitFor(`!!document.querySelector('[data-qa="quick-downloads-page"]')`, {
+      desc: '下载页容器 [data-qa="quick-downloads-page"]',
+      timeoutMs: 6000,
+    });
+    await sleep(250);
+    let page = await quickPage(cdp);
+    suite.assert(page.exists, '缺少嵌入下载页 [data-qa="quick-downloads-page"]');
+    suite.assert(page.title === '下载队列', `嵌入页标题应为「下载队列」，实际「${page.title}」`);
+    suite.assert(page.tabs.length === 4, `嵌入页筛选 tab 应为 4 个，实际 ${page.tabs.length}`);
+    suite.assert(
+      page.tabs.map((tab) => tab.text).join('/') === '全部/下载中/已完成/失败',
+      `嵌入页筛选 tab 文案不符：${page.tabs.map((tab) => tab.text).join('/')}`,
+    );
+    suite.assert(page.segReady === 'ready', `嵌入页 .dlq-tabs data-seg-thumb 应为 ready，实际「${page.segReady}」`);
+    suite.assert(page.segThumb.exists, '嵌入页筛选条缺少 .seg-thumb 滑块');
+    suite.assert(page.segThumb.width > 0, `滑块宽度应 >0，实际 ${page.segThumb.width}`);
+    suite.assert(page.segThumb.opacity === '1', `滑块 opacity 应为 1，实际 ${page.segThumb.opacity}`);
+    const activeTab = page.tabs.find((tab) => tab.active);
+    suite.assert(activeTab, '嵌入页没有激活的筛选 tab');
+    suite.assert(
+      activeTab.on && activeTab.selected === 'true',
+      `激活 tab 应同时带 is-on + aria-selected=true，实际 classes=${activeTab.classes.join('.')} selected=${activeTab.selected}`,
+    );
+    suite.assert(
+      activeTab.rect && Math.abs(page.segThumb.rect.x - activeTab.rect.x) <= 3,
+      `滑块应覆盖激活 tab（滑块 x=${page.segThumb.rect && page.segThumb.rect.x}，tab x=${activeTab.rect && activeTab.rect.x}）`,
+    );
+
+    // 状态文案 / 目录 / 行数 必须与宿主真实队列一致
+    const debug = await dlqDebug(cdp);
+    const jobs = debug.jobs || [];
+    const running = jobs.filter((job) => job.state === 'running').length;
+    const done = jobs.filter((job) => job.state === 'done').length;
+    const errors = jobs.filter((job) => job.state === 'error').length;
+    suite.assert(
+      page.status.includes(`下载中 ${running}`) && page.status.includes(`已完成 ${done}`),
+      `嵌入页状态「${page.status}」与真实计数（下载中 ${running} · 已完成 ${done}）不一致`,
+    );
+    if (errors > 0) {
+      suite.assert(page.status.includes(`失败 ${errors}`), `嵌入页状态缺少「失败 ${errors}」，实际「${page.status}」`);
+    }
+    suite.assert(page.dir === debug.directory, `嵌入页目录「${page.dir}」应为「${debug.directory}」`);
+    suite.assert(page.hasOpenDir, '嵌入页缺少「打开下载目录」按钮 .dlq-open-dir');
+    suite.assert(page.hasRefresh, '嵌入页缺少刷新按钮 .dlq-embed-refresh');
+    suite.assert(page.rowCount === jobs.length, `嵌入页行数 ${page.rowCount} 与任务数 ${jobs.length} 不一致`);
+    suite.assert(page.emptyHidden === (page.rowCount > 0), `嵌入页空态显隐不符：rows=${page.rowCount} emptyHidden=${page.emptyHidden}`);
+
+    // 切「已完成」→ 行全 done；再切回「全部」→ 行数恢复
+    await cdp.clickText(`${QUICK.embed} .dlq-tab`, '已完成', { desc: '嵌入页筛选 tab「已完成」' });
+    await sleep(400);
+    page = await quickPage(cdp);
+    suite.assert(page.rows.length > 0, '切「已完成」后嵌入页没有行');
+    suite.assert(
+      page.rows.every((row) => row.state === 'done'),
+      `「已完成」筛选下应只有 done 行，实际 ${page.rows.map((row) => row.state).join(',')}`,
+    );
+    await cdp.clickText(`${QUICK.embed} .dlq-tab`, '全部', { desc: '嵌入页筛选 tab「全部」' });
+    await sleep(400);
+    page = await quickPage(cdp);
+    suite.assert(page.rowCount === jobs.length, `切回「全部」后行数应恢复为 ${jobs.length}，实际 ${page.rowCount}`);
+    const thumbAfter = page.segThumb;
+    suite.assert(thumbAfter.exists && thumbAfter.opacity === '1', '切换后滑块应保持可见');
+
+    // 切到其它快捷页再切回：只应有一份嵌入视图（不重复渲染），且不报错
+    cdp.takeConsoleErrors();
+    await cdp.clickText(QUICK.tabs, '封面', { desc: '快捷设置 tab「封面」（切走）' });
+    await sleep(350);
+    const awayPageCount = await cdp.eval(`document.querySelectorAll('[data-qa="quick-downloads-page"]').length`);
+    suite.assert(awayPageCount <= 1, `切走后嵌入下载页实例应 ≤1，实际 ${awayPageCount}`);
+    await cdp.clickText(QUICK.tabs, '下载', { desc: '快捷设置 tab「下载」（切回）' });
+    await cdp.waitFor(`!!document.querySelector('[data-qa="quick-downloads-page"]')`, { desc: '切回下载页', timeoutMs: 6000 });
+    await sleep(300);
+    const backPageCount = await cdp.eval(`document.querySelectorAll('[data-qa="quick-downloads-page"]').length`);
+    suite.assert(backPageCount === 1, `切回后嵌入下载页应单例，实际 ${backPageCount} 个`);
+    page = await quickPage(cdp);
+    suite.assert(page.rowCount === jobs.length, `切回后行数应恢复为 ${jobs.length}，实际 ${page.rowCount}`);
+    const switchErrors = cdp.takeConsoleErrors();
+    suite.assert(
+      switchErrors.length === 0,
+      `切换快捷设置 tab 期间出现 console 错误：${switchErrors.map((err) => err.text).slice(0, 3).join(' | ')}`,
+    );
+    suite.note('快捷页切走/切回：无重复渲染、无 console 错误 ✓');
+
+    await suite.shot('quick-downloads-page');
+    await pressEscape(cdp);
+    await cdp.waitFor(`!document.querySelector('.quick.is-open')`, { desc: 'Esc 收起快捷设置', timeoutMs: 5000 });
+    await goHome(cdp);
+    return `5 tab 顺序正确 · 嵌入队列 ${page.rowCount} 行 · 状态「${page.status}」· 筛选切换正常`;
+  });
+
+  /* ---------------------------------------------------------------------- */
+  /* 无损下载：源站/VIP 限制可能不提供，不提供时记 SKIP（附证据），不当 FAIL。 */
+  {
+    try {
+      await closeOverlays(cdp);
+      await goHome(cdp);
+      let wall = null;
+      let rows = 0;
+      for (let attempt = 1; attempt <= 3 && rows === 0; attempt += 1) {
+        await goHome(cdp);
+        try {
+          wall = await openSearch(cdp, SEARCH_KEYWORD);
+          rows = wall.rows;
+        } catch {
+          await sleep(400);
+        }
+      }
+      if (rows === 0) throw new Error(`搜索「${SEARCH_KEYWORD}」没有结果行（${wall ? wall.sub : '无'}）`);
+      const found = await cdp.eval(`(${pageDownloadCandidates.toString()})(8)`);
+      const candidates = found.candidates || [];
+      const pick = candidates.find((item) => item.key === targetTrack.key) || candidates[0];
+      if (!pick) throw new Error('搜索结果里没有可点的 .track-download');
+      const baselineIds = new Set(((await dlqDebug(cdp)).jobs || []).map((job) => job.id));
+      await cdp.eval(`(${pageClickRowDownload.toString()})(${JSON.stringify(pick.key)})`);
+      const snap = await waitPickerOpen(cdp);
+      const defaultQuality = (await settingsDownloadQuality(cdp)) || 'high';
+      suite.assert(
+        snap.checkedQuality.length === 1 && snap.checkedQuality[0] === defaultQuality,
+        `无损下载前浮层默认项应保持「${defaultQuality}」，实际 ${JSON.stringify(snap.checkedQuality)}`,
+      );
+      await pickQuality(cdp, 'lossless');
+      const appeared = await waitForNewJob(cdp, pick.key, baselineIds, { timeoutMs: 20000 });
+      if (!appeared) throw new Error('选无损后 20s 内任务未入队');
+      suite.assert(appeared.quality === 'lossless', `入队 job.quality 应为 lossless，实际「${appeared.quality}」`);
+      const settled = await waitJobSettled(cdp, appeared.id, { timeoutMs: DOWNLOAD_TIMEOUT_MS });
+      if (!settled) throw new Error(`无损任务 ${appeared.id} 在 ${DOWNLOAD_TIMEOUT_MS}ms 内没有终态`);
+      if (settled.state === 'done') {
+        suite.assert(/\.flac$/i.test(settled.fileName || ''), `无损 job fileName 应以 .flac 结尾，实际「${settled.fileName}」`);
+        const stat = fs.statSync(settled.path);
+        suite.assert(stat.isFile() && stat.size > 0, `无损文件落盘校验失败：${settled.path}`);
+        suite.record(
+          'PASS',
+          '无损下载：浮层选 lossless → job.quality=lossless / .flac 落盘',
+          `${settled.fileName}（${Math.round(stat.size / 1024)}KB）→ ${settled.path}`,
+        );
+        suite.note(`无损落盘：${settled.path}`);
+      } else {
+        suite.record(
+          'SKIP',
+          '无损下载：浮层选 lossless → job.quality=lossless / .flac 落盘',
+          `源站未提供无损：${settled.error || '未知错误'}（job ${appeared.id}）\nhost.log: ${hostLogTail(5)}`,
+        );
+      }
+    } catch (err) {
+      const evidence = await suite.captureEvidence('lossless');
+      suite.record('FAIL', '无损下载：浮层选 lossless → job.quality=lossless / .flac 落盘', err.message, 0, evidence);
+    }
+    // 无损兜底可能在上游触发 4xx 网络错误（CDP Log），在 console 断言前清理并记录
+    const losslessConsole = cdp.takeConsoleErrors();
+    if (losslessConsole.length) {
+      suite.note(`无损下载期间 console 记录 ${losslessConsole.length} 条错误（源站兜底触发，已在 console 断言前清理）：${losslessConsole[0].text || ''}`);
+    }
+    // 后续筛选步骤需要面板打开
+    if (!(await cdp.eval(`!!document.querySelector('.dlq-panel.is-open')`))) {
+      await cdp.click(DLQ.entry, { desc: '打开下载面板' });
+      await cdp.waitFor(`!!document.querySelector('.dlq-panel.is-open')`, { desc: '面板打开', timeoutMs: 6000 });
+    }
+    await sleep(200);
+  }
 
   /* ---------------------------------------------------------------------- */
   await suite.step('筛选 tab：已完成 / 失败 / 全部', async () => {

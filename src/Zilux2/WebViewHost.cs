@@ -314,6 +314,34 @@ internal sealed class WebViewHost : IDisposable
         PostJson("{\"v\":1,\"type\":\"host\",\"event\":\"windowState\",\"maximized\":" + (maximized ? "true" : "false") + "}");
     }
 
+    /// <summary>
+    /// 托盘菜单 / 全局热键的播放控制：推 <c>{"v":1,"type":"command","action":"..."}</c> 给页面。
+    /// 页面未就绪（启动中、导航中）时只记日志——这些是瞬时动作，缓存下来反而会在页面回来时
+    /// 突然同时生效，不如丢掉等下一次输入。
+    /// </summary>
+    public void PostCommand(string action)
+    {
+        if (action is not ("togglePlay" or "prev" or "next"))
+        {
+            HostLog.Warn($"command.post ignored action={action}");
+            return;
+        }
+
+        if (_disposed)
+        {
+            return;
+        }
+
+        if (!_pageReady)
+        {
+            HostLog.Info($"command.post skipped action={action}: page not ready");
+            return;
+        }
+
+        HostLog.Info($"command.post action={action}");
+        PostJson("{\"v\":1,\"type\":\"command\",\"action\":\"" + action + "\"}");
+    }
+
     public void Dispose()
     {
         if (_disposed)
@@ -1101,7 +1129,9 @@ internal sealed class WebViewHost : IDisposable
             _window.Dispatcher.BeginInvoke(DispatcherPriority.Normal, new Action(() =>
             {
                 HostLog.Info("[update] shutting down host for install");
-                Application.Current?.Shutdown();
+                // 后台常驻后窗口关闭只是隐藏到托盘，直接 Application.Shutdown() 又会被
+                // MainWindow 的 Closing 拦截；所以走宿主唯一的「真正退出」入口。
+                _window.ExitApplication("update");
             }));
         }
         catch (Exception exception)

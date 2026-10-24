@@ -1,0 +1,133 @@
+/* ==========================================================================
+   下载队列 · 嵌入视图（快捷设置第 5 页「下载」）
+   浮层面板的样式全部在 download-queue.css；这里只处理「塞进快捷面板」时的
+   布局与尺寸差异：去掉浮层固定定位，列表限高，宽度跟快捷面板一起变宽。
+   ========================================================================== */
+
+.dlq-view,
+.dlq-embed {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.dlq-embed {
+  /* 快捷设置内容区很窄，左右各留一点，避免滚动条贴边 */
+  min-width: 0;
+}
+
+/* ---------- 嵌入页头部：标题 + 摘要 + 刷新 ---------- */
+
+.dlq-embed-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dlq-embed-title {
+  flex: none;
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--text);
+  letter-spacing: 0.01em;
+}
+
+.dlq-embed-status {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.dlq-embed-refresh {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: rgb(var(--overlay-rgb, 24 26 32) / 0.04);
+  color: var(--text-soft);
+  cursor: pointer;
+  transition:
+    background 0.16s var(--ease, ease),
+    color 0.16s var(--ease, ease),
+    border-color 0.16s var(--ease, ease);
+}
+
+.dlq-embed-refresh:hover {
+  background: rgb(var(--overlay-rgb, 24 26 32) / 0.09);
+  color: var(--text);
+}
+
+.dlq-embed-refresh.is-busy svg {
+  animation: dlq-spin 0.8s linear infinite;
+}
+
+/* ---------- 嵌入页的列表 / 空态 / 底部 ---------- */
+
+/* 快捷面板高度有限：列表内部滚动，避免整页被撑高 */
+.dlq-embed .dlq-list {
+  max-height: min(268px, 34vh);
+  padding: 1px 2px 2px;
+}
+
+.dlq-embed .dlq-empty {
+  padding: 18px 10px;
+}
+
+.dlq-embed .dlq-foot {
+  padding-top: 9px;
+}
+
+.dlq-embed .dlq-dir-path {
+  font-size: 10.5px;
+}
+
+.dlq-embed .dlq-hint {
+  display: none;
+}
+
+/* 快捷设置面板切到「下载」页时加宽（其余 tab 保持原宽度） */
+.quick.is-download .quick-panel {
+  width: min(508px, 92vw);
+}
+
+@media (max-width: 720px) {
+  .quick.is-download .quick-panel {
+    width: min(100vw - 24px, 508px);
+  }
+
+  .dlq-embed .dlq-list {
+    max-height: min(232px, 30vh);
+  }
+}
+
+/* 窗口高度较小时再压一压列表，保证快捷面板不会顶到屏幕外 */
+@media (max-height: 760px) {
+  .dlq-embed .dlq-list {
+    max-height: min(190px, 24vh);
+  }
+}
+
+/* dlq-spin 由 download-queue.css 定义；单独声明一份兜底，避免样式加载顺序差异 */
+@keyframes dlq-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dlq-embed-refresh.is-busy svg {
+    animation: none;
+  }
+}

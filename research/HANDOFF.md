@@ -1,16 +1,16 @@
 # Zilux2 上下文交接（HANDOFF）
 
-> 更新时间：2026-10-24（v1.1.5 发版：纯字光柱 8 套样式 / 多入射角 / 彩虹色 / 自动轮换）
-> 当前版本：**1.1.5**（唯一来源：根目录 `Directory.Build.props`；最近构建 `1.1.5`（tag `v1.1.5`），发布资产由 push tag 后 Actions 构建 `Zilux2-Setup-1.1.5.exe`）
-> 代码仓库：`KaFuuChino2006/Zilux2`（**private**，`main` 已同步；Releases 已有 v1.1.0 / v1.1.1 / v1.1.2 / v1.1.3 / v1.1.4 / **v1.1.5（本轮）**）
+> 更新时间：2026-10-25（v1.1.6 发版：后台常驻 / 托盘图标交互 / 全局快捷键 / 下载入口迁移 / 快捷设置下载页 / 下载音质选择）
+> 当前版本：**1.1.6**（唯一来源：根目录 `Directory.Build.props`；最近构建 `1.1.6`（tag `v1.1.6`），发布资产由 push tag 后 Actions 构建 `Zilux2-Setup-1.1.6.exe`）
+> 代码仓库：`KaFuuChino2006/Zilux2`（**private**，`main` 已同步；Releases 已有 v1.1.0 / v1.1.1 / v1.1.2 / v1.1.3 / v1.1.4 / v1.1.5 / **v1.1.6（本轮）**）
 > 本文件给下一个接手的 AI / 开发者：读完即可继续开发。
 
 ## 0. 交接速览（先读这里）
 
 - **在做什么**：Windows 桌面音乐播放器 Zilux2（WPF + WebView2 宿主 + Vite/TS 前端），已具备完整播放器、在线音乐、发现页、房间/歌词效果、本地曲库、GitHub 自动更新。
-- **当前状态（2026-10-24 交接时）**：`main` 干净、已推送；`HEAD` 为 `v1.1.5` 发布提交（见 `git log`）；版本 1.1.5；本机已安装并运行 `1.1.5`；Releases 最新为 v1.1.5（纯字光柱 8 套样式 + 多入射角/彩虹/自动轮换）。
-- **最近 5 个提交（由新到旧）**：`v1.1.5` 发布提交：纯字光柱 8 套样式/多角度/彩虹/自动轮换 → `0121e74` 光柱多角度/彩虹/自动轮换 → `5ec1b7f` 四套光柱风格/无缝循环 → `b1bc181` 纯字光柱重做 → `b34fff8` 下载队列 UI + 搜索竞态。
-- **本轮已完成（2026-10-24）**：①房间设置新增粒子（星尘/萤火/雪点/静谧）+ 流星（默认/流星雨/彗星/微光）快捷预设；②宿主 `FileSystemWatcher` 本地目录自动监控（1.3s 去抖、增量重扫、下载自写入抑制）；③下载队列浮层（汇总/筛选/进度/速度/定位/重试）；④QA 回归套件固化 `research/qa/suite/`（43 PASS / 0 FAIL / 1 SKIP）。详见 `research/UPDATES-2026-10-24.md`。
+- **当前状态（2026-10-25 交接时）**：`main` 干净、已推送；`HEAD` 为 `v1.1.6` 发布提交（见 `git log`）；版本 1.1.6；本机已安装并运行 `1.1.6`；Releases 最新为 v1.1.6（后台常驻/托盘交互/全局快捷键/下载入口迁移/快捷设置下载页/下载音质选择）。
+- **最近 5 个提交（由新到旧）**：`6804460` \[v1.1.6\] 后台常驻/托盘/全局热键/下载入口迁移/音质选择 → `7c75209` v1.1.5 发布提交：纯字光柱 8 套样式/多角度/彩虹/自动轮换 → `0121e74` 光柱多角度/彩虹/自动轮换 → `5ec1b7f` 四套光柱风格/无缝循环 → `b1bc181` 纯字光柱重做。
+- **本轮已完成（2026-10-25）**：①后台常驻（`ShutdownMode=OnExplicitShutdown`，关窗隐藏到托盘、进程继续播放/下载/热键）；②托盘图标与交互（左键显示/隐藏、右键 显示/播放或暂停/上一首/下一首/退出、首次隐藏气泡提示）；③全局快捷键（Ctrl+Alt+Space 播放暂停、Ctrl+Alt+←/→ 上下首带候选回退、Ctrl+Alt+Z 显示隐藏）；④左侧 rail 下载入口迁移到快捷设置第 5 个「下载」页（复用下载队列可嵌入视图）；⑤所有下载入口先选音质（标准/高品质/无损，默认取设置、仅本次生效）。详见 `research/UPDATES-2026-10-25.md`。
 - **下一步候选**（按优先级）：①仓库切 **public** 才能真正启用应用内自动更新（当前 private，匿名 API 404）；②歌词页更多效果；③更多平台能力（见 §11）。
 - **改代码前必看**：§3 构建流程、§9 版本/发版节奏（**不要擅自跳版本号**）、§4 真机 QA、§10 更新通道。私有仓 + 未签名安装包会触发 SmartScreen，属预期。
 - **本机环境**：`E:/dotnet/dotnet.exe`；Node 用 `C:/Users/13329/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/node/bin/node.exe`；`github.com:443` 不通，git 走 SSH over 443（§10）；bash 里 `$LOCALAPPDATA` 不展开。
@@ -153,8 +153,9 @@ powershell -File tools/release.ps1 -DryRun   # 演练；去掉 -DryRun 真发版
 
 ## 8. 当前状态
 
-- 版本号统一由 `Directory.Build.props` 控制（当前 **1.1.5**）；`%LOCALAPPDATA%\Programs\Zilux2` 装的是最近一次构建（自动更新会改装到更新版本）。
-- 1.1.5（本轮发版）：纯字档背景光柱完成体验升级并正式发版——光柱从 4 套扩到 **8 套**（新增 斜光/交叉/仰光/虹光 四种入射角/扇形构图），虹光用每束 `tint/hueTint` 着色 + shader 截面色散；新增 **自动轮换**（`beamAuto` 默认开：每 16s 换一套，2.4s smoothstep 插值过渡，顺序 静光→缓息→流幕→聚光→斜光→交叉→仰光→虹光）；所有样式统一走 32s 无缝循环时钟，烟雾 42s 无缝循环；面板 `.ts-seg.is-wrap` 两行 8 chip + 「自动轮换」行。详见 `research/UPDATES-2026-10-24.md` §10/§11。
+- 版本号统一由 `Directory.Build.props` 控制（当前 **1.1.6**）；`%LOCALAPPDATA%\Programs\Zilux2` 装的是最近一次构建（自动更新会改装到更新版本）。
+- 1.1.6（本轮发版）：后台常驻 + 托盘 + 全局热键 + 下载入口迁移/下载页/音质选择。宿主：`ShutdownMode=OnExplicitShutdown`，关窗（页面按钮/Alt+F4/WM_CLOSE）隐藏到托盘、进程继续跑；新增 `Tray/TrayIconService.cs`（NotifyIcon，左键显示/隐藏，右键 显示/播放或暂停/上一首/下一首/退出，首次隐藏气泡提示一次）；`MainWindow` 注册全局热键（Ctrl+Alt+Space 播放暂停、Ctrl+Alt+←/→ 上/下一首带候选回退 Ctrl+Alt+Shift+←/→ 与 Ctrl+Alt+J/K、Ctrl+Alt+Z 显示/隐藏），托盘菜单/热键统一经 `WebViewHost.PostCommand` 下发 `{type:'command',action:...}` 到页面；真正退出只有托盘「退出」与更新安装。前端：rail 移除下载入口（9 项）；快捷设置增加第 5 个「下载」页（`.quick.is-download`，复用下载队列可嵌入视图 `createDownloadQueueView`）；新增 `downloadPicker.ts` 音质浮层（标准/高品质默认/无损，仅本次生效不回写设置，锚定按钮、键盘可达）；列表行下载按钮改为「先选音质再入队」，播放条下载按钮仍打开队列浮层。详见 `research/UPDATES-2026-10-25.md`。
+- 1.1.5：纯字档背景光柱完成体验升级并正式发版——光柱从 4 套扩到 **8 套**（新增 斜光/交叉/仰光/虹光 四种入射角/扇形构图），虹光用每束 `tint/hueTint` 着色 + shader 截面色散；新增 **自动轮换**（`beamAuto` 默认开：每 16s 换一套，2.4s smoothstep 插值过渡，顺序 静光→缓息→流幕→聚光→斜光→交叉→仰光→虹光）；所有样式统一走 32s 无缝循环时钟，烟雾 42s 无缝循环；面板 `.ts-seg.is-wrap` 两行 8 chip + 「自动轮换」行。详见 `research/UPDATES-2026-10-24.md` §10/§11。
 - 1.1.4（本轮）：房间设置新增粒子/流星快捷预设（8 组，`.room-preset-chip`）；宿主新增 `FileSystemWatcher` 本地音乐目录自动监控（`LocalFolderWatcher.cs` + `LocalMusicService.Watch.cs`，1.3s 去抖、增量重扫、自写入抑制）；下载队列浮层（`downloadQueue.ts`：汇总/筛选/进度/速度/定位/重试，入口 `.pb-actions [data-qa=download-entry]`）；QA 回归套件固化到 `research/qa/suite/`；修复 `NotifyFileAdded` 跨线程、`WebViewHost` 未释放 `LocalMusicService`、`DeleteTracks` 自身写入未抑制。详见 `research/UPDATES-2026-10-24.md`。
 - 1.1.4 第二轮微调（同日、已推 main、**未发版**，未达 §9 门槛：4 处修复/优化、无新增功能）：下载入口 rail 常驻（`.rail-btn[aria-label=下载队列]`，`toggleDownloadPanel`）；下载队列 tab 统一全局 `.seg` 分段控件（白色滑块 `.seg-thumb`）并加切换动画（`.is-switch` / `dlq-switch-in`，行 24ms stagger）；修复搜索「input 后立即 Enter 永久卡加载中」竞态（`commitSearch` 清 `searchTimer`）。QA 套件扩到 **46 项**（新增下载队列 UI 断言 + 竞态回归，`run-all` 46.5s 全绿）。详见 `research/UPDATES-2026-10-24.md` §7。
 - 1.1.4 第三轮（同日、已推 main、**未发版**，未达 §9 门槛：累计 5 处修复/优化、无新增功能）：纯字档背景光柱重做——移除此前的 folia 迁移光位光束，新增自研 `light/textBeams.ts`（固定构图 6 道＝`TEXT_BEAM_COUNT`；围绕文字区、垂直光柱、独立慢摆 + 长度呼吸 + 低频抬升亮度；设置面板「背景光柱 / 光柱大小 / 左右位置 / 上下位置」继续生效）；`scene.ts` 的纯字分支改用 `resolveTextBeams`，非纯字档位保持原 folia 光位链路不变。详见 `research/UPDATES-2026-10-24.md` §8。
@@ -185,7 +186,7 @@ powershell -File tools/release.ps1 -DryRun   # 演练；去掉 -DryRun 真发版
   git push origin v1.1.3
   ```
   Actions 会重新跑并覆盖同一 Release 的资产；本地再 `make-installer` + 静默安装同步。已安装同版本的客户端不会提示更新（见 §8）。
-- 已按此节奏发布：`v1.1.0`（设置居中/EQ/渐变）、`v1.1.1`（渐变细分 + 歌曲信息浮窗）、`v1.1.2`（EQ 平滑 + 首帧爆音）、`v1.1.3`（效果弹层遮罩；后按 `06ef14e` 重发含滑块数值/图标，再按 `463995e` 重发含地毯椭圆修复）、`v1.1.4`（房间预设/本地目录监控/下载队列/QA 套件）、`v1.1.5`（纯字光柱 8 套样式 + 多入射角/彩虹/自动轮换）。
+- 已按此节奏发布：`v1.1.0`（设置居中/EQ/渐变）、`v1.1.1`（渐变细分 + 歌曲信息浮窗）、`v1.1.2`（EQ 平滑 + 首帧爆音）、`v1.1.3`（效果弹层遮罩；后按 `06ef14e` 重发含滑块数值/图标，再按 `463995e` 重发含地毯椭圆修复）、`v1.1.4`（房间预设/本地目录监控/下载队列/QA 套件）、`v1.1.5`（纯字光柱 8 套样式 + 多入射角/彩虹/自动轮换）、`v1.1.6`（后台常驻/托盘/全局热键/下载入口迁移/快捷下载页/音质选择）。
 
 ## 10. 更新通道（GitHub Releases）
 
@@ -195,7 +196,7 @@ powershell -File tools/release.ps1 -DryRun   # 演练；去掉 -DryRun 真发版
 - 资产：`Zilux2-Setup-<version>.exe`；宿主下载到 `%LOCALAPPDATA%\Zilux2\updates\`，校验 GitHub `digest`（sha256）后以 `--silent --no-shortcuts --launch --dir <安装目录>` 静默安装并重启。
 - 默认 `updates.mode="auto"`（自动下载+提示安装），可切 `"notify"`（只提示）；`updates.autoCheck` 控制启动检查 + 每 4 小时轮询。
 - 发版：改 props 版本 → 提交 → `tools\release.ps1`（或 push tag `v<version>`，Actions 自动构建发布）。
-- 当前 Release：`v1.1.5`，tag 指向 v1.1.5 发布提交（2026-10-24 推送）；Actions 自动构建资产 `Zilux2-Setup-1.1.5.exe` / `Zilux2-Portable-1.1.5.zip` / `.exe.sha256`。上一版 `v1.1.4`（一轮发版时创建），更早 `v1.1.3` 曾按 `463995e` 重发覆盖。
+- 当前 Release：`v1.1.6`，tag 指向 v1.1.6 发布提交（2026-10-25 推送）；Actions 自动构建资产 `Zilux2-Setup-1.1.6.exe` / `Zilux2-Portable-1.1.6.zip` / `.exe.sha256`。上一版 `v1.1.5`（2026-10-24 发布），更早 `v1.1.3` 曾按 `463995e` 重发覆盖。
 - 仓库可见性：应用内更新走未认证 GitHub API，**只有公开仓库的 Release 可见**；开发期可先建私有仓库存代码（先不推 tag），要发布更新时把仓库切 public 再推 tag。客户端对 404 的提示为「仓库不存在、未公开，或还没发布 Release」。当前仓库仍是 private：Releases 已发布但匿名 API 查不到，**应用内自动更新暂不可用**；要启用自动更新需把仓库切成 public（或后续给客户端加 token 支持）。
 - 本机网络：`github.com:443`（HTTPS）被重置/超时，`origin` 走 **SSH over 443**：`ssh://git@ssh.github.com:443/KaFuuChino2006/Zilux2.git`，deploy key 在 `C:\Users\13329\.ssh\zilux2_deploy`，仓库本地已配 `core.sshCommand`；细节见 `docs/zilux2-github-setup.md` §4.3。
 - 注意：更新包未做代码签名（SmartScreen 会提示，属预期）。
@@ -209,6 +210,7 @@ powershell -File tools/release.ps1 -DryRun   # 演练；去掉 -DryRun 真发版
 - 房间效果为 Canvas2D + DOM，低配机可调低「渲染像素比」。
 - 回归靠 `research/qa/suite/`（CDP 套件 + 截图 + results JSON），`node research/qa/suite/run-all.mjs` 一键跑；前提是应用带 `--remote-debugging-port=9223` 运行，且依赖真实在线网络（搜索/下载用例）。
 - 后续可做：歌词页多效果、更多平台能力；下载队列暂无「取消/清空」宿主接口（面板如实提示）；本地目录监控无设置开关（默认开启）。
+- 后台常驻/托盘/热键的已知限制：全局热键每动作有候选回退（全部被占用时该动作无热键，只记 WARN）；托盘依赖资源管理器通知区域，初始化失败时关窗即退出（日志 `tray.unavailable`）；托盘气泡只弹一次；播放条下载按钮打开下载队列浮层而不是直接下载当前曲目；真正退出只有托盘菜单「退出」与更新安装两条路径。
 
 ## 12. 常用命令速查
 

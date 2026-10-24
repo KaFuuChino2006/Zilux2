@@ -5,9 +5,17 @@
     <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
     <UseWPF>true</UseWPF>
+    <!-- 托盘图标（NotifyIcon / ContextMenuStrip）需要 WinForms；本项目其余代码都是 WPF。 -->
+    <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
+    <!--
+      WFO0003 来自 WinForms 分析器：它要求高 DPI 改由 Application.SetHighDpiMode 配置。本项目是
+      WPF 应用，PerMonitorV2 必须写在 app.manifest 里（WPF 的 DPI 感知靠清单生效），WinForms 只用来
+      承载托盘 NotifyIcon、没有 WinForms 启动代码，所以这里只屏蔽这一条建议。
+    -->
+    <NoWarn>$(NoWarn);WFO0003</NoWarn>
     <RootNamespace>Zilux2</RootNamespace>
     <AssemblyName>Zilux2</AssemblyName>
     <!-- Version comes from Directory.Build.props (single source of truth for releases). -->
@@ -16,6 +24,17 @@
     <!-- WebView2 runtime ships separately; no need to flatten native bits into the output root. -->
     <Platforms>AnyCPU;x64</Platforms>
   </PropertyGroup>
+
+  <!--
+    UseWindowsForms 会让 WindowsDesktop SDK 注入全局 using System.Drawing / System.Windows.Forms
+    （Microsoft.NET.Sdk.WindowsDesktop.WindowsForms.props）。本项目是 WPF 项目，注入后 Application、
+    MessageBox、Point、Color、Size、Timer 等类型会与 WPF 同名类型产生 CS0104 歧义，因此显式移除；
+    TrayIconService 内部用 alias `using Forms = System.Windows.Forms;` 访问 WinForms 类型。
+  -->
+  <ItemGroup>
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" />

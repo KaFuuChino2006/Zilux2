@@ -1,20 +1,21 @@
 /// <reference types="vite/client" />
 /**
- * 下载队列面板。
+ * 下载队列面板 + 可嵌入视图（快捷设置「下载」页共用同一份状态）。
  *
  * 宿主（/api/download*）只提供「发起 / 列表 / 定位」三个接口，没有取消与清空，
- * 所以这里做的是：统一接管 startDownload、轮询进度、轻量 diff 更新面板、失败重试、
- * 完成后在资源管理器里定位文件。面板与入口按钮按需懒创建，dispose 时清掉定时器与监听。
+ * 所以这里做的是：统一接管 startDownload、轮询进度、轻量 diff 更新视图、失败重试、
+ * 完成后在资源管理器里定位文件。浮层面板与入口按钮按需懒创建，dispose 时清掉定时器与监听。
  *
  * 轮询策略：递归 setTimeout（非 setInterval），按状态动态调频：
- *   - 有进行中任务 / 面板打开 → 1.2s
+ *   - 有进行中任务 / 有可见队列视图（浮层或快捷设置「下载」页）→ 1.2s
  *   - 有请求正在发起（POST 未返回）→ 0.4s
- *   - 面板打开但全部结束 → 4s
+ *   - 有可见视图但全部结束 → 4s
  *   - 页面隐藏 → 5s
- *   - 面板关闭且无进行中任务 → 停止轮询（下次入队 / 打开面板时重启）
+ *   - 没有任何可见视图且无进行中任务 → 停止轮询（下次入队 / 打开视图时重启）
  * 每次刷新都走同一次 inflight Promise 去重，避免并发 GET。
  */
 import '../styles/download-queue.css';
+import '../styles/download-queue-embed.css';
 import { fetchDownloads, revealDownload, startDownload, type DownloadJob } from '../online/download';
 import type { OnlineTrack, StreamQuality } from '../online/types';
 import { getSettings } from '../core/settings';
@@ -58,15 +59,12 @@ interface RowHandle {
 
 interface PanelRefs {
   root: HTMLElement;
-  list: HTMLDivElement;
-  empty: HTMLDivElement;
   error: HTMLDivElement;
-  dirPath: HTMLDivElement;
   refreshBtn: HTMLButtonElement;
   sumRunning: HTMLElement;
   sumDone: HTMLElement;
   sumError: HTMLElement;
-  tabs: Map<DownloadFilter, HTMLButtonElement>;
+  view: DownloadQueueViewImpl;
 }
 
 interface DownloadQueueDebugApi {
@@ -92,9 +90,6 @@ const QUALITY_LABELS: Record<string, string> = {
   standard: '标准',
 };
 
-// 与 app.ts 左侧 rail 里「下载队列」常驻入口的 aria-label 保持一致（用于放行它的 pointerdown）。
-const RAIL_ENTRY_SELECTOR = '.rail .rail-btn[aria-label="下载队列"]';
-
 const POLL_RUNNING_MS = 1200;
 const POLL_HIDDEN_MS = 5000;
 const POLL_IDLE_MS = 4000;
@@ -102,10 +97,11 @@ const POLL_PENDING_MS = 400;
 
 const listeners = new Set<ChangeListener>();
 const pendingKeys = new Set<string>();
-const rows = new Map<string, RowHandle>();
 // 速度：用两次 received 差 / 时间差估算，只在 running 行显示（MB/s，1 位小数）。
 const speeds = new Map<string, number>();
 const speedSamples = new Map<string, { received: number; at: number }>();
+// 正在展示的嵌入视图（快捷设置「下载」页）；切走时移出集合即停止刷新。
+const embeddedViews = new Set<DownloadQueueViewImpl>();
 
 let jobs: DownloadJob[] = [];
 let directory = '';
@@ -126,9 +122,6 @@ let initialized = false;
 let disposed = false;
 let documentBound = false;
 let lastPointerToggleAt = 0;
-// 过滤切换动画：记录上一次渲染的 tab，变化时给列表加一次性动画类。
-let renderedFilter: DownloadFilter | null = null;
-let switchTimer = 0;
 
 /* ---------- 小工具 ---------- */
 
@@ -184,6 +177,7 @@ function notify(): void {
   try {
     syncEntry();
     syncPanel();
+    for (const view of embeddedViews) view.render();
   } catch (error) {
     console.warn('[downloadQueue] sync failed', error);
   }
@@ -221,41 +215,12 @@ function syncPanel(): void {
   setText(refs.sumRunning, String(summary.running));
   setText(refs.sumDone, String(summary.done));
   setText(refs.sumError, String(summary.error));
-  for (const [key, button] of refs.tabs) {
-    const active = key === filter;
-    // is-active 是 QA 套件既有契约；is-on 供全局 .seg 白色滑块定位。
-    button.classList.toggle('is-active', active);
-    button.classList.toggle('is-on', active);
-    button.setAttribute('aria-selected', active ? 'true' : 'false');
-  }
-  if (renderedFilter !== null && renderedFilter !== filter) playFilterSwitch(refs);
-  renderedFilter = filter;
   const errorText = lastError ? `刷新下载列表失败：${lastError}` : '';
   setText(refs.error, errorText);
   refs.error.hidden = errorText === '';
   refs.refreshBtn.classList.toggle('is-busy', refreshing);
-  const dirText = directory || getSettings().downloads?.directory || '系统音乐目录（默认）';
-  setText(refs.dirPath, dirText);
-  refs.dirPath.title = dirText;
-  syncRows(refs);
-}
-
-/** tab 切换时给列表内容做一次淡入 + 上滑（行 24ms stagger）；行节点复用不受影响。 */
-function playFilterSwitch(refs: PanelRefs): void {
-  if (disposed) return;
-  refs.list.classList.remove('is-switch');
-  refs.empty.classList.remove('is-switch');
-  // 强制一次重排，保证连续切换时动画能重新播放。
-  void refs.list.offsetWidth;
-  refs.list.classList.add('is-switch');
-  refs.empty.classList.add('is-switch');
-  if (switchTimer) window.clearTimeout(switchTimer);
-  switchTimer = window.setTimeout(() => {
-    switchTimer = 0;
-    if (disposed) return;
-    refs.list.classList.remove('is-switch');
-    refs.empty.classList.remove('is-switch');
-  }, 420);
+  // 筛选 tab / 列表 / 目录三块由可复用视图渲染（与快捷设置「下载」页共用同一份实现）。
+  refs.view.render();
 }
 
 function visibleJobs(): DownloadJob[] {
@@ -263,50 +228,6 @@ function visibleJobs(): DownloadJob[] {
   const list = filter === 'all' ? jobs.slice() : jobs.filter((job) => job.state === filter);
   // Array.prototype.sort 稳定，同状态内保留宿主 startedAt 倒序。
   return list.sort((a, b) => (priority[a.state] ?? 3) - (priority[b.state] ?? 3));
-}
-
-function syncRows(refs: PanelRefs): void {
-  const visible = visibleJobs();
-  const seen = new Set<string>();
-  let cursor: Node | null = refs.list.firstChild;
-  for (const job of visible) {
-    seen.add(job.id);
-    const key = rowKey(job);
-    let handle = rows.get(job.id);
-    if (!handle) {
-      handle = createRow();
-      rows.set(job.id, handle);
-      applyRow(handle, job, key);
-    } else if (handle.key !== key) {
-      applyRow(handle, job, key);
-    }
-    if (cursor === handle.el) {
-      cursor = handle.el.nextSibling;
-    } else {
-      refs.list.insertBefore(handle.el, cursor);
-    }
-  }
-  for (const [id, handle] of rows) {
-    if (seen.has(id)) continue;
-    handle.el.remove();
-    rows.delete(id);
-  }
-  const empty = refs.empty;
-  empty.hidden = visible.length > 0;
-  if (visible.length > 0) return;
-  let text: string;
-  if (!refreshedOnce) {
-    text = lastError ? '下载列表暂不可用，稍后重试' : '正在读取下载列表…';
-  } else if (filter === 'running') {
-    text = '当前没有正在下载的任务';
-  } else if (filter === 'done') {
-    text = '还没有下载完成的歌曲';
-  } else if (filter === 'error') {
-    text = '没有失败的任务';
-  } else {
-    text = '暂时没有下载任务\n在搜索结果里点下载按钮，就会加入队列';
-  }
-  setText(empty, text);
 }
 
 /* ---------- 行 ---------- */
@@ -480,6 +401,235 @@ async function doRetry(job: DownloadJob, button: HTMLButtonElement): Promise<voi
   }
 }
 
+/* ---------- 可复用列表视图（浮层面板 / 快捷设置「下载」页共用） ---------- */
+
+/** 可嵌入的下载队列视图：复用同一份队列状态与轮询，不复制业务逻辑。 */
+export interface DownloadQueueView {
+  readonly element: HTMLElement;
+  /** 显示时调用：订阅状态刷新并立即取一次最新进度。 */
+  activate(): void;
+  /** 隐藏时调用：停止接收刷新（不再重绘，也不再因该视图触发轮询）。 */
+  deactivate(): void;
+  dispose(): void;
+}
+
+class DownloadQueueViewImpl implements DownloadQueueView {
+  readonly element: HTMLElement;
+  private readonly embedded: boolean;
+  private readonly list: HTMLDivElement;
+  private readonly empty: HTMLDivElement;
+  private readonly dirPath: HTMLDivElement;
+  private readonly tabs = new Map<DownloadFilter, HTMLButtonElement>();
+  private readonly rows = new Map<string, RowHandle>();
+  private readonly status: HTMLDivElement | null;
+  private readonly refreshBtn: HTMLButtonElement | null;
+  private enabled: boolean;
+  private renderedFilter: DownloadFilter | null = null;
+  private switchTimer = 0;
+
+  constructor(embedded: boolean) {
+    this.embedded = embedded;
+    this.enabled = !embedded;
+
+    const tabs = new Map<DownloadFilter, HTMLButtonElement>();
+    // 统一走全局分段控件 .seg：白色滑块由 app.ts 的 enhanceSegs 自动注入，这里不手写滑块。
+    const tabBar = h('div', { class: 'seg dlq-tabs', role: 'tablist' });
+    for (const item of FILTERS) {
+      const button = h(
+        'button',
+        { class: 'seg-btn dlq-tab', type: 'button', role: 'tab', 'aria-selected': 'false' },
+        item.label,
+      );
+      button.addEventListener('click', () => this.selectFilter(item.key));
+      tabs.set(item.key, button);
+      tabBar.append(button);
+    }
+    this.tabs = tabs;
+
+    this.list = h('div', { class: 'dlq-list' });
+    this.empty = h('div', { class: 'dlq-empty' });
+    this.dirPath = h('div', { class: 'dlq-dir-path' });
+    const openDirBtn = h(
+      'button',
+      { class: 'dlq-foot-btn dlq-open-dir', type: 'button', title: '在资源管理器中打开下载目录' },
+      icon('folder', 14),
+      '打开目录',
+    );
+    openDirBtn.addEventListener('click', () => this.openDirectory());
+    const foot = h('div', { class: 'dlq-foot' }, this.dirPath, openDirBtn);
+
+    if (embedded) {
+      // 快捷设置第 5 页：容器独立一层 .dlq-embed，内部仍沿用 .dlq-* 契约类名。
+      this.status = h('div', { class: 'dlq-embed-status' });
+      this.refreshBtn = h(
+        'button',
+        { class: 'dlq-embed-refresh', type: 'button', title: '刷新下载列表', 'aria-label': '刷新下载列表' },
+        icon('refresh', 14),
+      );
+      this.refreshBtn.addEventListener('click', () => {
+        void refresh().then(() => {
+          if (!disposed) kick();
+        });
+      });
+      const head = h(
+        'div',
+        { class: 'dlq-embed-head' },
+        h('div', { class: 'dlq-embed-title', text: '下载队列' }),
+        this.status,
+        this.refreshBtn,
+      );
+      this.element = h(
+        'div',
+        { class: 'dlq-embed', 'data-qa': 'quick-downloads-page' },
+        head,
+        tabBar,
+        this.list,
+        this.empty,
+        foot,
+      );
+    } else {
+      this.status = null;
+      this.refreshBtn = null;
+      this.element = h('div', { class: 'dlq-view' }, tabBar, this.list, this.empty, foot);
+    }
+  }
+
+  activate(): void {
+    if (disposed) return;
+    this.enabled = true;
+    if (this.embedded) {
+      embeddedViews.add(this);
+    }
+    this.render();
+    kick();
+  }
+
+  deactivate(): void {
+    embeddedViews.delete(this);
+    if (this.embedded) this.enabled = false;
+  }
+
+  dispose(): void {
+    this.deactivate();
+    this.enabled = false;
+    if (this.switchTimer) {
+      window.clearTimeout(this.switchTimer);
+      this.switchTimer = 0;
+    }
+    for (const [, handle] of this.rows) handle.el.remove();
+    this.rows.clear();
+    this.element.remove();
+  }
+
+  /** 只做字段级更新（tabs 状态 / 行 diff / 目录文案），不重建 DOM。 */
+  render(): void {
+    if (!this.enabled || disposed) return;
+    this.syncTabs();
+    this.syncRows();
+    const dirText = directory || getSettings().downloads?.directory || '系统音乐目录（默认）';
+    setText(this.dirPath, dirText);
+    this.dirPath.title = dirText;
+    if (this.status) {
+      const { running, done, error } = countJobs();
+      setText(this.status, `下载中 ${running} · 已完成 ${done}${error > 0 ? ` · 失败 ${error}` : ''}`);
+    }
+    if (this.refreshBtn) this.refreshBtn.classList.toggle('is-busy', refreshing);
+    if (this.renderedFilter !== null && this.renderedFilter !== filter) this.playSwitch();
+    this.renderedFilter = filter;
+  }
+
+  private selectFilter(key: DownloadFilter): void {
+    if (filter === key) return;
+    filter = key;
+    notify();
+  }
+
+  private syncTabs(): void {
+    for (const [key, button] of this.tabs) {
+      const on = key === filter;
+      // is-active 是 QA 套件既有契约；is-on 供全局 .seg 白色滑块定位。
+      button.classList.toggle('is-active', on);
+      button.classList.toggle('is-on', on);
+      button.setAttribute('aria-selected', on ? 'true' : 'false');
+    }
+  }
+
+  private syncRows(): void {
+    const visible = visibleJobs();
+    const seen = new Set<string>();
+    let cursor: Node | null = this.list.firstChild;
+    for (const job of visible) {
+      seen.add(job.id);
+      const key = rowKey(job);
+      let handle = this.rows.get(job.id);
+      if (!handle) {
+        handle = createRow();
+        this.rows.set(job.id, handle);
+        applyRow(handle, job, key);
+      } else if (handle.key !== key) {
+        applyRow(handle, job, key);
+      }
+      if (cursor === handle.el) {
+        cursor = handle.el.nextSibling;
+      } else {
+        this.list.insertBefore(handle.el, cursor);
+      }
+    }
+    for (const [id, handle] of this.rows) {
+      if (seen.has(id)) continue;
+      handle.el.remove();
+      this.rows.delete(id);
+    }
+    const empty = this.empty;
+    empty.hidden = visible.length > 0;
+    if (visible.length > 0) return;
+    let text: string;
+    if (!refreshedOnce) {
+      text = lastError ? '下载列表暂不可用，稍后重试' : '正在读取下载列表…';
+    } else if (filter === 'running') {
+      text = '当前没有正在下载的任务';
+    } else if (filter === 'done') {
+      text = '还没有下载完成的歌曲';
+    } else if (filter === 'error') {
+      text = '没有失败的任务';
+    } else {
+      text = '暂时没有下载任务\n在搜索结果里点下载按钮，就会加入队列';
+    }
+    setText(empty, text);
+  }
+
+  /** tab 切换时给列表内容做一次淡入 + 上滑（行 24ms stagger）；行节点复用不受影响。 */
+  private playSwitch(): void {
+    const { list, empty } = this;
+    list.classList.remove('is-switch');
+    empty.classList.remove('is-switch');
+    // 强制一次重排，保证连续切换时动画能重新播放。
+    void list.offsetWidth;
+    list.classList.add('is-switch');
+    empty.classList.add('is-switch');
+    if (this.switchTimer) window.clearTimeout(this.switchTimer);
+    this.switchTimer = window.setTimeout(() => {
+      this.switchTimer = 0;
+      list.classList.remove('is-switch');
+      empty.classList.remove('is-switch');
+    }, 420);
+  }
+
+  private openDirectory(): void {
+    const target = directory || getSettings().downloads?.directory || '';
+    try {
+      host.openDownloadFolder(target);
+    } catch (err) {
+      toast(`无法打开下载目录：${errorMessage(err)}`, 'error');
+    }
+  }
+}
+
+/** 创建可嵌入的下载队列视图（快捷设置「下载」页用）；dispose 时彻底移除节点。 */
+export function createDownloadQueueView(): DownloadQueueView {
+  return new DownloadQueueViewImpl(true);
+}
+
 /* ---------- 面板 ---------- */
 
 function ensurePanel(): void {
@@ -496,23 +646,6 @@ function ensurePanel(): void {
     h('span', { class: 'dlq-sum-sep' }, '·'),
     h('span', { class: 'dlq-sum-item', 'data-kind': 'error' }, '失败 ', sumError),
   );
-  const tabs = new Map<DownloadFilter, HTMLButtonElement>();
-  // 统一走全局分段控件 .seg：白色滑块由 app.ts 的 enhanceSegs 自动注入，这里不手写滑块。
-  const tabBar = h('div', { class: 'seg dlq-tabs', role: 'tablist' });
-  for (const item of FILTERS) {
-    const button = h(
-      'button',
-      { class: 'seg-btn dlq-tab', type: 'button', role: 'tab', 'aria-selected': 'false' },
-      item.label,
-    );
-    button.addEventListener('click', () => {
-      if (filter === item.key) return;
-      filter = item.key;
-      notify();
-    });
-    tabs.set(item.key, button);
-    tabBar.append(button);
-  }
   const refreshBtn = h(
     'button',
     { class: 'dlq-icon-btn dlq-refresh', type: 'button', title: '刷新下载列表', 'aria-label': '刷新下载列表' },
@@ -531,16 +664,7 @@ function ensurePanel(): void {
   );
   const error = h('div', { class: 'dlq-error' });
   error.hidden = true;
-  const list = h('div', { class: 'dlq-list' });
-  const empty = h('div', { class: 'dlq-empty' });
-  const dirPath = h('div', { class: 'dlq-dir-path' });
-  const openDirBtn = h(
-    'button',
-    { class: 'dlq-foot-btn dlq-open-dir', type: 'button', title: '在资源管理器中打开下载目录' },
-    icon('folder', 14),
-    '打开目录',
-  );
-  const foot = h('div', { class: 'dlq-foot' }, dirPath, openDirBtn);
+  const view = new DownloadQueueViewImpl(false);
   const hint = h('div', {
     class: 'dlq-hint',
     text: '宿主暂不支持取消或清空任务；已完成的记录保留在本次宿主会话中。',
@@ -551,14 +675,11 @@ function ensurePanel(): void {
     head,
     summary,
     error,
-    tabBar,
-    list,
-    empty,
-    foot,
+    view.element,
     hint,
   );
   document.body.append(root);
-  panel = { root, list, empty, error, dirPath, refreshBtn, sumRunning, sumDone, sumError, tabs };
+  panel = { root, error, refreshBtn, sumRunning, sumDone, sumError, view };
   bindDocument();
 
   refreshBtn.addEventListener('click', () => {
@@ -567,14 +688,6 @@ function ensurePanel(): void {
     });
   });
   closeBtn.addEventListener('click', () => closeDownloadPanel());
-  openDirBtn.addEventListener('click', () => {
-    const target = directory || getSettings().downloads?.directory || '';
-    try {
-      host.openDownloadFolder(target);
-    } catch (err) {
-      toast(`无法打开下载目录：${errorMessage(err)}`, 'error');
-    }
-  });
 
   syncPanel();
 }
@@ -585,9 +698,6 @@ function onDocumentPointerDown(event: PointerEvent): void {
   if (!(target instanceof Node)) return;
   if (panel?.root.contains(target)) return;
   if (entryBtn?.contains(target)) return;
-  // 左侧 rail 的「下载队列」常驻入口自己负责 toggle：pointerdown 阶段放行，
-  // 否则会先被这里关掉、再被随后的 click 打开，表现为「只能开不能关」。
-  if (target instanceof Element && target.closest(RAIL_ENTRY_SELECTOR)) return;
   closeDownloadPanel();
 }
 
@@ -614,7 +724,7 @@ function unbindDocument(): void {
 /* ---------- 轮询 ---------- */
 
 function shouldPoll(): boolean {
-  return panelOpen || countJobs().running > 0 || pendingStarts > 0;
+  return panelOpen || embeddedViews.size > 0 || countJobs().running > 0 || pendingStarts > 0;
 }
 
 function pollDelay(): number {
@@ -689,8 +799,8 @@ function applyList(nextJobs: DownloadJob[], nextDirectory?: string): void {
   updateSpeeds();
   updatedAt = Date.now();
   refreshedOnce = true;
-  // 面板收起时保留旧流程的完成/失败提示；面板打开时看行状态即可，不再弹 toast。
-  if (!panelOpen) notifyFinishedTransitions(previous);
+  // 队列可见（浮层或快捷设置「下载」页）时看行状态即可，不再弹完成/失败 toast。
+  if (!panelOpen && embeddedViews.size === 0) notifyFinishedTransitions(previous);
 }
 
 /** 用相邻两次快照的 received 差 / 时间差估算速度；非 running 任务立刻清掉采样。 */
@@ -761,8 +871,8 @@ export async function beginQueueDownload(track: OnlineTrack, quality?: StreamQua
     applyList([result.job, ...jobs.filter((item) => item.id !== result.job.id)], result.directory);
     lastError = null;
     toast(`已加入下载队列：${track.title}（${label}）`);
-    // 入队后展开面板（已打开则不动），让用户立刻看到进度；关闭后可再次入队时自动弹出。
-    if (!panelOpen) openDownloadPanel();
+    // 有可见的队列视图（浮层 / 快捷设置「下载」页）就不再抢焦点；都不可见时展开浮层。
+    if (!panelOpen && embeddedViews.size === 0) openDownloadPanel();
     notify();
     kick();
     return true;
@@ -903,14 +1013,12 @@ export function disposeDownloadQueue(): void {
     window.clearTimeout(pollTimer);
     pollTimer = 0;
   }
-  if (switchTimer) {
-    window.clearTimeout(switchTimer);
-    switchTimer = 0;
-  }
   unbindDocument();
-  for (const [, handle] of rows) handle.el.remove();
-  rows.clear();
+  // 先销毁所有可见视图（快捷设置页 + 浮层面板内部视图），再移除浮层外壳。
+  for (const view of Array.from(embeddedViews)) view.dispose();
+  embeddedViews.clear();
   if (panel) {
+    panel.view.dispose();
     panel.root.remove();
     panel = null;
   }
@@ -927,8 +1035,6 @@ export function disposeDownloadQueue(): void {
   updatedAt = 0;
   pendingStarts = 0;
   pendingKeys.clear();
-  renderedFilter = null;
-  switchTimer = 0;
   speeds.clear();
   speedSamples.clear();
   delete (window as DebugWindow).__zilux2DownloadQueue;

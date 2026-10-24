@@ -103,11 +103,13 @@ import {
   beginQueueDownload,
   closeDownloadPanel,
   createDownloadEntryButton,
+  createDownloadQueueView,
   disposeDownloadQueue,
   initDownloadQueue,
   isDownloadPanelOpen,
-  toggleDownloadPanel,
+  type DownloadQueueView,
 } from './downloadQueue';
+import { closeQualityPicker, openQualityPicker } from './downloadPicker';
 import type { PlayScope } from './home';
 import type { HomeCollection, HomeData } from './home';
 import { openLyricPicker } from './lyricPicker';
@@ -278,12 +280,14 @@ export class App {
   private quickVolume!: HTMLInputElement;
   private quickThumb!: HTMLDivElement;
   private quickTabBtns: Record<string, HTMLButtonElement> = {};
-  private quickTab: 'cover' | 'lyrics' | 'settings' | 'airplay' = 'cover';
+  private quickTab: 'cover' | 'lyrics' | 'settings' | 'airplay' | 'download' = 'cover';
   private quickBody!: HTMLDivElement;
   private quickBodyInner!: HTMLDivElement;
   private quickRenderKey = '';
   private quickLikeBtn: HTMLButtonElement | null = null;
   private lastQualityKey = '';
+  private downloadQuickView: DownloadQueueView | null = null;
+  private hostCommandBound = false;
   private appBgOn = readAppBgOn();
   private appBgEl!: HTMLDivElement;
   private appBgLayers: HTMLDivElement[] = [];
@@ -326,6 +330,7 @@ export class App {
     // 调试/自动化用：暴露只读播放状态，便于真机验证。
     (window as unknown as { __ziluxPlayer?: typeof playerState }).__ziluxPlayer = playerState;
     initDownloadQueue();
+    this.bindHostCommands();
     this.playerDispose = onPlayer((state) => this.syncPlayer(state));
     this.localDispose = onLocalLibraryChange(() => {
       if (this.wall.kind === 'local') {
@@ -344,6 +349,25 @@ export class App {
   private async bootData(): Promise<void> {
     this.syncAccount();
     await this.showHome();
+  }
+
+  /**
+   * 宿主托盘菜单 / 全局热键会通过页面消息下发播放指令：
+   * {v:1,type:'command',action:'togglePlay'|'prev'|'next'}。
+   * 这里只监听这一种消息，其它消息（host/mediaControl 等）仍由各自模块处理。
+   */
+  private bindHostCommands(): void {
+    if (this.hostCommandBound) return;
+    this.hostCommandBound = true;
+    host.onMessage((message) => {
+      if (message.type !== 'command') return;
+      const action = typeof message.action === 'string' ? message.action : '';
+      if (action === 'togglePlay') toggle();
+      else if (action === 'prev') prev();
+      else if (action === 'next') next();
+      else return;
+      host.log('info', `command ${action}`);
+    });
   }
 
   /* ------------------------------------------------------------------ */
@@ -559,7 +583,6 @@ export class App {
       { key: 'discover', label: '发现', iconName: 'compass', onClick: () => void this.showDiscover() },
       { key: 'playlists', label: '我的歌单', iconName: 'list', onClick: () => void this.openPlaylistSheet() },
       { key: 'local', label: '本地曲库', iconName: 'folder', onClick: () => this.showLocal() },
-      { key: 'downloads', label: '下载队列', iconName: 'download', onClick: () => toggleDownloadPanel() },
       { key: 'airplay', label: '投送', iconName: 'airplay', onClick: () => this.toggleAirplayPop() },
     ];
     for (const item of items) {
@@ -1986,13 +2009,29 @@ export class App {
     if (changed && !this.wallHost.classList.contains('is-hidden')) this.syncSearchLiked();
   }
 
-  /** 下载一首在线歌曲到本地（统一走下载队列面板，默认 Windows 音乐目录，可在设置里改）。 */
-  private async beginDownload(track: OnlineTrack): Promise<void> {
+  /**
+   * 下载一首在线歌曲：先弹音质选择浮层（标准 / 高品质 / 无损），选完再统一走下载队列。
+   * anchor 是触发按钮，用它的位置摆放浮层；本轮选择只对这一次生效，不改设置。
+   */
+  private beginDownload(track: OnlineTrack, anchor?: HTMLElement): void {
     if (track.source === 'local') {
       toast('本地歌曲不需要下载');
       return;
     }
-    await beginQueueDownload(track, getSettings().downloads?.quality ?? 'high');
+    const defaultQuality = getSettings().downloads?.quality ?? 'high';
+    openQualityPicker({
+      anchor: anchor ?? null,
+      title: track.title,
+      artist: track.artist,
+      defaultQuality,
+      onPick: (quality) => {
+        if (anchor && anchor.isConnected) {
+          anchor.classList.add('is-busy');
+          window.setTimeout(() => anchor.classList.remove('is-busy'), 1600);
+        }
+        void beginQueueDownload(track, quality);
+      },
+    });
   }
 
   /** 搜索结果行：封面 + 歌名/作者 + VIP + 平台角标 + 下载 + 收藏。 */
@@ -2039,9 +2078,8 @@ export class App {
       } else {
         downloadBtn.addEventListener('click', (event) => {
           event.stopPropagation();
-          downloadBtn.classList.add('is-busy');
-          window.setTimeout(() => downloadBtn.classList.remove('is-busy'), 1600);
-          void this.beginDownload(track);
+          // 音质选择在 beginDownload 里弹；选完才入队、才开始转圈。
+          this.beginDownload(track, downloadBtn);
         });
       }
       const infoBtn = h('button', {
@@ -3584,9 +3622,9 @@ export class App {
     });
 
     this.quickThumb = h('div', { class: 'quick-thumb' });
-    // 底部四个选项只在快捷设置这个小窗口内切换内容，不再从侧边打开整页
+    // 底部五个选项只在快捷设置这个小窗口内切换内容，不再从侧边打开整页
     const tab = (
-      key: 'cover' | 'lyrics' | 'settings' | 'airplay',
+      key: 'cover' | 'lyrics' | 'settings' | 'airplay' | 'download',
       label: string,
     ): HTMLButtonElement => {
       const button = h('button', { class: 'quick-tab', type: 'button', text: label });
@@ -3604,6 +3642,7 @@ export class App {
       tab('lyrics', '歌词'),
       tab('settings', '设置'),
       tab('airplay', '投送'),
+      tab('download', '下载'),
     );
 
     this.quickBodyInner = h('div', { class: 'quick-body-inner' });
@@ -3726,13 +3765,23 @@ export class App {
     };
   }
 
-  /** 面板内容按底部选项切换：封面放大预览 / 当前歌词 / 音量与模式。 */
+  /** 面板内容按底部选项切换：封面放大预览 / 当前歌词 / 音量与模式 / 投送 / 下载。 */
   private renderQuickBody(): void {
     if (!this.quickBody) return;
     const current = playerState().track;
     this.quickRenderKey = `${this.quickTab}:${current ? `${current.source}:${current.id}` : ''}`;
+    // 「下载」页需要把快捷面板加宽（见 download-queue-embed.css）。
+    this.quickRoot.classList.toggle('is-download', this.quickTab === 'download');
+    if (this.quickTab !== 'download') this.downloadQuickView?.deactivate();
     const body = this.quickBodyInner ?? this.quickBody;
     body.textContent = '';
+    if (this.quickTab === 'download') {
+      // 第 5 页：复用下载队列的可嵌入视图（同一份状态与轮询，不另起一套逻辑）。
+      const view = this.quickDownloadView();
+      body.append(view.element);
+      view.activate();
+      return;
+    }
     if (this.quickTab === 'airplay') {
       const panel = this.ensureAirplayQuickPanel();
       body.append(panel.element);
@@ -4234,6 +4283,12 @@ export class App {
     );
   }
 
+  /** 快捷设置「下载」页的视图单例：首次进页面时创建，切走只 deactivate（不重建 DOM）。 */
+  private quickDownloadView(): DownloadQueueView {
+    if (!this.downloadQuickView) this.downloadQuickView = createDownloadQueueView();
+    return this.downloadQuickView;
+  }
+
   /** 快捷设置内容区高度变化时做一次平滑过渡（内容显隐/切 tab 都用它，避免面板跳一下）。 */
   private animateQuickBodyHeight(from: number, to: number): void {
     const body = this.quickBody;
@@ -4250,7 +4305,7 @@ export class App {
     }, 340);
   }
 
-  private setQuickTab(key: 'cover' | 'lyrics' | 'settings' | 'airplay'): void {
+  private setQuickTab(key: 'cover' | 'lyrics' | 'settings' | 'airplay' | 'download'): void {
     const body = this.quickBody;
     const before = body ? body.offsetHeight : 0;
     if (key !== 'airplay') this.deactivateAirplayQuick();
@@ -4400,6 +4455,8 @@ export class App {
   private closeQuick(): void {
     if (!this.quickPanelOpen) return;
     this.quickPanelOpen = false;
+    // 收起时立刻停止「下载」页的刷新（不依赖内容是否已被清空）。
+    this.downloadQuickView?.deactivate();
     const panel = this.quickPanelEl;
     const root = this.quickRoot;
     let timer = 0;
@@ -4773,6 +4830,9 @@ export class App {
     this.settingsDispose?.();
     this.updatesDispose?.();
     this.updatesDispose = null;
+    this.downloadQuickView?.dispose();
+    this.downloadQuickView = null;
+    closeQualityPicker();
     disposeDownloadQueue();
     this.disposers.dispose();
     this.closeLyrics();
