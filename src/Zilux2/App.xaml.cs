@@ -8,6 +8,7 @@ using Zilux2.Media;
 using Zilux2.Online;
 using Zilux2.Online.Account;
 using Zilux2.Settings;
+using Zilux2.Tray;
 
 namespace Zilux2;
 
@@ -22,6 +23,9 @@ public partial class App : Application
     internal static MediaSessionService? Media { get; private set; }
 
     internal static AirPlayService? AirPlay { get; private set; }
+
+    /// <summary>后台常驻的托盘图标；窗口关闭后进程仍活着就靠它找回窗口/退出。</summary>
+    internal static TrayIconService? Tray { get; private set; }
 
     private static int _shutdownWatchdogArmed;
     private static int _shutdownFinished;
@@ -111,6 +115,10 @@ public partial class App : Application
         Online.FileDownloaded = path => window.NotifyDownloadedFile(path);
         window.Show();
 
+        // 托盘图标：失败只失去托盘入口（窗口仍在，但关闭会被隐藏到托盘后找不回来，所以
+        // TrayIconService 构造失败时它自己会记日志并退出；这里只兜底不抛到启动流程）。
+        TryCreateTray(window);
+
         if (Settings?.StartMaximized == true)
         {
             // Contract §5: apply after the window exists. Setting WindowState before Show raises
@@ -122,6 +130,17 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        try
+        {
+            // 托盘图标要最先撤掉：它持有主窗口引用，也能在退出过程中再发命令。
+            Tray?.Dispose();
+            Tray = null;
+        }
+        catch (Exception exception)
+        {
+            HostLog.Error("tray.dispose failed", exception);
+        }
+
         try
         {
             // The capture thread reads settings, so it must stop before the service is disposed.
@@ -184,6 +203,13 @@ public partial class App : Application
         base.OnExit(e);
     }
 
+    protected override void OnSessionEnding(SessionEndingCancelEventArgs e)
+    {
+        // 后台常驻不能拦住 Windows 关机/注销：系统注销会话时放行真正的关闭。
+        (MainWindow as MainWindow)?.AllowExitForSystemShutdown();
+        base.OnSessionEnding(e);
+    }
+
     /// <summary>
     /// The WebView2 teardown occasionally stalls for a few seconds (browser process busy). Keep
     /// that from turning into a window that never closes: force the process down if shutdown
@@ -234,6 +260,28 @@ public partial class App : Application
         catch (Exception exception)
         {
             HostLog.Error("settings.init failed", exception);
+            return null;
+        }
+    }
+
+    private static TrayIconService? TryCreateTray(MainWindow window)
+    {
+        try
+        {
+            var tray = new TrayIconService(window);
+            if (tray.IsAvailable)
+            {
+                return Tray = tray;
+            }
+
+            tray.Dispose();
+            HostLog.Warn("tray.unavailable: window close will exit");
+            return null;
+        }
+        catch (Exception exception)
+        {
+            // 托盘起不来只影响「后台常驻」的可见入口，不能拖垮启动；任务栏按钮仍然可用。
+            HostLog.Error("tray.start failed", exception);
             return null;
         }
     }

@@ -27,10 +27,11 @@ const SUITE_DIR = path.join(REPO_ROOT, 'research', 'qa', 'suite');
 /** 执行顺序：先冒烟（确认基座可用），再跑各功能套件；downloads 最慢放最后。 */
 const SUITES = [
   { name: 'smoke', title: '冒烟：基座 + 主要页面' },
+  { name: 'tray-and-downloads', title: '托盘 / 全局热键 / 宿主命令通道（task-12）' },
   { name: 'room-effects', title: '房间预设（粒子/流星 chips）' },
   { name: 'update-channel', title: '更新通道（设置页 + mock 服务）' },
   { name: 'local-watch', title: '本地目录监控（新增/删除自动刷新）' },
-  { name: 'downloads', title: '下载队列（面板 + 真实下载）' },
+  { name: 'downloads', title: '下载队列（入口迁移 + 音质浮层 + 真实下载）' },
 ];
 
 function parseSelection(argv) {

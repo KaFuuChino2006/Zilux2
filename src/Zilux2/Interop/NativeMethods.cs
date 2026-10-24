@@ -18,6 +18,18 @@ internal static class NativeMethods
     public const uint SwpNoZOrder = 0x0004;
     public const uint SwpNoActivate = 0x0010;
 
+    // 全局热键（RegisterHotKey / WM_HOTKEY）
+    public const int WmHotkey = 0x0312;
+    public const uint ModAlt = 0x0001;
+    public const uint ModControl = 0x0002;
+    public const uint ModShift = 0x0004;
+    public const uint VkSpace = 0x20;
+    public const uint VkLeft = 0x25;
+    public const uint VkRight = 0x27;
+    public const uint VkJ = 0x4A; // 备选键：Ctrl+Alt+Left/Right 被占用时用 Ctrl+Alt+J/K
+    public const uint VkK = 0x4B;
+    public const uint VkZ = 0x5A;
+
     private const uint ShfoDelete = 0x0003;
     private const ushort FofAllowUndo = 0x0040;
     private const ushort FofNoConfirmation = 0x0010;
@@ -183,6 +195,18 @@ internal static class NativeMethods
     [DllImport("gdi32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool DeleteObject(IntPtr hObject);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SetForegroundWindow(IntPtr hWnd);
 
     /// <summary>
     /// Keep the window's restore rect at <paramref name="normal"/> while it is minimized, so the
