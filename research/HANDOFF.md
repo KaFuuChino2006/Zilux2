@@ -1,16 +1,16 @@
 # Zilux2 上下文交接（HANDOFF）
 
-> 更新时间：2026-10-25（v1.1.6 发版：后台常驻 / 托盘图标交互 / 全局快捷键 / 下载入口迁移 / 快捷设置下载页 / 下载音质选择）
-> 当前版本：**1.1.6**（唯一来源：根目录 `Directory.Build.props`；最近构建 `1.1.6`（tag `v1.1.6`），发布资产由 push tag 后 Actions 构建 `Zilux2-Setup-1.1.6.exe`）
-> 代码仓库：`KaFuuChino2006/Zilux2`（**private**，`main` 已同步；Releases 已有 v1.1.0 / v1.1.1 / v1.1.2 / v1.1.3 / v1.1.4 / v1.1.5 / **v1.1.6（本轮）**）
+> 更新时间：2026-10-25（v1.1.7 发版：无缝衔接系列——鼓点对齐自动过渡 / WSOLA 变速不变调 / 尾端静音排除 / 唱词对齐 / 过渡顶部提示）
+> 当前版本：**1.1.7**（唯一来源：根目录 `Directory.Build.props`；最近构建 `1.1.7`（tag `v1.1.7`），发布资产由 push tag 后 Actions 构建 `Zilux2-Setup-1.1.7.exe`）
+> 代码仓库：`KaFuuChino2006/Zilux2`（**private**，`main` 已同步；Releases 已有 v1.1.0 / v1.1.1 / v1.1.2 / v1.1.3 / v1.1.4 / v1.1.5 / v1.1.6 / **v1.1.7（本轮）**）
 > 本文件给下一个接手的 AI / 开发者：读完即可继续开发。
 
 ## 0. 交接速览（先读这里）
 
 - **在做什么**：Windows 桌面音乐播放器 Zilux2（WPF + WebView2 宿主 + Vite/TS 前端），已具备完整播放器、在线音乐、发现页、房间/歌词效果、本地曲库、GitHub 自动更新。
-- **当前状态（2026-10-25 交接时）**：`main` 已推送至 `v1.1.6` 之后（见 `git log`：v1.1.6 发布提交 → 快捷设置过渡修复 → 快捷键可配置 → P0 节拍分析实验）；版本 1.1.6；本机已安装并运行最新构建（含 P0 节拍分析实验）；Releases 最新为 v1.1.6（后台常驻/托盘交互/全局快捷键/下载入口迁移/快捷设置下载页/下载音质选择）。
-- **最近 5 个提交（由新到旧）**：`e1f80f0` \[v1.1.6\] 后台常驻/托盘/全局热键/下载入口迁移/音质选择 → `7c75209` v1.1.5 发布提交：纯字光柱 8 套样式/多角度/彩虹/自动轮换 → `0121e74` 光柱多角度/彩虹/自动轮换 → `5ec1b7f` 四套光柱风格/无缝循环 → `b1bc181` 纯字光柱重做。
-- **本轮已完成（2026-10-25）**：①后台常驻（`ShutdownMode=OnExplicitShutdown`，关窗隐藏到托盘、进程继续播放/下载/热键）；②托盘图标与交互（左键显示/隐藏、右键 显示/播放或暂停/上一首/下一首/退出、首次隐藏气泡提示）；③全局快捷键（Ctrl+Alt+Space 播放暂停、Ctrl+Alt+←/→ 上下首带候选回退、Ctrl+Alt+Z 显示隐藏）；④左侧 rail 下载入口迁移到快捷设置第 5 个「下载」页（复用下载队列可嵌入视图）；⑤所有下载入口先选音质（标准/高品质/无损，默认取设置、仅本次生效）。详见 `research/UPDATES-2026-10-25.md`。
+- **当前状态（2026-10-25 交接时）**：`main` 已推送至 **v1.1.7**（见 `git log`：v1.1.6 发布提交 → 快捷设置过渡 → 快捷键 → P0 节拍分析 → B 版 Phase 1 无缝衔接 → WSOLA/尾端静音/唱词对齐/过渡提示 → v1.1.7 发布提交）；版本 1.1.7；本机已安装并运行最新构建（含无缝衔接实验特性）；Releases 最新为 v1.1.7（无缝衔接系列）。
+- **最近 5 个提交（由新到旧）**：`fefecec` \[v1.1.7\] 发布提交 无缝衔接系列（双 deck/WSOLA/尾端静音/唱词对齐/过渡提示）→ `46a792e` 过渡顶部提示「正在无缝过渡到」→ `4b7355f` WSOLA 变速不变调 + 更慢/人声优先融合 → `df9d7c3` 过渡时长 3–30 秒 → `856106b` 过渡对齐下一首开始唱词。
+- **本轮已完成（2026-10-25 v1.1.7）**：①B 版 Phase 1 无缝衔接（双 deck、鼓点对齐、图内增益淡化、auto 4 小节 5–10s / 手动 3–30s）；②WSOLA 变速不变调（±12%）+ 更慢的人声优先融合；③尾端静音自动排除（`audibleEndMs/tailSilenceMs`）；④过渡终点对齐下一首「开始唱词」；⑤过渡中顶部提示「正在无缝过渡到 X」+ 淡化进度。入口：设置 → 播放 →「无缝衔接（实验）」。详见 `research/UPDATES-2026-10-25.md` §7–§14。
 - **下一步候选**（按优先级）：①仓库切 **public** 才能真正启用应用内自动更新（当前 private，匿名 API 404）；②歌词页更多效果；③更多平台能力（见 §11）。
 - **改代码前必看**：§3 构建流程、§9 版本/发版节奏（**不要擅自跳版本号**）、§4 真机 QA、§10 更新通道。私有仓 + 未签名安装包会触发 SmartScreen，属预期。
 - **本机环境**：`E:/dotnet/dotnet.exe`；Node 用 `C:/Users/13329/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/node/bin/node.exe`；`github.com:443` 不通，git 走 SSH over 443（§10）；bash 里 `$LOCALAPPDATA` 不展开。
@@ -153,8 +153,9 @@ powershell -File tools/release.ps1 -DryRun   # 演练；去掉 -DryRun 真发版
 
 ## 8. 当前状态
 
-- 版本号统一由 `Directory.Build.props` 控制（当前 **1.1.6**）；`%LOCALAPPDATA%\Programs\Zilux2` 装的是最近一次构建（自动更新会改装到更新版本）。
-- 1.1.6（本轮发版）：后台常驻 + 托盘 + 全局热键 + 下载入口迁移/下载页/音质选择。宿主：`ShutdownMode=OnExplicitShutdown`，关窗（页面按钮/Alt+F4/WM_CLOSE）隐藏到托盘、进程继续跑；新增 `Tray/TrayIconService.cs`（NotifyIcon，左键显示/隐藏，右键 显示/播放或暂停/上一首/下一首/退出，首次隐藏气泡提示一次）；`MainWindow` 注册全局热键（Ctrl+Alt+Space 播放暂停、Ctrl+Alt+←/→ 上/下一首带候选回退 Ctrl+Alt+Shift+←/→ 与 Ctrl+Alt+J/K、Ctrl+Alt+Z 显示/隐藏），托盘菜单/热键统一经 `WebViewHost.PostCommand` 下发 `{type:'command',action:...}` 到页面；真正退出只有托盘「退出」与更新安装。前端：rail 移除下载入口（9 项）；快捷设置增加第 5 个「下载」页（`.quick.is-download`，复用下载队列可嵌入视图 `createDownloadQueueView`）；新增 `downloadPicker.ts` 音质浮层（标准/高品质默认/无损，仅本次生效不回写设置，锚定按钮、键盘可达）；列表行下载按钮改为「先选音质再入队」，播放条下载按钮仍打开队列浮层。详见 `research/UPDATES-2026-10-25.md`。
+【1.1.7（本轮发版）】无缝衔接系列：B 版 Phase 1 双 deck 交叉淡化 + WSOLA 变速不变调节拍对齐 + 尾端静音自动排除 + 对齐下一首「开始唱词」+ 过渡中顶部「正在无缝过渡到 X」提示。宿主：`src/Zilux2/Analysis/` 新增 `TailSilenceDetector.cs`、`AnalysisSuccessResponse` 增加 `audibleEndMs/tailSilenceMs`、`AnalyzerVersion` p0-4；前端：`crossfadeDeck.ts`（双 deck 引擎、auto 4 小节 5–10s/手动 3–30s、WSOLA ±12%、唱词反推、可听结尾终点）、`audioTap.ts`（deck 混音图 + low/high shelf 人声优先）、`player.ts`（双 `<audio>`、`@preservesPitch` 时间拉伸、状态迁移）、`vocalStart.ts`、`upNextToast.ts`（transition 阶段）、`app.ts`（播放页「无缝衔接（实验）」设置区，localStorage `zilux2.crossfade`）。验证：收藏歌单 なでなで→人は猫 全链路 `prepared→fading→done`、公式 `fadeStart+fadeMs=audibleEnd`（偏差 0ms）、WSOLA `tempoRate=0.976/ tempoMatched=true`、QA 76 PASS / 0 FAIL / 3 SKIP（90.2s，crossfade 9 步）；顶部提示截图 `research/shots/lead-toast-transition.png`。详见 `research/UPDATES-2026-10-25.md` §7–§13。
+- 版本号统一由 `Directory.Build.props` 控制（当前 **1.1.7**）；`%LOCALAPPDATA%\Programs\Zilux2` 装的是最近一次构建（自动更新会改装到更新版本）。
+- 1.1.6（上一轮发版）：后台常驻 + 托盘 + 全局热键 + 下载入口迁移/下载页/音质选择。宿主：`ShutdownMode=OnExplicitShutdown`，关窗（页面按钮/Alt+F4/WM_CLOSE）隐藏到托盘、进程继续跑；新增 `Tray/TrayIconService.cs`（NotifyIcon，左键显示/隐藏，右键 显示/播放或暂停/上一首/下一首/退出，首次隐藏气泡提示一次）；`MainWindow` 注册全局热键（Ctrl+Alt+Space 播放暂停、Ctrl+Alt+←/→ 上/下一首带候选回退 Ctrl+Alt+Shift+←/→ 与 Ctrl+Alt+J/K、Ctrl+Alt+Z 显示/隐藏），托盘菜单/热键统一经 `WebViewHost.PostCommand` 下发 `{type:'command',action:...}` 到页面；真正退出只有托盘「退出」与更新安装。前端：rail 移除下载入口（9 项）；快捷设置增加第 5 个「下载」页（`.quick.is-download`，复用下载队列可嵌入视图 `createDownloadQueueView`）；新增 `downloadPicker.ts` 音质浮层（标准/高品质默认/无损，仅本次生效不回写设置，锚定按钮、键盘可达）；列表行下载按钮改为「先选音质再入队」，播放条下载按钮仍打开队列浮层。详见 `research/UPDATES-2026-10-25.md`。
 - 2026-10-25 第二轮微调（已推 main、**未发版**，未达 §9 门槛：3 处修复/优化、无新增功能）：快捷设置切 tab 时面板**宽度/高度都做弹簧过渡**——`app.css` 的 `.quick .quick-panel` 补 `transition: width .32s cubic-bezier(.22,1.28,.36,1)`（`prefers-reduced-motion` 下关闭）；高度目标改为按「目标宽度」预量（`measureQuickBodyHeightAtTargetWidth`：临时加 `is-resizing` 关宽度过渡、按 tab 目标宽度落布局量内容高，再退回旧宽度交给 CSS 过渡），并用 `ResizeObserver` 观察 `quickBodyInner`，在宽度落定/异步内容加载后补一段高度动画（`scheduleQuickBodySync` / `syncQuickBodyHeight`），修掉「宽度过渡结束时高度再跳一截」；分页栏白色胶囊 `.quick-thumb` 与内容里的分段滑块 `.quick-seg-thumb` 在宽度过渡期间由 `ResizeObserver` 每帧贴合（`paintQuickTabThumb` / `repaintQuickSegThumbs` + `.is-width-animating` 期间 `transition: none`），修掉用户反馈的「切换时开关的显示背景错位/变形」。改动文件：`web/src/ui/app.ts`、`web/src/styles/app.css`。验证：宽度 348↔384↔508 平滑（中间帧 442 / 496 / 510）、过渡期间滑块漂移 ≤1px、落定后漂移 0、console 0 error；截图 `research/shots/lead-quick-anim-mid1.png`、`research/shots/lead-quick-cover-after-download.png`、`research/shots/lead-quick-final-cover.png`。
 - 2026-10-25 第三轮（已推 main、**未发版**，未达 §9 门槛：1 个新增功能 + 2 处修复/优化）：**全局快捷键改为设置驱动、可配置**——完整设置弹窗新增「快捷键」页（4 行：播放/暂停、上一首、下一首、显示/隐藏窗口；展示当前组合与状态、录制换键、启用开关、恢复默认）。宿主：`SettingsModel` 新增 `shortcuts{enabled,playPause,prev,next,toggleWindow}`，新增 `Hotkeys/{HotkeyBinding,HotkeyCatalog,HotkeyState}.cs` 组合键解析/校验，`MainWindow` 删除静态 `HotkeySpecs` 改为 `ApplyShortcutSettings(reason)` 幂等注册（默认组合保留候选回退 prev/next→`Ctrl+Alt+Shift+←/→`→`Ctrl+Alt+J/K`；被占用时回落并在 UI 提示、无法回落提示可换键），`WebViewHost.PublishShortcuts` 回推 `{type:'host',event:'shortcuts'}`；前端 `core/settings.ts`/`core/bridge.ts`/`ui/app.ts` 新增设置段与面板、`styles/shortcut-settings.css`；契约文档 `docs/zilux2-settings-contract.md` 同步 §2/§3.3/§5/§7。验证：UI 4 行状态正确、录制 prev=Ctrl+Alt+U 后宿主重注册且 `WM_HOTKEY id=2` 实测切歌、关闭开关后 `hotkey.register ... skipped reason=disabled`/`apply enabled=false count=0`、恢复默认后 `apply enabled=true count=4`，settings.json 持久化。截图 `research/shots/lead-shortcuts-{panel,recorded,disabled,reset}.png`。详见 `research/UPDATES-2026-10-25.md` §4。
 - 2026-10-25 第四轮（P0 节拍分析，已推 main、**未发版**，按用户「先做 P0 让我听听」暂不发版）：为「鼓点对齐自动衔接」的目标先做实验性 P0——宿主新增 `src/Zilux2/Analysis/`（`AnalysisModels.cs` 契约 DTO、`TrackAudioDecoder.cs` MediaFoundation 解码 + 22050Hz 单声道重采样、`BeatAnalyzer.cs` 谱通量 onset→自相关+梳状 BPM→相位拟合→4/3 拍强拍→拍网格/downbeats→小节 novelty 乐句，analyzer `p0-1`、`TrackAnalysisService.cs` 缓存/单飞/超时/错误码），`LocalMusicServer` 加 `GET /api/analysis`，`OnlineMusicService` 持有服务并暴露 `LocalPathResolver`，`WebViewHost` 接本地 rel→路径回调，`LocalMusicService.ResolveTrackPath` 改 internal；前端新增 `online/analysis.ts`（接口封装+内存缓存+单飞）、`core/metronome.ts`（AudioContext click 节拍器：强拍 1760Hz/普通 1046Hz、120ms tick、250ms lookahead、暂停/拖动/切歌清空、localStorage 持久化）、`ui/analysisSection.ts`（设置 → 播放「节拍分析（实验）」：分析当前/下一首 + BPM/拍号/拍点/小节/乐句/段落 + 节拍器开关/音量/强拍加重）、`styles/analysis-section.css`；契约文档 `docs/zilux2-beat-analysis-contract.md`。验证：合成 120/128/75 BPM 点击轨 BPM 119.8/128.6/75.2、拍号 4/4、相位误差 ≤85ms；真实 mp3 4:39 → 133.4 BPM（87%）、155 小节、594ms；节拍器开关与 localStorage 持久化；QA 回归 67 PASS / 0 FAIL / 3 SKIP。详见 `research/UPDATES-2026-10-25.md` §5。
@@ -196,7 +197,7 @@ powershell -File tools/release.ps1 -DryRun   # 演练；去掉 -DryRun 真发版
   git push origin v1.1.3
   ```
   Actions 会重新跑并覆盖同一 Release 的资产；本地再 `make-installer` + 静默安装同步。已安装同版本的客户端不会提示更新（见 §8）。
-- 已按此节奏发布：`v1.1.0`（设置居中/EQ/渐变）、`v1.1.1`（渐变细分 + 歌曲信息浮窗）、`v1.1.2`（EQ 平滑 + 首帧爆音）、`v1.1.3`（效果弹层遮罩；后按 `06ef14e` 重发含滑块数值/图标，再按 `463995e` 重发含地毯椭圆修复）、`v1.1.4`（房间预设/本地目录监控/下载队列/QA 套件）、`v1.1.5`（纯字光柱 8 套样式 + 多入射角/彩虹/自动轮换）、`v1.1.6`（后台常驻/托盘/全局热键/下载入口迁移/快捷下载页/音质选择）。
+- 已按此节奏发布：`v1.1.0`（设置居中/EQ/渐变）、`v1.1.1`（渐变细分 + 歌曲信息浮窗）、`v1.1.2`（EQ 平滑 + 首帧爆音）、`v1.1.3`（效果弹层遮罩；后按 `06ef14e` 重发含滑块数值/图标，再按 `463995e` 重发含地毯椭圆修复）、`v1.1.4`（房间预设/本地目录监控/下载队列/QA 套件）、`v1.1.5`（纯字光柱 8 套样式 + 多入射角/彩虹/自动轮换）、`v1.1.6`（后台常驻/托盘/全局热键/下载入口迁移/快捷下载页/音质选择）、`v1.1.7`（无缝衔接：鼓点对齐自动过渡 / WSOLA / 尾端静音 / 唱词对齐 / 过渡提示）。
 
 ## 10. 更新通道（GitHub Releases）
 
@@ -206,7 +207,7 @@ powershell -File tools/release.ps1 -DryRun   # 演练；去掉 -DryRun 真发版
 - 资产：`Zilux2-Setup-<version>.exe`；宿主下载到 `%LOCALAPPDATA%\Zilux2\updates\`，校验 GitHub `digest`（sha256）后以 `--silent --no-shortcuts --launch --dir <安装目录>` 静默安装并重启。
 - 默认 `updates.mode="auto"`（自动下载+提示安装），可切 `"notify"`（只提示）；`updates.autoCheck` 控制启动检查 + 每 4 小时轮询。
 - 发版：改 props 版本 → 提交 → `tools\release.ps1`（或 push tag `v<version>`，Actions 自动构建发布）。
-- 当前 Release：`v1.1.6`，tag 指向 v1.1.6 发布提交（2026-10-25 推送）；Actions 自动构建资产 `Zilux2-Setup-1.1.6.exe` / `Zilux2-Portable-1.1.6.zip` / `.exe.sha256`。上一版 `v1.1.5`（2026-10-24 发布），更早 `v1.1.3` 曾按 `463995e` 重发覆盖。
+- 当前 Release：`v1.1.7`，tag 指向 v1.1.7 发布提交（2026-10-25 推送）；Actions 自动构建资产 `Zilux2-Setup-1.1.7.exe` / `Zilux2-Portable-1.1.7.zip` / `.exe.sha256`。上一版 `v1.1.6`（2026-10-25 发布），更早 `v1.1.5` / `v1.1.4` 等见上。
 - 仓库可见性：应用内更新走未认证 GitHub API，**只有公开仓库的 Release 可见**；开发期可先建私有仓库存代码（先不推 tag），要发布更新时把仓库切 public 再推 tag。客户端对 404 的提示为「仓库不存在、未公开，或还没发布 Release」。当前仓库仍是 private：Releases 已发布但匿名 API 查不到，**应用内自动更新暂不可用**；要启用自动更新需把仓库切成 public（或后续给客户端加 token 支持）。
 - 本机网络：`github.com:443`（HTTPS）被重置/超时，`origin` 走 **SSH over 443**：`ssh://git@ssh.github.com:443/KaFuuChino2006/Zilux2.git`，deploy key 在 `C:\Users\13329\.ssh\zilux2_deploy`，仓库本地已配 `core.sshCommand`；细节见 `docs/zilux2-github-setup.md` §4.3。
 - 注意：更新包未做代码签名（SmartScreen 会提示，属预期）。
