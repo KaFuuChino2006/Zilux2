@@ -245,3 +245,29 @@ export function dirExists(dir) {
     return false;
   }
 }
+
+/**
+ * 无缝衔接（B 版 Phase 1 MVP，task-19 / task-20）设置与调试接口。
+ *
+ * 产品实现：web/src/ui/crossfadeDeck.ts
+ * - 设置存 localStorage（独立于 settings.json），默认 { enabled: true, length: 'auto' }
+ * - 调试快照挂在 window.__ziluxCrossfade，snapshot() 返回 phase/reason/events 等
+ */
+export const CROSSFADE = {
+  storageKey: 'zilux2.crossfade',
+  defaults: { enabled: true, length: 'auto' },
+  lengths: ['4', '6', '8', 'auto'],
+  section: '[data-qa="crossfade-section"]',
+  sectionTitle: '[data-qa="crossfade-section"] .section-title',
+  toggle: '[data-qa="crossfade-toggle"]',
+  lengthOption: (value) => `[data-qa="crossfade-length"][data-length="${value}"]`,
+  /** 调试 API 全局名（页面内 window.__ziluxCrossfade） */
+  debugGlobal: 'window.__ziluxCrossfade',
+};
+
+/** 交叉淡化触发窗口：seek 到淡化起点附近后，等待 phase 变化的超时。 */
+export const CROSSFADE_TRIGGER_TIMEOUT_MS = Number(process.env.ZILUX2_CROSSFADE_TRIGGER_TIMEOUT_MS || 25000);
+
+/** 播放条悬停点：鼠标移到这里让播放条展开（Lead 实测坐标）。 */
+export const PLAYERBAR_HOVER = { x: 800, y: 928 };
+

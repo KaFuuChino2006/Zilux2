@@ -59,6 +59,7 @@ import {
 } from '../online/sources';
 import { onlineArtwork } from '../online/artwork';
 import { buildAnalysisSection } from './analysisSection';
+import { buildCrossfadeSection } from './crossfadeDeck';
 import { confirmDialog } from './confirmDialog';
 import { createEqCurve } from './eqCurve';
 import { localArtists, type LocalArtist } from './localArtists';
@@ -2455,6 +2456,7 @@ export class App {
           patchSettings({ playback: { searchLimit: value } });
         }, (value) => `${value} 条`),
         buildAnalysisSection(this.sheetScope),
+        buildCrossfadeSection(this.sheetScope),
       );
 
       // 账号

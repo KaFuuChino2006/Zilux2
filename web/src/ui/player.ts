@@ -10,9 +10,19 @@
 
 import { onMediaControl, reportMedia, type MediaControl } from '../core/bridge';
 import { fetchStreamInfo, onlineInfo, qualityForSource, streamUrl, checkLiked, addLikedTrack, removeLikedTrack, recordRecent } from '../online/client';
+import { analyzeTrack } from '../online/analysis';
 import type { OnlineTrack } from '../online/types';
 import { getSettings } from '../core/settings';
-import { attachAudioTap, audioTapGraphActive, ensureEqualizerGraph, setAudioTapVolume, setEqualizer, setVocalFade } from '../core/audioTap';
+import { attachAudioTap, audioTapGraphActive, deckGraphConnected, ensureEqualizerGraph, setAudioTapVolume, setEqualizer, setVocalFade } from '../core/audioTap';
+import {
+  cancelCrossfade,
+  crossfadeApplyVolume,
+  crossfadeFinishNow,
+  crossfadeIsFading,
+  crossfadeTick,
+  prepareCrossfade,
+  readCrossfadeSettings,
+} from './crossfadeDeck';
 
 export type PlayMode = 'list' | 'single' | 'shuffle';
 
@@ -55,11 +65,29 @@ type Listener = (state: PlayerState) => void;
 
 const listeners = new Set<Listener>();
 
-const audio = new Audio();
-audio.preload = 'auto';
-// 页面侧取流（AirPlay 只投送本软件声音）需要拿到 <audio> 的 PCM：媒体走 CORS 请求，
-// 否则跨域资源接进 Web Audio 后只会输出静音。宿主 /api/stream 已带 Access-Control-Allow-Origin。
-audio.crossOrigin = 'anonymous';
+/**
+ * 双 deck：`audio` 是当前发声元素，`standby` 预留给无缝衔接的下一首。
+ * 交叉淡化完成后两者交换（见 commitSeamless）；其余既有逻辑继续只认 `audio`。
+ */
+function createDeck(): HTMLAudioElement {
+  const element = new Audio();
+  element.preload = 'auto';
+  // 页面侧取流（AirPlay 只投送本软件声音）需要拿到 <audio> 的 PCM：媒体走 CORS 请求，
+  // 否则跨域资源接进 Web Audio 后只会输出静音。宿主 /api/stream 已带 Access-Control-Allow-Origin。
+  element.crossOrigin = 'anonymous';
+  return element;
+}
+
+const deckA = createDeck();
+const deckB = createDeck();
+let audio: HTMLAudioElement = deckA;
+let standby: HTMLAudioElement = deckB;
+
+/**
+ * 淡化中途 Web Audio 图被激活时，活跃 deck 可能不是图绑定的那个元素。
+ * 图的 MediaElementSource 只能绑定一个 <audio> 且无法迁移，此时音量只能退回元素音量。
+ */
+let activeDeckOutsideGraph = false;
 
 /** 播放音效偏好（均衡 + 播放/暂停渐变），由 settings.applySettings 广播同步。 */
 interface PlaybackFx {
@@ -109,6 +137,9 @@ applyEq();
 window.addEventListener('zilux:playback-fx', () => {
   fx = readPlaybackFx();
   applyEq();
+  // 音效开关可能建立 Web Audio 图：无缝衔接支持图内增益淡化，所以重新准备一次
+  // （图内模式会自行把两个 deck 接进 deckMix），而不是像早期那样一律作废计划。
+  if (state.playing) prepareSeamlessNext();
   applyPlaybackVolume();
 });
 
@@ -166,10 +197,15 @@ function fadeTo(
 }
 
 function applyPlaybackVolume(immediate = false): void {
+  // 交叉淡化进行中：两 deck 音量由引擎按等功率曲线直接控制，这里只同步基础音量。
+  if (crossfadeIsFading()) {
+    crossfadeApplyVolume(state.volume);
+    return;
+  }
   // 均衡器 / 人声保留淡出都需要 Web Audio 图；开启时保证图已建立，音量随之交给本地 gain。
   if ((fx.eqEnabled || fx.fadeVocal) && !audioTapGraphActive()) ensureEqualizerGraph();
   const volume = state.volume * fadeScale;
-  if (audioTapGraphActive()) {
+  if (audioTapGraphActive() && !activeDeckOutsideGraph) {
     audio.volume = 1;
     setAudioTapVolume(volume, immediate);
   } else {
@@ -347,6 +383,8 @@ function tick(): void {
   ) {
     setState({ positionMs: nextPos, durationMs: nextDur, playing: !audio.paused });
   }
+  // 到点就起播 B 并开始等功率交叉淡化（内部有开关/图表/过期守卫）。
+  crossfadeTick(nextPos, nextDur);
   scheduleTick();
   maybeReport();
 }
@@ -439,7 +477,12 @@ function applyCue(track: OnlineTrack | null): void {
   cueSeconds = track && track.durationMs > 0 && startAt > 0 ? track.durationMs / 1000 : 0;
 }
 
-function onEnded(): void {
+function onEnded(element: HTMLAudioElement): void {
+  // 只有活跃 deck 的 ended 有意义：B 在淡化中被忽略（预加载失败等场景也不切歌）。
+  if (element !== audio) return;
+  // 淡化进行中 A 先放完：直接收尾到 B，不要再 load 一次。
+  if (crossfadeFinishNow('ended')) return;
+  cancelSeamless('ended');
   if (state.mode === 'single') {
     seek(0);
     void audio.play().catch(() => undefined);
@@ -448,7 +491,13 @@ function onEnded(): void {
   advance();
 }
 
-function onError(): void {
+function onError(element: HTMLAudioElement): void {
+  // 预加载的 B 报错：放弃这次无缝衔接，不影响正在播放的 A。
+  if (element !== audio) {
+    cancelSeamless('standby-error');
+    return;
+  }
+  cancelSeamless('error');
   const track = state.track;
   if (!track) return;
   setState({ playing: false, loading: false });
@@ -479,6 +528,8 @@ function load(index: number, autoplay = true): void {
     stop();
     return;
   }
+  // 任何显式切歌都放弃上一首的无缝衔接计划（B 的预加载一并清掉）。
+  cancelSeamless('load');
   applyCue(track);
   setState({
     track,
@@ -511,6 +562,9 @@ function load(index: number, autoplay = true): void {
     return;
   }
   audio.src = url;
+  attachAudioTap(audio);
+  // 图未建立时不存在「活跃 deck 在图外」的问题；图建立后绑定的是此时挂上的元素。
+  if (!audioTapGraphActive()) activeDeckOutsideGraph = false;
   srcPort = onlineInfo()?.port ?? 0;
   pendingResumeMs = 0;
   applyPlaybackVolume();
@@ -531,6 +585,8 @@ function load(index: number, autoplay = true): void {
         scheduleTick();
         void recordRecent(track);
         if (fade > 0) void fadeTo(1, fade, token, fx.fadeCurve);
+        // 播放已启动：异步预分析 + 预加载下一首，准备鼓点对齐的无缝衔接。
+        prepareSeamlessNext();
       })
       .catch((err: unknown) => {
         console.warn('[player] play failed', err);
@@ -540,6 +596,8 @@ function load(index: number, autoplay = true): void {
       });
   } else {
     setState({ playing: false, loading: false });
+    // 暂停态也先预分析/预加载，用户按播放后可直接衔接。
+    prepareSeamlessNext();
   }
 }
 
@@ -565,8 +623,11 @@ export function replaceQueue(tracks: OnlineTrack[]): void {
   }
   const index = tracks.findIndex((item) => item.source === track.source && item.id === track.id);
   if (index < 0) return;
+  // 队列内容变了，下一首也可能变：先放弃旧计划再按新队列重新准备。
+  cancelSeamless('queue');
   state = { ...state, queue: tracks.slice(), index };
   setState({ queue: state.queue, index });
+  prepareSeamlessNext();
 }
 
 /** 播放单曲（队列只有它）。 */
@@ -599,6 +660,7 @@ function ensureSource(): boolean {
   }
   const keep = audio.currentTime > 0 && Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
   audio.src = url;
+  attachAudioTap(audio);
   srcPort = port;
   applyPlaybackVolume();
   const resume = pendingResumeMs > 0 ? pendingResumeMs : keep * 1000;
@@ -638,6 +700,8 @@ export function toggle(): void {
 /** 开始播放：渐变开启时先把音量压到 0，再按设置曲线淡入；人声保留则同步从暂停状态恢复。 */
 function startPlayback(): Promise<void> {
   cancelFade();
+  // 恢复播放时重建无缝衔接计划（分析结果命中缓存，代价很小）。
+  cancelSeamless('resume');
   const token = fadeToken;
   const fade = fx.fadeEnabled ? Math.max(0, fx.fadeInMs) : 0;
   fadeScale = fade > 0 ? 0 : 1;
@@ -659,6 +723,7 @@ function startPlayback(): Promise<void> {
       if (token !== fadeToken) return;
       setState({ playing: true });
       scheduleTick();
+      prepareSeamlessNext();
       if (fade > 0) {
         void fadeTo(1, fade, token, fx.fadeCurve, (progress) => {
           if (hold > 0) setVocalFade(hold * (1 - easeFade(progress, fx.fadeCurve)));
@@ -683,6 +748,8 @@ function startPlayback(): Promise<void> {
  */
 function pausePlayback(): void {
   cancelFade();
+  // 暂停即放弃下一首的无缝衔接计划（B 的预加载一起清掉）。
+  cancelSeamless('pause');
   const token = fadeToken;
   const fadeOut = fx.fadeEnabled ? Math.max(0, fx.fadeOutMs) : 0;
   const vocalTail = fx.fadeEnabled && fx.fadeVocal ? Math.max(0, fx.fadeVocalTailMs) : 0;
@@ -741,7 +808,10 @@ export function cycleMode(): PlayMode {
   } catch {
     /* 忽略 */
   }
+  // 无缝衔接只在列表循环下成立：切模式先放弃旧计划，再按新模式决定是否重新准备。
+  cancelSeamless('mode');
   setState({ mode: nextMode });
+  prepareSeamlessNext();
   return nextMode;
 }
 
@@ -763,6 +833,8 @@ export function prev(): void {
 
 export function seek(ms: number): void {
   if (!state.track) return;
+  // 拖动进度：旧的淡化窗口失效，先取消并清理 B，再按新位置重新准备。
+  cancelSeamless('seek');
   const duration = durationMs();
   const target = Math.max(0, Math.min(ms, duration > 0 ? duration : ms));
   try {
@@ -771,6 +843,7 @@ export function seek(ms: number): void {
     /* 媒体尚未就绪 */
   }
   setState({ positionMs: target });
+  prepareSeamlessNext();
 }
 
 export function setVolume(value: number): void {
@@ -780,6 +853,7 @@ export function setVolume(value: number): void {
 }
 
 export function stop(): void {
+  cancelSeamless('stop');
   cancelFade();
   vocalHold = 0;
   setVocalFade(0);
@@ -799,9 +873,168 @@ export function stop(): void {
   likeToken += 1;
 }
 
-audio.addEventListener('ended', onEnded);
-audio.addEventListener('error', onError);
-audio.addEventListener('loadedmetadata', () => {
+/* ------------------------------------------------------------------ */
+/* 无缝衔接：准备 / 取消 / 交换 deck（player 侧状态迁移）              */
+/* ------------------------------------------------------------------ */
+
+/** 作废进行中的异步准备（分析回来的闭包看到 token != 当前值就放弃）。 */
+let seamlessToken = 0;
+
+function clearStandbyDeck(): void {
+  try {
+    standby.pause();
+    standby.removeAttribute('src');
+    standby.load();
+  } catch {
+    /* 忽略 */
+  }
+}
+
+/**
+ * 取消无缝衔接：作废异步准备、中止引擎里的计划/淡化（引擎会恢复 A 的音量），
+ * 并清掉 B 的预加载。任何显式切歌/暂停/seek/停止/改队列/关开关都走这里。
+ */
+function cancelSeamless(reason: string): void {
+  seamlessToken += 1;
+  cancelCrossfade(reason);
+  clearStandbyDeck();
+}
+
+/**
+ * 异步准备下一首：先分析 A（已知）与 B，再让引擎排淡化时间表并预加载 B。
+ * 分析失败（AnalysisError）、单曲循环/随机、队列只有一首时静默放弃，行为回退为原来的硬切
+ * （ended → load 下一首）。Web Audio 图已建立时改走图内增益淡化（引擎会把两个 deck 接图）。
+ */
+function prepareSeamlessNext(): void {
+  seamlessToken += 1;
+  const token = seamlessToken;
+  // 上一份计划作废（引擎内部会恢复 A 音量、暂停 B）。
+  cancelCrossfade('replace');
+  clearStandbyDeck();
+
+  if (!state.playing) return;
+  const settings = readCrossfadeSettings();
+  if (!settings.enabled) return;
+  if (state.mode !== 'list') return;
+  const queue = state.queue;
+  if (queue.length < 2) return;
+  const current = state.track;
+  if (!current) return;
+  const nextIndex = state.index + 1 >= queue.length ? 0 : state.index + 1;
+  const nextTrack = queue[nextIndex];
+  if (!nextTrack || nextIndex === state.index) return;
+
+  // 捕获准备时的 deck 引用：过程中若发生过 deck 交换则这次准备作废。
+  const activeDeck = audio;
+  const standbyDeck = standby;
+  const currentStartAt = startAt;
+  const currentDurationMs = durationMs();
+  const currentPositionMs = positionMs();
+
+  Promise.all([analyzeTrack(current), analyzeTrack(nextTrack)])
+    .then(([currentResult, nextResult]) => {
+      if (token !== seamlessToken) return;
+      if (!state.playing || audio !== activeDeck || state.track !== current) return;
+      if (!readCrossfadeSettings().enabled) return;
+      let nextUrl = '';
+      try {
+        nextUrl = streamUrl(nextTrack);
+      } catch (err) {
+        console.warn('[player] seamless streamUrl failed', err);
+        return;
+      }
+      const prepared = prepareCrossfade({
+        active: activeDeck,
+        standby: standbyDeck,
+        current: { track: current, startAt: currentStartAt },
+        next: { track: nextTrack, startAt: Number(nextTrack.startAt ?? 0) },
+        currentDurationMs,
+        currentPositionMs,
+        currentAnalysis: currentResult,
+        nextAnalysis: nextResult,
+        nextUrl,
+        baseVolume: () => state.volume,
+        isValid: () =>
+          token === seamlessToken &&
+          state.playing &&
+          audio === activeDeck &&
+          state.track === current &&
+          readCrossfadeSettings().enabled,
+        onFinish: () => commitSeamless(activeDeck, standbyDeck, nextTrack, nextIndex),
+      });
+      if (!prepared) console.warn('[player] seamless prepare skipped（回退硬切）');
+    })
+    .catch((err: unknown) => {
+      // 分析失败是常态（不支持 / 宿主返回错误）：静默回退，不影响正常播放。
+      if (token === seamlessToken) clearStandbyDeck();
+      console.warn('[player] seamless analyze skipped（回退硬切）', err instanceof Error ? err.message : err);
+    });
+}
+
+/**
+ * 引擎淡化完成（或图激活硬切）后交换 deck，并把所有既有行为迁移到新曲：
+ * track/index、时长与进度、音质、喜欢、持久化、SMTC 上报、最近播放、歌词页进度、下次准备。
+ */
+function commitSeamless(
+  previousDeck: HTMLAudioElement,
+  nextDeck: HTMLAudioElement,
+  track: OnlineTrack,
+  index: number,
+): void {
+  if (audio !== previousDeck || standby !== nextDeck) {
+    cancelSeamless('commit-stale');
+    return;
+  }
+  cancelFade();
+  seamlessToken += 1;
+  audio = nextDeck;
+  standby = previousDeck;
+  // 图内模式时 B 已在 deckMix 里（gain=1），切换后继续走图；只有元素模式的硬切需要标记
+  // 「当前 deck 不在图里」以便 applyPlaybackVolume 走元素音量。
+  activeDeckOutsideGraph = audioTapGraphActive() && !deckGraphConnected(audio);
+  try {
+    previousDeck.pause();
+    previousDeck.removeAttribute('src');
+    previousDeck.load();
+  } catch {
+    /* 忽略 */
+  }
+  applyCue(track);
+  fadeScale = 1;
+  vocalHold = 0;
+  setVocalFade(0);
+  setState({
+    track,
+    index,
+    positionMs: positionMs(),
+    durationMs: durationMs(),
+    playing: true,
+    loading: false,
+  });
+  refreshLiked(track);
+  setState({ streamQuality: '' });
+  if (track.source !== 'local') {
+    void fetchStreamInfo(track.source, track.id, qualityForSource(track.source))
+      .then((info) => {
+        if (state.track !== track) return;
+        const parts = [info.quality, info.format ? info.format.toUpperCase() : ''];
+        if (info.bitrate >= 1000) parts.push(`${Math.round(info.bitrate / 1000)}k`);
+        setState({ streamQuality: parts.filter(Boolean).join(' · ') });
+      })
+      .catch(() => {
+        if (state.track === track) setState({ streamQuality: '' });
+      });
+  }
+  attachAudioTap(audio);
+  applyPlaybackVolume(true);
+  void recordRecent(track);
+  maybeReport();
+  scheduleTick();
+  prepareSeamlessNext();
+}
+
+function onLoadedMetadata(element: HTMLAudioElement): void {
+  if (element !== audio) return;
   if (startAt > 0) {
     try {
       audio.currentTime = startAt;
@@ -810,6 +1043,25 @@ audio.addEventListener('loadedmetadata', () => {
     }
   }
   setState({ durationMs: durationMs() });
+}
+
+/** 两个 deck 都要接事件：B 的 ended/error 用来及时放弃衔接计划，不触发切歌。 */
+function wireDeck(element: HTMLAudioElement): void {
+  element.addEventListener('ended', () => onEnded(element));
+  element.addEventListener('error', () => onError(element));
+  element.addEventListener('loadedmetadata', () => onLoadedMetadata(element));
+}
+
+wireDeck(deckA);
+wireDeck(deckB);
+
+/* 设置里的无缝衔接开关/时长变化：关 = 立即取消并回退硬切；开 = 重新准备。 */
+window.addEventListener('zilux:crossfade', () => {
+  if (!readCrossfadeSettings().enabled) {
+    cancelSeamless('disabled');
+    return;
+  }
+  if (state.playing) prepareSeamlessNext();
 });
 
 /* 系统媒体键 / Windows 浮层按钮 */

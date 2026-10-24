@@ -218,6 +218,8 @@ internal sealed class TrackAnalysisService : IDisposable
             }
 
             analysis.Warnings = warnings.Distinct(StringComparer.Ordinal).ToArray();
+            // 尾端静音检测：给前端交叉淡化对齐「音乐结束」，不改变 bpm/拍点等已有字段。
+            var tail = TailSilenceDetector.Detect(decoded.Samples, decoded.SampleRate, decoded.DurationMs);
             var response = new AnalysisSuccessResponse
             {
                 V = 1,
@@ -228,6 +230,8 @@ internal sealed class TrackAnalysisService : IDisposable
                 Title = title,
                 Artist = artist,
                 DurationMs = decoded.DurationMs,
+                AudibleEndMs = tail.AudibleEndMs,
+                TailSilenceMs = tail.TailSilenceMs,
                 Cached = false,
                 ElapsedMs = stopwatch.ElapsedMilliseconds,
                 Analyzer = BeatAnalyzer.AnalyzerVersion,
@@ -237,7 +241,8 @@ internal sealed class TrackAnalysisService : IDisposable
             WriteJsonCache(cacheKey, response);
             HostLog.Info(
                 $"analysis.done cached=false source={source} key={flightKey} bpm={analysis.Bpm:0.##} " +
-                $"meter={analysis.Meter} beats={analysis.Downbeats.Length} elapsedMs={stopwatch.ElapsedMilliseconds}");
+                $"meter={analysis.Meter} beats={analysis.Downbeats.Length} elapsedMs={stopwatch.ElapsedMilliseconds} " +
+                $"audibleEndMs={response.AudibleEndMs} tailSilenceMs={response.TailSilenceMs}");
             PruneCacheInBackground();
             return AnalysisOutcome.Success(response);
         }
@@ -299,7 +304,9 @@ internal sealed class TrackAnalysisService : IDisposable
 
             response.Cached = true;
             response.ElapsedMs = stopwatch.ElapsedMilliseconds;
-            HostLog.Info($"analysis.done cached=true key={cacheKey} bpm={response.Analysis.Bpm:0.##} elapsedMs={response.ElapsedMs}");
+            HostLog.Info(
+                $"analysis.done cached=true key={cacheKey} bpm={response.Analysis.Bpm:0.##} elapsedMs={response.ElapsedMs} " +
+                $"audibleEndMs={response.AudibleEndMs} tailSilenceMs={response.TailSilenceMs}");
             outcome = AnalysisOutcome.Success(response);
             return true;
         }

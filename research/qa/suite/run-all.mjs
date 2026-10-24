@@ -29,6 +29,7 @@ const SUITES = [
   { name: 'smoke', title: '冒烟：基座 + 主要页面' },
   { name: 'tray-and-downloads', title: '托盘 / 全局热键 / 宿主命令通道（task-12）' },
   { name: 'shortcuts', title: '全局快捷键：设置面板 / 录制 / 宿主重注册（task-15）' },
+  { name: 'crossfade', title: '无缝衔接：crossfade 设置 + 播放交叉淡化 + 可听结尾调度 + 收藏歌单路径 + 关闭后硬切（task-20/23）' },
   { name: 'room-effects', title: '房间预设（粒子/流星 chips）' },
   { name: 'update-channel', title: '更新通道（设置页 + mock 服务）' },
   { name: 'local-watch', title: '本地目录监控（新增/删除自动刷新）' },

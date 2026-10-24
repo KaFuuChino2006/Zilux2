@@ -10,7 +10,7 @@ namespace Zilux2.Analysis;
 /// </summary>
 internal static class BeatAnalyzer
 {
-    internal const string AnalyzerVersion = "p0-3";
+    internal const string AnalyzerVersion = "p0-4";
 
     private const int WindowSize = 1024;
     private const int HopSize = 512;

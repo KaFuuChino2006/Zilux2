@@ -80,6 +80,13 @@ let audio: HTMLAudioElement | null = null;
 let context: AudioContext | null = null;
 let mediaSource: MediaElementAudioSourceNode | null = null;
 let localGain: GainNode | null = null;
+/** 交叉淡化用的混音入口：所有 deck 的 gain 先汇到这里，再统一进 EQ / 本地 gain。 */
+let deckMix: GainNode | null = null;
+/** 已接进图的 deck 源节点缓存（同一元素只能建一次 MediaElementAudioSourceNode）。 */
+const deckNodes = new Map<
+  HTMLAudioElement,
+  { source: MediaElementAudioSourceNode; gain: GainNode }
+>();
 let workletNode: AudioWorkletNode | null = null;
 let processor: ScriptProcessorNode | null = null;
 let silentGain: GainNode | null = null;
@@ -109,14 +116,84 @@ const VOCAL_FADE_MAX_DB = 36;
 
 /** 记录播放器元素；<audio> 只创建一次，MediaElementAudioSourceNode 也只能建一次。 */
 export function attachAudioTap(element: HTMLAudioElement): void {
+  const previous = audio;
   audio = element;
   localVolume = Number.isFinite(element.volume) ? element.volume : 1;
+  // 图已建立（EQ / 人声保留淡出 / 歌词页分析器已启用）时，新上场的 deck 也要接回图里：
+  // 一是音量继续由本地 gain 接管，二是歌词页的频谱分析器能持续拿到声音。
+  if (deckMix) {
+    attachDeckToGraph(element);
+    if (previous && previous !== element) setDeckGraphGain(previous, 0);
+  }
 }
 
 /** 取流图是否已建立（建立后 @audio 的输出改走 Web Audio，音量由本地 gain 接管）。 */
 export function audioTapGraphActive(): boolean {
   return mediaSource !== null;
 }
+
+/**
+ * 把一个 deck（<audio>）接进本地 Web Audio 图：源 → 该 deck 的 gain → 混音入口（EQ 前）。
+ * 图不存在时会先建图（等价于 ensureEqualizerGraph 的效果）。返回 false 表示图建不起来。
+ * 注意：同一个 <audio> 元素只能 createMediaElementSource 一次，所以源节点按元素缓存复用。
+ */
+export function attachDeckToGraph(element: HTMLAudioElement): boolean {
+  const ctx = ensureContext();
+  if (!ctx || !buildLocalGraph(ctx)) return false;
+  if (!deckMix) return false;
+  const existing = deckNodes.get(element);
+  if (existing) {
+    try {
+      existing.gain.connect(deckMix);
+    } catch {
+      /* 已连接时忽略 */
+    }
+    element.volume = 1;
+    return true;
+  }
+  try {
+    const source = ctx.createMediaElementSource(element);
+    const gain = ctx.createGain();
+    gain.gain.value = 1;
+    source.connect(gain);
+    gain.connect(deckMix);
+    element.volume = 1;
+    deckNodes.set(element, { source, gain });
+    return true;
+  } catch (err) {
+    console.warn('[audioTap] attachDeckToGraph failed', err);
+    return false;
+  }
+}
+
+/** 某个 deck 是否已经接在 Web Audio 图里（交叉淡化据此决定走图内增益还是元素音量）。 */
+export function deckGraphConnected(element: HTMLAudioElement): boolean {
+  return deckNodes.has(element);
+}
+
+/** 设置 deck 在图里的增益（0~1）；未接入图时静默忽略。 */
+export function setDeckGraphGain(element: HTMLAudioElement, value: number): void {
+  const node = deckNodes.get(element);
+  if (!node) return;
+  const target = Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
+  try {
+    node.gain.gain.value = target;
+  } catch {
+    /* 忽略 */
+  }
+}
+
+/** 把 deck 从混音入口上摘下来（元素本身保留源节点，下次重新 attach 复用）。 */
+export function detachDeckFromGraph(element: HTMLAudioElement): void {
+  const node = deckNodes.get(element);
+  if (!node) return;
+  try {
+    node.gain.disconnect();
+  } catch {
+    /* 忽略 */
+  }
+}
+
 
 /** 同步播放器音量：取流图存在时元素音量固定 1，音量为本地 gain。immediate 时不做平滑，用于消除恢复播放的首帧爆音。 */
 export function setAudioTapVolume(value: number, immediate = false): void {
@@ -265,7 +342,15 @@ function buildLocalGraph(ctx: AudioContext): boolean {
     audio.volume = 1;
     localGain = ctx.createGain();
     localGain.gain.value = running ? 0 : localVolume;
-    // 均衡器始终串在 source 与 localGain 之间：关闭时全部 0dB，等价直通。
+    // 所有 deck 的 gain 先汇到 deckMix，再统一进 EQ：交叉淡化时两首共用同一条 EQ/分析链路。
+    deckMix = ctx.createGain();
+    deckMix.gain.value = 1;
+    const deckGain = ctx.createGain();
+    deckGain.gain.value = 1;
+    source.connect(deckGain);
+    deckGain.connect(deckMix);
+    deckNodes.set(audio, { source, gain: deckGain });
+    // 均衡器始终串在 deckMix 与 localGain 之间：关闭时全部 0dB，等价直通。
     eqFilters = EQ_FREQS.map((freq) => {
       const filter = ctx.createBiquadFilter();
       filter.type = 'peaking';
@@ -283,7 +368,7 @@ function buildLocalGraph(ctx: AudioContext): boolean {
     vocalHigh.type = 'highshelf';
     vocalHigh.frequency.value = 4200;
     vocalHigh.gain.value = 0;
-    let tail: AudioNode = source;
+    let tail: AudioNode = deckMix;
     for (const filter of eqFilters) {
       tail.connect(filter);
       tail = filter;

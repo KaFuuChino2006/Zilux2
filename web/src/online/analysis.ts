@@ -34,6 +34,14 @@ export interface BeatAnalysis {
   barCount: number;
   sections: BeatSection[];
   warnings: string[];
+  /**
+   * 最后可听样本位置（ms，相对音频文件起点）。p0-4 起宿主返回：
+   * 尾部静音被排除，无尾部静音时 = 文件时长。旧宿主 / 旧缓存缺失，
+   * 消费方（交叉淡化调度）按 durationMs 回退。
+   */
+  audibleEndMs?: number;
+  /** 尾部静音时长（ms）= durationMs - audibleEndMs；无尾部静音为 0。缺失时同样回退。 */
+  tailSilenceMs?: number;
 }
 
 /** 契约 §2.1 成功响应。 */
@@ -49,6 +57,13 @@ export interface AnalysisResult {
   cached: boolean;
   elapsedMs: number;
   analyzer: string;
+  /**
+   * p0-4：最后可听样本位置（ms，相对音频文件起点）与尾部静音。宿主放在响应
+   * 顶层（与 durationMs 同级）；normalizeResult 会把它注入 analysis 对象，
+   * 交叉淡化调度直接读 analysis.audibleEndMs。旧宿主缺失时保持 undefined。
+   */
+  audibleEndMs?: number;
+  tailSilenceMs?: number;
   analysis: BeatAnalysis;
 }
 
@@ -79,6 +94,9 @@ interface AnalysisResponse {
   cached?: boolean;
   elapsedMs?: number;
   analyzer?: string;
+  /** p0-4：宿主把可听结尾 / 尾部静音放在响应顶层（与 durationMs 同级）。 */
+  audibleEndMs?: number;
+  tailSilenceMs?: number;
   analysis?: Partial<BeatAnalysis>;
 }
 
@@ -162,6 +180,7 @@ function normalizeResult(raw: AnalysisResponse, track: OnlineTrack): AnalysisRes
   }
   const beatIntervalMs = source.beatIntervalMs;
   const firstBeatMs = num(source.firstBeatMs, 0);
+  const durationMs = num(raw.durationMs, track.durationMs);
   const analysis: BeatAnalysis = {
     bpm: num(source.bpm, beatIntervalMs > 0 ? 60_000 / beatIntervalMs : 0),
     bpmConfidence: clamp01(num(source.bpmConfidence, 0)),
@@ -178,6 +197,21 @@ function normalizeResult(raw: AnalysisResponse, track: OnlineTrack): AnalysisRes
       : [],
     warnings: strings(source.warnings),
   };
+  // p0-4：可听结尾 / 尾部静音。宿主字段在响应顶层（与 durationMs 同级）；
+  // 同时兼容放在 analysis 对象里的写法（防御旧草案）。缺失时保持 undefined，
+  // 交叉淡化调度回退 durationMs（task-19 行为不变）。
+  const rawAudibleEnd = raw.audibleEndMs ?? source.audibleEndMs;
+  if (typeof rawAudibleEnd === 'number' && Number.isFinite(rawAudibleEnd) && rawAudibleEnd > 0) {
+    const audibleEndMs = durationMs > 0 ? Math.min(durationMs, rawAudibleEnd) : rawAudibleEnd;
+    analysis.audibleEndMs = Math.max(0, audibleEndMs);
+    const rawTail = raw.tailSilenceMs ?? source.tailSilenceMs;
+    analysis.tailSilenceMs =
+      typeof rawTail === 'number' && Number.isFinite(rawTail) && rawTail >= 0
+        ? rawTail
+        : durationMs > 0
+          ? Math.max(0, durationMs - analysis.audibleEndMs)
+          : 0;
+  }
   return {
     v: num(raw.v, 1),
     ok: true,
@@ -186,10 +220,12 @@ function normalizeResult(raw: AnalysisResponse, track: OnlineTrack): AnalysisRes
     rel: raw.rel ?? '',
     title: raw.title ?? track.title,
     artist: raw.artist ?? track.artist,
-    durationMs: num(raw.durationMs, track.durationMs),
+    durationMs,
     cached: raw.cached === true,
     elapsedMs: num(raw.elapsedMs, 0),
     analyzer: raw.analyzer ?? '',
+    audibleEndMs: analysis.audibleEndMs,
+    tailSilenceMs: analysis.tailSilenceMs,
     analysis,
   };
 }

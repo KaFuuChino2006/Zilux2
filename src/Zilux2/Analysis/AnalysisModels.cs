@@ -22,6 +22,12 @@ internal sealed class AnalysisSuccessResponse
 
     public long DurationMs { get; set; }
 
+    /// <summary>「可听结尾」位置（ms，相对文件起点，0..DurationMs）；尾部静音不足阈值时等于 DurationMs。</summary>
+    public long AudibleEndMs { get; set; }
+
+    /// <summary>尾端静音长度（ms）= DurationMs - AudibleEndMs；没有有效尾部静音时为 0。</summary>
+    public long TailSilenceMs { get; set; }
+
     public bool Cached { get; set; }
 
     public long ElapsedMs { get; set; }
