@@ -273,8 +273,13 @@ export class App {
   private upnextListKey = '';
   private quickRoot!: HTMLDivElement;
   private quickPanelEl!: HTMLDivElement;
+  private quickTabsObserver: ResizeObserver | null = null;
   private quickCloseCleanup: (() => void) | null = null;
   private quickHeightTimer = 0;
+  private quickWidthBusyTimer = 0;
+  private quickBodySyncRaf = 0;
+  private quickBodySyncPending = false;
+  private quickResizeObserver: ResizeObserver | null = null;
   private quickPanelOpen = false;
   private quickModeBtn!: HTMLButtonElement;
   private quickVolume!: HTMLInputElement;
@@ -3644,6 +3649,12 @@ export class App {
       tab('airplay', '投送'),
       tab('download', '下载'),
     );
+    // 面板宽度过渡/窗口缩放时，分页栏每帧都会变宽变窄；跟着重排滑块，
+    // 否则选中项的白色胶囊会错位或跟着旧宽度被拉变形。
+    if (typeof ResizeObserver !== 'undefined') {
+      this.quickTabsObserver = new ResizeObserver(() => this.paintQuickTabThumb(false));
+      this.quickTabsObserver.observe(tabs);
+    }
 
     this.quickBodyInner = h('div', { class: 'quick-body-inner' });
     this.quickBody = h('div', { class: 'quick-body' }, this.quickBodyInner);
@@ -3663,6 +3674,16 @@ export class App {
     this.quickRoot = h('div', { class: 'quick' }, panel, trigger);
     this.quickPanelEl = panel;
     this.playerbarWrap.append(this.quickRoot);
+    // 下载列表/投送设备等异步内容会在面板打开后撑高内容区，这里观察一下，
+    // 有变化就用高度动画平滑接住，避免内容加载完的瞬间面板跳一截。
+    if (typeof ResizeObserver !== 'undefined') {
+      this.quickResizeObserver = new ResizeObserver(() => {
+        // 内容区宽度会随面板宽度过渡变化：分段滑块要跟着重排，否则会停在旧位置。
+        this.repaintQuickSegThumbs();
+        this.scheduleQuickBodySync();
+      });
+      this.quickResizeObserver.observe(this.quickBodyInner);
+    }
     this.paintQuickMode(playerState().mode);
 
     document.addEventListener('pointerdown', (event) => {
@@ -4305,23 +4326,121 @@ export class App {
     }, 340);
   }
 
+  /**
+   * 切 tab 时先按「目标宽度」量一次内容自然高度。
+   * 面板宽度在不同 tab 间不同（封面/歌词/设置 348px、投送 384px、下载 508px），
+   * 若按旧宽度测量，宽度过渡结束时内容会重排、高度再跳一截；这里临时关掉宽度过渡，
+   * 让布局按 tab 类名对应的目标宽度落下来拿到真实高度，再把宽度退回旧值交给 CSS 过渡。
+   */
+  private measureQuickBodyHeightAtTargetWidth(fromWidth: number): number {
+    const inner = this.quickBodyInner ?? this.quickBody;
+    const panel = this.quickPanelEl;
+    if (!inner || !panel) return 0;
+    if (!this.quickPanelOpen || fromWidth <= 0) return inner.offsetHeight;
+    panel.classList.add('is-resizing');
+    panel.style.width = '';
+    const width = panel.getBoundingClientRect().width;
+    const height = inner.offsetHeight;
+    try {
+      panel.style.width = `${fromWidth}px`;
+      void panel.offsetWidth;
+    } finally {
+      panel.classList.remove('is-resizing');
+      panel.style.width = '';
+    }
+    // 宽度确实在变：记一个「宽度过渡中」的窗口，这期间内容重排导致的高度变化先攒着，
+    // 等宽度落定后再用一段短动画补上（下载列表/投送设备这类异步内容也能平滑到位）。
+    if (Math.abs(width - fromWidth) > 0.5) {
+      // 过渡期间禁止内容滑块做补间，改由 ResizeObserver 每帧即时贴合，避免视觉滞后。
+      panel.classList.add('is-width-animating');
+      if (this.quickWidthBusyTimer) window.clearTimeout(this.quickWidthBusyTimer);
+      this.quickWidthBusyTimer = window.setTimeout(() => {
+        this.quickWidthBusyTimer = 0;
+        panel.classList.remove('is-width-animating');
+        this.repaintQuickSegThumbs();
+        if (this.quickBodySyncPending) {
+          this.quickBodySyncPending = false;
+          this.syncQuickBodyHeight();
+        }
+      }, 380);
+    }
+    return height;
+  }
+
+  /** 内容因异步加载/宽度过渡重排而变高变矮时，补一段高度动画，避免到位瞬间跳一下。 */
+  private scheduleQuickBodySync(): void {
+    if (!this.quickPanelOpen) return;
+    if (this.quickWidthBusyTimer) {
+      this.quickBodySyncPending = true;
+      return;
+    }
+    if (this.quickBodySyncRaf) return;
+    this.quickBodySyncRaf = window.requestAnimationFrame(() => {
+      this.quickBodySyncRaf = 0;
+      this.syncQuickBodyHeight();
+    });
+  }
+
+  private syncQuickBodyHeight(): void {
+    if (!this.quickPanelOpen || this.quickHeightTimer) return;
+    const inner = this.quickBodyInner ?? this.quickBody;
+    const body = this.quickBody;
+    if (!inner || !body) return;
+    const natural = inner.offsetHeight;
+    const current = body.getBoundingClientRect().height;
+    if (natural <= 0 || Math.abs(natural - current) < 1.5) return;
+    this.animateQuickBodyHeight(current, natural);
+  }
+
+  /**
+   * 快捷设置内容里的分段滑块（背景/歌词模式/音质…）在面板宽度变化时按当前布局重新贴合。
+   * 这些控件由各自页面在渲染时定位滑块，宽度过渡期间若不再重排，就会停在旧位置/旧宽度，
+   * 表现为「开关的白色背景错位或变形」；统一在这里按选中项重排可覆盖所有分段控件。
+   */
+  private repaintQuickSegThumbs(): void {
+    const body = this.quickBody;
+    if (!body) return;
+    body.querySelectorAll<HTMLElement>('.quick-seg-slider').forEach((seg) => {
+      const thumb = seg.querySelector<HTMLElement>('.quick-seg-thumb');
+      const active = seg.querySelector<HTMLElement>('.quick-seg-btn.is-on');
+      if (!thumb || !active) return;
+      thumb.style.width = `${active.offsetWidth}px`;
+      thumb.style.transform = `translateX(${active.offsetLeft}px)`;
+    });
+  }
+
   private setQuickTab(key: 'cover' | 'lyrics' | 'settings' | 'airplay' | 'download'): void {
     const body = this.quickBody;
     const before = body ? body.offsetHeight : 0;
+    const beforeWidth = this.quickPanelEl ? this.quickPanelEl.getBoundingClientRect().width : 0;
     if (key !== 'airplay') this.deactivateAirplayQuick();
     this.quickTab = key;
     this.quickRoot.classList.toggle('is-airplay', key === 'airplay');
     if (key === 'lyrics') primeLyrics(playerState().track);
     this.renderQuickBody();
-    // 内容高度变化用动画过渡，避免面板一下子跳大/跳小
+    // 内容高度变化用动画过渡，避免面板一下子跳大/跳小；
+    // 目标高度按切完之后的「目标宽度」量，否则宽度过渡结束时内容重排、高度会再跳一下。
     if (body && before > 0) {
-      this.animateQuickBodyHeight(before, (this.quickBodyInner ?? body).offsetHeight);
+      this.animateQuickBodyHeight(before, this.measureQuickBodyHeightAtTargetWidth(beforeWidth));
     }
     const button = this.quickTabBtns[key];
     if (!button) return;
     Object.entries(this.quickTabBtns).forEach(([name, element]) => {
       element.classList.toggle('is-on', name === key);
     });
+    this.paintQuickTabThumb(true);
+  }
+
+  /**
+   * 把分页栏的白色滑块对齐到当前选中项。
+   * animate=false 用于面板宽度过渡中的跟手重排：此时每帧都要即时贴住按钮，
+   * 不能走 CSS 过渡，否则滑块会跟不上分页栏宽度、看起来错位甚至被拉变形。
+   */
+  private paintQuickTabThumb(animate: boolean): void {
+    const button = this.quickTabBtns[this.quickTab];
+    if (!button || !this.quickThumb) return;
+    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    this.quickThumb.style.transition = animate && !reduce ? '' : 'none';
     this.quickThumb.style.width = `${button.offsetWidth}px`;
     this.quickThumb.style.transform = `translateX(${button.offsetLeft}px)`;
   }
@@ -4822,6 +4941,14 @@ export class App {
   destroy(): void {
     this.segObserver?.disconnect();
     this.segObserver = undefined;
+    this.quickResizeObserver?.disconnect();
+    this.quickResizeObserver = null;
+    this.quickTabsObserver?.disconnect();
+    this.quickTabsObserver = null;
+    if (this.quickWidthBusyTimer) window.clearTimeout(this.quickWidthBusyTimer);
+    this.quickWidthBusyTimer = 0;
+    if (this.quickBodySyncRaf) window.cancelAnimationFrame(this.quickBodySyncRaf);
+    this.quickBodySyncRaf = 0;
     this.upNextToast?.dispose();
     this.upNextToast = null;
     this.playerDispose?.();

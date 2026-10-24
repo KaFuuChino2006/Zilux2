@@ -3200,6 +3200,21 @@ body,
 .quick .quick-panel {
   transform-origin: 100% 100%;
   will-change: transform, opacity;
+  /* 切 tab 时面板宽度会变（封面/歌词/设置 348px、投送 384px、下载 508px），
+   * 给宽度也补一段和高度同款弹簧过渡，避免整块面板「啪」地跳一下。 */
+  transition: width 0.32s cubic-bezier(0.22, 1.28, 0.36, 1);
+}
+
+/* 量内容高度时临时关掉宽度过渡，让布局直接落在 tab 对应的目标宽度上 */
+.quick .quick-panel.is-resizing {
+  transition: none;
+}
+
+/* 面板宽度过渡期间，内容里的分段滑块由 ResizeObserver 每帧即时贴合，
+ * 不能再走 CSS 补间，否则滑块会滞后于按钮、看起来错位或被拉变形。 */
+.quick .quick-panel.is-width-animating .quick-seg-thumb,
+.quick .quick-panel.is-width-animating .quick-thumb {
+  transition: none;
 }
 
 .quick.is-open .quick-panel {
@@ -3289,6 +3304,10 @@ body,
   .quick.is-open .quick-panel .quick-tabs {
     animation-duration: 0.01ms;
     animation-delay: 0s;
+  }
+
+  .quick .quick-panel {
+    transition: none;
   }
 }
 
