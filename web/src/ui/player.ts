@@ -531,6 +531,13 @@ function load(index: number, autoplay = true): void {
   }
   // 任何显式切歌都放弃上一首的无缝衔接计划（B 的预加载一并清掉）。
   cancelSeamless('load');
+  // 过渡期的 WSOLA 变速不跨曲残留：新的一首始终从原速开始。
+  try {
+    audio.playbackRate = 1;
+    audio.preservesPitch = true;
+  } catch {
+    /* 忽略 */
+  }
   applyCue(track);
   setState({
     track,
