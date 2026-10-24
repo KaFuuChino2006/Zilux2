@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using Zilux2.Analysis;
 using Zilux2.Online.Account;
 using Zilux2.Online.Library;
 
@@ -17,6 +18,7 @@ internal sealed class OnlineMusicService : IDisposable
     private readonly Dictionary<string, IOnlineMusicProvider> _providers = new(StringComparer.OrdinalIgnoreCase);
     private LocalMusicServer? _server;
     private DownloadService? _download;
+    private TrackAnalysisService? _analysis;
     private bool _disposed;
 
     public OnlineMusicService()
@@ -48,6 +50,12 @@ internal sealed class OnlineMusicService : IDisposable
     /// <summary>下载完成回调（宿主用它刷新本地曲库）。</summary>
     internal Action<string>? FileDownloaded { get; set; }
 
+    /// <summary>
+    /// 本地曲库 rel → 磁盘路径（离线节拍分析 /api/analysis 用）。由 WebViewHost 接到
+    /// LocalMusicService.ResolveTrackPath（必须在该回调里切回 UI 线程）。
+    /// </summary>
+    internal Func<string?, string?>? LocalPathResolver { get; set; }
+
     public OnlineEndpoint? Endpoint { get; private set; }
 
     public string? FailureMessage { get; private set; }
@@ -68,7 +76,12 @@ internal sealed class OnlineMusicService : IDisposable
                 () => DownloadDirectoryProvider?.Invoke(),
                 () => DownloadQualityProvider?.Invoke(),
                 path => FileDownloaded?.Invoke(path));
-            var server = new LocalMusicServer(_providers, Sources, token, Accounts, Library, _download);
+            // 离线节拍分析：音质缺省跟随下载设置；本地 rel 解析回调由 WebViewHost 接入。
+            _analysis = new TrackAnalysisService(
+                _providers,
+                () => DownloadQualityProvider?.Invoke(),
+                rel => LocalPathResolver?.Invoke(rel));
+            var server = new LocalMusicServer(_providers, Sources, token, Accounts, Library, _download, _analysis);
             var port = server.Start();
             _server = server;
             Endpoint = new OnlineEndpoint(port, token, Sources.ToList());
@@ -87,6 +100,16 @@ internal sealed class OnlineMusicService : IDisposable
                 OnlineHttp.Error("start cleanup failed", disposeException);
             }
 
+            try
+            {
+                _analysis?.Dispose();
+            }
+            catch (Exception disposeException)
+            {
+                OnlineHttp.Error("analysis cleanup failed", disposeException);
+            }
+
+            _analysis = null;
             _server = null;
             Endpoint = null;
         }
@@ -122,6 +145,18 @@ internal sealed class OnlineMusicService : IDisposable
 
         _server = null;
         Endpoint = null;
+
+        // 分析任务可能在写缓存/下载音频，先撤它再撤下载与账号。
+        try
+        {
+            _analysis?.Dispose();
+        }
+        catch (Exception exception)
+        {
+            OnlineHttp.Error("analysis dispose failed", exception);
+        }
+
+        _analysis = null;
 
         try
         {

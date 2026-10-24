@@ -11,6 +11,7 @@ using System.Text;
 using System.Text.Json;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using Zilux2.Analysis;
 using Zilux2.Online.Account;
 using Zilux2.Online.Discover;
 using Zilux2.Online.Library;
@@ -38,6 +39,7 @@ internal sealed class LocalMusicServer : IDisposable
     private readonly LibraryService? _library;
     private readonly DiscoverService _discover;
     private readonly DownloadService? _download;
+    private readonly TrackAnalysisService? _analysis;
     private readonly byte[] _tokenBytes;
     private readonly string _token;
     private readonly CancellationTokenSource _shutdown = new();
@@ -53,7 +55,8 @@ internal sealed class LocalMusicServer : IDisposable
         string token,
         AccountService? accounts = null,
         LibraryService? library = null,
-        DownloadService? download = null)
+        DownloadService? download = null,
+        TrackAnalysisService? analysis = null)
     {
         _providers = providers;
         _sources = sources;
@@ -62,6 +65,7 @@ internal sealed class LocalMusicServer : IDisposable
         _accounts = accounts;
         _library = library;
         _download = download;
+        _analysis = analysis;
         // 发现页服务只读上游；封面回环地址在请求时生成（Start() 之后 Port 才有值）。
         _discover = new DiscoverService(accounts, BuildCoverUrl);
     }
@@ -215,6 +219,8 @@ internal sealed class LocalMusicServer : IDisposable
                 "/api/artist/image" => isGet ? await HandleArtistImageAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/playlists/hot" => isGet ? await HandleHotPlaylistsAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/stream/info" => isGet ? await HandleStreamInfoAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
+                // 离线节拍分析（契约 docs/zilux2-beat-analysis-contract.md；本地 rel / 在线 id 共用）。
+                "/api/analysis" => isGet ? await HandleAnalysisAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 // 在线歌曲下载（网易云 / QQ / 酷狗 / 无名音乐统一走这里）。
                 "/api/downloads" => isGet ? WriteDownloads(context) : MethodNotAllowed(context),
                 "/api/download" => isPost ? await HandleDownloadStartAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
@@ -576,6 +582,113 @@ internal sealed class LocalMusicServer : IDisposable
             OnlineHttp.Error("api stream/info failed", exception);
             return WriteError(context, 502, "upstream-error", "获取音质信息失败：" + OnlineHttp.Describe(exception));
         }
+    }
+
+    // Contract docs/zilux2-beat-analysis-contract.md §2：离线节拍分析。同步返回；解码/分析在
+    // TrackAnalysisService 的后台线程池里跑，HTTP 处理线程只 await，不占用 UI 线程。
+    private async Task<int> HandleAnalysisAsync(HttpListenerContext context)
+    {
+        if (!ValidateToken(context.Request))
+        {
+            return WriteAnalysisError(context, 401, "unauthorized", "缺少或无效的 token");
+        }
+
+        var analysis = _analysis;
+        if (analysis is null)
+        {
+            return WriteAnalysisError(context, 503, "internal-error", "节拍分析服务不可用");
+        }
+
+        var query = context.Request.QueryString;
+        var source = (query["source"] ?? string.Empty).Trim().ToLowerInvariant();
+        if (source.Length == 0)
+        {
+            return WriteAnalysisError(context, 400, "not-found", "缺少 source 参数");
+        }
+
+        string? trackId = null;
+        string? rel = null;
+        if (string.Equals(source, "local", StringComparison.Ordinal))
+        {
+            rel = (query["rel"] ?? string.Empty).Trim();
+            if (rel.Length is 0 or > 1024)
+            {
+                return WriteAnalysisError(context, 400, "not-found", "rel 参数非法");
+            }
+        }
+        else
+        {
+            trackId = (query["id"] ?? string.Empty).Trim();
+            if (trackId.Length is 0 or > 200)
+            {
+                return WriteAnalysisError(context, 400, "not-found", "id 参数非法");
+            }
+
+            if (GetProvider(source) is null)
+            {
+                return WriteAnalysisError(context, 404, "not-found", "暂不支持该音乐平台");
+            }
+
+            if (!IsValidTrackId(source, trackId))
+            {
+                return WriteAnalysisError(context, 400, "not-found", "id 参数非法");
+            }
+        }
+
+        // quality 原样交给服务：缺省时服务用下载设置里的音质，非法值回落 high。
+        var quality = query["quality"];
+        var force = string.Equals(query["force"], "1", StringComparison.Ordinal) ||
+                    string.Equals(query["force"], "true", StringComparison.OrdinalIgnoreCase);
+        try
+        {
+            var outcome = await analysis
+                .AnalyzeAsync(new AnalysisRequest(source, trackId, rel, quality, force), _shutdown.Token)
+                .ConfigureAwait(false);
+            if (outcome.Ok && outcome.Response is not null)
+            {
+                WriteJson(
+                    context,
+                    200,
+                    JsonSerializer.Serialize(outcome.Response, AnalysisJsonContext.Default.AnalysisSuccessResponse));
+                return 200;
+            }
+
+            return WriteAnalysisError(context, MapAnalysisStatus(outcome.Code), outcome.Code, outcome.Message);
+        }
+        catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
+        {
+            return WriteAnalysisError(context, 503, "internal-error", "宿主正在关闭");
+        }
+        catch (Exception exception)
+        {
+            OnlineHttp.Error("api analysis failed", exception);
+            return WriteAnalysisError(context, 500, "internal-error", "节拍分析失败：" + OnlineHttp.Describe(exception));
+        }
+    }
+
+    // Contract §2.2 的 code → HTTP 状态映射（页面主要看 ok/code，状态码只影响 fetch 错误分支）。
+    private static int MapAnalysisStatus(string code) => code switch
+    {
+        "not-found" => 404,
+        "not-playable" => 403,
+        "upstream-failed" => 502,
+        "decode-failed" => 422,
+        "timeout" => 504,
+        _ => 500,
+    };
+
+    // Contract §2.2 的失败体是 {v,ok:false,code,message}，与其它接口的 ErrorResponse 形状不同。
+    private static int WriteAnalysisError(HttpListenerContext context, int status, string code, string message)
+    {
+        var payload = new AnalysisErrorResponse
+        {
+            V = 1,
+            Ok = false,
+            Code = code,
+            Message = message,
+        };
+        WriteJson(context, status, JsonSerializer.Serialize(payload, AnalysisJsonContext.Default.AnalysisErrorResponse));
+        return status;
     }
 
     private async Task<int> HandleHotPlaylistsAsync(HttpListenerContext context)

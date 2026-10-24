@@ -225,6 +225,12 @@ internal sealed class WebViewHost : IDisposable
             () => _webView.CoreWebView2,
             PostJson,
             settings is null ? null : () => settings.DownloadDirectory);
+        // 离线节拍分析（/api/analysis）需要把本地曲库 rel 解析成磁盘路径；回调来自分析线程池，
+        // CreateLocalMusicService 之后才能接线，App.Online 在窗口创建前就已经 Start。
+        if (App.Online is { } online)
+        {
+            online.LocalPathResolver = ResolveLocalTrackPathForAnalysis;
+        }
         // 自动更新：状态推送从任意线程回来，统一调度到 UI 线程再 PostWebMessage。
         _updates = settings is null
             ? null
@@ -356,6 +362,39 @@ internal sealed class WebViewHost : IDisposable
         PostJson(json);
     }
 
+    /// <summary>
+    /// 离线节拍分析（/api/analysis）的本地曲目路径解析。分析请求跑在 HTTP 线程池里，而
+    /// LocalMusicService.ResolveTrackPath 会触发 EnsureDownloadFolder → RescanDownloads →
+    /// PostMergedTracks，必须在 UI 线程执行，否则会跨线程碰页面推送与曲库状态。
+    /// </summary>
+    private string? ResolveLocalTrackPathForAnalysis(string? rel)
+    {
+        if (string.IsNullOrWhiteSpace(rel))
+        {
+            return null;
+        }
+
+        try
+        {
+            if (_disposed)
+            {
+                return null;
+            }
+
+            if (_window.Dispatcher.CheckAccess())
+            {
+                return _localMusic.ResolveTrackPath(rel);
+            }
+
+            return _window.Dispatcher.Invoke(() => _localMusic.ResolveTrackPath(rel));
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[analysis] local path resolve failed rel={rel}: {exception.Message}");
+            return null;
+        }
+    }
+
     public void Dispose()
     {
         if (_disposed)
@@ -364,6 +403,12 @@ internal sealed class WebViewHost : IDisposable
         }
 
         _disposed = true;
+        // 先断开分析用的本地路径解析，避免本地曲库 Dispose 后分析线程还回调进来。
+        if (App.Online is { } online)
+        {
+            online.LocalPathResolver = null;
+        }
+
         _updates?.Dispose();
         // 先停本地目录监听，避免 WebView2 销毁后还有后台扫描往页面推消息。
         _localMusic.Dispose();

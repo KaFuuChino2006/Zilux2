@@ -58,6 +58,7 @@ import {
   sourceSupportsLikedWrite,
 } from '../online/sources';
 import { onlineArtwork } from '../online/artwork';
+import { buildAnalysisSection } from './analysisSection';
 import { confirmDialog } from './confirmDialog';
 import { createEqCurve } from './eqCurve';
 import { localArtists, type LocalArtist } from './localArtists';
@@ -71,6 +72,7 @@ import { lookupCover } from '../online/coverLookup';
 import { h, icon, toast, fmtTime, Disposers } from './dom';
 import { airplay } from '../airplay';
 import { startAudioTap, stopAudioTap } from '../core/audioTap';
+import { disposeMetronome } from '../core/metronome';
 import { createAirplayPanel, type AirplayPanelHandle } from './airplayPanel';
 import {
   deleteLocalTracks,
@@ -2452,6 +2454,7 @@ export class App {
         sliderField('搜索结果条数', 10, 50, 5, settings.playback.searchLimit, (value) => {
           patchSettings({ playback: { searchLimit: value } });
         }, (value) => `${value} 条`),
+        buildAnalysisSection(this.sheetScope),
       );
 
       // 账号
@@ -5223,6 +5226,7 @@ export class App {
     this.downloadQuickView = null;
     closeQualityPicker();
     disposeDownloadQueue();
+    disposeMetronome();
     this.disposers.dispose();
     this.sheetScope?.dispose();
     this.sheetScope = null;
