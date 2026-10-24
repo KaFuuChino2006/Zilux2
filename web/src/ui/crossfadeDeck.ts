@@ -132,6 +132,10 @@ export interface CrossfadeDebugState {
   fadeMs: number;
   /** B 的起播位置（文件毫秒） */
   bStartFileMs: number;
+  /** 下一次调度的「开始唱词」位置（曲内毫秒）；0 = 无歌词/未取到 */
+  nextVocalStartMs: number;
+  /** 本次调度是否按「开始唱词」对齐（true = B 起播点按唱词反推） */
+  vocalAligned: boolean;
   /** A 的「可听结尾」（曲内毫秒）：调度以它为终点；旧宿主无 audibleEndMs 时 = 曲内时长 */
   currentAudibleEndMs: number;
   /** A 的尾部静音（毫秒）= 曲内时长 - currentAudibleEndMs；无静音为 0 */
@@ -153,6 +157,8 @@ const debug: CrossfadeDebugState = {
   fadeStartPosMs: 0,
   fadeMs: 0,
   bStartFileMs: 0,
+  nextVocalStartMs: 0,
+  vocalAligned: false,
   currentAudibleEndMs: 0,
   tailSilenceMs: 0,
   progress: 0,
@@ -202,6 +208,8 @@ export interface CrossfadePrepareOptions {
   currentPositionMs: number;
   currentAnalysis: AnalysisResult;
   nextAnalysis: AnalysisResult;
+  /** 下一首的「开始唱词」位置（曲内毫秒，player 用 vocalStart.ts 取）；null/0 = 无歌词回退普通淡化 */
+  nextVocalStartMs?: number | null;
   /** B 的流地址（由 player 用 streamUrl 解析好，避免本模块依赖 online 层） */
   nextUrl: string;
   /** 读取当前基础音量（用户音量 0..1） */
@@ -221,6 +229,10 @@ interface FadeSchedule {
   audibleEndPosMs: number;
   /** A 的尾部静音（毫秒）；无静音（含旧宿主回退）为 0 */
   tailSilenceMs: number;
+  /** B 的「开始唱词」位置（曲内毫秒）；0 = 未启用 */
+  nextVocalStartMs: number;
+  /** true = B 起播点按唱词反推（前奏够长跳过 / 前奏较短整段过渡） */
+  vocalAligned: boolean;
 }
 
 interface ActivePlan {
@@ -339,7 +351,47 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
   const fileAudibleEndMs = currentStartMs + audibleEndPosMs;
 
   const desiredMs = resolveFadeLength(options);
-  const targetFileMs = fileAudibleEndMs - desiredMs;
+
+  // ---- B 侧：优先让「淡化结束」正好落在下一首的开始唱词 ----
+  const nextStartMs = options.next.startAt * 1000;
+  const nextDurationMs =
+    options.next.track.durationMs > 0
+      ? options.next.track.durationMs
+      : Math.max(0, options.nextAnalysis.durationMs - nextStartMs);
+  const nextLimitMs = nextDurationMs > 0 ? nextStartMs + nextDurationMs : 0;
+  const nextAnalysis = options.nextAnalysis.analysis;
+  const nextFirstDownbeat = pickDownbeatAtOrAfter(nextAnalysis, nextStartMs, nextLimitMs);
+  const baseBStartFileMs = nextFirstDownbeat === null ? nextStartMs : nextFirstDownbeat;
+
+  const rawVocalStart = options.nextVocalStartMs;
+  const vocalPosMs =
+    typeof rawVocalStart === 'number' && Number.isFinite(rawVocalStart) && rawVocalStart > 0
+      ? Math.round(Math.min(rawVocalStart, nextDurationMs > 0 ? nextDurationMs : rawVocalStart))
+      : 0;
+  const vocalFileMs = vocalPosMs > 0 ? nextStartMs + vocalPosMs : 0;
+
+  let plannedFadeMs = desiredMs;
+  let bStartFileMs = baseBStartFileMs;
+  let vocalAligned = false;
+  if (vocalFileMs > 0) {
+    const candidate = vocalFileMs - desiredMs;
+    if (candidate >= nextStartMs + 250) {
+      // 前奏够长：从「唱词前 desiredMs」处起播，淡化结束正好进入唱词（更早的前奏直接跳过）；
+      // 起播点尽量贴在强拍上，保证淡化期间鼓点依然对齐。
+      const nearby = pickDownbeatNear(nextAnalysis, candidate, nextStartMs);
+      bStartFileMs = nearby !== null && Math.abs(nearby - candidate) <= 200 ? nearby : Math.round(candidate);
+      vocalAligned = true;
+    } else if (vocalFileMs - baseBStartFileMs >= MIN_FADE_MS) {
+      // 前奏比目标淡化还短：把整段前奏当成过渡，淡化终点 = 唱词起点。
+      plannedFadeMs = Math.max(MIN_FADE_MS, Math.min(desiredMs, vocalFileMs - baseBStartFileMs));
+      bStartFileMs = baseBStartFileMs;
+      vocalAligned = true;
+    }
+    // 前奏太短（< MIN_FADE_MS）或数据异常：保持普通淡化，B 从第一个强拍起播。
+  }
+
+  // ---- A 侧：终点固定为可听结尾，按本次淡化时长反推起点，并尽量贴强拍 ----
+  const targetFileMs = fileAudibleEndMs - plannedFadeMs;
   const downbeat = pickDownbeatNear(analysis, targetFileMs, currentStartMs);
   let fadeStartFile = downbeat === null ? targetFileMs : downbeat;
 
@@ -358,17 +410,15 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
   const fadeMs = Math.round(fileAudibleEndMs - fadeStartFile);
   if (fadeMs < MIN_FADE_MS) return null;
 
-  // B 从自己的强拍起播，和 A 的淡化起点同为强拍 → 两边的强拍在淡化开始瞬间对齐。
-  const nextStartMs = options.next.startAt * 1000;
-  const nextDurationMs =
-    options.next.track.durationMs > 0
-      ? options.next.track.durationMs
-      : Math.max(0, options.nextAnalysis.durationMs - nextStartMs);
-  const nextLimitMs = nextDurationMs > 0 ? nextStartMs + nextDurationMs : 0;
-  const bDownbeat = pickDownbeatAtOrAfter(options.nextAnalysis.analysis, nextStartMs, nextLimitMs);
-  const bStartFileMs = bDownbeat === null ? nextStartMs : bDownbeat;
-  // B 太短，撑不到淡化结束：放弃（回退硬切，交给原来的 ended 逻辑）。
-  if (nextDurationMs > 0 && nextDurationMs - (bStartFileMs - nextStartMs) < fadeMs + 400) return null;
+  // B 太短，撑不到淡化结束：回退普通方案（B 从开头/第一个强拍起播）；仍不行就放弃。
+  if (nextDurationMs > 0) {
+    const availableMs = nextDurationMs - (bStartFileMs - nextStartMs);
+    if (availableMs < fadeMs + 400) {
+      vocalAligned = false;
+      bStartFileMs = baseBStartFileMs;
+      if (nextDurationMs - (bStartFileMs - nextStartMs) < fadeMs + 400) return null;
+    }
+  }
 
   return {
     fadeStartFileMs: fadeStartFile,
@@ -377,6 +427,8 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
     bStartFileMs,
     audibleEndPosMs: Math.round(audibleEndPosMs),
     tailSilenceMs: Math.round(tailSilenceMs),
+    nextVocalStartMs: vocalPosMs,
+    vocalAligned,
   };
 }
 
@@ -391,6 +443,8 @@ function applySchedule(plan: ActivePlan, schedule: FadeSchedule): void {
   debug.bStartFileMs = schedule.bStartFileMs;
   debug.currentAudibleEndMs = schedule.audibleEndPosMs;
   debug.tailSilenceMs = schedule.tailSilenceMs;
+  debug.nextVocalStartMs = schedule.nextVocalStartMs;
+  debug.vocalAligned = schedule.vocalAligned;
 }
 
 /** seek 到指定文件秒数；元数据还没到时挂一次性 loadedmetadata 兜底。 */
@@ -795,7 +849,7 @@ export function buildCrossfadeSection(scope: Disposers | null): HTMLElement {
     h('h3', { class: 'section-title', text: '无缝衔接（实验）' }),
     h('p', {
       class: 'analysis-desc',
-      text: '当前歌曲结束前，按鼓点提前开始下一首，并按等功率曲线交叉淡化（A 余弦、B 正弦），避免曲间静音；淡化终点对齐歌曲的可听结尾，自动跳过曲尾静音（需宿主分析支持 audibleEndMs）。仅在列表循环、下一首分析成功时生效；均衡器/人声保留淡出等 Web Audio 音效开启时自动改走图内增益淡化，否则回退为原来的硬切。',
+      text: '当前歌曲结束前，按鼓点提前开始下一首，并按等功率曲线交叉淡化（A 余弦、B 正弦），避免曲间静音；淡化终点对齐歌曲的可听结尾，自动跳过曲尾静音（需宿主分析支持 audibleEndMs）。淡化结束时机对齐下一首的「开始唱词」（有歌词时）：前奏较长会跳过前奏、从唱词前若干秒切入；前奏较短则把整段前奏当作过渡，结束时正好进入唱词。仅在列表循环、下一首分析成功时生效；均衡器/人声保留淡出等 Web Audio 音效开启时自动改走图内增益淡化，否则回退为原来的硬切。',
     }),
     h(
       'div',
@@ -825,7 +879,7 @@ export function buildCrossfadeSection(scope: Disposers | null): HTMLElement {
     ),
     h('p', {
       class: 'analysis-footnote',
-      text: '切歌后先异步分析当前与下一首（本地约 1–5 秒），分析成功才会生效；失败静默回退硬切。开启均衡器 / 人声保留淡出 / 歌词页频谱等 Web Audio 音效时，两个 deck 都会接进混音图，用各自增益做等功率淡化（主音量不变）。',
+      text: '切歌后先异步分析当前与下一首（本地约 1–5 秒）并读取下一首歌词首行（本地同名 .lrc / 在线歌词），任一失败则回退为普通淡化或硬切。开启均衡器 / 人声保留淡出 / 歌词页频谱等 Web Audio 音效时，两个 deck 都会接进混音图，用各自增益做等功率淡化（主音量不变）。',
     }),
   );
 

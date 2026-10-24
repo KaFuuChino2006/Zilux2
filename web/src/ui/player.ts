@@ -23,6 +23,7 @@ import {
   prepareCrossfade,
   readCrossfadeSettings,
 } from './crossfadeDeck';
+import { fetchVocalStartMs } from './vocalStart';
 
 export type PlayMode = 'list' | 'single' | 'shuffle';
 
@@ -932,7 +933,13 @@ function prepareSeamlessNext(): void {
   const currentPositionMs = positionMs();
 
   Promise.all([analyzeTrack(current), analyzeTrack(nextTrack)])
-    .then(([currentResult, nextResult]) => {
+    .then(async ([currentResult, nextResult]) => {
+      if (token !== seamlessToken) return;
+      if (!state.playing || audio !== activeDeck || state.track !== current) return;
+      if (!readCrossfadeSettings().enabled) return;
+      // 取下一首「开始唱词」位置：前奏长则从唱词前定长切入，前奏短则用整段前奏过渡。
+      // 取不到（无歌词/超时）返回 null，引擎回退为「B 从第一个强拍起播」的普通淡化。
+      const nextVocalStartMs = await fetchVocalStartMs(nextTrack);
       if (token !== seamlessToken) return;
       if (!state.playing || audio !== activeDeck || state.track !== current) return;
       if (!readCrossfadeSettings().enabled) return;
@@ -952,6 +959,7 @@ function prepareSeamlessNext(): void {
         currentPositionMs,
         currentAnalysis: currentResult,
         nextAnalysis: nextResult,
+        nextVocalStartMs,
         nextUrl,
         baseVolume: () => state.volume,
         isValid: () =>
