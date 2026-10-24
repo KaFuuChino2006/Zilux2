@@ -167,6 +167,11 @@ jobs:
           body: |
             ## Zilux2 v${{ steps.version.outputs.version }}
 
+            Zilux2 是一款面向 Windows 的沉浸式桌面音乐播放器：在线双源（网易云 / QQ 音乐）、本地曲库、
+            3D 歌词舞台、AirPlay 投送、鼓点对齐的无缝衔接、可配置全局快捷键，以及应用内自动更新。
+
+            > 本项目（宿主 / 前端 / 安装器 / 文档 / 测试 / 发布流水线）全程使用 **DeepSeek Harness** 的 AI Agent 开发。
+
             本版本已启用**应用内更新**：打开 设置 → 更新 即可检查 / 下载 / 安装新版本。
             默认在启动约 8 秒后自动检查，之后每 4 小时检查一次；也可以随时手动点「检查更新」。
 
@@ -176,8 +181,8 @@ jobs:
             | `Zilux2-Portable-${{ steps.version.outputs.version }}.zip` | 便携版，解压即用（不含自动更新安装器） |
             | `Zilux2-Setup-${{ steps.version.outputs.version }}.exe.sha256` | 安装包 SHA-256 校验和 |
 
-            注意：自动更新走 GitHub Releases API，仓库需要公开；未签名的安装包首次运行会被
-            SmartScreen 提示，属正常现象。
+            注意：自动更新走 GitHub Releases 匿名 API，仓库需为公开仓库（本仓库已公开）；未签名的
+            安装包首次运行会被 SmartScreen 提示，属正常现象。
 
             完整更新日志见下方。
           generate_release_notes: true
