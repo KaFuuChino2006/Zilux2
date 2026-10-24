@@ -256,7 +256,7 @@ export function dirExists(dir) {
 export const CROSSFADE = {
   storageKey: 'zilux2.crossfade',
   defaults: { enabled: true, length: 'auto' },
-  lengths: ['4', '6', '8', 'auto'],
+  lengths: ['5', '7', '10', 'auto'],
   section: '[data-qa="crossfade-section"]',
   sectionTitle: '[data-qa="crossfade-section"] .section-title',
   toggle: '[data-qa="crossfade-toggle"]',
