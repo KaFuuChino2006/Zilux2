@@ -112,6 +112,7 @@ import { buildSettingsIOActions } from './settingsIO';
 import { buildSleepTimerPanel, completeSleepTimer, getSleepTimerState } from './sleepTimer';
 import { currentLyricSource, lyricGrowMode, lyricMatchMinScore, lyricOffsetOf, lyricsBackgroundMode, lyricsLumiereMode, LyricsView, primeLyrics, setLyricGrowMode, setLyricsBackgroundMode, setLyricsLumiereMode, setLyricMatchMinScore, setLyricOffset, updateCurrentLyricLine, lyricMatchText } from './lyrics';
 import { LUMIERE_MODES } from './lumiere';
+import { LYRIC_STYLES, lyricStyle, setLyricStyle } from './lyricStyle';
 import {
   cycleMode,
   getPlaybackSpeed,
@@ -5144,18 +5145,52 @@ export class App {
           h('div', { class: 'quick-cell-title', text: title }),
           ...children,
         );
-      // 动效（逐字生长）：只对「关闭」档的 DOM 歌词生效，画布效果（纯字/房间）下没有意义，因此仅关闭档显示。
+      // 歌词样式：经典 / 发光 / 渐变 / 频谱律动（只对「关闭」档的 DOM 歌词生效，画布效果下没有意义）
+      const styleThumb = h('div', { class: 'quick-seg-thumb' });
+      const styleBtns: HTMLButtonElement[] = LYRIC_STYLES.map((item) => {
+        const btn = h('button', {
+          class: `quick-seg-btn${item.id === lyricStyle() ? ' is-on' : ''}`,
+          type: 'button',
+          text: item.label,
+          title: item.hint,
+        }) as HTMLButtonElement;
+        btn.addEventListener('pointerdown', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        });
+        btn.addEventListener('click', () => {
+          setLyricStyle(item.id);
+          paintLyricStyle();
+        });
+        return btn;
+      });
+      const paintLyricStyle = (): void => {
+        const index = Math.max(0, LYRIC_STYLES.findIndex((item) => item.id === lyricStyle()));
+        styleBtns.forEach((btn, i) => btn.classList.toggle('is-on', i === index));
+        const active = styleBtns[index];
+        if (!active) return;
+        styleThumb.style.width = `${active.offsetWidth}px`;
+        styleThumb.style.transform = `translateX(${active.offsetLeft}px)`;
+      };
+      const styleControl = h('div', { class: 'quick-seg-slider' }, styleThumb, ...styleBtns);
+      paintLyricStyle();
+      window.requestAnimationFrame(() => paintLyricStyle());
+      // 动效（逐字生长）+ 歌词样式：只对「关闭」档的 DOM 歌词生效，画布效果（纯字/房间）下没有意义，因此仅关闭档显示。
       const growCell = cell('动效', true, growControl);
+      const styleCell = cell('歌词样式', true, styleControl);
+      const lyricDomCells = [styleCell, growCell];
       const syncGrowCell = (): void => {
         const hidden = lyricsLumiereMode() !== 'off';
-        if (growCell.classList.contains('is-hidden') === hidden) return;
+        if (lyricDomCells.every((el) => el.classList.contains('is-hidden') === hidden)) return;
         const inner = this.quickBodyInner;
         const before = this.quickPanelOpen && inner ? inner.offsetHeight : 0;
-        growCell.classList.toggle('is-hidden', hidden);
-        growCell.classList.remove('is-reveal');
-        if (!hidden) {
-          void growCell.offsetWidth;
-          growCell.classList.add('is-reveal');
+        for (const el of lyricDomCells) {
+          el.classList.toggle('is-hidden', hidden);
+          el.classList.remove('is-reveal');
+          if (!hidden) {
+            void el.offsetWidth;
+            el.classList.add('is-reveal');
+          }
         }
         if (before && inner) this.animateQuickBodyHeight(before, inner.offsetHeight);
       };
@@ -5288,6 +5323,7 @@ export class App {
           cell('匹配度阈值', false, thresholdStepper.root),
           cell('时间轴偏移', false, offsetStepper.root, reset),
           cell('歌词颜色', true, bgControl),
+          styleCell,
           growCell,
           cell('播放效果', true, effectControl),
           effectSettingsCell,

@@ -24,6 +24,8 @@ import { createLumiereStage, lumiereMode, lumiereThemeForCover, setLumiereMode, 
 import { createRoomStage, setRoomLyricTintProvider, type RoomStage } from './room';
 import type { Theme } from './lumiere-folia/types';
 import type { LyricTextSettings } from './lumiereSettings';
+import { lyricStyle, onLyricStyle } from './lyricStyle';
+import { playbackAnalyser } from '../core/audioTap';
 
 /** 歌词页播放效果（纯字）；导出给快捷设置用。 */
 export type { LumiereMode };
@@ -899,6 +901,12 @@ export class LyricsView {
   private roomStage: RoomStage | null = null;
   /** 进页时等画布第一次出像的监听（见 watchStagePaint）。 */
   private stageObserver: MutationObserver | null = null;
+  /** 默认歌词页的播放样式（经典/发光/渐变/频谱，见 lyricStyle.ts）：底部频谱条与样式 class。 */
+  private spectrumEl: HTMLDivElement;
+  private spectrumCanvas: HTMLCanvasElement;
+  private spectrumRaf = 0;
+  private spectrumData: Uint8Array<ArrayBuffer> | null = null;
+  private styleUnsub: (() => void) | null = null;
 
   constructor(private readonly onClose: () => void) {
     this.bgEl = h('div', { class: 'lyrics-bg' });
@@ -916,6 +924,10 @@ export class LyricsView {
     this.coverWrapEl = h('div', { class: 'lyrics-cover-wrap' }, this.coverEl);
     this.metaEl = h('div', { class: 'lyrics-meta' }, this.titleEl, this.artistEl, this.sourceEl);
 
+    // 频谱律动：默认歌词页底部的频谱条（样式切到「频谱」时才显示，见 lyricStyle.ts）。
+    this.spectrumCanvas = document.createElement('canvas');
+    this.spectrumEl = h('div', { class: 'lyrics-spectrum' }, this.spectrumCanvas) as HTMLDivElement;
+
     const closeBtn = h('button', { class: 'lyrics-close', title: '收起歌词' }, icon('chevron', 22));
     closeBtn.addEventListener('click', () => this.onClose());
 
@@ -928,6 +940,7 @@ export class LyricsView {
       { class: 'lyrics-view' },
       this.bgEl,
       scrim,
+      this.spectrumEl,
       this.lumiereText.root,
       this.roomStage.root,
       closeBtn,
@@ -951,6 +964,8 @@ export class LyricsView {
     );
 
     this.applyLumiereMode();
+    this.applyLyricStyle();
+    this.styleUnsub = onLyricStyle(() => this.applyLyricStyle());
 
     this.matchUnsub = onLyricMatch(() => {
       if (this.disposed) return;
@@ -1051,6 +1066,91 @@ export class LyricsView {
       this.root.classList.remove('is-lumiere-fresh');
     }
     if (anyOn) this.syncLumiereSong();
+  }
+
+  /** 应用默认歌词页的播放样式（经典/发光/渐变/频谱）；切换后立即生效、不重载歌词。 */
+  private applyLyricStyle(): void {
+    if (this.disposed) return;
+    const style = lyricStyle();
+    this.root.classList.remove('lyric-style-classic', 'lyric-style-glow', 'lyric-style-gradient', 'lyric-style-spectrum');
+    this.root.classList.add(`lyric-style-${style}`);
+    if (style === 'spectrum') this.startSpectrum();
+    else this.stopSpectrum();
+  }
+
+  private startSpectrum(): void {
+    if (this.spectrumRaf || this.disposed) return;
+    const ctx = this.spectrumCanvas.getContext('2d');
+    if (!ctx) return;
+    const render = (now: number): void => {
+      this.spectrumRaf = 0;
+      if (this.disposed || lyricStyle() !== 'spectrum') return;
+      this.drawSpectrum(ctx, now);
+      this.spectrumRaf = window.requestAnimationFrame(render);
+    };
+    this.spectrumRaf = window.requestAnimationFrame(render);
+  }
+
+  private stopSpectrum(): void {
+    if (this.spectrumRaf) window.cancelAnimationFrame(this.spectrumRaf);
+    this.spectrumRaf = 0;
+  }
+
+  /** 频谱条颜色：从主题强调色取 rgb，空值回退到暖金。 */
+  private spectrumAccent(): string {
+    const raw = getComputedStyle(this.root).getPropertyValue('--accent').trim();
+    const hex = /^#([0-9a-f]{6})$/i.exec(raw);
+    if (hex) {
+      const value = parseInt(hex[1], 16);
+      return `${(value >> 16) & 255}, ${(value >> 8) & 255}, ${value & 255}`;
+    }
+    const rgb = /^rgb\((\d+)[ ,]+(\d+)[ ,]+(\d+)\)$/i.exec(raw);
+    if (rgb) return `${rgb[1]}, ${rgb[2]}, ${rgb[3]}`;
+    return '217, 192, 141';
+  }
+
+  /** 画一帧频谱：64 根镜像条，低频在中心、向两侧扩散，底部渐隐。 */
+  private drawSpectrum(ctx: CanvasRenderingContext2D, _now: number): void {
+    const width = this.spectrumEl.clientWidth || this.root.clientWidth || 800;
+    const height = this.spectrumEl.clientHeight || 240;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const pixelWidth = Math.round(width * dpr);
+    const pixelHeight = Math.round(height * dpr);
+    if (this.spectrumCanvas.width !== pixelWidth || this.spectrumCanvas.height !== pixelHeight) {
+      this.spectrumCanvas.width = pixelWidth;
+      this.spectrumCanvas.height = pixelHeight;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+    const analyser = playbackAnalyser();
+    if (!analyser) return;
+    const bins = analyser.frequencyBinCount;
+    if (!this.spectrumData || this.spectrumData.length !== bins) this.spectrumData = new Uint8Array(bins);
+    analyser.getByteFrequencyData(this.spectrumData);
+    const data = this.spectrumData;
+    const accent = this.spectrumAccent();
+    const bars = 64;
+    const step = width / bars;
+    const barWidth = Math.max(2, step * 0.56);
+    const maxBin = Math.max(8, Math.floor(bins * 0.62));
+    const gradient = ctx.createLinearGradient(0, height, 0, height * 0.2);
+    gradient.addColorStop(0, `rgba(${accent}, 0.55)`);
+    gradient.addColorStop(0.55, `rgba(${accent}, 0.24)`);
+    gradient.addColorStop(1, `rgba(${accent}, 0)`);
+    ctx.fillStyle = gradient;
+    ctx.shadowColor = `rgba(${accent}, 0.35)`;
+    ctx.shadowBlur = 16;
+    for (let i = 0; i < bars; i += 1) {
+      const t = i / (bars - 1);
+      const bin = Math.min(maxBin - 1, Math.floor(Math.pow(t, 1.35) * maxBin));
+      const level = data[bin] / 255;
+      const barHeight = Math.max(2, level * height * 0.9);
+      const x = i * step + (step - barWidth) / 2;
+      ctx.beginPath();
+      ctx.roundRect(x, height - barHeight, barWidth, barHeight, barWidth / 2);
+      ctx.fill();
+    }
+    ctx.shadowBlur = 0;
   }
 
   /** 等舞台第一次出像（或确认失败）就撤掉 is-lumiere-fresh；6 秒兜底别一直暗着。 */
@@ -1645,6 +1745,10 @@ export class LyricsView {
     this.roomStage = null;
     this.stageObserver?.disconnect();
     this.stageObserver = null;
+    this.stopSpectrum();
+    this.styleUnsub?.();
+    this.styleUnsub = null;
+    this.spectrumData = null;
     this.root.remove();
   }
 }
