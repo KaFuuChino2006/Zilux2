@@ -365,3 +365,26 @@ WinRT 不可用或初始化失败时记一次 `[smtc] unavailable: <类型>: <�
 - 格式支持取决于系统属性处理器：MP3 / FLAC / M4A(AAC/ALAC) / WAV 一般可写；DSF / APE / OGG / OPUS / WMA / AIFF 可能失败（返回上面的 `ok:false`）。
 - 日志前缀 `[tag]`：`wrote <文件名>` / `refreshed track ...` / `resolve failed ...`。
 
+
+
+## 17. 附加：发现流 /api/library/feed v1（含私人雷达）
+
+`GET /api/library/feed?source=<netease|qq>&kind=<recent|daily|radar>&limit=<n>&token=<token>`
+
+- `source`：`netease` 或 `qq`（其他值 400）。
+- `kind`：
+  - `recent`：最近播放（网易云 `/api/v1/play/record`；QQ 对应最近播放）。
+  - `daily`：每日推荐（网易云 `/api/v3/discovery/recommend/songs`；QQ 对应每日推荐）。
+  - `radar`：**私人雷达**（本轮新增）——网易云的每日个人化歌单，固定歌单 id `3136952023`，内容随登录用户与日期变化；宿主走 `NeteaseLibraryProvider.GetPrivateRadarAsync`，复用歌单详情链路（v6 playlist/detail + song/detail）取曲目。**仅网易云支持**：`source=qq&kind=radar` → `400 {"error":"bad-request","message":"私人雷达目前只支持网易云音乐"}`。
+- `limit`：缺省/≤0 视为 60，上限 200（`Math.Min(limit,200)`；provider 内再 `Clamp(1,200)`）。私人雷达当前实际返回歌单内的曲目数（今日 35 首），`limit` 只截取前 N 首。
+- 认证：该源未登录 → `401 {"error":"unauthorized","message":"该音源尚未登录，请先登录"}`（前端据此不渲染「今日推荐/私人雷达」卡片）。
+- 成功响应（`200`）：
+
+```json
+{"source":"netease","kind":"radar","tracks":[{"source":"netease","id":"...","title":"...","artist":"...","album":"...","cover":"https://...","durationMs":245000,"playable":true}]}
+```
+
+  前端 `web/src/online/client.ts` 的 `fetchFeed(source, kind, limit)` 返回 `{ tracks }`；`FeedKind` 联合类型含 `'radar'`。
+- 宿主日志前缀 `[netease]` / `[http]`：成功 `GET netease/library radar ok <N> total`；歌单标题校验失败 `GET netease/library radar unexpected playlist id=... title=... tracks=...`（此时仍返回数据，可能歌单 id 被平台变更，需改用 eapi 发现新 id）；上游错误会转成 502/4xx 并带中文 message。
+- 降级与限制：私人雷达依赖网易云登录 cookie；未登录或歌单 id 失效时前端不显示卡片（`HomeData.radarAvailable=false`）。响应不进歌单缓存（每日变化）；同一数据同时供首页卡片（`limit=12`）与「查看全部」雷达墙（`limit=120`）使用。
+- 页面侧：首页「私人雷达」卡片与「今日推荐」并排（`.home-daily-row` 两列，≤1120px 单列）；`查看全部` 打开 `showRadarWall()` 列表墙；「播放全部」把当前歌曲加入队列并从第 1 首开始播放。

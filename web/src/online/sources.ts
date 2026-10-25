@@ -50,7 +50,7 @@ const DEFAULT_SOURCES: SourceDescriptor[] = [
     accent: '#ff5a5f',
     loginMode: 'code',
     loginHint: '在网易云 App 扫码后确认登录',
-    feedKinds: ['recent', 'daily'],
+    feedKinds: ['recent', 'daily', 'radar'],
     supportsWordLyrics: true,
     supportsLikedWrite: true,
     hasDaily30: false,

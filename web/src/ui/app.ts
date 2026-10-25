@@ -389,14 +389,9 @@ export class App {
     this.bindHostCommands();
     // 提前绑定快捷键回执：宿主可能在用户打开设置页之前就推送注册结果。
     this.disposers.add(onShortcutsState(() => {}));
-    // 迷你播放器：宿主回推窗口状态（含用户在系统层还原窗口的情况）。
+    // 迷你播放器：宿主回推窗口状态（含用户在系统层还原窗口的情况）。页面刷新后宿主会把当前
+    // 迷你态重新推一次，所以这里不需要再用 localStorage 抢先请求（会和宿主的回推抢时序）。
     this.disposers.add(onMiniMode((enabled) => this.applyMiniMode(enabled)));
-    // 上次窗口停在迷你态时页面刷新不会收到事件：主动向宿主复核一次，避免「窗口小、页面以为是大窗」。
-    try {
-      if (window.localStorage.getItem(MINI_MODE_KEY) === '1') host.setMiniMode(true);
-    } catch {
-      /* 忽略：localStorage 不可用时按普通窗口处理。 */
-    }
     const onMiniKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || !this.miniMode || this.miniTransition !== 'idle') return;
       event.preventDefault();
@@ -724,6 +719,7 @@ export class App {
       onRecommend: () => void this.openRecommendSheet(),
       onDaily: () => void this.showDailyWall(),
       onDaily30: () => void this.showDailyWall(true),
+      onRadar: () => void this.showRadarWall(),
       onSearch: () => this.focusSearch(),
       onPlay: (tracks, index, scope) => this.playFromHome(tracks, index, scope),
       onPlaylist: (item) => void this.showPlaylist(item),
@@ -900,6 +896,22 @@ export class App {
     } catch (err) {
       console.warn('[app] home daily failed', err);
     }
+    let radar: OnlineTrack[] = [];
+    let radarAvailable = false;
+    try {
+      radarAvailable =
+        getAccounts().some((item) => item.loggedIn && item.source === 'netease') &&
+        (sourceMeta('netease')?.feedKinds ?? []).includes('radar');
+    } catch {
+      radarAvailable = false;
+    }
+    if (radarAvailable) {
+      try {
+        radar = (await fetchFeed('netease', 'radar', 12)).tracks;
+      } catch (err) {
+        console.warn('[app] private radar failed', err);
+      }
+    }
     const local = localLibrary();
     const now = new Date();
     const dailyDate = `${now.getMonth() + 1} 月 ${now.getDate()} 日 · 每天 6:00 更新`;
@@ -911,6 +923,9 @@ export class App {
       dailyDate,
       dailyLoading: false,
       daily,
+      radarAvailable,
+      radarLoading: false,
+      radar,
       recent,
       playlists: playlists.slice(0, 14),
       neteasePlaylists: neteasePlaylists.slice(0, 14),
@@ -1056,6 +1071,27 @@ export class App {
       tracks: merged.tracks,
     };
     this.renderWall();
+  }
+
+  private async showRadarWall(): Promise<void> {
+    this.wallPager = null;
+    this.feedRailKey = '';
+    this.setRailActive('daily');
+    this.wall = { kind: 'feed', title: '私人雷达', subtitle: '网易云 · 同步中…', tracks: [] };
+    this.renderWall();
+    try {
+      const feed = await fetchFeed('netease', 'radar', 120);
+      this.wall = {
+        kind: 'feed',
+        title: '私人雷达',
+        subtitle: `网易云 · ${feed.tracks.length} 首 · 每天 6:00 更新`,
+        tracks: feed.tracks,
+      };
+      this.renderWall();
+    } catch (err) {
+      console.warn('[app] radar wall failed', err);
+      toast('私人雷达读取失败', 'error');
+    }
   }
 
   private async openRecommendSheet(): Promise<void> {
@@ -6269,6 +6305,8 @@ export class App {
           full = await this.fetchLikedTracks(this.preferredSource() ?? start.source);
         } else if (scope === 'recent') {
           full = await fetchRecentMerged(300);
+        } else if (scope === 'radar') {
+          full = (await fetchFeed('netease', 'radar', 120)).tracks;
         } else {
           full = (await this.fetchDailyMerged(80)).tracks;
         }

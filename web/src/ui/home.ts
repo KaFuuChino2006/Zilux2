@@ -19,7 +19,7 @@ function formatPlays(value: number): string {
   return `${Math.round(value)} 次播放`;
 }
 
-export type PlayScope = 'daily' | 'recent' | 'liked';
+export type PlayScope = 'daily' | 'recent' | 'liked' | 'radar';
 
 export interface HomeCallbacks {
   onLogin(): void;
@@ -29,6 +29,7 @@ export interface HomeCallbacks {
   onRecommend(): void;
   onDaily(): void;
   onDaily30(): void;
+  onRadar(): void;
   onSearch(): void;
   onPlay(tracks: OnlineTrack[], index: number, scope: PlayScope): void;
   onPlaylist(item: LibraryPlaylist): void;
@@ -56,6 +57,10 @@ export interface HomeData {
   dailyDate: string;
   dailyLoading: boolean;
   daily: OnlineTrack[];
+  /** 私人雷达（网易云按账号每日生成；展示在今日推荐右侧） */
+  radarAvailable: boolean;
+  radarLoading: boolean;
+  radar: OnlineTrack[];
   recent: OnlineTrack[];
   playlists: LibraryPlaylist[];
   /** 网易云热门歌单（第二块） */
@@ -68,6 +73,7 @@ export class HomeView {
   private titleEl: HTMLHeadingElement | null = null;
   private deckKey: string[] = [];
   private dailyTracks: OnlineTrack[] = [];
+  private radarTracks: OnlineTrack[] = [];
   private likedDeckEl: HTMLDivElement | null = null;
   private likedKey: string[] = [];
   private likedTracks: OnlineTrack[] = [];
@@ -91,6 +97,7 @@ export class HomeView {
 
   update(data: HomeData): void {
     this.dailyTracks = data.daily;
+    this.radarTracks = data.radar;
     this.deckEl = null;
     this.titleEl = null;
     this.deckKey = [];
@@ -203,7 +210,79 @@ export class HomeView {
       ),
     );
 
-    return h('section', { class: ui.section('home-daily') }, card);
+    const radar = this.buildRadarCard(data);
+    if (!radar) return h('section', { class: ui.section('home-daily') }, card);
+    const row = h('div', { class: 'home-daily-row' });
+    row.append(card, radar);
+    return h('section', { class: ui.section('home-daily') }, row);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 私人雷达（网易云按账号每日更新的个人化歌单，样式与今日推荐一致）     */
+  /* ------------------------------------------------------------------ */
+
+  private buildRadarCard(data: HomeData): HTMLElement | null {
+    if (!data.radarAvailable) return null;
+    const covers = data.radar.slice(0, 5);
+    const deck = h('div', { class: 'daily-deck radar-deck' });
+
+    if (covers.length > 0) {
+      covers
+        .map((track, index) => ({ track, index }))
+        .reverse()
+        .forEach(({ track, index }) => {
+          const layer = h('div', { class: `daily-cover daily-cover-${index}`, 'data-layer': String(index) });
+          layer.append(h('img', { src: onlineArtwork(track), loading: 'lazy', alt: '' }));
+          if (index === 0) {
+            const play = h('button', { class: 'daily-play', title: `播放私人雷达：${track.title}` }, icon('play', 18));
+            play.addEventListener('click', (event) => {
+              event.stopPropagation();
+              this.playRadar();
+            });
+            layer.append(play);
+            layer.addEventListener('click', () => this.playRadar());
+          }
+          deck.append(layer);
+        });
+    } else {
+      deck.append(h('div', { class: 'daily-cover daily-cover-0 is-empty' }, icon('compass', 34)));
+    }
+
+    const title =
+      data.radar.length === 0
+        ? data.radarLoading
+          ? '私人雷达加载中…'
+          : '今天的私人雷达还没生成'
+        : covers[0]?.title ?? '私人雷达';
+    const meta = '网易云 · 每天 6:00 更新' + (data.radar.length > 0 ? ` · 共 ${data.radar.length} 首` : '');
+    const actions = h('div', { class: 'daily-actions' });
+    if (data.radar.length > 0) {
+      const playAll = h('button', { class: ui.btn({ variant: 'primary' }) }, icon('play', 16), h('span', { text: '播放全部' }));
+      playAll.addEventListener('click', () => this.callbacks.onPlay(data.radar, 0, 'radar'));
+      const more = h('button', { class: ui.btn({ variant: 'ghost' }) }, h('span', { text: '查看全部' }));
+      more.addEventListener('click', () => this.callbacks.onRadar());
+      actions.append(playAll, more);
+    }
+
+    return h(
+      'div',
+      { class: `daily-card radar-card${covers.length > 0 ? '' : ' is-empty'}` },
+      deck,
+      h(
+        'div',
+        { class: 'daily-body' },
+        h('div', { class: 'daily-kicker' }, icon('compass', 13), h('span', { text: '私人雷达' })),
+        h('h2', { class: 'daily-title', text: title }),
+        h('div', { class: 'daily-meta', text: meta }),
+        actions,
+      ),
+    );
+  }
+
+  private playRadar(): void {
+    const list = this.radarTracks;
+    if (list.length === 0) return;
+    this.callbacks.onPlay(list, 0, 'radar');
   }
 
   /** 叠放顺序：正在播放的今日推荐曲排到最上面，其余顺延。 */

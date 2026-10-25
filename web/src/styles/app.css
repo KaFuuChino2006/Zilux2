@@ -403,6 +403,15 @@ to{opacity:1;transform:translateY(0) scale(1)}
 .daily-actions{display:flex;gap:10px;margin-top:12px}
 .daily-cover.is-empty{display:grid;place-items:center;color:var(--muted);border:1px dashed var(--line-strong);background:var(--surface)}
 .daily-card.is-empty .daily-deck{width:118px;height:118px}
+/* 首页「今日推荐 + 私人雷达」并排：私人雷达在今日推荐右侧，样式同源 */
+.home-daily-row{display:grid;grid-template-columns:minmax(0,1.04fr) minmax(0,1fr);gap:16px;align-items:stretch}
+.home-daily-row > .daily-card{min-width:0}
+.home-daily-row .daily-card{min-height:184px;padding:18px 20px;gap:24px}
+.home-daily-row .daily-deck{width:132px;height:132px;margin-right:12px}
+.home-daily-row .daily-title{font-size:clamp(18px,1.3vw,22px)}
+.home-daily-row .daily-meta{font-size:12.5px}
+.home-daily-row .daily-actions{margin-top:10px}
+@media(max-width:1120px){.home-daily-row{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:900px){.daily-card{gap:20px;padding:16px}
 .daily-deck{width:122px;height:122px;margin-right:14px}
 }
