@@ -135,6 +135,111 @@ export function currentTheme(): ThemeName {
 }
 
 /* -------------------------------------------------------------------------- */
+/* 控制色（整站主题色）                                                        */
+/* -------------------------------------------------------------------------- */
+
+const ACCENT_KEY = 'zilux2.accentColor';
+
+/** 用户可自定义的「控制色」预设；空串 = 跟随当前主题默认金色。 */
+export const ACCENT_PRESETS: ReadonlyArray<{ label: string; color: string }> = [
+  { label: '默认金', color: '' },
+  { label: '樱粉', color: '#d98aa4' },
+  { label: '薄荷', color: '#5fb99f' },
+  { label: '天青', color: '#6f9fd8' },
+  { label: '薰衣草', color: '#9182cc' },
+  { label: '杏橙', color: '#d69a5e' },
+  { label: '朱砂', color: '#d06a63' },
+  { label: '青瓷', color: '#5aa8b8' },
+];
+
+/** 控制色会覆盖的语义令牌（顺序即声明顺序，重置时按主题令牌还原）。 */
+const ACCENT_TOKENS = [
+  '--accent',
+  '--accent-strong',
+  '--accent-soft',
+  '--accent-contrast',
+  '--bg',
+  '--bg-soft',
+  '--panel-solid',
+] as const;
+
+type Rgb = [number, number, number];
+
+function parseHexRgb(hex: string): Rgb | null {
+  const match = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!match) return null;
+  const value = Number.parseInt(match[1], 16);
+  return [(value >> 16) & 0xff, (value >> 8) & 0xff, value & 0xff];
+}
+
+function rgbToHex([r, g, b]: Rgb): string {
+  const toHex = (v: number): string => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0');
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+function mixRgb(from: Rgb, to: Rgb, amount: number): Rgb {
+  return [from[0] + (to[0] - from[0]) * amount, from[1] + (to[1] - from[1]) * amount, from[2] + (to[2] - from[2]) * amount];
+}
+
+function rgbLuma([r, g, b]: Rgb): number {
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+}
+
+/** 读取已保存的控制色（'' = 跟随主题默认）。 */
+export function readAccentColor(): string {
+  try {
+    const raw = localStorage.getItem(ACCENT_KEY) ?? '';
+    const rgb = parseHexRgb(raw);
+    return rgb ? rgbToHex(rgb) : '';
+  } catch {
+    return '';
+  }
+}
+
+/** 保存控制色；传 '' 表示恢复当前主题默认色。 */
+export function writeAccentColor(hex: string): void {
+  try {
+    if (parseHexRgb(hex)) localStorage.setItem(ACCENT_KEY, rgbToHex(parseHexRgb(hex) as Rgb));
+    else localStorage.removeItem(ACCENT_KEY);
+  } catch {
+    /* 忽略隐私模式写入失败 */
+  }
+}
+
+/**
+ * 应用控制色：一个颜色统一驱动按钮/高亮/描边，并给页面底色混一点同色相，
+ * 保证整站"同一个控制色"而不会把文字对比度拉坏。
+ */
+export function applyAccentColor(hex: string): void {
+  const root = document.documentElement;
+  const theme = THEMES[currentTheme()] ?? THEMES.light;
+  const rgb = parseHexRgb(hex);
+  const reset = (): void => {
+    for (const key of ACCENT_TOKENS) {
+      root.style.removeProperty(key);
+      const base = theme.tokens[key];
+      if (base) root.style.setProperty(key, base);
+    }
+  };
+  if (!rgb) {
+    reset();
+    return;
+  }
+  const light = currentTheme() === 'light';
+  const baseBg = parseHexRgb(theme.tokens['--bg'] ?? '#f3f1ea') ?? [243, 241, 234];
+  const baseBgSoft = parseHexRgb(theme.tokens['--bg-soft'] ?? '#eae7de') ?? [234, 231, 222];
+  const basePanel = parseHexRgb(theme.tokens['--panel-solid'] ?? '#ffffff') ?? [255, 255, 255];
+  const strong = light ? mixRgb(rgb, [255, 255, 255], 0.18) : mixRgb(rgb, [0, 0, 0], 0.18);
+  root.style.setProperty('--accent', rgbToHex(rgb));
+  root.style.setProperty('--accent-strong', rgbToHex(strong));
+  root.style.setProperty('--accent-soft', `rgba(${Math.round(rgb[0])}, ${Math.round(rgb[1])}, ${Math.round(rgb[2])}, 0.18)`);
+  root.style.setProperty('--accent-contrast', rgbLuma(rgb) > 0.62 ? '#1b1d23' : '#fffaf0');
+  root.style.setProperty('--bg', rgbToHex(mixRgb(baseBg, rgb, light ? 0.028 : 0.12)));
+  root.style.setProperty('--bg-soft', rgbToHex(mixRgb(baseBgSoft, rgb, light ? 0.034 : 0.14)));
+  root.style.setProperty('--panel-solid', rgbToHex(mixRgb(basePanel, rgb, light ? 0.016 : 0.1)));
+}
+
+/* -------------------------------------------------------------------------- */
 /* 组件样式接口                                                                */
 /* -------------------------------------------------------------------------- */
 

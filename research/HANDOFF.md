@@ -191,6 +191,8 @@ powershell -File tools/release.ps1 -DryRun   # 演练；去掉 -DryRun 真发版
 
 - 2026-10-25 第十七轮（**本地记录、未推送**，按用户要求「先不同步 hub」）：①rail「我喜欢的音乐」「最近播放」支持双击直接播放（单击仍只进页面，title 提示「双击直接播放」，`playRailList()` 进页后整列表播放）；②歌词页右上角关闭按钮在顶部窗口栏展开（`.app.is-topbar-peek`）时下移 58px 避让，不再被窗口按钮遮挡；③播放条「下一首」胶囊收窄（标题/歌手限 120px）；④待播队列面板新增每行「上移 / 下移 / 移出队列（跳过）」按钮与提示，`player.ts` 新增 `moveQueueItem()/removeQueueItem()`（移动/移除后自动重新准备无缝衔接）。详见 `research/UPDATES-2026-10-25.md` §19、§20。远端 main 仍停在 `5e596ef`。
 
+- 2026-10-25 第十八轮（**本地记录、未推送**，按用户要求「先不同步 hub」）：整站主题自定义——①控制色：设置→外观新增「主题配色」色板（默认金 + 7 个预设 + 自定义取色器），一个颜色统一驱动按钮/高亮/进度条/选中态，并给页面底色混入约 3% 同色相（`web/src/ui/theme.ts` 新增 `ACCENT_PRESETS`/`readAccentColor`/`writeAccentColor`/`applyAccentColor`，键 `zilux2.accentColor`）；②页面背景：设置→外观新增「页面背景」三档（关闭/跟随封面/自定义图片）+ 选择图片…，自定义图片自动压缩到最长边 1600px、JPEG 0.82 存 `zilux2.appBgImage`（`web/src/ui/appBackground.ts`，旧开关 `zilux2.appCoverBg` 自动迁移；image 模式无播放也显示）。详见 `research/UPDATES-2026-10-25.md` §21。远端 main 仍停在 `5e596ef`。
+
 ## 9. 版本与发版节奏（约定）
 
 - 版本号只递增第三位（patch）：`1.1.x`；小修小补也**不要**跳到 `1.2.0`。
