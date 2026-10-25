@@ -131,6 +131,8 @@ import { openLyricPicker } from './lyricPicker';
 import { openTextSettingsSheet } from './textSettingsPanel';
 import { openRoomSettingsSheet } from './roomSettingsPanel';
 import { readPosterLayout, writePosterLayout, type PosterLayout } from './posterLayout';
+import { ACCENT_PRESETS, applyAccentColor, readAccentColor, writeAccentColor } from './theme';
+import { pickBackgroundImageFile, readAppBgImage, readAppBgMode, writeAppBgImage, writeAppBgMode, type AppBgMode } from './appBackground';
 import {
   UPDATE_STATE_TEXT,
   cancelUpdate,
@@ -182,17 +184,6 @@ function formatPlays(value: number): string {
 }
 
 const WINDOW_ICON = { minimize: 'minimize', maximize: 'maximize', close: 'close' } as const;
-
-const APP_BG_KEY = 'zilux2.appCoverBg';
-
-/** 是否用当前歌曲封面做整个界面的模糊背景（默认开启）。 */
-function readAppBgOn(): boolean {
-  try {
-    return localStorage.getItem(APP_BG_KEY) !== '0';
-  } catch {
-    return true;
-  }
-}
 
 export class App {
   readonly root: HTMLDivElement;
@@ -310,7 +301,8 @@ export class App {
   private lastQualityKey = '';
   private downloadQuickView: DownloadQueueView | null = null;
   private hostCommandBound = false;
-  private appBgOn = readAppBgOn();
+  private appBgMode: AppBgMode = readAppBgMode();
+  private appBgImage = readAppBgImage();
   private appBgEl!: HTMLDivElement;
   private appBgLayers: HTMLDivElement[] = [];
   private appBgLayer = 0;
@@ -320,6 +312,8 @@ export class App {
   private readonly disposers = new Disposers();
 
   constructor() {
+    // 控制色是整站主题的一部分：先按本机保存的颜色覆盖语义令牌，再建界面。
+    applyAccentColor(readAccentColor());
     this.root = h('div', { class: 'app' });
     this.appBgEl = h('div', { class: 'app-bg' });
     // 每层写成「淡入淡出壳 + 固定模糊图片」：透明度动画在外层、模糊在内层，
@@ -340,6 +334,8 @@ export class App {
     this.buildUpNext();
     this.upNextToast = createUpNextToast(() => next());
     this.root.append(this.upNextToast.element);
+    // 自定义图片背景不依赖正在播放的歌曲，构造完成即可铺上。
+    if (this.appBgMode === 'image') this.paintAppBg(null);
   }
 
   /* ------------------------------------------------------------------ */
@@ -2460,6 +2456,8 @@ export class App {
           settings.appearance.playerBarExpanded,
           (value) => patchSettings({ appearance: { playerBarExpanded: value } }),
         ),
+        this.buildAccentField(),
+        this.buildPageBackgroundField(),
       );
 
       // 播放
@@ -4183,7 +4181,7 @@ export class App {
       const bgThumb = h('div', { class: 'quick-seg-thumb' });
       const bgBtns: HTMLButtonElement[] = [];
       const paintBg = (): void => {
-        const index = this.appBgOn ? 1 : 0;
+        const index = this.appBgMode === 'none' ? 0 : 1;
         const button = bgBtns[index];
         if (!button) return;
         bgThumb.style.width = `${button.offsetWidth}px`;
@@ -4771,48 +4769,176 @@ export class App {
 
   /** 面板打开时跟随播放状态刷新：封面/歌词只在切歌或切 tab 时重建，避免图片反复重载闪烁。 */
   private paintAppBg(track: OnlineTrack | null): void {
-    if (!track || !this.appBgOn) {
-      // 先只摘类名让 opacity 过渡跑完，真正隐藏交给 setAppBg 里的延时
+    const mode = this.appBgMode;
+    if (mode === 'none') {
+      // 先只摘类名让 opacity 过渡跑完，真正隐藏交给 setBackgroundMode 里的延时
+      this.root.classList.remove('is-app-bg');
+      return;
+    }
+    // 跟随封面时必须先有正在播放的歌；自定义图片则随时可以铺。
+    const source = mode === 'image' ? this.appBgImage : track ? onlineArtwork(track) : '';
+    if (!source) {
       this.root.classList.remove('is-app-bg');
       return;
     }
     this.appBgEl.style.display = '';
-    const bgKey = `${track.source}:${track.id}:${track.cover ?? ''}`;
+    const bgKey =
+      mode === 'image'
+        ? `image:${source.length}:${source.slice(-28)}`
+        : `${track?.source ?? ''}:${track?.id ?? ''}:${track?.cover ?? ''}`;
     if (bgKey !== this.appBgKey) {
       // 双层交替：新图先铺到隐藏层，再交叉淡入淡出，避免切歌时背景硬切
       const next = this.appBgLayers[1 - this.appBgLayer];
       const prev = this.appBgLayers[this.appBgLayer];
       const image = next.firstElementChild;
       if (image instanceof HTMLElement) {
-        image.style.backgroundImage = `url("${onlineArtwork(track)}")`;
+        image.style.backgroundImage = `url("${source}")`;
       }
       next.classList.add('is-on');
       prev.classList.remove('is-on');
       this.appBgLayer = 1 - this.appBgLayer;
       this.appBgKey = bgKey;
     }
-    this.root.classList.toggle('is-app-bg', this.appBgOn);
+    this.root.classList.add('is-app-bg');
   }
 
-  private setAppBg(on: boolean): void {
-    this.appBgOn = on;
-    try {
-      localStorage.setItem(APP_BG_KEY, on ? '1' : '0');
-    } catch {
-      /* 忽略隐私模式写入失败 */
-    }
-    if (on) {
+  /**
+   * 设置整站背景模式（关闭 / 跟随封面 / 自定义图片）。
+   * 图片模式没有图片时会自动回落到跟随封面，避免设置里写着"自定义图片"却什么都没有。
+   */
+  private setBackgroundMode(mode: AppBgMode): void {
+    this.appBgMode = mode;
+    writeAppBgMode(mode);
+    if (mode !== 'none') {
       window.clearTimeout(this.appBgHideTimer);
       this.appBgEl.style.display = '';
     }
     this.paintAppBg(playerState().track);
-    if (!on) {
+    if (mode === 'none') {
       // 等淡出动画走完（0.7s）再真正摘掉背景层，保证关闭时也有过渡
       window.clearTimeout(this.appBgHideTimer);
       this.appBgHideTimer = window.setTimeout(() => {
-        if (!this.appBgOn) this.appBgEl.style.display = 'none';
+        if (this.appBgMode === 'none') this.appBgEl.style.display = 'none';
       }, 760);
     }
+  }
+
+  /** 打开文件选择器更换自定义背景图片；成功后切到图片模式。 */
+  private async pickBackgroundImage(): Promise<void> {
+    try {
+      const dataUrl = await pickBackgroundImageFile();
+      if (!dataUrl) return;
+      this.appBgImage = dataUrl;
+      writeAppBgImage(dataUrl);
+      this.setBackgroundMode('image');
+      this.appBgKey = '';
+      this.paintAppBg(playerState().track);
+      toast('背景图片已更新', 'info');
+    } catch (err) {
+      toast(err instanceof Error ? err.message : '背景图片读取失败', 'error');
+    }
+  }
+
+  /** 移除自定义背景图片；图片模式会回落到跟随封面。 */
+  private async clearBackgroundImage(): Promise<void> {
+    this.appBgImage = '';
+    writeAppBgImage('');
+    if (this.appBgMode === 'image') this.setBackgroundMode('cover');
+    this.paintAppBg(playerState().track);
+    toast('已移除自定义背景图片', 'info');
+  }
+
+  /** 快捷设置里的「背景」两段开关：关闭 / 跟随当前歌曲封面。 */
+  private setAppBg(on: boolean): void {
+    this.setBackgroundMode(on ? 'cover' : 'none');
+  }
+
+  /** 设置 → 外观：整站控制色（一个颜色统一驱动按钮/高亮/底色）。 */
+  private buildAccentField(): HTMLDivElement {
+    const swatches = h('div', { class: 'theme-swatches' });
+    const custom = h('input', { class: 'theme-color-input', type: 'color', value: readAccentColor() || '#a9803f' });
+    const customLabel = h('label', { class: 'theme-swatch is-custom', title: '自定义控制色' }, custom, h('span', { class: 'theme-swatch-plus', text: '+' }));
+    const paint = (): void => {
+      const saved = readAccentColor();
+      swatches.querySelectorAll<HTMLButtonElement>('.theme-swatch').forEach((button) => {
+        button.classList.toggle('is-on', (button.dataset.color ?? '') === saved);
+      });
+      custom.value = saved || '#a9803f';
+      customLabel.classList.toggle('is-on', saved !== '');
+    };
+    for (const preset of ACCENT_PRESETS) {
+      const button = h('button', { class: 'theme-swatch', type: 'button', title: preset.label });
+      button.dataset.color = preset.color;
+      button.style.setProperty('--swatch', preset.color || '#a9803f');
+      button.addEventListener('click', () => {
+        writeAccentColor(preset.color);
+        applyAccentColor(preset.color);
+        paint();
+      });
+      swatches.append(button);
+    }
+    custom.addEventListener('input', () => {
+      writeAccentColor(custom.value);
+      applyAccentColor(custom.value);
+      paint();
+    });
+    swatches.append(customLabel);
+    paint();
+    return h(
+      'div',
+      { class: 'field is-stacked' },
+      h('div', { class: 'field-label', text: '主题配色' }),
+      swatches,
+      h('div', { class: 'field-hint', text: '一个控制色统一驱动按钮、高亮、进度条与页面底色；默认金 = 跟随主题内置配色。' }),
+    );
+  }
+
+  /** 设置 → 外观：整站背景（关闭 / 跟随封面 / 自定义图片）。 */
+  private buildPageBackgroundField(): HTMLDivElement {
+    const seg = h('div', { class: 'seg' });
+    const status = h('span', { class: 'bg-image-status', text: '' });
+    const buttons: HTMLButtonElement[] = [];
+    const options: ReadonlyArray<{ value: AppBgMode; label: string }> = [
+      { value: 'none', label: '关闭' },
+      { value: 'cover', label: '跟随封面' },
+      { value: 'image', label: '自定义图片' },
+    ];
+    const refresh = (): void => {
+      const active = readAppBgMode();
+      buttons.forEach((button, index) => button.classList.toggle('is-on', options[index].value === active));
+      status.textContent = readAppBgImage() ? '已选择自定义图片' : '未选择图片';
+    };
+    for (const option of options) {
+      const button = h('button', { class: 'seg-btn', type: 'button', text: option.label });
+      button.addEventListener('click', () => {
+        if (option.value === 'image') {
+          if (readAppBgImage()) this.setBackgroundMode('image');
+          else void this.pickBackgroundImage().then(refresh);
+        } else {
+          this.setBackgroundMode(option.value);
+        }
+        refresh();
+      });
+      buttons.push(button);
+      seg.append(button);
+    }
+    const pick = h('button', { class: 'btn btn-sm', type: 'button', text: '选择图片…' });
+    pick.addEventListener('click', () => {
+      void this.pickBackgroundImage().then(refresh);
+    });
+    const clear = h('button', { class: 'btn btn-sm', type: 'button', text: '移除' });
+    clear.addEventListener('click', () => {
+      void this.clearBackgroundImage().then(refresh);
+    });
+    refresh();
+    return h(
+      'div',
+      { class: 'field is-stacked' },
+      h('div', { class: 'field-label', text: '页面背景' }),
+      seg,
+      h('div', { class: 'bg-image-row' }, pick, clear, status),
+      h('div', { class: 'field-hint', text: '关闭 = 纯页面底色；跟随封面 = 随当前歌曲封面模糊变化；自定义图片会压缩到 1600px 内保存到本机。' }),
+    );
   }
 
   private syncQuickBody(): void {
@@ -5086,7 +5212,7 @@ export class App {
           const now = playerState().track;
           if (!now || `${now.source}:${now.id}` !== trackKey) return;
           this.pbCover.src = onlineArtwork(track);
-          if (this.appBgOn) this.paintAppBg(track);
+          if (this.appBgMode !== 'none') this.paintAppBg(track);
           if (this.upnextCover && this.upnextTitle && this.upnextTitle.textContent) {
             const next = playerState().queue[playerState().index + 1];
             if (next && `${next.source}:${next.id}` === trackKey) this.upnextCover.src = onlineArtwork(next);
