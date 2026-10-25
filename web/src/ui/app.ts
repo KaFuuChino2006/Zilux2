@@ -2146,6 +2146,17 @@ export class App {
         this.confirmDeleteLocal([track]);
       });
 
+      // 封面：与海报网格同一套补图逻辑——没有内嵌封面时先去线上找一张，
+      // 找到后再回填，避免横条视图停在程序化渐变占位图上（网格会补、横条不补的 bug）。
+      const coverImg = h('img', { src: onlineArtwork(track), loading: 'lazy' });
+      if (!track.cover) {
+        void lookupCover(track).then((found) => {
+          if (!found) return;
+          track.cover = found;
+          coverImg.src = onlineArtwork(track);
+        });
+      }
+
       const row = h(
         'div',
         {
@@ -2154,7 +2165,7 @@ export class App {
           'data-track-key': key,
         },
         h('div', { class: 'track-index', text: String(index + 1).padStart(2, '0') }),
-        h('div', { class: 'track-cover' }, h('img', { src: onlineArtwork(track), loading: 'lazy' })),
+        h('div', { class: 'track-cover' }, coverImg),
         h(
           'div',
           { class: 'track-body' },
