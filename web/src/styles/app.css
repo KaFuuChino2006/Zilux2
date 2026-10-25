@@ -363,10 +363,11 @@ to{opacity:1;transform:translateY(0) scale(1)}
 .track-download:active{transform:scale(.92)}
 .track-download.is-disabled{opacity:.4;cursor:not-allowed}
 .track-download.is-busy{color:var(--accent)}
-.track-reveal,.track-del{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;border:1px solid transparent;border-radius:999px;background:transparent;color:var(--muted);cursor:pointer;transition:color .16s ease,background .16s ease,border-color .16s ease,transform .16s ease}
+.track-reveal,.track-del,.track-more{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;border:1px solid transparent;border-radius:999px;background:transparent;color:var(--muted);cursor:pointer;transition:color .16s ease,background .16s ease,border-color .16s ease,transform .16s ease}
 .track-reveal:hover{color:var(--accent);background:var(--surface-hover);border-color:var(--line)}
+.track-more:hover{color:var(--accent);background:var(--surface-hover);border-color:var(--line)}
 .track-del:hover{color:#e2566b;background:color-mix(in srgb,#e2566b 12%,transparent);border-color:color-mix(in srgb,#e2566b 34%,transparent)}
-.track-reveal:active,.track-del:active{transform:scale(.92)}
+.track-reveal:active,.track-del:active,.track-more:active{transform:scale(.92)}
 .poster-actions{position:absolute;top:10px;right:10px;z-index:2;display:flex;gap:6px;opacity:0;transform:translateY(-2px);transition:opacity .16s ease,transform .16s ease}
 .poster:hover .poster-actions,.poster:focus-within .poster-actions{opacity:1;transform:none}
 .poster-action{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:999px;border:1px solid rgb(var(--overlay-rgb) / .26);background:rgb(var(--ink-rgb) / .34);color:rgb(var(--overlay-rgb) / .95);cursor:pointer;backdrop-filter:blur(10px) saturate(1.2);-webkit-backdrop-filter:blur(10px) saturate(1.2);transition:background .16s ease,color .16s ease,border-color .16s ease}
@@ -997,6 +998,11 @@ to{opacity:1;transform:none}
 }
 .upnext-row{transition:background .18s var(--ease)}
 .upnext-row.is-selected{background:var(--accent-soft)}
+/* 待播队列拖拽排序：拖动中的行降透明度，落点用内阴影高亮 */
+.upnext-row.is-dragging{opacity:.45}
+.upnext-row.is-drop-before{box-shadow:inset 0 2px 0 var(--accent)}
+.upnext-row.is-drop-after{box-shadow:inset 0 -2px 0 var(--accent)}
+.upnext-list.is-drop-tail{box-shadow:inset 0 -2px 0 var(--accent)}
 .upnext-row:hover{background:rgb(var(--overlay-rgb) / .06)}
 .wall-grid .poster-name,.wall-grid .poster-artist,.wall-grid .poster-foot,.wall-grid .poster-badge,.ui-tile-name,.ui-tile-meta{text-shadow:none}
 .pb-title-line{display:flex;align-items:center;gap:6px;min-width:0}
@@ -5961,3 +5967,20 @@ html.is-pb-expanded .playerbar.is-hidden {
 .bg-image-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .bg-image-status{font-size:12px;color:var(--muted)}
 .btn.btn-sm{height:30px;padding:0 12px;border-radius:var(--radius-pill);font-size:12px}
+
+/* 本地曲目「更多操作」与本地歌单（本地收藏/歌单/标签集成） */
+.local-sheet-meta{padding:2px 2px 10px;display:flex;flex-direction:column;gap:3px}
+.local-sheet-meta .row-name{font-size:15px;font-weight:700;color:var(--text)}
+.local-sheet-actions{display:flex;flex-direction:column;gap:4px}
+.local-sheet-actions .local-sheet-action{display:flex;width:100%;align-items:center;gap:12px;padding:10px 12px;border-radius:14px;border:1px solid transparent;background:transparent;cursor:pointer;text-align:left;color:var(--text)}
+.local-sheet-actions .local-sheet-action:hover{background:var(--surface-hover);border-color:var(--line)}
+.local-sheet-icon{width:38px;height:38px;border-radius:11px;background:var(--surface);display:flex;align-items:center;justify-content:center;color:var(--accent);flex:none}
+.local-playlist-create{display:flex;gap:10px;align-items:center;margin:8px 0 14px}
+.local-playlist-create .search-input{flex:1;min-width:0}
+.local-playlist-name,.local-playlist-rename{width:100%}
+.local-playlist-cover{width:44px;height:44px;border-radius:11px;display:flex;align-items:center;justify-content:center;color:var(--muted);overflow:hidden}
+.local-playlist-cover img{width:100%;height:100%;object-fit:cover;display:block}
+.local-playlist-actions{display:flex;gap:6px;margin-left:auto;flex:none}
+.local-playlist-actions .icon-btn{color:var(--muted)}
+.local-playlist-actions .icon-btn:hover{color:var(--accent);background:var(--surface-hover);border-color:var(--line)}
+.local-playlist-login{display:flex;justify-content:center;padding:6px 0 14px}

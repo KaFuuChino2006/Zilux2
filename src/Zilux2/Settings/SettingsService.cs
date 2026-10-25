@@ -51,6 +51,30 @@ internal sealed class SettingsService : IDisposable
         }
     }
 
+    /// <summary>开机自启：是否把本程序注册进 HKCU\...\Run（由 App 启动时幂等 apply）。</summary>
+    internal bool AutoLaunch
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _state.General.AutoLaunch;
+            }
+        }
+    }
+
+    /// <summary>本地曲库目录自动监控开关（LocalMusicService.Watch 的启停依据）。</summary>
+    internal bool WatchLocalFolder
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _state.General.WatchLocalFolder;
+            }
+        }
+    }
+
     // Read by the audio feature service on its capture thread, so it must stay cheap and locked.
     internal bool AudioReactive
     {
@@ -152,6 +176,12 @@ internal sealed class SettingsService : IDisposable
     /// </summary>
     internal event Action? ShortcutsChanged;
 
+    /// <summary>
+    /// <c>general</c> 段被 patch/reset 后触发（开机自启 / 本地目录监控这类需要宿主立即生效的
+    /// 设置）。其它段的变化不触发；回调和 <see cref="ShortcutsChanged"/> 一样在锁外、可能在 UI 线程。
+    /// </summary>
+    internal event Action? GeneralChanged;
+
     internal static string ResolveDefaultPath()
     {
         var overridePath = Environment.GetEnvironmentVariable(PathOverrideEnvironmentVariable);
@@ -183,6 +213,7 @@ internal sealed class SettingsService : IDisposable
         }
 
         var shortcutsChanged = false;
+        var generalChanged = false;
         lock (_gate)
         {
             if (_disposed)
@@ -200,6 +231,7 @@ internal sealed class SettingsService : IDisposable
             HostLog.Info($"[settings] patch keys={string.Join(",", keys)}");
             MarkDirtyLocked();
             shortcutsChanged = keys.Exists(key => key.StartsWith("shortcuts.", StringComparison.Ordinal));
+            generalChanged = keys.Exists(key => key.StartsWith("general.", StringComparison.Ordinal));
         }
 
         // 回调放到锁外：监听方（MainWindow）会回头读 ShortcutsSnapshot 并注销/注册热键，
@@ -207,6 +239,11 @@ internal sealed class SettingsService : IDisposable
         if (shortcutsChanged)
         {
             RaiseShortcutsChanged();
+        }
+
+        if (generalChanged)
+        {
+            RaiseGeneralChanged();
         }
     }
 
@@ -227,6 +264,8 @@ internal sealed class SettingsService : IDisposable
 
         // reset 一定会把 shortcuts 段恢复成默认值，所以无条件通知重新注册。
         RaiseShortcutsChanged();
+        // general 段同理：开机自启 / 目录监控恢复到默认值。
+        RaiseGeneralChanged();
     }
 
     public void Dispose()
@@ -272,6 +311,25 @@ internal sealed class SettingsService : IDisposable
         {
             // 热键重注册失败不能影响设置保存/页面 ACK，只记日志。
             HostLog.Error("[settings] shortcuts changed handler failed", exception);
+        }
+    }
+
+    private void RaiseGeneralChanged()
+    {
+        var handler = GeneralChanged;
+        if (handler is null)
+        {
+            return;
+        }
+
+        try
+        {
+            handler();
+        }
+        catch (Exception exception)
+        {
+            // 开机自启 / 目录监控的即时应用失败也只记日志，不影响设置保存与页面 ACK。
+            HostLog.Error("[settings] general changed handler failed", exception);
         }
     }
 
@@ -374,7 +432,7 @@ internal sealed class SettingsService : IDisposable
 
     private static bool IsKnownField(string section, string name) => section switch
     {
-        "general" => name is "splash" or "startMaximized",
+        "general" => name is "splash" or "startMaximized" or "autoLaunch" or "watchLocalFolder",
         "appearance" => name is "theme" or "reduceMotion" or "glow" or "heroAutoRotate" or "lyricsSize",
         "playback" => name is "defaultSource" or "searchLimit" or "lyricsAutoOpen" or "volume" or "audioReactive"
             or "eqEnabled" or "eqPreset" or "eqGains" or "fadeEnabled" or "fadeMs"
@@ -458,6 +516,9 @@ internal sealed class SettingsService : IDisposable
         {
             state.General.Splash = ReadBool(general, "splash", state.General.Splash, "general.splash", keys);
             state.General.StartMaximized = ReadBool(general, "startMaximized", state.General.StartMaximized, "general.startMaximized", keys);
+            state.General.AutoLaunch = ReadBool(general, "autoLaunch", state.General.AutoLaunch, "general.autoLaunch", keys);
+            state.General.WatchLocalFolder = ReadBool(
+                general, "watchLocalFolder", state.General.WatchLocalFolder, "general.watchLocalFolder", keys);
         }
 
         if (TryGetObject(document, "appearance", out var appearance))

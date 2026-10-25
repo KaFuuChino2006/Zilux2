@@ -109,6 +109,8 @@ const ICONS: Record<string, string> = {
     '<path d="M5.4 7.4h13.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M9.2 7.4V5.9c0-.8.6-1.4 1.4-1.4h2.8c.8 0 1.4.6 1.4 1.4v1.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M7 7.4l.8 10.3c.1.9.8 1.5 1.7 1.5h5c.9 0 1.6-.6 1.7-1.5L17 7.4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M10.3 11v4.6M13.7 11v4.6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>',
   comment:
     '<path d="M4.6 6.2c0-.9.7-1.6 1.6-1.6h11.6c.9 0 1.6.7 1.6 1.6v8.2c0 .9-.7 1.6-1.6 1.6H9.4L5.4 19.2V6.2z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>',
+  more:
+    '<circle cx="6.2" cy="12" r="1.55" fill="currentColor"/><circle cx="12" cy="12" r="1.55" fill="currentColor"/><circle cx="17.8" cy="12" r="1.55" fill="currentColor"/>',
 };
 
 /** 生成 SVG 图标（16×16 viewBox 24，随 currentColor）。 */

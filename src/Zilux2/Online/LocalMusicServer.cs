@@ -9,9 +9,11 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using Zilux2.Analysis;
+using Zilux2.Local;
 using Zilux2.Online.Account;
 using Zilux2.Online.Discover;
 using Zilux2.Online.Library;
@@ -71,6 +73,12 @@ internal sealed class LocalMusicServer : IDisposable
     }
 
     public int Port { get; private set; }
+
+    /// <summary>本地曲目相对路径 → 绝对路径（由 OnlineMusicService 接到 LocalMusicService.ResolveTrackPath）。</summary>
+    internal Func<string?, string?>? LocalPathResolver { get; set; }
+
+    /// <summary>本地文件被宿主改写后的刷新回调（/api/local/tag 写成功时触发）。</summary>
+    internal Action<string>? LocalFileChanged { get; set; }
 
     public int Start()
     {
@@ -225,6 +233,13 @@ internal sealed class LocalMusicServer : IDisposable
                 "/api/downloads" => isGet ? WriteDownloads(context) : MethodNotAllowed(context),
                 "/api/download" => isPost ? await HandleDownloadStartAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/download/reveal" => isPost ? await HandleDownloadRevealAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
+                // 下载队列控制（内存队列）：暂停 / 继续 / 取消单任务 / 清空已完成。
+                "/api/download/pause" => isPost ? await HandleDownloadJobControlAsync(context, "pause").ConfigureAwait(false) : MethodNotAllowed(context),
+                "/api/download/resume" => isPost ? await HandleDownloadJobControlAsync(context, "resume").ConfigureAwait(false) : MethodNotAllowed(context),
+                "/api/download/cancel" => isPost ? await HandleDownloadJobControlAsync(context, "cancel").ConfigureAwait(false) : MethodNotAllowed(context),
+                "/api/download/clear" => isPost ? HandleDownloadClear(context) : MethodNotAllowed(context),
+                // 本地曲目标签写入（Windows Property System，契约 docs/zilux2-host-contract.md §16）。
+                "/api/local/tag" => isPost ? await HandleLocalTagAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/account" => isGet ? WriteAccount(context) : MethodNotAllowed(context),
                 "/api/account/login/qr" => isPost ? await HandleAccountLoginQrAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/account/login/status" => isGet ? await HandleAccountLoginStatusAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
@@ -2331,6 +2346,292 @@ internal sealed class LocalMusicServer : IDisposable
 
         WriteJson(context, 200, "{\"ok\":true}");
         return 200;
+    }
+
+    /// <summary>POST /api/download/{pause|resume|cancel}：body {id}，成功统一回 {"ok":true}。</summary>
+    private async Task<int> HandleDownloadJobControlAsync(HttpListenerContext context, string action)
+    {
+        if (!ValidateToken(context.Request))
+        {
+            return WriteUnauthorized(context);
+        }
+
+        var service = _download;
+        if (service is null)
+        {
+            return WriteError(context, 501, "unsupported", "当前宿主没有启用下载");
+        }
+
+        var body = await ReadBodyAsync(context.Request, 8 * 1024).ConfigureAwait(false);
+        var jobId = string.Empty;
+        if (body is not null)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(body);
+                jobId = ReadString(document.RootElement, "id");
+            }
+            catch (JsonException)
+            {
+                return WriteError(context, 400, "bad-request", "请求内容不是合法 JSON");
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(jobId))
+        {
+            return WriteError(context, 400, "bad-request", "缺少 id");
+        }
+
+        var ok = action switch
+        {
+            "pause" => service.Pause(jobId),
+            "resume" => service.Resume(jobId),
+            _ => service.Cancel(jobId),
+        };
+        if (!ok)
+        {
+            return WriteError(context, 404, "not-found", "找不到该下载任务或任务已结束");
+        }
+
+        WriteJson(context, 200, "{\"ok\":true}");
+        return 200;
+    }
+
+    /// <summary>POST /api/download/clear：只把已完成/失败任务移出内存列表，不删磁盘文件。</summary>
+    private int HandleDownloadClear(HttpListenerContext context)
+    {
+        if (!ValidateToken(context.Request))
+        {
+            return WriteUnauthorized(context);
+        }
+
+        var service = _download;
+        if (service is null)
+        {
+            return WriteError(context, 501, "unsupported", "当前宿主没有启用下载");
+        }
+
+        var cleared = service.ClearFinished();
+        WriteJson(context, 200, "{\"ok\":true,\"cleared\":" + cleared.ToString(CultureInfo.InvariantCulture) + "}");
+        return 200;
+    }
+
+    /// <summary>
+    /// POST /api/local/tag：写本地曲目元数据（Windows Property System）。
+    /// body {rel,title?,artist?,album?,albumArtist?,track?,year?}；省略=不改，空串/null=清空。
+    /// 成功 {"ok":true,"fields":{...}}；文件存在但属性系统写不了 -> HTTP 200 {"ok":false,"error":...}。
+    /// </summary>
+    private async Task<int> HandleLocalTagAsync(HttpListenerContext context)
+    {
+        if (!ValidateToken(context.Request))
+        {
+            return WriteUnauthorized(context);
+        }
+
+        var resolver = LocalPathResolver;
+        if (resolver is null)
+        {
+            return WriteError(context, 501, "unsupported", "当前宿主没有接入本地曲库");
+        }
+
+        var body = await ReadBodyAsync(context.Request, 32 * 1024).ConfigureAwait(false);
+        if (body is null)
+        {
+            return WriteError(context, 400, "bad-request", "缺少请求内容");
+        }
+
+        JsonDocument document;
+        try
+        {
+            document = JsonDocument.Parse(body);
+        }
+        catch (JsonException)
+        {
+            return WriteError(context, 400, "bad-request", "请求内容不是合法 JSON");
+        }
+
+        using (document)
+        {
+            var root = document.RootElement;
+            var rel = ReadString(root, "rel");
+            if (string.IsNullOrWhiteSpace(rel))
+            {
+                return WriteError(context, 400, "bad-request", "缺少 rel");
+            }
+
+            string? path;
+            try
+            {
+                path = resolver(rel);
+            }
+            catch (Exception exception)
+            {
+                HostLog.Warn($"[tag] resolve failed rel={rel}: {exception.Message}");
+                path = null;
+            }
+
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            {
+                return WriteError(context, 404, "not-found", "找不到本地曲目文件");
+            }
+
+            var textFields = new Dictionary<string, string?>(StringComparer.Ordinal);
+            foreach (var name in new[] { "title", "artist", "album", "albumArtist" })
+            {
+                if (TryReadTextField(root, name, out var text))
+                {
+                    textFields[name] = text;
+                }
+            }
+
+            var numberFields = new Dictionary<string, uint?>(StringComparer.Ordinal);
+            var badNumber = false;
+            foreach (var name in new[] { "track", "year" })
+            {
+                if (!TryReadNumberField(root, name, out var number, out var invalid))
+                {
+                    continue;
+                }
+
+                if (invalid)
+                {
+                    badNumber = true;
+                }
+
+                numberFields[name] = number;
+            }
+
+            if (badNumber)
+            {
+                return WriteError(context, 400, "bad-request", "track/year 需要数字或数字字符串");
+            }
+
+            if (textFields.Count == 0 && numberFields.Count == 0)
+            {
+                return WriteError(context, 400, "bad-request", "没有需要写入的字段");
+            }
+
+            var result = LocalTagWriter.Write(path, textFields, numberFields);
+            if (result.Ok)
+            {
+                NotifyLocalFileChanged(path);
+                WriteJson(context, 200, BuildTagSuccessJson(result.Fields));
+            }
+            else
+            {
+                WriteJson(context, 200, BuildTagFailureJson(result.Error ?? "写入标签失败"));
+            }
+
+            return 200;
+        }
+    }
+
+    private static string BuildTagSuccessJson(IReadOnlyDictionary<string, object?>? fields)
+    {
+        var values = new JsonObject();
+        foreach (var pair in fields ?? new Dictionary<string, object?>())
+        {
+            values[pair.Key] = pair.Value switch
+            {
+                string text => JsonValue.Create(text),
+                uint number => JsonValue.Create(number),
+                _ => null,
+            };
+        }
+
+        return new JsonObject { ["ok"] = true, ["fields"] = values }.ToJsonString();
+    }
+
+    private static string BuildTagFailureJson(string error) =>
+        new JsonObject { ["ok"] = false, ["error"] = error }.ToJsonString();
+
+    private void NotifyLocalFileChanged(string path)
+    {
+        var callback = LocalFileChanged;
+        if (callback is null)
+        {
+            return;
+        }
+
+        try
+        {
+            callback(path);
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[tag] refresh callback failed: {exception.Message}");
+        }
+    }
+
+    /// <summary>字段存在且为字符串/null 才处理；null 或空串都表示清空，其他类型忽略并保留原值。</summary>
+    private static bool TryReadTextField(JsonElement root, string name, out string? value)
+    {
+        value = null;
+        if (!root.TryGetProperty(name, out var element))
+        {
+            return false;
+        }
+
+        if (element.ValueKind == JsonValueKind.Null)
+        {
+            return true;
+        }
+
+        if (element.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        value = element.GetString() ?? string.Empty;
+        return true;
+    }
+
+    /// <summary>数字字段容错：number / 数字字符串 / null（清空）都接受，其他类型标记 invalid。</summary>
+    private static bool TryReadNumberField(JsonElement root, string name, out uint? value, out bool invalid)
+    {
+        value = null;
+        invalid = false;
+        if (!root.TryGetProperty(name, out var element))
+        {
+            return false;
+        }
+
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Null:
+                return true;
+            case JsonValueKind.Number:
+                if (element.TryGetUInt32(out var number))
+                {
+                    value = number;
+                }
+                else
+                {
+                    invalid = true;
+                }
+
+                return true;
+            case JsonValueKind.String:
+                var text = element.GetString();
+                if (string.IsNullOrWhiteSpace(text))
+                {
+                    return true;
+                }
+
+                if (uint.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+                {
+                    value = parsed;
+                }
+                else
+                {
+                    invalid = true;
+                }
+
+                return true;
+            default:
+                invalid = true;
+                return true;
+        }
     }
 
     private int WriteHealth(HttpListenerContext context)

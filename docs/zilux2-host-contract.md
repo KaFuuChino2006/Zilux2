@@ -71,6 +71,7 @@ E:\Zilux2开发\
 ```jsonc
 {"v":1,"type":"ready"}
 {"v":1,"type":"window","action":"minimize" | "toggleMaximize" | "close"}
+{"v":1,"type":"window","action":"miniMode","enabled":true|false,"width":420,"height":120}  // 迷你播放器（§15）
 {"v":1,"type":"drag"}                       // 页面在无边框标题区 pointerdown 时发；宿主用 ReleaseCapture+WM_NCLBUTTONDOWN(HTCAPTION) 进入系统拖拽
 {"v":1,"type":"log","level":"info"|"warn"|"error","message":"..."}
 ```
@@ -80,6 +81,7 @@ E:\Zilux2开发\
 ```jsonc
 {"v":1,"type":"host","event":"ready","version":"0.1.0","maximized":false}
 {"v":1,"type":"host","event":"windowState","maximized":false}
+{"v":1,"type":"window","event":"miniMode","enabled":false}   // 迷你播放器状态（§15）
 ```
 
 约定：未知 `type` 忽略；单条消息 ≤ 64KB；不使用 `AddHostObjectToScript`；页面在非 WebView2 环境（浏览器直开）必须也能工作（`bridge.ts` 自动降级）。
@@ -274,3 +276,91 @@ WinRT 不可用或初始化失败时记一次 `[smtc] unavailable: <类型>: <�
 - `state` ∈ `idle` / `checking` / `up-to-date` / `available` / `downloading` / `downloaded` / `installing` / `error` / `unavailable`。
 - 页面 `ready` 后宿主立即推送一次当前快照，此后任何状态变化都推送完整快照。
 - 详细字段、宿主行为（下载目录 / digest 校验 / 安装参数）、设置字段与发版流程见 `docs/zilux2-update-channel.md`；设置字段见 `docs/zilux2-settings-contract.md` §2。
+
+
+## 14. 附加：在线下载队列控制（download control v1）
+
+> 2026-10-25 新增；前端调用方 `web/src/ui/downloadQueue.ts`。队列只存在宿主内存里，不跨进程持久化。
+
+### 14.1 端点总览
+
+所有端点都在在线服务回环地址（`http://127.0.0.1:<port>`）上，与既有 `/api/download` 同一鉴权：query 必须带 `token=<Endpoint.Token>`（由 `online` host 消息下发）。
+
+| 方法 | 路径 | body | 成功响应 | 说明 |
+| --- | --- | --- | --- | --- |
+| GET | `/api/downloads` | — | `{"directory":"D:\\Music","jobs":[DownloadJob...]}` | 队列快照（按 startedAt 倒序，最多 30 条） |
+| POST | `/api/download` | `{"source","trackId","title","artist","quality"}` | `{"directory":"...","job":{...}}` | 新建下载（已有） |
+| POST | `/api/download/pause` | `{"id":"<jobId>"}` | `{"ok":true}` | 暂停（保留 received/total） |
+| POST | `/api/download/resume` | `{"id":"<jobId>"}` | `{"ok":true}` | 继续 |
+| POST | `/api/download/cancel` | `{"id":"<jobId>"}` | `{"ok":true}` | 取消单任务（列表项保留，state=error、error="已取消"） |
+| POST | `/api/download/clear` | — | `{"ok":true,"cleared":<n>}` | 把 done/error 任务移出内存列表，**不删磁盘文件** |
+| POST | `/api/download/reveal` | `{"id":"<jobId>"}` | `{"ok":true}` | 资源管理器选中已完成文件（已有） |
+
+`DownloadJob` 字段：`id` / `source` / `trackId` / `title` / `artist` / `quality` / `state` / `received` / `total` / `fileName` / `path?` / `error?` / `startedAt`。
+其中 `state` ∈ `running` / `paused` / `done` / `error`；`paused` 时 `received`/`total` 保留，前端据此显示进度与「继续 / 取消」按钮。
+
+### 14.2 错误
+
+- token 缺失/错误：`401 {"error":"unauthorized","message":"缺少或无效的 token"}`
+- 宿主未启用下载服务：`501 {"error":"unsupported","message":"当前宿主没有启用下载"}`
+- 请求体缺失 / 非法 JSON / `id` 为空：`400 {"error":"bad-request","message":"..."}`
+- 找不到任务或任务已结束（pause / resume / cancel）：`404 {"error":"not-found","message":"找不到该下载任务或任务已结束"}`
+- 前端按「HTTP 4xx/5xx + `error` 字段」统一 toast。
+
+### 14.3 行为与限制
+
+- 暂停：下载循环在每个读/写块之间等待恢复信号，暂停期间不继续写盘；磁盘上保留 `.part`，恢复后继续写同一文件。
+- 取消：任务从 running/paused 变为 error（`error:"已取消"`），`.part` 被删除；已完成的文件不会被删。
+- 清空已完成：只清内存列表（最多保留 40 条，超出时按 startedAt 淘汰最旧的已完成项）；磁盘文件始终保留。
+- 宿主重启后列表为空，未完成的 `.part` 不会自动续传（降级：v1 不支持断点续传）。
+- 日志前缀 `[download]`：`paused` / `resumed` / `canceled` / `cleared N finished jobs`。
+
+
+## 15. 附加：迷你播放器模式（window.miniMode v1）
+
+页面 → 宿主（复用 §3.4 的 `window` 消息通道）：
+
+```jsonc
+{"v":1,"type":"window","action":"miniMode","enabled":true,"width":420,"height":120}
+{"v":1,"type":"window","action":"miniMode","enabled":false}
+```
+
+- `enabled` 必填（布尔）；`width` / `height` 可选（DIP 浮点，缺省 420×120；宽度钳到 360–1600，高度 100–900）。
+- 开启：宿主保存当前窗口 rect / WindowState / Topmost / MinWidth / MinHeight，切到紧凑尺寸（临时把 MinWidth 降到 360）、置顶、吸附到当前显示器工作区右下角（安全边距 12 DIP），保持无边框圆角与 6 px 可缩放边条。
+- 关闭：按保存值精确还原尺寸/位置/最大化状态/Topmost，并恢复原 MinWidth/MinHeight。
+- 切换成功后宿主 → 页面：
+
+```jsonc
+{"v":1,"type":"window","event":"miniMode","enabled":true}
+```
+
+- 同一状态重复发指令是幂等的（只补推一次事件）；页面 `ready` 时若宿主正处于 mini 态，宿主会立即补推一次 `enabled:true`（页面导航回来后据此渲染迷你布局）。
+- mini 态下 §3.4 的 `drag`（标题栏拖拽）与 `resize`（边缘缩放）仍可用；页面自行渲染迷你布局并留出可拖拽区域（建议顶部整条 `drag` 热区）。
+- 日志：`window.miniMode enabled rect=.. size=..`、`window.miniMode disabled restored=..`。
+- 降级：窗口尚未创建（hwnd=0）时宿主改用 WPF 的 Left/Top/Width/Height 兜底；没有任何可还原 rect 时退回普通状态。
+
+
+## 16. 附加：本地曲目标签写入（/api/local/tag v1）
+
+`POST /api/local/tag?token=<token>`（UTF-8 JSON body ≤ 32KB）：
+
+```json
+{"rel":"@downloads/晴天.mp3","title":"晴天","artist":"周杰伦","album":"叶惠美","albumArtist":"周杰伦","track":3,"year":2003}
+```
+
+- `rel`（必填）：本地曲库相对路径，与 `/api/local/*` 的 `rel` 同源（`LocalMusicService.ResolveTrackPath`：普通曲库相对路径或 `@downloads/` 前缀）。
+- `title` / `artist` / `album` / `albumArtist`：字符串，可省略（=不改该字段）；`null` 或 `""` =清空该字段；其他类型忽略（不改）。
+- `track` / `year`：数字（也接受数字字符串与 `null`）；其他类型 → 400。
+- 至少给一个要写的字段，否则 400。
+- 写入使用 Windows Property System（`SHGetPropertyStoreFromParsingName` + `IPropertyStore.SetValue/Commit`），属性：`System.Title`、`System.Music.Artist`、`System.Music.AlbumTitle`、`System.Music.AlbumArtist`、`System.Music.TrackNumber`、`System.Media.Year`。**不写封面**（v1 降级）。
+- 成功后回读 6 个字段、`SHChangeNotify` 通知资源管理器，并让宿主刷新曲库缓存/视图：
+
+```json
+{"ok":true,"fields":{"title":"晴天","artist":"周杰伦","album":"叶惠美","albumArtist":"周杰伦","track":3,"year":2003}}
+```
+
+- 文件存在但属性系统写不了（格式无标签处理器、只读、被占用等）：HTTP 200 + `{"ok":false,"error":"提交标签失败（0x80070021）：文件可能只读、正在被占用或格式不支持写入"}`，页面直接 toast `error`。
+- `rel` 解析不到或文件不存在：`404 {"error":"not-found","message":"找不到本地曲目文件"}`；请求非法：`400 {"error":"bad-request",...}`；token 错：`401`；宿主未接入本地曲库：`501`。
+- 格式支持取决于系统属性处理器：MP3 / FLAC / M4A(AAC/ALAC) / WAV 一般可写；DSF / APE / OGG / OPUS / WMA / AIFF 可能失败（返回上面的 `ok:false`）。
+- 日志前缀 `[tag]`：`wrote <文件名>` / `refreshed track ...` / `resolve failed ...`。
+

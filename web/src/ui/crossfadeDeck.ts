@@ -13,6 +13,10 @@
  *   与暂停淡出的「人声保留淡出」一致。
  * - 节拍对齐用 WSOLA 变速不变调：把 B 的 playbackRate 设为 A/B 的拍间隔比（±12% 内），
  *   配合 preservesPitch（Chromium 原生时间拉伸），淡化期间两首鼓点保持同拍，结束后速率平滑回 1。
+ * - Phase 2 扩展：同一引擎还负责「手动切歌」（next/prev/点列表，1.2–2.0 秒等功率短过渡，B 从
+ *   0 起播、不等节拍分析）与「单曲循环曲尾重启」（淡出→同曲淡入，B 从头播）。这两类过渡共用
+ *   cancel/commit 状态机与 seek 取消逻辑；玩家倍速（0.5–2.0）作为 deck 基础速率参与，过渡结束后
+ *   B 恢复用户倍速，WSOLA tempoRate 只在检测器允许时叠加在自动衔接上。
  */
 
 import {
@@ -84,6 +88,12 @@ const TILT_MAX_DB = 9;
 const TRIGGER_LEAD_MS = 120;
 /** 已经越过淡化起点超过这个量就放弃本次衔接（回退硬切）。 */
 const MISS_TOLERANCE_MS = 900;
+
+/** 手动切歌 / 单曲循环的短过渡：1.2–2.0 秒等功率，不做节拍分析、不做 BPM 对齐。 */
+const MANUAL_FADE_MIN_MS = 1_200;
+const MANUAL_FADE_MAX_MS = 2_000;
+/** player 手动切歌默认使用的过渡时长（毫秒）。 */
+export const MANUAL_FADE_DEFAULT_MS = 1_500;
 
 function normalizeLength(value: unknown): CrossfadeLength {
   if (value === 'auto') return 'auto';
@@ -180,6 +190,18 @@ export interface CrossfadeDebugState {
   autoBarMs: number;
   /** auto 决策说明（手动档位 / 默认乐句 / 快歌两乐句 / B 前奏较短 / 尾奏前奏宽裕 / 无拍点回退） */
   autoNote: string;
+  /** 最近一次过渡类型：auto = 自然播完的鼓点衔接；manual = 手动切歌；loop = 单曲循环重启；null = 尚未过渡 */
+  crossfadeKind: 'auto' | 'manual' | 'loop' | null;
+  /** 下一首（预取目标）的分析是否已就绪（player 侧 prefetch；切歌瞬间已就绪可跳过等待） */
+  nextAnalysisReady: boolean;
+  /** 预分析状态：idle = 未开始 / pending = 分析中 / ready = 就绪 / failed = 失败 */
+  prefetchState: 'idle' | 'pending' | 'ready' | 'failed';
+  /** 预分析目标曲目标题（调试用；空串 = 无目标） */
+  prefetchTitle: string;
+  /** 最近一次准备是否命中预分析缓存（true = 无需等待宿主分析） */
+  prefetchHit: boolean;
+  /** 是否已有准备好的衔接计划（prepared 相位；手动过渡一经开始即为 false） */
+  nextPrepared: boolean;
   progress: number;
   baseVolume: number;
   events: CrossfadeDebugEvent[];
@@ -207,6 +229,12 @@ const debug: CrossfadeDebugState = {
   autoBars: 0,
   autoBarMs: 0,
   autoNote: '',
+  crossfadeKind: null,
+  nextAnalysisReady: false,
+  prefetchState: 'idle',
+  prefetchTitle: '',
+  prefetchHit: false,
+  nextPrepared: false,
   progress: 0,
   baseVolume: 0,
   events: [],
@@ -231,6 +259,19 @@ function logEvent(event: string, detail = ''): void {
   if (debug.events.length > 40) debug.events.splice(0, debug.events.length - 40);
 }
 
+/**
+ * player 侧预分析状态写入调试快照（window.__ziluxCrossfade 可直接观测）：
+ * nextAnalysisReady / prefetchState / prefetchTitle / prefetchHit。
+ */
+export function setPrefetchDebug(
+  patch: Partial<Pick<CrossfadeDebugState, 'nextAnalysisReady' | 'prefetchState' | 'prefetchTitle' | 'prefetchHit'>>,
+): void {
+  if (typeof patch.nextAnalysisReady === 'boolean') debug.nextAnalysisReady = patch.nextAnalysisReady;
+  if (patch.prefetchState !== undefined) debug.prefetchState = patch.prefetchState;
+  if (patch.prefetchTitle !== undefined) debug.prefetchTitle = patch.prefetchTitle;
+  if (typeof patch.prefetchHit === 'boolean') debug.prefetchHit = patch.prefetchHit;
+}
+
 /* ------------------------------------------------------------------ */
 /* 计划与引擎                                                          */
 /* ------------------------------------------------------------------ */
@@ -241,11 +282,25 @@ export interface CrossfadeTrackInfo {
   startAt: number;
 }
 
-export interface CrossfadePrepareOptions {
+/** 双 deck 过渡计划的公共字段（自动衔接 / 手动切歌 / 单曲循环共用）。 */
+interface DeckPlanCommon {
   /** 当前发声 deck（A） */
   active: HTMLAudioElement;
   /** 预留给下一首的 deck（B） */
   standby: HTMLAudioElement;
+  /** B 的流地址（由 player 用 streamUrl 解析好，避免本模块依赖 online 层） */
+  nextUrl: string;
+  /** 读取当前基础音量（用户音量 0..1） */
+  baseVolume: () => number;
+  /** 读取用户播放倍速（0.5–2.0，Phase 2 D）；缺省 1。过渡期间 B 在此基础上再乘 tempoRate。 */
+  baseRate?: () => number;
+  /** 这次准备是否仍有效（player 的 token、曲目未变、开关仍开、图未激活） */
+  isValid: () => boolean;
+  /** 过渡完成（A 已静音、B 已满音量）：player 负责交换 deck 与状态迁移 */
+  onFinish: () => void;
+}
+
+export interface CrossfadePrepareOptions extends DeckPlanCommon {
   current: CrossfadeTrackInfo;
   next: CrossfadeTrackInfo;
   /** A 的曲内总时长（毫秒） */
@@ -256,14 +311,22 @@ export interface CrossfadePrepareOptions {
   nextAnalysis: AnalysisResult;
   /** 下一首的「开始唱词」位置（曲内毫秒，player 用 vocalStart.ts 取）；null/0 = 无歌词回退普通淡化 */
   nextVocalStartMs?: number | null;
-  /** B 的流地址（由 player 用 streamUrl 解析好，避免本模块依赖 online 层） */
-  nextUrl: string;
-  /** 读取当前基础音量（用户音量 0..1） */
-  baseVolume: () => number;
-  /** 这次准备是否仍有效（player 的 token、曲目未变、开关仍开、图未激活） */
-  isValid: () => boolean;
-  /** 淡化完成（A 已静音、B 已满音量）：player 负责交换 deck 与状态迁移 */
-  onFinish: () => void;
+}
+
+/** 手动切歌 / 单曲循环重启：短过渡，B 从该段开头起播，不等节拍分析、不做 BPM 对齐。 */
+export interface ManualCrossfadeOptions extends DeckPlanCommon {
+  fromTitle: string;
+  nextTitle: string;
+  /** B 的起播文件毫秒：整轨 0；CUE 分轨 = startAt*1000（B 始终从这一段开头播） */
+  nextStartFileMs: number;
+  /** A 的当前曲内位置（毫秒，仅调试快照用） */
+  currentPositionMs: number;
+  /** 过渡时长（毫秒）：自动夹到 1200–2000 */
+  fadeMs: number;
+  /** 单曲循环：A 曲内位置到达 >= triggerPosMs 时自动触发；缺省 0（立即开始） */
+  triggerPosMs?: number;
+  /** B 无法起播等失败时回调；player 据此回退硬切。 */
+  onFail?: (reason: string) => void;
 }
 
 interface FadeSchedule {
@@ -292,7 +355,9 @@ interface FadeSchedule {
 }
 
 interface ActivePlan {
-  options: CrossfadePrepareOptions;
+  /** 计划类型：auto = 自然播完的鼓点衔接；manual = 手动切歌；loop = 单曲循环曲尾重启 */
+  kind: 'auto' | 'manual' | 'loop';
+  options: DeckPlanCommon;
   phase: 'prepared' | 'fading';
   /**
    * Web Audio 图已建立时走「图内增益」淡化：两个 deck 都接进 deckMix，用各自 gain 做等功率曲线，
@@ -307,6 +372,8 @@ interface ActivePlan {
   bStartFileMs: number;
   /** A 的可听结尾（曲内毫秒）；用于 tick 里判断还剩多少可淡化时间 */
   audibleEndPosMs: number;
+  /** manual/loop 的触发点（曲内毫秒）：tick 到达后开始过渡；auto 恒为 0 */
+  triggerPosMs: number;
   startedAt: number;
   progress: number;
   baseVolume: number;
@@ -351,16 +418,24 @@ function setDeckPlaybackRate(element: HTMLAudioElement, rate: number): void {
   }
 }
 
-/** 过渡结束后把 B 的速率平滑拉回 1，避免整首歌带着过渡期的变速继续放。 */
-function returnDeckTempoToNormal(element: HTMLAudioElement, from: number): void {
-  if (!Number.isFinite(from) || Math.abs(from - 1) < 0.001) {
-    setDeckPlaybackRate(element, 1);
+/** 用户播放倍速（0.5–2.0）作为 deck 的基础速率；缺省/坏值回退 1。 */
+function baseDeckRate(options: DeckPlanCommon): number {
+  const raw = options.baseRate?.() ?? 1;
+  if (!Number.isFinite(raw)) return 1;
+  return Math.max(0.5, Math.min(2, raw));
+}
+
+/** 过渡结束后把 B 的速率平滑拉回目标速率（默认 1，Phase 2 改为用户倍速），避免整首歌带着过渡期的变速继续放。 */
+function returnDeckTempoToNormal(element: HTMLAudioElement, from: number, to = 1): void {
+  const target = Number.isFinite(to) && to > 0 ? to : 1;
+  if (!Number.isFinite(from) || Math.abs(from - target) < 0.001) {
+    setDeckPlaybackRate(element, target);
     return;
   }
   const started = performance.now();
   const step = (): void => {
     const t = Math.min(1, (performance.now() - started) / TEMPO_RETURN_MS);
-    setDeckPlaybackRate(element, from + (1 - from) * smoothStep(t));
+    setDeckPlaybackRate(element, from + (target - from) * smoothStep(t));
     if (t < 1) requestAnimationFrame(step);
   };
   requestAnimationFrame(step);
@@ -372,16 +447,25 @@ function returnDeckTempoToNormal(element: HTMLAudioElement, from: number): void 
  * - A 的退出用 p^1.15 余弦 → 人声/尾音多留一点；
  * - 图内路径同时压低伴奏（低/高架滤波）：A 的伴奏先退、人声后走；B 的伴奏从压低回正，
  *   于是听感上是「B 的人声先出来，伴奏慢慢融进来」，与暂停淡出的人声保留一致。
+ * - Phase 2：手动切歌 / 单曲循环这类 1.2–2.0 秒短过渡用纯等功率（不加权、不压伴奏），
+ *   短窗口里加权会听出能量凹陷。
  */
 function applyEqualPowerGains(plan: ActivePlan, progress: number): void {
   const p = clamp01(progress);
-  const outGain = Math.cos(Math.pow(p, A_EXIT_WARP) * Math.PI * 0.5);
-  const inGain = Math.sin(Math.pow(p, B_ENTRY_WARP) * Math.PI * 0.5);
+  const warped = plan.kind === 'auto';
+  const outGain = Math.cos(Math.pow(p, warped ? A_EXIT_WARP : 1) * Math.PI * 0.5);
+  const inGain = Math.sin(Math.pow(p, warped ? B_ENTRY_WARP : 1) * Math.PI * 0.5);
   if (plan.graphMode) {
     // 图内：主音量（baseVolume）在本地 gain 上，deck gain 只负责 0~1 的等功率比例。
     setAudioTapVolume(plan.baseVolume, true);
     setDeckGraphGain(plan.options.active, outGain);
     setDeckGraphGain(plan.options.standby, inGain);
+    if (!warped) {
+      // 短过渡不做人声/伴奏倾斜，直接等功率交叉。
+      setDeckGraphTilt(plan.options.active, 0, 0);
+      setDeckGraphTilt(plan.options.standby, 0, 0);
+      return;
+    }
     // 伴奏压低量：A 从 0 到 -TILT_MAX_DB；B 从 -TILT_MAX_DB 回到 0。
     const outTilt = -TILT_MAX_DB * smoothStep(p * 0.9);
     const inTilt = -TILT_MAX_DB * (1 - smoothStep(p * 1.35));
@@ -780,6 +864,7 @@ export function prepareCrossfade(options: CrossfadePrepareOptions): boolean {
     setDeckGraphGain(options.standby, 0);
   }
   const plan: ActivePlan = {
+    kind: 'auto',
     options,
     phase: 'prepared',
     graphMode,
@@ -789,6 +874,7 @@ export function prepareCrossfade(options: CrossfadePrepareOptions): boolean {
     fadeMs: 0,
     bStartFileMs: 0,
     audibleEndPosMs: 0,
+    triggerPosMs: 0,
     startedAt: 0,
     progress: 0,
     baseVolume: 0,
@@ -796,8 +882,9 @@ export function prepareCrossfade(options: CrossfadePrepareOptions): boolean {
   };
   applySchedule(plan, schedule);
   // 预先把 B 的速率与伴奏倾斜设置好：淡化开始时不用临时改，避免首帧爆音。
-  if (plan.tempoRate !== 1) setDeckPlaybackRate(options.standby, plan.tempoRate);
-  setDeckPlaybackRate(options.active, 1);
+  const baseRate = baseDeckRate(options);
+  setDeckPlaybackRate(options.standby, baseRate * plan.tempoRate);
+  setDeckPlaybackRate(options.active, baseRate);
   if (graphMode) {
     setDeckGraphTilt(options.active, 0, 0);
     setDeckGraphTilt(options.standby, -TILT_MAX_DB, -TILT_MAX_DB);
@@ -807,6 +894,8 @@ export function prepareCrossfade(options: CrossfadePrepareOptions): boolean {
   debug.reason = '';
   debug.currentTitle = options.current.track.title;
   debug.nextTitle = options.next.track.title;
+  debug.crossfadeKind = 'auto';
+  debug.nextPrepared = true;
   debug.progress = 0;
   debug.baseVolume = clamp01(options.baseVolume());
   logEvent(
@@ -814,6 +903,203 @@ export function prepareCrossfade(options: CrossfadePrepareOptions): boolean {
     `「${options.current.track.title}」→「${options.next.track.title}」，${plan.fadeMs} ms 后在曲内 ${Math.round(plan.fadeStartPosMs)} ms 处淡化（可听结尾 ${plan.audibleEndPosMs} ms，尾部静音/渐弱 ${debug.tailSilenceMs} ms）`,
   );
   return true;
+}
+
+/* ------------------------------------------------------------------ */
+/* Phase 2：手动切歌与单曲循环的短过渡                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 构造手动/单曲循环的过渡计划：B 从该段开头起播，不等节拍分析、不做 BPM 对齐。
+ * 返回 null = 当前 deck 无法接入 / 状态已过期。
+ */
+function createManualPlan(options: ManualCrossfadeOptions, kind: 'manual' | 'loop'): ActivePlan | null {
+  if (!options.isValid()) {
+    logEvent('manual-skip', '准备已过期');
+    return null;
+  }
+  try {
+    options.standby.pause();
+    options.standby.preload = 'auto';
+    options.standby.src = options.nextUrl;
+  } catch (err) {
+    logEvent('manual-skip', `预加载失败：${messageOf(err)}`);
+    return null;
+  }
+  const graphMode = audioTapGraphActive();
+  if (graphMode && (!attachDeckToGraph(options.active) || !attachDeckToGraph(options.standby))) {
+    logEvent('manual-skip', '无法把两个 deck 接入 Web Audio 图，回退硬切');
+    return null;
+  }
+  if (graphMode) {
+    setDeckGraphGain(options.active, 1);
+    setDeckGraphGain(options.standby, 0);
+    setDeckGraphTilt(options.active, 0, 0);
+    setDeckGraphTilt(options.standby, 0, 0);
+  }
+  const requested = Number.isFinite(options.fadeMs) ? options.fadeMs : MANUAL_FADE_DEFAULT_MS;
+  const fadeMs = Math.round(Math.max(MANUAL_FADE_MIN_MS, Math.min(MANUAL_FADE_MAX_MS, requested)));
+  const plan: ActivePlan = {
+    kind,
+    options,
+    phase: 'prepared',
+    graphMode,
+    tempoRate: 1,
+    fadeStartFileMs: 0,
+    fadeStartPosMs: Math.max(0, Math.round(options.currentPositionMs || 0)),
+    fadeMs,
+    bStartFileMs: Math.max(0, Math.round(options.nextStartFileMs || 0)),
+    audibleEndPosMs: 0,
+    triggerPosMs: Math.max(0, Math.round(options.triggerPosMs ?? 0)),
+    startedAt: 0,
+    progress: 0,
+    baseVolume: clamp01(options.baseVolume()),
+    raf: 0,
+  };
+  const baseRate = baseDeckRate(options);
+  setDeckPlaybackRate(options.active, baseRate);
+  setDeckPlaybackRate(options.standby, baseRate);
+  activePlan = plan;
+  debug.phase = 'prepared';
+  debug.reason = '';
+  debug.currentTitle = options.fromTitle;
+  debug.nextTitle = options.nextTitle;
+  debug.crossfadeKind = kind;
+  debug.nextPrepared = true;
+  debug.fadeStartPosMs = plan.fadeStartPosMs;
+  debug.fadeMs = fadeMs;
+  debug.bStartFileMs = plan.bStartFileMs;
+  debug.tempoRate = 1;
+  debug.tempoMatched = false;
+  debug.nextVocalStartMs = 0;
+  debug.vocalAligned = false;
+  debug.currentAudibleEndMs = 0;
+  debug.tailSilenceMs = 0;
+  debug.autoFadeMs = 0;
+  debug.autoBars = 0;
+  debug.autoBarMs = 0;
+  debug.autoNote = kind === 'loop' ? '单曲循环：曲尾同曲淡入重启（不等节拍）' : '手动切歌：短过渡（不等节拍）';
+  debug.progress = 0;
+  debug.baseVolume = plan.baseVolume;
+  logEvent(
+    kind === 'loop' ? 'loop-prepared' : 'manual-prepared',
+    `「${options.fromTitle}」→「${options.nextTitle}」，${fadeMs} ms 等功率短过渡（B 从文件 ${plan.bStartFileMs} ms 起播）`,
+  );
+  return plan;
+}
+
+/**
+ * 手动切歌（next/prev/点列表）：立即开始 1.2–2.0 秒等功率交叉淡化。
+ * 返回 false 表示无法走过渡，调用方应立即回退硬切。
+ */
+export function startManualCrossfade(options: ManualCrossfadeOptions): boolean {
+  cancelCrossfade('replaced');
+  const plan = createManualPlan(options, 'manual');
+  if (!plan) return false;
+  startManualFade(plan);
+  return true;
+}
+
+/** 单曲循环：先准备好「曲尾淡出 → 同曲从 0 淡入」，tick 到点自动开始。返回 false = 不适合。 */
+export function prepareLoopCrossfade(options: ManualCrossfadeOptions): boolean {
+  cancelCrossfade('replaced');
+  const plan = createManualPlan(options, 'loop');
+  return plan !== null;
+}
+
+/** 立即开始手动/循环过渡：B 从起点起播，A 等功率淡出。 */
+function startManualFade(plan: ActivePlan): void {
+  if (plan.phase !== 'prepared' || activePlan !== plan) return;
+  if (!plan.options.isValid()) {
+    cancelCrossfade('stale');
+    return;
+  }
+  if (!plan.graphMode && audioTapGraphActive()) {
+    cancelCrossfade('graph-active');
+    return;
+  }
+  const base = clamp01(plan.options.baseVolume());
+  plan.phase = 'fading';
+  plan.startedAt = performance.now();
+  plan.progress = 0;
+  plan.baseVolume = base;
+  debug.phase = 'fading';
+  debug.reason = '';
+  debug.progress = 0;
+  debug.baseVolume = base;
+  debug.nextPrepared = false;
+  if (plan.graphMode) {
+    setAudioTapVolume(base, true);
+    setDeckGraphGain(plan.options.active, 1);
+    setDeckGraphGain(plan.options.standby, 0);
+    setDeckGraphTilt(plan.options.active, 0, 0);
+    setDeckGraphTilt(plan.options.standby, 0, 0);
+  } else {
+    setDeckVolume(plan.options.active, base);
+    setDeckVolume(plan.options.standby, 0);
+  }
+  setDeckPlaybackRate(plan.options.standby, baseDeckRate(plan.options));
+  if (!seekDeck(plan.options.standby, plan.bStartFileMs / 1000)) {
+    failManualFade(plan, 'b-seek-failed');
+    return;
+  }
+  logEvent(
+    plan.kind === 'loop' ? 'loop-fade-start' : 'manual-fade-start',
+    `B 从文件 ${Math.round(plan.bStartFileMs)} ms 起播，等功率 ${plan.fadeMs} ms`,
+  );
+  plan.options.standby.play().then(
+    () => {
+      if (activePlan !== plan || plan.phase !== 'fading') return;
+      plan.raf = requestAnimationFrame(fadeStep);
+    },
+    (err: unknown) => {
+      if (activePlan !== plan) return;
+      logEvent('b-play-failed', messageOf(err));
+      failManualFade(plan, 'b-play-failed');
+    },
+  );
+}
+
+/** 手动/循环过渡失败：恢复 A 的音量与速率，通知 player 回退硬切。 */
+function failManualFade(plan: ActivePlan, reason: string): void {
+  if (activePlan !== plan) return;
+  if (plan.raf) {
+    cancelAnimationFrame(plan.raf);
+    plan.raf = 0;
+  }
+  const base = clamp01(plan.options.baseVolume());
+  const rate = baseDeckRate(plan.options);
+  if (plan.graphMode) {
+    setAudioTapVolume(base, true);
+    setDeckGraphGain(plan.options.active, 1);
+    setDeckGraphGain(plan.options.standby, 0);
+    setDeckGraphTilt(plan.options.active, 0, 0);
+    detachDeckFromGraph(plan.options.standby);
+  } else {
+    setDeckVolume(plan.options.active, base);
+    setDeckVolume(plan.options.standby, 0);
+  }
+  setDeckPlaybackRate(plan.options.active, rate);
+  setDeckPlaybackRate(plan.options.standby, rate);
+  try {
+    plan.options.standby.pause();
+  } catch {
+    /* 忽略 */
+  }
+  activePlan = null;
+  debug.phase = 'canceled';
+  debug.reason = reason;
+  debug.progress = 0;
+  debug.nextPrepared = false;
+  logEvent('manual-cancel', reason);
+  const onFail = (plan.options as ManualCrossfadeOptions).onFail;
+  if (onFail) {
+    try {
+      onFail(reason);
+    } catch (err) {
+      console.warn('[crossfade] onFail failed', err);
+    }
+  }
 }
 
 /** tick 里调用：到点就起播 B 并开始淡化。 */
@@ -829,14 +1115,28 @@ export function crossfadeTick(positionMs: number, durationMs: number): void {
     cancelCrossfade('graph-active');
     return;
   }
+  if (plan.kind !== 'auto') {
+    // 单曲循环：曲尾前 fadeMs 处开始，B 从该段开头淡入（不做节拍分析）。
+    // 手动切歌的计划在 startManualCrossfade 里已立即开始，不会以 prepared 状态被 tick 到。
+    const rate = baseDeckRate(plan.options);
+    let trigger = plan.triggerPosMs;
+    if (plan.kind === 'loop') {
+      if (!(durationMs > 0)) return; // 时长未知：等元数据 / ended 兜底
+      trigger = Math.max(0, durationMs - plan.fadeMs * rate);
+    }
+    if (positionMs + TRIGGER_LEAD_MS < trigger) return;
+    startManualFade(plan);
+    return;
+  }
+  const autoOptions = plan.options as CrossfadePrepareOptions;
   // 实际时长和准备时差太多（元数据后到 / CUE 边界）：重建时间表，建不出来就放弃。
-  if (durationMs > 0 && Math.abs(durationMs - plan.options.currentDurationMs) > 500) {
-    const updated = buildSchedule({ ...plan.options, currentDurationMs: durationMs, currentPositionMs: positionMs });
+  if (durationMs > 0 && Math.abs(durationMs - autoOptions.currentDurationMs) > 500) {
+    const updated = buildSchedule({ ...autoOptions, currentDurationMs: durationMs, currentPositionMs: positionMs });
     if (!updated) {
       cancelCrossfade('reschedule');
       return;
     }
-    plan.options.currentDurationMs = durationMs;
+    autoOptions.currentDurationMs = durationMs;
     applySchedule(plan, updated);
   }
   const past = positionMs - plan.fadeStartPosMs;
@@ -889,8 +1189,10 @@ function startFade(plan: ActivePlan): void {
     setDeckVolume(plan.options.active, base);
     setDeckVolume(plan.options.standby, 0);
   }
-  // 准备期间 player 可能重设过 deck 属性，起播前再确保一次 WSOLA 速率。
-  if (plan.tempoRate !== 1) setDeckPlaybackRate(plan.options.standby, plan.tempoRate);
+  // 准备期间 player 可能重设过 deck 属性，起播前再确保一次 WSOLA 速率与用户倍速。
+  const startBaseRate = baseDeckRate(plan.options);
+  setDeckPlaybackRate(plan.options.active, startBaseRate);
+  setDeckPlaybackRate(plan.options.standby, startBaseRate * plan.tempoRate);
   if (!seekDeck(plan.options.standby, plan.bStartFileMs / 1000)) {
     cancelCrossfade('b-seek-failed');
     return;
@@ -951,13 +1253,24 @@ function finishFade(plan: ActivePlan): void {
     setDeckVolume(plan.options.active, 0);
     setDeckVolume(plan.options.standby, plan.baseVolume);
   }
-  // 变速不变调只用于过渡期间：结束后把 B 的速率在 650ms 内平滑拉回 1，整首歌恢复原速。
-  if (plan.tempoRate !== 1) returnDeckTempoToNormal(plan.options.standby, plan.tempoRate);
+  // 变速不变调只用于过渡期间：结束后把 B 的速率平滑拉回用户倍速（默认 1），整首歌恢复原速。
+  const baseRate = baseDeckRate(plan.options);
+  const bRate = baseRate * plan.tempoRate;
+  if (Math.abs(bRate - baseRate) >= 0.001) {
+    returnDeckTempoToNormal(plan.options.standby, bRate, baseRate);
+  } else {
+    setDeckPlaybackRate(plan.options.standby, baseRate);
+  }
+  setDeckPlaybackRate(plan.options.active, baseRate);
   activePlan = null;
   debug.phase = 'done';
-  debug.reason = 'fade-done';
+  debug.reason = plan.kind === 'manual' ? 'manual-done' : plan.kind === 'loop' ? 'loop-done' : 'fade-done';
+  debug.nextPrepared = false;
   debug.progress = 1;
-  logEvent('fade-done', 'A 已静音、B 已满音量，交由 player 交换 deck');
+  logEvent(
+    plan.kind === 'auto' ? 'fade-done' : plan.kind === 'loop' ? 'loop-fade-done' : 'manual-fade-done',
+    'A 已静音、B 已满音量，交由 player 交换 deck',
+  );
   try {
     plan.options.onFinish();
   } catch (err) {
@@ -985,12 +1298,14 @@ function hardCutToStandby(plan: ActivePlan): void {
     detachDeckFromGraph(plan.options.standby);
   }
   // 硬切也把过渡期的变速与伴奏倾斜收掉，避免影响后面的整首播放。
-  if (plan.tempoRate !== 1) setDeckPlaybackRate(plan.options.standby, 1);
-  setDeckPlaybackRate(plan.options.active, 1);
+  const cutBaseRate = baseDeckRate(plan.options);
+  setDeckPlaybackRate(plan.options.standby, cutBaseRate);
+  setDeckPlaybackRate(plan.options.active, cutBaseRate);
   plan.baseVolume = base;
   activePlan = null;
   debug.phase = 'done';
   debug.reason = 'graph-hard-cut';
+  debug.nextPrepared = false;
   debug.progress = 1;
   logEvent('graph-hard-cut', '淡化中途 Web Audio 图被激活，立即取消并硬切到下一首');
   try {
@@ -1026,8 +1341,10 @@ export function cancelCrossfade(reason = 'manual'): void {
     detachDeckFromGraph(plan.options.standby);
   }
   // 取消也要把过渡期的变速恢复，否则下一首会继承 B 的播放速率。
-  if (plan.tempoRate !== 1) setDeckPlaybackRate(plan.options.standby, 1);
-  setDeckPlaybackRate(plan.options.active, 1);
+  const cancelBaseRate = baseDeckRate(plan.options);
+  setDeckPlaybackRate(plan.options.standby, cancelBaseRate);
+  setDeckPlaybackRate(plan.options.active, cancelBaseRate);
+  debug.nextPrepared = false;
   try {
     plan.options.standby.pause();
   } catch {
@@ -1067,6 +1384,18 @@ export function crossfadeFinishNow(reason = 'ended'): boolean {
   logEvent('force-finish', reason);
   finishFade(plan);
   return true;
+}
+
+/**
+ * 用户播放倍速变化（Phase 2 D）时调用：把新的基础速率立即应用到两个 deck。
+ * 过渡中 B 的速率 = 用户倍速 × 本次 tempoRate；没有过渡计划时由 player 自己设置两 deck。
+ */
+export function crossfadeApplyPlaybackRate(): void {
+  const plan = activePlan;
+  if (!plan) return;
+  const rate = baseDeckRate(plan.options);
+  setDeckPlaybackRate(plan.options.active, rate);
+  setDeckPlaybackRate(plan.options.standby, rate * plan.tempoRate);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1142,7 +1471,7 @@ export function buildCrossfadeSection(scope: Disposers | null): HTMLElement {
     h('h3', { class: 'section-title', text: '无缝衔接（实验）' }),
     h('p', {
       class: 'analysis-desc',
-      text: '当前歌曲结束前，按鼓点提前开始下一首，并按等功率曲线交叉淡化（B 用更慢的进入曲线，避免一上来就大声；A 多留一点尾音），避免曲间静音；淡化终点对齐歌曲的可听结尾，自动跳过曲尾静音与明显渐弱收尾（需宿主分析支持 audibleEndMs，p0-5 起）。淡化结束时机对齐下一首的「开始唱词」（有歌词时）：前奏较长会跳过前奏、从唱词前若干秒切入；前奏较短则把整段前奏当作过渡，结束时正好进入唱词。过渡时长「自动」不再固定 5–10 秒：以两首歌的小节为基准（默认一个乐句 4 小节，拍速差大时取两首的平均小节），B 前奏到唱词的空间不足时按整小节缩短、A 尾奏与 B 前奏都宽裕时放宽到 6–8 小节、小节很短（快歌/双拍）时取两个乐句，实际时长随歌曲自由变化。两首 BPM 不同时会用 WSOLA 变速不变调（±12% 内）把 B 的节拍拉齐，过渡结束后平滑恢复原速；图内路径下 A 的伴奏先退、B 的伴奏慢慢回正，人声先出现、伴奏后融进来。仅在列表循环、下一首分析成功时生效；均衡器/人声保留淡出等 Web Audio 音效开启时自动改走图内增益淡化，否则回退为原来的硬切。',
+      text: '当前歌曲结束前，按鼓点提前开始下一首，并按等功率曲线交叉淡化（B 用更慢的进入曲线，避免一上来就大声；A 多留一点尾音），避免曲间静音；淡化终点对齐歌曲的可听结尾，自动跳过曲尾静音与明显渐弱收尾（需宿主分析支持 audibleEndMs，p0-5 起）。淡化结束时机对齐下一首的「开始唱词」（有歌词时）：前奏较长会跳过前奏、从唱词前若干秒切入；前奏较短则把整段前奏当作过渡，结束时正好进入唱词。过渡时长「自动」不再固定 5–10 秒：以两首歌的小节为基准（默认一个乐句 4 小节，拍速差大时取两首的平均小节），B 前奏到唱词的空间不足时按整小节缩短、A 尾奏与 B 前奏都宽裕时放宽到 6–8 小节、小节很短（快歌/双拍）时取两个乐句，实际时长随歌曲自由变化。两首 BPM 不同时会用 WSOLA 变速不变调（±12% 内）把 B 的节拍拉齐，过渡结束后平滑恢复原速；图内路径下 A 的伴奏先退、B 的伴奏慢慢回正，人声先出现、伴奏后融进来。自然播完（列表循环 / 随机播放）与单曲循环都会自动衔接；手动切歌（下一首 / 上一首 / 点列表）走 1.2–2.0 秒等功率短过渡，不等节拍分析。均衡器/人声保留淡出等 Web Audio 音效开启时自动改走图内增益淡化，否则回退为原来的硬切。',
     }),
     h(
       'div',

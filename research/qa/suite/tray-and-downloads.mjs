@@ -2,7 +2,7 @@
  * Zilux2 真机 QA —— 托盘 / 全局热键 / 宿主命令通道（task-12）
  *
  * 覆盖（尽量在 CDP/日志层自动化的部分）：
- *   1) 宿主日志：本次会话 host.start 版本/PID（默认期望 1.1.6，可用 ZILUX2_EXPECT_HOST_VERSION 覆盖）；
+ *   1) 宿主日志：本次会话 host.start 版本/PID（默认取仓库 Directory.Build.props 的 <Version>，可用 ZILUX2_EXPECT_HOST_VERSION 覆盖）；
  *   2) 全局热键注册：id=1..4 全部注册成功，动作/按键符合设计；id=2/3 允许首选键被占用后回落；
  *   3) 托盘初始化：tray.start icon=process，且无 tray.error；
  *   4) 宿主命令通道：页面确实通过 window.chrome.webview.addEventListener 注册了 host.onMessage；
@@ -17,16 +17,32 @@
  *   - 派发命令前把页面 <audio> 临时静音，避免自动化验收时出声，结束后恢复。
  *
  * 环境变量：
- *   ZILUX2_EXPECT_HOST_VERSION  期望宿主版本，默认 1.1.6
+ *   ZILUX2_EXPECT_HOST_VERSION  期望宿主版本；默认从仓库 Directory.Build.props 的 <Version> 读取
+ *                               （发版只改那一处，测试不再硬编码旧版本号）
  *
  * 用法：node research/qa/suite/tray-and-downloads.mjs
  */
 import fs from 'node:fs';
+import path from 'node:path';
 
-import { runSuite, sleep, hostLogTail, hostLogSize, hostLogSince, HOST_LOG } from './lib/cdp.mjs';
+import { runSuite, sleep, hostLogTail, hostLogSize, hostLogSince, HOST_LOG, REPO_ROOT } from './lib/cdp.mjs';
 import { closeOverlays, goHome } from './lib/ui.mjs';
 
-const EXPECT_VERSION = process.env.ZILUX2_EXPECT_HOST_VERSION || '1.1.6';
+/** 期望版本：优先环境变量，其次仓库 Directory.Build.props 的 <Version>，最后兜底。 */
+function resolveExpectVersion() {
+  const fromEnv = (process.env.ZILUX2_EXPECT_HOST_VERSION || '').trim();
+  if (fromEnv) return fromEnv;
+  try {
+    const props = fs.readFileSync(path.join(REPO_ROOT, 'Directory.Build.props'), 'utf8');
+    const match = /<Version>\s*([^<\s]+)\s*<\/Version>/.exec(props);
+    if (match) return match[1];
+  } catch {
+    /* 读不到就兜底 */
+  }
+  return '1.1.8';
+}
+
+const EXPECT_VERSION = resolveExpectVersion();
 
 /** 读整份宿主日志（host.log 不大，直接读全文）。 */
 function readHostLog() {

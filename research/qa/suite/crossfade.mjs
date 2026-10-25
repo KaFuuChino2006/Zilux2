@@ -30,6 +30,8 @@ import { CROSSFADE, CROSSFADE_TRIGGER_TIMEOUT_MS, PLAYERBAR_HOVER, LOCAL_FOLDER_
 
 const LOCAL_RAIL = '本地曲库';
 const FAVORITES_RAIL = '我喜欢的音乐';
+/** 封面显示偏好（app 的 posterLayout.ts 共用这一份 localStorage）。 */
+const POSTER_LAYOUT_KEY = 'zilux2.posterLayout';
 const LENGTH_LABELS = {
   auto: '自动',
   3: '3 秒',
@@ -58,7 +60,9 @@ async function readSettingsStorage(cdp) {
   try {
     const parsed = JSON.parse(raw);
     const enabled = typeof parsed.enabled === 'boolean' ? parsed.enabled : CROSSFADE.defaults.enabled;
-    const length = CROSSFADE.lengths.includes(parsed.length) ? parsed.length : CROSSFADE.defaults.length;
+    // 时长在 localStorage 里是数字（3/5/...）或 'auto'，fixtures 用字符串档位；统一成字符串比较。
+    const parsedLength = String(parsed.length);
+    const length = CROSSFADE.lengths.includes(parsedLength) ? parsedLength : CROSSFADE.defaults.length;
     return { raw, value: { enabled, length }, missing: false };
   } catch (err) {
     return { raw, value: null, missing: false, parseError: String(err && err.message ? err.message : err) };
@@ -157,7 +161,7 @@ function waitSettingsStorage(cdp, accept, desc, timeoutMs = 8000) {
         if (raw === null) return null;
         const parsed = JSON.parse(raw);
         if (!parsed || typeof parsed !== 'object') return null;
-        return { enabled: parsed.enabled, length: parsed.length };
+        return { enabled: parsed.enabled, length: String(parsed.length) };
       } catch (e) {
         return null;
       }
@@ -270,6 +274,7 @@ await runSuite('crossfade', '无缝衔接（crossfade 设置 + 播放交叉淡�
   const cdp = suite.cdp;
   let baselineStorage = { enabled: true, length: 'auto' };
   let baselinePlayer = { playing: false };
+  let baselineLayout = 'grid';
   let localReady = false;
   let firstTitle = '';
   let secondTitle = '';
@@ -278,7 +283,17 @@ await runSuite('crossfade', '无缝衔接（crossfade 设置 + 播放交叉淡�
   await suite.step('准备：读 crossfade 基线设置 + 本地曲库就绪（≥2 首）', async () => {
     await closeAllLayers(cdp);
     await goHome(cdp);
+    baselineLayout = (await readLocalStorage(cdp, POSTER_LAYOUT_KEY)) || 'grid';
     await clickRail(cdp, LOCAL_RAIL, { settleMs: 900 });
+    // 本地曲库默认可能是「网格」封面布局（用户偏好持久化在 zilux2.posterLayout），
+    // 而本套件与 fixtures 都基于横条列表的 .track-row；先确保切到「横条」再等行。
+    await cdp.eval(`(() => {
+      const rows = document.querySelectorAll('.wall .track-row').length;
+      if (rows >= 2) return rows;
+      const btn = Array.from(document.querySelectorAll('.layout-modes .seg-btn')).find((b) => (b.textContent || '').trim() === '横条');
+      if (btn) { btn.click(); return 'clicked'; }
+      return 'no-layout-seg';
+    })()`);
     await cdp.waitFor(
       `(() => { const wall = document.querySelector('.wall'); const rows = document.querySelectorAll('.wall .track-row').length; return wall && !wall.classList.contains('is-hidden') && rows >= 2 ? rows : null; })()`,
       { desc: '本地曲库墙体 ≥2 行', timeoutMs: 25000, intervalMs: 200 },
@@ -353,7 +368,7 @@ await runSuite('crossfade', '无缝衔接（crossfade 设置 + 播放交叉淡�
       );
       suite.assert(others.every((pressed) => pressed === 'false'), `切换「${value}」后其它选项 aria-pressed 未复位：${JSON.stringify(others)}`);
       const debug = await pageDebugState(cdp);
-      suite.assert(debug.length === value, `调试快照 length=${debug.length} 与 UI「${value}」不一致`);
+      suite.assert(String(debug.length) === String(value), `调试快照 length=${debug.length} 与 UI「${value}」不一致`);
       observed.push(value);
     }
     // 回到基线时长，后面播放链路用基线的 auto/固定值。
@@ -447,7 +462,7 @@ await runSuite('crossfade', '无缝衔接（crossfade 设置 + 播放交叉淡�
     suite.assert(prepared.nextTitle === secondTitle, `预加载的下一首「${prepared.nextTitle}」与本地曲库第二行「${secondTitle}」不一致`);
     suite.assert(prepared.fadeStartPosMs > 0, `fadeStartPosMs=${prepared.fadeStartPosMs} 应为正数`);
     suite.assert(prepared.fadeMs >= 1000, `fadeMs=${prepared.fadeMs} 过短（产品下限 1200ms）`);
-    suite.assert(prepared.enabled === true && prepared.length === baselineStorage.length, `快照设置不符：enabled=${prepared.enabled} length=${prepared.length}`);
+    suite.assert(prepared.enabled === true && String(prepared.length) === String(baselineStorage.length), `快照设置不符：enabled=${prepared.enabled} length=${prepared.length}`);
     const player = await ensurePlaying(cdp);
     suite.assert(player.title === firstTitle && player.playing, `播放状态异常：${JSON.stringify(player)}`);
 
@@ -714,7 +729,22 @@ await runSuite('crossfade', '无缝衔接（crossfade 设置 + 播放交叉淡�
     suite.assert(ui.toggle.pressed === String(baselineStorage.enabled), `恢复后开关 aria-pressed=${ui.toggle.pressed}`);
     suite.assert(ui.datasetEnabled === (baselineStorage.enabled ? '1' : '0'), `恢复后 data-enabled=${ui.datasetEnabled}`);
     const debug = await pageDebugState(cdp);
-    suite.assert(debug.enabled === baselineStorage.enabled && debug.length === baselineStorage.length, `恢复后调试快照 ${JSON.stringify({ enabled: debug.enabled, length: debug.length })}`);
+    suite.assert(debug.enabled === baselineStorage.enabled && String(debug.length) === String(baselineStorage.length), `恢复后调试快照 ${JSON.stringify({ enabled: debug.enabled, length: debug.length })}`);
+
+    // 封面布局恢复基线（套件为了让 .track-row 可见可能切到了「横条」）。
+    const layoutNow = (await readLocalStorage(cdp, POSTER_LAYOUT_KEY)) || 'grid';
+    if (layoutNow !== baselineLayout) {
+      const label = baselineLayout === 'list' ? '横条' : '网格';
+      await clickRail(cdp, LOCAL_RAIL, { settleMs: 700 });
+      await cdp.eval(`(() => {
+        const btn = Array.from(document.querySelectorAll('.layout-modes .seg-btn')).find((b) => (b.textContent || '').trim() === ${JSON.stringify(label)});
+        if (btn) { btn.click(); return true; }
+        return false;
+      })()`);
+      await sleep(300);
+      const restoredLayout = (await readLocalStorage(cdp, POSTER_LAYOUT_KEY)) || 'grid';
+      suite.assert(restoredLayout === baselineLayout, `封面布局未恢复基线：${restoredLayout}（期望 ${baselineLayout}）`);
+    }
 
     await closeAllLayers(cdp);
     await goHome(cdp);

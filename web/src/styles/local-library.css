@@ -1,0 +1,304 @@
+/* ============================================================
+   本地曲库扩展样式：本地歌单 / 本地红心 / 标签编辑弹窗
+   - 由 Lead 在合适位置 import（不要 import 进 main.ts）
+   - 复用 web/src/styles/app.css 的变量与 section/field/btn/row/sheet 类，
+     本文件只补本地模块专用形态；开关一律使用 .seg / .pill-switch / .slider
+   ============================================================ */
+
+/* ---------- 标签编辑弹窗（tagEditor.ts） ---------- */
+
+/* 右侧滑出面板，结构同 app.ts openSheet()；略微加宽以容纳 6 个字段。 */
+.sheet.tag-editor-sheet .sheet-panel {
+  width: min(520px, 94vw);
+}
+
+.sheet.tag-editor-sheet .sheet-head {
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.tag-editor-headtext {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.tag-editor-file {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.tag-editor-form {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 14px;
+}
+
+.tag-editor-field {
+  align-items: stretch;
+  flex-direction: column;
+  gap: 7px;
+  padding: 12px 0;
+}
+
+.tag-editor-field .field-label {
+  font-size: 13px;
+  color: var(--text-soft);
+}
+
+/* 输入框用现有 .search-input 的视觉语言（面板实心背景下不依赖毛玻璃）。 */
+.tag-input {
+  width: 100%;
+  box-sizing: border-box;
+  height: 38px;
+  padding: 0 14px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-strong, rgba(25, 27, 33, .94));
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color .16s var(--ease), background .16s var(--ease);
+}
+
+.tag-input::placeholder {
+  color: var(--muted);
+}
+
+.tag-input:hover {
+  border-color: var(--line-strong);
+}
+
+.tag-input:focus {
+  border-color: var(--accent);
+  background: rgb(var(--overlay-rgb) / .1);
+}
+
+.tag-editor-hint {
+  margin-top: 14px;
+  padding: 11px 14px;
+  border-radius: var(--radius);
+  background: rgb(var(--overlay-rgb) / .045);
+  border: 1px solid var(--line);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.tag-editor-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+  padding-bottom: 8px;
+}
+
+/* ---------- 本地歌单 ---------- */
+
+/* 歌单卡片网格 */
+.local-playlist-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 16px;
+  padding: 4px 0 18px;
+}
+
+.local-playlist-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: var(--radius);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--text);
+  text-align: left;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background .18s var(--ease), border-color .18s var(--ease), transform .18s var(--ease);
+}
+
+.local-playlist-card:hover {
+  background: var(--panel-raised);
+  border-color: var(--line-strong);
+  transform: translateY(-1px);
+}
+
+.local-playlist-card.is-drop-target {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.local-playlist-cover {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: var(--radius-sm);
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+  background: linear-gradient(135deg, rgb(var(--overlay-rgb) / .08), rgb(var(--overlay-rgb) / .03));
+  border: 1px solid var(--line);
+}
+
+.local-playlist-name {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.local-playlist-meta {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 歌单选曲 / 拖拽排序 */
+.local-playlist-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 0;
+}
+
+.local-playlist-toolbar .search-input {
+  min-width: 180px;
+}
+
+.local-track-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.local-track-drag {
+  width: 22px;
+  height: 28px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  cursor: grab;
+  touch-action: none;
+}
+
+.local-track-drag:hover {
+  color: var(--text);
+  background: rgb(var(--overlay-rgb) / .08);
+}
+
+.local-track-drag:active {
+  cursor: grabbing;
+}
+
+.local-track-row.is-dragging {
+  opacity: .45;
+}
+
+.local-track-name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.local-track-sub {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 拖拽排序时的插入指示线（弹性滑块同款曲线） */
+.local-track-drop-line {
+  height: 2px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 12px var(--accent);
+  animation: local-drop-in .22s cubic-bezier(.22, 1.28, .36, 1);
+}
+
+@keyframes local-drop-in {
+  from {
+    opacity: 0;
+    transform: scaleX(.4);
+  }
+  to {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+}
+
+/* 本地红心按钮：给现有 .track-row 内使用，命中区域覆盖整个按钮 */
+.local-like-btn {
+  -webkit-app-region: no-drag;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.local-like-btn .local-like-icon {
+  display: inline-flex;
+  color: var(--muted);
+  transition: color .18s var(--ease), transform .22s cubic-bezier(.22, 1.28, .36, 1);
+}
+
+.local-like-btn:hover .local-like-icon {
+  color: var(--text);
+}
+
+.local-like-btn.is-liked .local-like-icon {
+  color: var(--accent);
+  transform: scale(1.08);
+}
+
+/* 给本地页面模式分段加一点固定宽度，避免两段文字跳动 */
+.local-modes .seg-btn {
+  min-width: 62px;
+}
+
+/* 歌单内「添加曲目」来源分段（.seg 的宽度收敛） */
+.local-pick-modes {
+  width: 100%;
+}
+
+.local-pick-modes .seg-btn {
+  flex: 1;
+}
+
+/* 歌单空状态 */
+.local-playlist-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 46px 20px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.local-playlist-empty .btn {
+  margin-top: 4px;
+}
+
+/* 小屏收窄 */
+@media (max-width: 980px) {
+  .local-playlist-grid {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 12px;
+  }
+}

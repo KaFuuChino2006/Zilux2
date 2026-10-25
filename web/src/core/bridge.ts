@@ -22,6 +22,8 @@ export interface HostMessage {
   event?: string;
   maximized?: boolean;
   version?: string;
+  /** miniMode 事件里表示迷你播放器是否已开启。 */
+  enabled?: boolean;
   state?: unknown;
   [key: string]: unknown;
 }
@@ -169,6 +171,13 @@ export const host = {
   resize(edge: 'left' | 'right' | 'top' | 'bottom'): void {
     post({ v: 1, type: 'resize', edge });
   },
+  /**
+   * 迷你播放器：请求宿主切换紧凑置顶小窗。
+   * 宿主负责保存/还原窗口 Bounds 与 Topmost，切换完成后回推 window/miniMode 事件。
+   */
+  setMiniMode(enabled: boolean): void {
+    post({ v: 1, type: 'window', action: 'miniMode', enabled });
+  },
   log(level: 'info' | 'warn' | 'error', message: string): void {
     post({ v: 1, type: 'log', level, message });
     if (level === 'error') console.error('[web]', message);
@@ -250,6 +259,37 @@ export const host = {
     });
   },
 };
+
+/* ---- 迷你播放器（window v1：miniMode 指令/事件） ---- */
+
+const miniModeHandlers = new Set<(enabled: boolean) => void>();
+let miniModeBound = false;
+
+/**
+ * 订阅宿主回推的迷你窗口状态。
+ * 宿主在完成窗口切换后回推 `{v:1,type:'window',event:'miniMode',enabled}`；
+ * 若用户在系统层面退出迷你态（例如任务栏还原），宿主也会再推一次。
+ */
+export function onMiniMode(handler: (enabled: boolean) => void): () => void {
+  miniModeHandlers.add(handler);
+  if (!miniModeBound) {
+    miniModeBound = true;
+    host.onMessage((message) => {
+      if (message.type !== 'window' || message.event !== 'miniMode') return;
+      const enabled = message.enabled !== false;
+      miniModeHandlers.forEach((listener) => {
+        try {
+          listener(enabled);
+        } catch (err) {
+          console.warn('[bridge] miniMode handler failed', err);
+        }
+      });
+    });
+  }
+  return () => {
+    miniModeHandlers.delete(handler);
+  };
+}
 
 /* ---- Windows Now Playing / SMTC（media event v1，见 docs/zilux2-host-contract.md §11） ---- */
 

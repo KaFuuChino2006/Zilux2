@@ -1,0 +1,126 @@
+/* mini-player.css —— 迷你播放器（置顶紧凑小窗）
+ *
+ * 页面只负责「迷你态长什么样」；窗口尺寸、置顶、屏幕角落吸附全部由宿主完成
+ * （页面发 window/miniMode 指令，宿主回推 window/miniMode 事件后这里才切布局）。
+ * 迷你窗口默认 420×120，只保留播放条：封面 + 歌曲信息 + 控制 + 进度 + 退出按钮。
+ */
+
+body.is-mini {
+  background: var(--panel-solid);
+}
+
+/* 迷你态只保留播放条，其余顶层浮层（顶栏/主区/待播队列/快捷设置/下载面板…）全部隐藏。 */
+.app.is-mini > :not(.playerbar-wrap) {
+  display: none !important;
+}
+
+.app.is-mini {
+  display: block;
+  background: var(--panel-solid);
+}
+
+.app.is-mini .playerbar-wrap {
+  position: fixed;
+  inset: 0;
+  display: block;
+  padding: 0;
+  pointer-events: auto;
+}
+
+.app.is-mini .playerbar {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: 0;
+  border: 0;
+  box-shadow: none;
+  background: var(--panel-solid);
+  backdrop-filter: none;
+  transition: none;
+  padding: 0 10px;
+  gap: 8px;
+  cursor: grab;
+  overflow: hidden;
+}
+
+.app.is-mini .playerbar:active {
+  cursor: grabbing;
+}
+
+/* 普通窗口里播放条默认收起（进度/右区 max-width:0）；迷你态强制展开并允许点按。 */
+.app.is-mini .playerbar .pb-progress,
+.app.is-mini .playerbar .pb-extra {
+  max-width: none;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.app.is-mini .pb-cover {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+}
+
+.app.is-mini .pb-meta {
+  width: auto;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.app.is-mini .pb-title,
+.app.is-mini .pb-artist {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.app.is-mini .pb-title {
+  font-size: 13px;
+}
+
+.app.is-mini .pb-artist {
+  font-size: 11px;
+}
+
+/* 迷你态精简：只留上一首/播放/下一首、底部细进度条与退出按钮。 */
+.app.is-mini .pb-actions,
+.app.is-mini .pb-btn-lyrics,
+.app.is-mini .pb-btn-poster,
+.app.is-mini .pb-extra .volume-wrap {
+  display: none;
+}
+
+.app.is-mini .pb-controls {
+  flex: none;
+  gap: 4px;
+}
+
+.app.is-mini .pb-btn {
+  width: 30px;
+  height: 30px;
+}
+
+.app.is-mini .pb-progress {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 6px;
+  height: 4px;
+  flex: none;
+  gap: 0;
+}
+
+.app.is-mini .pb-cur,
+.app.is-mini .pb-dur {
+  display: none;
+}
+
+.app.is-mini .pb-mini {
+  color: var(--accent);
+}
+
+/* 普通窗口里迷你按钮跟随其余图标；hover 时点亮提示可点。 */
+.pb-mini:hover {
+  color: var(--accent);
+}

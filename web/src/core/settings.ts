@@ -221,6 +221,10 @@ export interface Settings {
   general: {
     splash: boolean;
     startMaximized: boolean;
+    /** 开机自启（HKCU Run）；关闭时启动即注销注册项。 */
+    autoLaunch: boolean;
+    /** 监控本地曲库文件夹（新增/删除实时同步）；关闭后需手动重新扫描。 */
+    watchLocalFolder: boolean;
   };
   appearance: {
     theme: Theme;
@@ -292,7 +296,7 @@ export type SettingsPatch = {
 
 export const DEFAULT_SETTINGS: Settings = {
   version: 1,
-  general: { splash: true, startMaximized: false },
+  general: { splash: true, startMaximized: false, autoLaunch: false, watchLocalFolder: true },
   appearance: {
     theme: 'frost',
     reduceMotion: false,
@@ -421,6 +425,8 @@ export function normalizeSettings(raw: unknown): Settings {
     general: {
       splash: asBool(general.splash, DEFAULT_SETTINGS.general.splash),
       startMaximized: asBool(general.startMaximized, DEFAULT_SETTINGS.general.startMaximized),
+      autoLaunch: asBool(general.autoLaunch, DEFAULT_SETTINGS.general.autoLaunch),
+      watchLocalFolder: asBool(general.watchLocalFolder, DEFAULT_SETTINGS.general.watchLocalFolder),
     },
     appearance: {
       theme: asEnum(appearance.theme, THEMES, DEFAULT_SETTINGS.appearance.theme),

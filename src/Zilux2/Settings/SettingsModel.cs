@@ -29,6 +29,13 @@ internal sealed class GeneralSettings
     public bool Splash { get; set; } = true;
 
     public bool StartMaximized { get; set; }
+
+    // 开机自启（HKCU\Software\Microsoft\Windows\CurrentVersion\Run 值 Zilux2）。追加在最后，
+    // 保证旧 settings.json 的字段顺序不变。
+    public bool AutoLaunch { get; set; }
+
+    // 本地曲库目录自动监控开关（LocalMusicService.Watch）。追加在最后，同上。
+    public bool WatchLocalFolder { get; set; } = true;
 }
 
 internal sealed class AppearanceSettings

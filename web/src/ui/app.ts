@@ -5,7 +5,12 @@
  */
 
 import '../styles/shortcut-settings.css';
+import '../styles/local-library.css';
+import '../styles/polish-tools.css';
 import QRCode from 'qrcode';
+
+/** 迷你播放器状态记忆键：刷新/崩溃恢复后用来向宿主复核窗口态。 */
+const MINI_MODE_KEY = 'zilux2.miniMode';
 import {
   accountOf,
   getAccounts,
@@ -88,10 +93,30 @@ import {
   revealLocalTrack,
   trackOf,
 } from './local';
-import { currentLyricSource, lyricGrowMode, lyricMatchMinScore, lyricOffsetOf, lyricsBackgroundMode, lyricsLumiereMode, LyricsView, primeLyrics, setLyricGrowMode, setLyricsBackgroundMode, setLyricsLumiereMode, setLyricMatchMinScore, setLyricOffset, updateCurrentLyricLine, lyricMatchText } from './lyrics';
+import { isLocalLiked, likedLocalKeys, subscribe as subscribeLocalLikes, toggleLocalLike } from './localLikes';
+import {
+  addTracks as addTracksToPlaylist,
+  createPlaylist,
+  deletePlaylist,
+  listPlaylists,
+
+  renamePlaylist,
+  subscribe as subscribeLocalPlaylists,
+  trackKeyOfTrack,
+  tracksOfKeys,
+
+} from './localPlaylists';
+import { openTagEditor } from './tagEditor';
+import { buildEqPresetManager } from './eqPresets';
+import { openLyricPosterSheet } from './lyricPoster';
+import { buildSearchHistoryPanel, recordSearch, type SearchHistoryPanelHandle } from './searchHistory';
+import { buildSettingsIOActions } from './settingsIO';
+import { buildSleepTimerPanel, completeSleepTimer, getSleepTimerState } from './sleepTimer';
+import { currentLyricLine, currentLyricSource, lyricGrowMode, lyricMatchMinScore, lyricOffsetOf, lyricsBackgroundMode, lyricsLumiereMode, LyricsView, primeLyrics, setLyricGrowMode, setLyricsBackgroundMode, setLyricsLumiereMode, setLyricMatchMinScore, setLyricOffset, updateCurrentLyricLine, lyricMatchText } from './lyrics';
 import { LUMIERE_MODES } from './lumiere';
 import {
   cycleMode,
+  getPlaybackSpeed,
   moveQueueItem,
   next,
   onPlayer,
@@ -103,12 +128,13 @@ import {
   refreshCurrentLiked,
   replaceQueue,
   seek,
+  setPlaybackSpeed,
   setVolume,
   toggle,
   toggleLiked,
   type PlayerState,
 } from './player';
-import { host, hostAvailable, getShortcutsState, onShortcutsState, type UpdateSnapshot } from '../core/bridge';
+import { host, hostAvailable, getShortcutsState, onMiniMode, onShortcutsState, type UpdateSnapshot } from '../core/bridge';
 import { HomeView } from './home';
 import { DiscoverView } from './discover';
 import { openSongInfo, setSongInfoView, songInfoView } from './songInfo';
@@ -229,6 +255,8 @@ export class App {
   private searchSource: OnlineSource | 'all' = 'all';
   private searchSeq = 0;
   private searchTimer = 0;
+  /** 搜索历史面板（顶部搜索弹层里）。 */
+  private searchHistory: SearchHistoryPanelHandle | null = null;
 
   /** 当前墙面 */
   private wall: WallData = { kind: 'liked', title: '我喜欢的音乐', subtitle: '', tracks: [] };
@@ -279,6 +307,8 @@ export class App {
   private upnextList!: HTMLUListElement;
   private upnextOpen = false;
   private upnextListKey = '';
+  /** 待播队列拖拽排序：正在拖动的队列下标（-1 = 未拖动）。 */
+  private upnextDragFrom = -1;
   private quickRoot!: HTMLDivElement;
   private quickPanelEl!: HTMLDivElement;
   private quickTabsObserver: ResizeObserver | null = null;
@@ -301,6 +331,9 @@ export class App {
   private lastQualityKey = '';
   private downloadQuickView: DownloadQueueView | null = null;
   private hostCommandBound = false;
+  /** 迷你播放器（紧凑置顶小窗）：状态以宿主回推的 window/miniMode 事件为准。 */
+  private miniMode = false;
+  private miniBtn!: HTMLButtonElement;
   private appBgMode: AppBgMode = readAppBgMode();
   private appBgImage = readAppBgImage();
   private appBgEl!: HTMLDivElement;
@@ -353,6 +386,21 @@ export class App {
     this.bindHostCommands();
     // 提前绑定快捷键回执：宿主可能在用户打开设置页之前就推送注册结果。
     this.disposers.add(onShortcutsState(() => {}));
+    // 迷你播放器：宿主回推窗口状态（含用户在系统层还原窗口的情况）。
+    this.disposers.add(onMiniMode((enabled) => this.applyMiniMode(enabled)));
+    // 上次窗口停在迷你态时页面刷新不会收到事件：主动向宿主复核一次，避免「窗口小、页面以为是大窗」。
+    try {
+      if (window.localStorage.getItem(MINI_MODE_KEY) === '1') host.setMiniMode(true);
+    } catch {
+      /* 忽略：localStorage 不可用时按普通窗口处理。 */
+    }
+    const onMiniKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || !this.miniMode) return;
+      event.preventDefault();
+      this.toggleMiniMode();
+    };
+    window.addEventListener('keydown', onMiniKey);
+    this.disposers.add(() => window.removeEventListener('keydown', onMiniKey));
     this.playerDispose = onPlayer((state) => this.syncPlayer(state));
     this.localDispose = onLocalLibraryChange(() => {
       if (this.wall.kind === 'local') {
@@ -361,9 +409,30 @@ export class App {
       }
       this.updateRailBadges();
     });
+    // 本地收藏变化：如果正停在「我喜欢的音乐」墙，就地刷新（融合墙要重新拼本地收藏）。
+    this.disposers.add(
+      subscribeLocalLikes(() => {
+        if (this.wall.kind === 'liked' && !this.wallHost.classList.contains('is-hidden')) void this.showLiked();
+      }),
+    );
     onLocalResult((result) => toast(result.message, result.ok ? 'info' : 'error'));
     this.accountDispose = onAccountChange(() => this.syncAccount());
     this.settingsDispose = onSettingsChange(() => this.syncSettingsUi());
+    // 睡眠定时：模块触发时统一在这里暂停（不依赖设置弹窗是否还开着）。
+    const onSleepFired = () => {
+      if (playerState().playing) toggle();
+      toast('睡眠定时已到，已暂停播放');
+    };
+    window.addEventListener('zilux:sleep-timer-fired', onSleepFired);
+    this.disposers.add(() => window.removeEventListener('zilux:sleep-timer-fired', onSleepFired));
+    // 「播完当前曲」：曲末前 300ms 触发；其余模式由睡眠定时模块自己计时。
+    window.setInterval(() => {
+      const timer = getSleepTimerState();
+      if (!timer.active || timer.mode !== 'track-end') return;
+      const state = playerState();
+      if (!state.playing || state.durationMs <= 0) return;
+      if (state.positionMs >= state.durationMs - 300) completeSleepTimer();
+    }, 500);
     initLocalLibrary();
     void this.bootData();
   }
@@ -433,9 +502,17 @@ export class App {
     this.searchList = h('div', { class: 'search-list' });
     this.searchNote = h('div', { class: 'search-note', text: '输入关键词，边打边搜' });
     const searchAllBtn = h('button', { class: 'pill search-all', title: '查看全部结果（Enter）' }, icon('search', 15), h('span', { text: '查看全部' }));
+    this.searchHistory = buildSearchHistoryPanel({
+      onPick: (query: string) => {
+        this.searchInput.value = query;
+        this.openSearchDock();
+        void this.commitSearch();
+      },
+    });
     this.searchPop = h(
       'div',
       { class: 'search-pop' },
+      this.searchHistory.element,
       this.searchTabs,
       this.searchList,
       h('div', { class: 'search-foot' }, this.searchNote, searchAllBtn),
@@ -1221,7 +1298,7 @@ export class App {
       playQueue(queue, index, true);
     });
     poster.append(playBtn);
-    if (this.wall.kind === 'local') {
+    if (this.wall.kind === 'local' || track.source === 'local') {
       const actions = h('div', { class: 'poster-actions' });
       const reveal = h('button', { class: 'poster-action', type: 'button', title: '在文件夹中显示' });
       reveal.append(icon('folder', 15));
@@ -1229,13 +1306,19 @@ export class App {
         event.stopPropagation();
         revealLocalTrack(track);
       });
+      const more = h('button', { class: 'poster-action', type: 'button', title: '更多操作' });
+      more.append(icon('more', 15));
+      more.addEventListener('click', (event) => {
+        event.stopPropagation();
+        this.openLocalTrackActions(track);
+      });
       const del = h('button', { class: 'poster-action is-danger', type: 'button', title: '删除到回收站' });
       del.append(icon('trash', 15));
       del.addEventListener('click', (event) => {
         event.stopPropagation();
         this.confirmDeleteLocal([track]);
       });
-      actions.append(reveal, del);
+      actions.append(reveal, more, del);
       poster.append(actions);
     }
     poster.addEventListener('click', () => playQueue(queue, index, true));
@@ -1335,10 +1418,47 @@ export class App {
     if (mode) this.likedMode = mode;
     this.setRailActive('liked');
     const label = this.likedMode === 'all' ? '多平台融合' : SOURCE_LABEL[this.likedMode];
+    // 没登录任何平台时也把本地收藏显示出来（本地收藏独立存在 localStorage）。
+    const anyOnline = getAccounts().some((account) => account.loggedIn);
+    const localKeys = likedLocalKeys();
+    if (!anyOnline) {
+      this.wall = {
+        kind: 'liked',
+        title: '我喜欢的音乐',
+        subtitle: localKeys.length > 0 ? `本地收藏 · ${localKeys.length} 首 · 登录后可同步在线平台` : '尚未登录在线平台',
+        tracks: tracksOfKeys(localKeys),
+      };
+      this.renderWall();
+      return;
+    }
     // 不先渲染「同步中」占位：否则进入/切平台时会先闪一次空网格再闪一次结果。
     this.wall = { kind: 'liked', title: '我喜欢的音乐', subtitle: `${label} · 同步中…`, tracks: [] };
     if (this.likedMode === 'all') await this.loadLikedMerged();
     else await this.loadLiked(this.likedMode);
+    this.mergeLocalLikesIntoWall();
+  }
+
+  /** 把本地收藏的歌合并进「我喜欢的音乐」融合墙（本地收藏与在线收藏互不影响）。 */
+  private mergeLocalLikesIntoWall(): void {
+    if (this.wall.kind !== 'liked') return;
+    const localTracks = tracksOfKeys(likedLocalKeys());
+    if (localTracks.length === 0) return;
+    const seen = new Set(this.wall.tracks.map((track) => `${track.source}:${track.id}`));
+    const added: OnlineTrack[] = [];
+    for (const track of localTracks) {
+      const key = `${track.source}:${track.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      added.push(track);
+    }
+    if (added.length === 0) return;
+    const tracks = this.wall.tracks.concat(added);
+    this.wall = {
+      ...this.wall,
+      subtitle: `${this.wall.subtitle} · 含本地收藏 ${added.length} 首`,
+      tracks,
+    };
+    this.renderWall(true);
   }
 
   /** 用一个平台拉「我喜欢的音乐」（带缓存）。返回 null 表示该平台不可用。 */
@@ -1612,21 +1732,169 @@ export class App {
   /* ------------------------------------------------------------------ */
 
   private async openPlaylistSheet(): Promise<void> {
-    if (!getAccounts().some((item) => item.loggedIn)) {
-      toast('先登录网易云或 QQ 音乐，才能读取歌单');
-      this.openLogin();
+    this.openSheet('我的歌单', (body) => {
+      const localHost = h('div', { class: 'local-playlist-host' });
+      const onlineHost = h('div', { class: 'online-playlist-host' });
+      body.append(localHost, onlineHost);
+      this.renderLocalPlaylists(localHost);
+      this.sheetScope?.add(
+        subscribeLocalPlaylists(() => {
+          this.renderLocalPlaylists(localHost);
+        }),
+      );
+      void this.renderOnlinePlaylists(onlineHost);
+    });
+  }
+
+  /** 我的歌单弹层里的「本地歌单」区块（新建 / 播放 / 重命名 / 删除）。 */
+  private renderLocalPlaylists(host: HTMLElement): void {
+    host.textContent = '';
+    const playlists = listPlaylists();
+    host.append(h('h3', { class: 'section-title', text: `本地歌单 · ${playlists.length} 个` }));
+    const input = h('input', {
+      class: 'search-input local-playlist-name',
+      type: 'text',
+      placeholder: '新歌单名称',
+      maxlength: '60',
+    });
+    const createBtn = h('button', { class: 'btn is-primary', type: 'button', text: '新建歌单' });
+    createBtn.addEventListener('click', () => {
+      const name = input.value.trim();
+      if (!name) {
+        toast('先输入歌单名称');
+        return;
+      }
+      try {
+        const playlist = createPlaylist(name);
+        toast(`已创建「${playlist.name}」`);
+        this.renderLocalPlaylists(host);
+      } catch (err) {
+        toast(err instanceof Error ? err.message : '创建歌单失败', 'error');
+      }
+    });
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        createBtn.click();
+      }
+    });
+    host.append(h('div', { class: 'local-playlist-create' }, input, createBtn));
+    if (playlists.length === 0) {
+      host.append(h('div', { class: 'empty', text: '还没有本地歌单。新建后可在本地曲目「更多操作」里把歌加进来。' }));
       return;
     }
-    const ref: { body: HTMLDivElement | null } = { body: null };
-    this.openSheet('我的歌单', (body) => {
-      ref.body = body;
-      body.append(h('div', { class: 'empty', text: '加载歌单…' }));
+    const list = h('div', { class: 'list' });
+    playlists.forEach((playlist) => {
+      const tracks = tracksOfKeys(playlist.trackKeys);
+      const nameEl = h('div', { class: 'row-name', text: playlist.name });
+      const row = h(
+        'div',
+        { class: 'row', title: playlist.name },
+        h(
+          'div',
+          { class: 'row-cover local-playlist-cover' },
+          tracks[0] ? h('img', { src: onlineArtwork(tracks[0]), loading: 'lazy' }) : icon('list', 20),
+        ),
+        h('div', { class: 'row-meta' }, nameEl, h('div', { class: 'row-artist', text: `${tracks.length} 首 · 本地` })),
+      );
+      row.addEventListener('click', () => {
+        this.sheet?.close();
+        this.openLocalPlaylistWall(playlist.id);
+      });
+      const actions = h('div', { class: 'local-playlist-actions' });
+      const playBtn = h('button', { class: 'icon-btn', type: 'button', title: '播放歌单' }, icon('play', 16));
+      playBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (tracks.length === 0) {
+          toast('歌单还是空的');
+          return;
+        }
+        this.sheet?.close();
+        playQueue(tracks, 0, true);
+      });
+      const renameBtn = h('button', { class: 'icon-btn', type: 'button', title: '重命名' }, icon('music', 16));
+      renameBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const edit = h('input', {
+          class: 'search-input local-playlist-rename',
+          type: 'text',
+          value: playlist.name,
+          maxlength: '60',
+        });
+        const commit = (): void => {
+          const next = edit.value.trim();
+          if (!next || next === playlist.name) {
+            if (edit.isConnected) edit.replaceWith(nameEl);
+            return;
+          }
+          try {
+            renamePlaylist(playlist.id, next);
+            toast('歌单已重命名');
+            this.renderLocalPlaylists(host);
+          } catch (err) {
+            toast(err instanceof Error ? err.message : '重命名失败', 'error');
+            if (edit.isConnected) edit.replaceWith(nameEl);
+          }
+        };
+        edit.addEventListener('keydown', (inner) => {
+          if (inner.key === 'Enter') {
+            inner.preventDefault();
+            commit();
+          }
+          if (inner.key === 'Escape') {
+            inner.stopPropagation();
+            if (edit.isConnected) edit.replaceWith(nameEl);
+          }
+        });
+        edit.addEventListener('blur', commit);
+        nameEl.replaceWith(edit);
+        edit.focus();
+        edit.select();
+      });
+      const deleteBtn = h('button', { class: 'icon-btn', type: 'button', title: '删除歌单' }, icon('trash', 16));
+      deleteBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        void confirmDialog({
+          title: '删除本地歌单',
+          message: `删除本地歌单「${playlist.name}」？`,
+          detail: '只删除歌单本身，不会删除任何本地歌曲文件。',
+          confirmText: '删除歌单',
+          tone: 'danger',
+        }).then((ok) => {
+          if (!ok) return;
+          deletePlaylist(playlist.id);
+          toast('歌单已删除');
+          this.renderLocalPlaylists(host);
+        });
+      });
+      actions.append(playBtn, renameBtn, deleteBtn);
+      row.append(actions);
+      list.append(row);
     });
+    host.append(list);
+  }
+
+  /** 我的歌单弹层里的「在线歌单」区块（未登录时给出登录入口）。 */
+  private async renderOnlinePlaylists(host: HTMLElement): Promise<void> {
+    host.textContent = '';
+    if (!getAccounts().some((account) => account.loggedIn)) {
+      const loginBtn = h('button', { class: 'btn', type: 'button', text: '去登录' });
+      loginBtn.addEventListener('click', () => {
+        this.sheet?.close();
+        this.openLogin();
+      });
+      host.append(
+        h('h3', { class: 'section-title', text: '在线歌单' }),
+        h('div', { class: 'empty', text: '登录网易云 / QQ 音乐后，这里会显示在线歌单' }),
+        h('div', { class: 'local-playlist-login' }, loginBtn),
+      );
+      return;
+    }
+    host.append(h('h3', { class: 'section-title', text: '在线歌单' }), h('div', { class: 'empty', text: '加载歌单…' }));
     try {
       const overview = await fetchLibraryOverview();
-      const body = ref.body;
-      if (!body) return;
-      body.textContent = '';
+      if (!host.isConnected) return;
+      host.textContent = '';
       let any = false;
       for (const state of overview.sources) {
         if (!state.loggedIn) continue;
@@ -1635,7 +1903,7 @@ export class App {
         items.push(...state.playlists);
         if (items.length === 0) continue;
         any = true;
-        body.append(h('h3', { class: 'section-title', text: `${SOURCE_LABEL[state.source]} · ${items.length} 个歌单` }));
+        host.append(h('h3', { class: 'section-title', text: `${SOURCE_LABEL[state.source]} · ${items.length} 个歌单` }));
         const list = h('div', { class: 'list' });
         items.forEach((item) => {
           const cover =
@@ -1668,16 +1936,14 @@ export class App {
           });
           list.append(row);
         });
-        body.append(list);
+        host.append(list);
       }
-      if (!any) body.append(h('div', { class: 'empty', text: '这两个平台暂时没有歌单' }));
+      if (!any) host.append(h('div', { class: 'empty', text: '这两个平台暂时没有歌单' }));
     } catch (err) {
       console.warn('[app] playlists failed', err);
-      const body = ref.body;
-      if (body) {
-        body.textContent = '';
-        body.append(h('div', { class: 'empty', text: '歌单读取失败，检查登录状态或稍后重试' }));
-      }
+      if (!host.isConnected) return;
+      host.textContent = '';
+      host.append(h('h3', { class: 'section-title', text: '在线歌单' }), h('div', { class: 'empty', text: '歌单读取失败，检查登录状态或稍后重试' }));
     }
   }
 
@@ -1992,6 +2258,7 @@ export class App {
       toast('先输入要搜索的歌曲或歌手');
       return;
     }
+    recordSearch(keyword);
     const seq = ++this.searchSeq;
     const label =
       this.searchSource === 'all' ? '融合搜索' : sourceMeta(this.searchSource as string).label;
@@ -2108,9 +2375,11 @@ export class App {
     const current = playerState().track;
     tracks.forEach((track, index) => {
       const key = `${track.source}:${track.id}`;
-      // 「我喜欢的音乐」墙里的歌本来就都是已收藏，重启后本地缓存是空的也不能显示空心。
-      const liked =
-        this.wall.kind === 'liked'
+      const isLocalTrack = track.source === 'local';
+      // 本地收藏独立存在 localStorage；在线收藏看 searchLiked 缓存。
+      const liked = isLocalTrack
+        ? isLocalLiked(track)
+        : this.wall.kind === 'liked'
           ? this.searchLiked.get(key) !== false
           : this.searchLiked.get(key) === true;
       const isCurrent = !!current && current.id === track.id && current.source === track.source;
@@ -2120,10 +2389,16 @@ export class App {
         'data-track-key': key,
       });
       likeBtn.append(icon(liked ? 'heartFill' : 'heart', 17));
-      if (track.source === 'local') {
-        likeBtn.disabled = true;
-        likeBtn.title = '本地歌曲暂不支持收藏';
-        likeBtn.classList.add('is-disabled');
+      if (isLocalTrack) {
+        likeBtn.title = liked ? '取消本地收藏' : '收藏到本地「我喜欢的音乐」';
+        likeBtn.addEventListener('click', (event) => {
+          event.stopPropagation();
+          const now = toggleLocalLike(track);
+          likeBtn.classList.toggle('is-liked', now);
+          likeBtn.title = now ? '取消本地收藏' : '收藏到本地「我喜欢的音乐」';
+          likeBtn.replaceChildren(icon(now ? 'heartFill' : 'heart', 17));
+          toast(now ? '已收藏到本地「我喜欢的音乐」' : '已取消本地收藏');
+        });
       } else {
         likeBtn.addEventListener('click', (event) => {
           event.stopPropagation();
@@ -2158,31 +2433,19 @@ export class App {
         this.openTrackInfo(track, row);
       });
 
-      // 本地曲库行：把「下载 / 收藏」两个无意义按钮换成「在文件夹中显示 / 删除」。
-      const localRow = this.wall.kind === 'local';
-      const revealBtn = h('button', {
-        class: 'track-reveal',
+      // 本地曲库行：把「下载 / 收藏」两个无意义按钮换成「收藏 / 更多（标签·歌单·定位·删除）」。
+      const localRow = this.wall.kind === 'local' || isLocalTrack;
+      const moreBtn = h('button', {
+        class: 'track-more',
         type: 'button',
-        title: '在文件夹中显示',
+        title: '更多操作',
         'data-track-key': key,
       });
-      revealBtn.append(icon('folder', 17));
-      revealBtn.addEventListener('click', (event) => {
+      moreBtn.append(icon('more', 17));
+      moreBtn.addEventListener('click', (event) => {
         event.stopPropagation();
-        revealLocalTrack(track);
+        this.openLocalTrackActions(track);
       });
-      const deleteBtn = h('button', {
-        class: 'track-del',
-        type: 'button',
-        title: '删除到回收站',
-        'data-track-key': key,
-      });
-      deleteBtn.append(icon('trash', 17));
-      deleteBtn.addEventListener('click', (event) => {
-        event.stopPropagation();
-        this.confirmDeleteLocal([track]);
-      });
-
       // 封面：与海报网格同一套补图逻辑——没有内嵌封面时先去线上找一张，
       // 找到后再回填，避免横条视图停在程序化渐变占位图上（网格会补、横条不补的 bug）。
       const coverImg = h('img', { src: onlineArtwork(track), loading: 'lazy' });
@@ -2220,8 +2483,8 @@ export class App {
         this.sourceTag(track.source),
         h('div', { class: 'track-dur', text: fmtTime(track.durationMs) }),
         infoBtn,
-        localRow ? revealBtn : downloadBtn,
-        localRow ? deleteBtn : likeBtn,
+        localRow ? likeBtn : downloadBtn,
+        localRow ? moreBtn : likeBtn,
       );
       row.addEventListener('click', () => playQueue(tracks, index, true));
       if (localRow) {
@@ -2257,6 +2520,170 @@ export class App {
     }).then((ok) => {
       if (ok) deleteLocalTracks(rels);
     });
+  }
+
+  /** 本地曲目「更多操作」面板：标签 / 歌单 / 文件夹 / 回收站。 */
+  private openLocalTrackActions(track: OnlineTrack): void {
+    const key = trackKeyOfTrack(track);
+    this.openSheet('歌曲操作', (body) => {
+      body.append(
+        h(
+          'div',
+          { class: 'local-sheet-meta' },
+          h('div', { class: 'row-name', text: track.title }),
+          h('div', { class: 'row-artist', text: track.artist || '未知歌手' }),
+        ),
+      );
+      const list = h('div', { class: 'list local-sheet-actions' });
+      const action = (label: string, iconName: string, hint: string, onClick: () => void): HTMLElement => {
+        const row = h(
+          'button',
+          { class: 'row local-sheet-action', type: 'button' },
+          h('div', { class: 'row-cover local-sheet-icon' }, icon(iconName, 18)),
+          h(
+            'div',
+            { class: 'row-meta' },
+            h('div', { class: 'row-name', text: label }),
+            h('div', { class: 'row-artist', text: hint }),
+          ),
+        );
+        row.addEventListener('click', () => {
+          this.sheet?.close();
+          onClick();
+        });
+        return row;
+      };
+      const liked = isLocalLiked(track);
+      list.append(
+        action(liked ? '取消本地收藏' : '收藏到本地「我喜欢的音乐」', liked ? 'heartFill' : 'heart', '只保存在本机，不写入账号', () => {
+          const now = toggleLocalLike(track);
+          this.syncLocalLikeButtons(track, now);
+          toast(now ? '已收藏到本地「我喜欢的音乐」' : '已取消本地收藏');
+        }),
+        action('编辑歌曲标签', 'music', '标题 / 歌手 / 专辑 / 年份，写入文件', () => {
+          openTagEditor(track, () => {
+            void initLocalLibrary();
+          });
+        }),
+        action('添加到歌单', 'list', '加入本地歌单，可拖动排序', () => {
+          if (!key) {
+            toast('找不到本地文件', 'error');
+            return;
+          }
+          this.openLocalPlaylistPicker(track);
+        }),
+        action('在文件夹中显示', 'folder', '打开文件所在目录', () => revealLocalTrack(track)),
+        action('移到回收站', 'trash', '可随时从回收站还原', () => this.confirmDeleteLocal([track])),
+      );
+      body.append(list);
+    });
+  }
+
+  /** 本地收藏状态变化后，同步当前页面上这首歌的所有红心按钮。 */
+  private syncLocalLikeButtons(track: OnlineTrack, liked: boolean): void {
+    const key = trackKeyOfTrack(track);
+    if (!key) return;
+    this.root.querySelectorAll<HTMLButtonElement>('.track-like[data-track-key]').forEach((button) => {
+      if (button.dataset.trackKey !== key) return;
+      button.classList.toggle('is-liked', liked);
+      button.title = liked ? '取消本地收藏' : '收藏到本地「我喜欢的音乐」';
+      button.replaceChildren(icon(liked ? 'heartFill' : 'heart', 17));
+    });
+  }
+
+  /** 把本地曲目加入某个本地歌单（或现场新建一个）。 */
+  private openLocalPlaylistPicker(track: OnlineTrack): void {
+    const key = trackKeyOfTrack(track);
+    if (!key) {
+      toast('找不到本地文件', 'error');
+      return;
+    }
+    this.openSheet('添加到歌单', (body) => {
+      const render = (): void => {
+        body.textContent = '';
+        const playlists = listPlaylists();
+        const list = h('div', { class: 'list' });
+        playlists.forEach((playlist) => {
+          const has = playlist.trackKeys.includes(key);
+          const row = h(
+            'button',
+            { class: 'row', type: 'button', title: playlist.name },
+            h('div', { class: 'row-cover local-sheet-icon' }, icon('list', 18)),
+            h(
+              'div',
+              { class: 'row-meta' },
+              h('div', { class: 'row-name', text: playlist.name }),
+              h('div', { class: 'row-artist', text: `${playlist.trackKeys.length} 首 · 本地` }),
+            ),
+            h('div', { class: 'row-dur', text: has ? '已在' : '' }),
+          );
+          row.addEventListener('click', () => {
+            if (has) {
+              toast('这首歌已经在歌单里');
+              return;
+            }
+            addTracksToPlaylist(playlist.id, [key]);
+            toast(`已添加到「${playlist.name}」`);
+            render();
+          });
+          list.append(row);
+        });
+        if (playlists.length === 0) {
+          body.append(h('div', { class: 'empty', text: '还没有本地歌单，在下面新建一个' }));
+        }
+        body.append(list);
+        const input = h('input', {
+          class: 'search-input local-playlist-name',
+          type: 'text',
+          placeholder: '新歌单名称',
+          maxlength: '60',
+        });
+        const createBtn = h('button', { class: 'btn is-primary', type: 'button', text: '新建并添加' });
+        const create = (): void => {
+          const name = input.value.trim();
+          if (!name) {
+            toast('先输入歌单名称');
+            return;
+          }
+          try {
+            const playlist = createPlaylist(name, [key]);
+            toast(`已创建「${playlist.name}」并加入 1 首`);
+            render();
+          } catch (err) {
+            toast(err instanceof Error ? err.message : '创建歌单失败', 'error');
+          }
+        };
+        createBtn.addEventListener('click', create);
+        input.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            create();
+          }
+        });
+        body.append(h('div', { class: 'local-playlist-create' }, input, createBtn));
+      };
+      render();
+    });
+  }
+
+  /** 打开本地歌单墙（曲库页的播放列表视图，复用本地行样式与更多操作）。 */
+  private openLocalPlaylistWall(id: string): void {
+    const playlist = listPlaylists().find((item) => item.id === id);
+    if (!playlist) {
+      toast('歌单不存在', 'error');
+      return;
+    }
+    const tracks = tracksOfKeys(playlist.trackKeys);
+    this.setRailActive('playlist');
+    this.localArtistFilter = null;
+    this.wallPager = null;
+    this.wall = {
+      kind: 'playlist',
+      title: playlist.name,
+      subtitle: `本地歌单 · ${tracks.length} 首 · 拖动可排序`,
+      tracks,
+    };
+    this.renderWall();
   }
 
   /** 收藏 / 取消收藏（乐观更新，失败回滚）。 */
@@ -2418,6 +2845,24 @@ export class App {
         toggleField('启动时最大化', '下次启动直接铺满屏幕', settings.general.startMaximized, (value) => {
           patchSettings({ general: { startMaximized: value } });
         }),
+        toggleField(
+          '开机自启',
+          '登录 Windows 后自动启动 Zilux2（也会出现在任务管理器的「启动」页，可在那里关闭）',
+          settings.general.autoLaunch,
+          (value) => {
+            patchSettings({ general: { autoLaunch: value } });
+            toast(value ? '已开启开机自启' : '已关闭开机自启');
+          },
+        ),
+        toggleField(
+          '监控本地文件夹',
+          '本地曲库文件夹里的新增/删除歌曲会实时同步；关闭后需要手动重新扫描',
+          settings.general.watchLocalFolder,
+          (value) => {
+            patchSettings({ general: { watchLocalFolder: value } });
+            toast(value ? '已开启本地文件夹监控' : '已暂停本地文件夹监控');
+          },
+        ),
       );
 
       // 外观
@@ -2477,6 +2922,21 @@ export class App {
           setVolume(value / 100);
           patchSettings({ playback: { volume: value / 100 } });
         }, (value) => `${value}%`),
+        segField(
+          '播放速度',
+          [
+            { value: '0.75', label: '0.75×' },
+            { value: '1', label: '1.0×' },
+            { value: '1.25', label: '1.25×' },
+            { value: '1.5', label: '1.5×' },
+            { value: '2', label: '2.0×' },
+          ],
+          getPlaybackSpeed() === 1 ? '1' : String(getPlaybackSpeed()),
+          (value) => {
+            setPlaybackSpeed(Number(value));
+          },
+          '变速不变调（Web Audio preservesPitch）；无缝过渡的变速会与此倍速相乘。',
+        ),
         toggleField('播放/暂停渐变', '开启后暂停淡出、播放淡入；关闭则瞬时切换', settings.playback.fadeEnabled, (value) => {
           patchSettings({ playback: { fadeEnabled: value } });
         }),
@@ -2511,6 +2971,17 @@ export class App {
         sliderField('搜索结果条数', 10, 50, 5, settings.playback.searchLimit, (value) => {
           patchSettings({ playback: { searchLimit: value } });
         }, (value) => `${value} 条`),
+        (() => {
+          const panel = buildSleepTimerPanel();
+          this.sheetScope?.add(() => panel.dispose());
+          return h(
+            'div',
+            { class: 'field is-stacked' },
+            h('div', { class: 'field-label', text: '睡眠定时' }),
+            h('div', { class: 'field-hint', text: '到点自动暂停；「播完当前曲」会在当前歌曲结束后停止。' }),
+            panel.element,
+          );
+        })(),
         buildAnalysisSection(this.sheetScope),
         buildCrossfadeSection(this.sheetScope),
       );
@@ -2584,6 +3055,37 @@ export class App {
             pickLocalFolder();
           });
           return h('div', { class: 'field' }, h('div', { class: 'field-label', text: '本地歌曲文件夹' }), btn);
+        })(),
+        (() => {
+          const io = buildSettingsIOActions({
+            getSettings,
+            onImported: (result) => {
+              if (result.ok && result.settings) {
+                patchSettings(result.settings);
+                toast('设置已导入');
+              } else if (result.error) {
+                toast(`导入失败：${result.error}`, 'error');
+              }
+            },
+            onCacheCleared: (result) => toast(`已清理 ${result.cleared.length} 项本地缓存`),
+            confirmClear: (keyCount) =>
+              confirmDialog({
+                title: '清空本地缓存',
+                message: `清空 ${keyCount} 项本地缓存？`,
+                detail: '只会清理缓存类数据，收藏、歌单、歌词偏移等个人数据不受影响。',
+                confirmText: '清空',
+                tone: 'danger',
+                iconName: 'trash',
+              }),
+          });
+          this.sheetScope?.add(() => io.dispose());
+          return h(
+            'div',
+            { class: 'field is-stacked' },
+            h('div', { class: 'field-label', text: '设置导入导出' }),
+            h('div', { class: 'field-hint', text: '导出为 JSON 备份；导入会覆盖本地设置。' }),
+            io.element,
+          );
         })(),
       );
 
@@ -2806,6 +3308,42 @@ export class App {
           eqSwitch.root,
         ),
         h('div', { class: 'field is-stacked' }, h('div', { class: 'field-label', text: '预设' }), presetSeg),
+        (() => {
+          const manager = buildEqPresetManager({
+            getGains: () => [...eqGains],
+            onApply: (gains) => {
+              gains.forEach((gain, index) => {
+                eqGains[index] = gain;
+              });
+              eqSliders.forEach((_slider, index) => paintEqGain(index));
+              eqCurve.setGains(eqGains);
+              presetSeg.querySelectorAll('.seg-btn').forEach((node) => node.classList.remove('is-on'));
+              if (!eqEnabled) {
+                eqEnabled = true;
+                paintEqEnabled();
+              }
+              patchSettings({ playback: { eqEnabled: true, eqGains: [...eqGains] } });
+              toast('已应用自定义 EQ 预设');
+            },
+            confirmDelete: (preset) =>
+              confirmDialog({
+                title: '删除自定义预设',
+                message: `删除「${preset.name}」？`,
+                detail: '只删除预设记录，不影响当前正在使用的增益。',
+                confirmText: '删除',
+                tone: 'danger',
+                iconName: 'trash',
+              }),
+          });
+          this.sheetScope?.add(() => manager.dispose());
+          return h(
+            'div',
+            { class: 'field is-stacked' },
+            h('div', { class: 'field-label', text: '自定义预设' }),
+            h('div', { class: 'field-hint', text: '保存当前 10 段增益为预设，下次一键还原。' }),
+            manager.element,
+          );
+        })(),
         h(
           'div',
           { class: 'eq-curve-card' },
@@ -3757,7 +4295,44 @@ export class App {
       { passive: false },
     );
 
+    // 歌词海报：把当前封面 + 歌名 + 正在唱的一句画成 1080×1440 分享图。
+    const posterBtn = h(
+      'button',
+      { class: 'pb-btn pb-btn-poster', title: '歌词海报' },
+      h('span', { class: 'pb-glyph', text: '享' }),
+    );
+    posterBtn.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const track = playerState().track;
+      if (!track) {
+        toast('先播放一首歌');
+        return;
+      }
+      void openLyricPosterSheet({
+        title: track.title,
+        artist: track.artist,
+        album: track.album,
+        coverUrl: track.cover || undefined,
+        lyricLine: currentLyricLine(),
+        sourceLabel: SOURCE_LABEL[track.source] ?? track.source,
+      }).catch((error: unknown) => {
+        toast(`生成海报失败：${error instanceof Error ? error.message : String(error)}`, 'error');
+      });
+    });
+
     const downloadBtn = createDownloadEntryButton((anchor) => this.openPlaybarDownloadMenu(anchor));
+    // 迷你播放器入口：只发指令，窗口切换由宿主完成并回推事件。
+    this.miniBtn = h(
+      'button',
+      { class: 'pb-btn pb-mini', title: '迷你播放器（置顶小窗）', 'data-qa': 'mini-toggle' },
+      icon('minimize', 15),
+    );
+    this.miniBtn.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.toggleMiniMode();
+    });
     const bar = h(
       'div',
       { class: 'playerbar' },
@@ -3771,7 +4346,9 @@ export class App {
         'div',
         { class: 'pb-extra' },
         lyricsBtn,
+        posterBtn,
         volumeWrap,
+        this.miniBtn,
       ),
     );
 
@@ -3779,6 +4356,49 @@ export class App {
     this.root.append(wrap);
     this.playerbar = bar;
     this.playerbarWrap = wrap;
+    // 迷你态整条播放条即拖动区（控件/进度条除外）；双击空白处退出迷你。
+    bar.addEventListener('pointerdown', (event) => {
+      if (!this.miniMode || event.button !== 0) return;
+      const target = event.target as HTMLElement | null;
+      if (target && target.closest('button, input, a, .slider, .pb-progress')) return;
+      host.drag();
+    });
+    bar.addEventListener('dblclick', (event) => {
+      if (!this.miniMode) return;
+      const target = event.target as HTMLElement | null;
+      if (target && target.closest('button, input, a, .slider, .pb-progress')) return;
+      this.toggleMiniMode();
+    });
+  }
+
+  /** 迷你播放器按钮：只向宿主发请求，实际状态以 window/miniMode 回推为准。 */
+  private toggleMiniMode(): void {
+    host.setMiniMode(!this.miniMode);
+  }
+
+  /** 应用迷你态：只改页面布局；窗口尺寸/置顶由宿主负责。 */
+  private applyMiniMode(enabled: boolean): void {
+    this.miniMode = enabled;
+    this.root.classList.toggle('is-mini', enabled);
+    document.body.classList.toggle('is-mini', enabled);
+    try {
+      window.localStorage.setItem(MINI_MODE_KEY, enabled ? '1' : '0');
+    } catch {
+      /* 忽略：localStorage 不可用不影响布局。 */
+    }
+    if (enabled) {
+      this.closeUpNext();
+      this.closeSearchDock();
+      if (this.lyrics) this.closeLyrics();
+      closeDownloadPanel();
+    }
+    this.paintMiniBtn();
+  }
+
+  private paintMiniBtn(): void {
+    if (!this.miniBtn) return;
+    this.miniBtn.title = this.miniMode ? '退出迷你播放器（恢复完整窗口）' : '迷你播放器（置顶小窗）';
+    this.miniBtn.replaceChildren(icon(this.miniMode ? 'maximize' : 'minimize', 15));
   }
 
   /* ------------------------------------------------------------------ */
@@ -3809,12 +4429,27 @@ export class App {
       this.closeUpNext();
     });
     this.upnextList = h('ul', { class: 'upnext-list' });
+    // 拖拽排序：行内 handler 见 renderUpNextList；列表空白区域接住拖拽 → 插到队尾。
+    this.upnextList.addEventListener('dragover', (event) => {
+      if (this.upnextDragFrom < 0) return;
+      event.preventDefault();
+      this.clearUpnextDropMarks();
+      this.upnextList.classList.add('is-drop-tail');
+    });
+    this.upnextList.addEventListener('dragleave', () => {
+      this.upnextList.classList.remove('is-drop-tail');
+    });
+    this.upnextList.addEventListener('drop', (event) => {
+      if (this.upnextDragFrom < 0) return;
+      event.preventDefault();
+      this.commitUpnextDrop(playerState().queue.length);
+    });
     this.upnextPanel = h(
       'div',
       { class: 'upnext-panel' },
       h('div', { class: 'upnext-head' }, h('div', { class: 'upnext-head-title', text: '待播队列' }), skip),
       this.upnextList,
-      h('div', { class: 'upnext-hint', text: '双击播放 · ↑↓ 调整顺序 · 垃圾桶移出队列' }),
+      h('div', { class: 'upnext-hint', text: '拖动或 ↑↓ 调整顺序 · 双击播放 · 垃圾桶移出队列' }),
     );
     this.upnextRoot = h('div', { class: 'upnext is-hidden' }, this.upnextPanel, this.upnextSummary);
     // 待播与快捷设置都是挂在播放条右侧的独立胶囊
@@ -5155,16 +5790,73 @@ export class App {
         h('div', { class: 'upnext-actions' }, upBtn, downBtn, removeBtn),
         h('span', { class: 'upnext-index', text: String(offset + 1) }),
       );
+      // 拖拽排序：整行可拖，按指针落在目标行上半/下半决定插到其前/后。
+      row.draggable = true;
+      row.dataset.queueIndex = String(index);
+      row.addEventListener('dragstart', (event) => {
+        this.upnextDragFrom = index;
+        row.classList.add('is-dragging');
+        if (event.dataTransfer) {
+          event.dataTransfer.setData('text/plain', String(index));
+          event.dataTransfer.effectAllowed = 'move';
+        }
+      });
+      row.addEventListener('dragend', () => {
+        this.upnextDragFrom = -1;
+        row.classList.remove('is-dragging');
+        this.clearUpnextDropMarks();
+      });
+      row.addEventListener('dragover', (event) => {
+        if (this.upnextDragFrom < 0) return;
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+        const rect = row.getBoundingClientRect();
+        const after = event.clientY > rect.top + rect.height / 2;
+        this.clearUpnextDropMarks();
+        row.classList.add(after ? 'is-drop-after' : 'is-drop-before');
+      });
+      row.addEventListener('drop', (event) => {
+        if (this.upnextDragFrom < 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const rect = row.getBoundingClientRect();
+        const after = event.clientY > rect.top + rect.height / 2;
+        this.commitUpnextDrop(after ? index + 1 : index);
+      });
       row.addEventListener('click', () => {
         for (const item of Array.from(this.upnextList.children)) item.classList.remove('is-selected');
         row.classList.add('is-selected');
-      });
-      row.addEventListener('dblclick', () => {
+      });      row.addEventListener('dblclick', () => {
         playAt(index);
         this.closeUpNext();
       });
       this.upnextList.append(row);
     });
+  }
+
+  /** 清掉待播队列的拖拽落点提示（行上的前/后标记 + 列表尾标记）。 */
+  private clearUpnextDropMarks(): void {
+    this.upnextList.classList.remove('is-drop-tail');
+    for (const row of Array.from(this.upnextList.children)) {
+      row.classList.remove('is-drop-before', 'is-drop-after');
+    }
+  }
+
+  /**
+   * 结束一次待播队列拖拽。insertion 是「移除前坐标」中的插入点（0..queue.length），
+   * 换算成 moveQueueItem(from, to) 的 to（移除后坐标）后交给播放器执行。
+   */
+  private commitUpnextDrop(insertion: number): void {
+    const from = this.upnextDragFrom;
+    this.upnextDragFrom = -1;
+    this.clearUpnextDropMarks();
+    if (from < 0) return;
+    const queue = playerState().queue;
+    let to = Math.max(0, Math.min(insertion, queue.length));
+    if (from < to) to -= 1;
+    to = Math.max(0, Math.min(to, queue.length - 1));
+    if (to === from) return;
+    moveQueueItem(from, to);
   }
 
   private syncUpNext(state: PlayerState): void {

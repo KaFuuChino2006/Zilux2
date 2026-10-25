@@ -194,6 +194,7 @@ internal sealed class WebViewHost : IDisposable
     private readonly WebView2 _webView;
     private readonly WebContentPlan _plan;
     private readonly SettingsBridge? _settingsBridge;
+    private readonly SettingsService? _settings;
     private readonly AudioFeatureService? _audio;
     private readonly MediaSessionService? _media;
     private readonly AirPlayService? _airplay;
@@ -217,6 +218,7 @@ internal sealed class WebViewHost : IDisposable
         _webView = webView;
         _plan = plan;
         _settingsBridge = settings is null ? null : new SettingsBridge(settings);
+        _settings = settings;
         _audio = audio;
         _media = media;
         _airplay = airplay;
@@ -224,12 +226,20 @@ internal sealed class WebViewHost : IDisposable
             window,
             () => _webView.CoreWebView2,
             PostJson,
-            settings is null ? null : () => settings.DownloadDirectory);
+            settings is null ? null : () => settings.DownloadDirectory,
+            settings is null ? null : () => settings.WatchLocalFolder);
+        if (settings is not null)
+        {
+            // general 段变更（目录监控开关）需要即时生效；开机自启由 App 订阅同一事件处理。
+            settings.GeneralChanged += OnGeneralSettingsChanged;
+        }
         // 离线节拍分析（/api/analysis）需要把本地曲库 rel 解析成磁盘路径；回调来自分析线程池，
         // CreateLocalMusicService 之后才能接线，App.Online 在窗口创建前就已经 Start。
         if (App.Online is { } online)
         {
             online.LocalPathResolver = ResolveLocalTrackPathForAnalysis;
+            // 标签写入成功后刷新曲库（回调来自 /api/local/tag 的 HTTP 线程，方法内部再切 UI）。
+            online.LocalFileChanged = NotifyLocalFileChanged;
         }
         // 自动更新：状态推送从任意线程回来，统一调度到 UI 线程再 PostWebMessage。
         _updates = settings is null
@@ -403,10 +413,16 @@ internal sealed class WebViewHost : IDisposable
         }
 
         _disposed = true;
+        if (_settings is not null)
+        {
+            _settings.GeneralChanged -= OnGeneralSettingsChanged;
+        }
+
         // 先断开分析用的本地路径解析，避免本地曲库 Dispose 后分析线程还回调进来。
         if (App.Online is { } online)
         {
             online.LocalPathResolver = null;
+            online.LocalFileChanged = null;
         }
 
         _updates?.Dispose();
@@ -508,6 +524,13 @@ internal sealed class WebViewHost : IDisposable
                     AttachMedia();
                     PostAirPlayStatus();
                     _updates?.Start();
+                    // 迷你播放器：宿主启动时若已经处于迷你态（例如后续把该状态持久化），
+                    // 页面 ready 后补推一次，让前端渲染迷你布局。
+                    if (_window.IsMiniMode)
+                    {
+                        NotifyMiniMode(true);
+                    }
+
                     break;
 
                 case "settings":
@@ -616,9 +639,89 @@ internal sealed class WebViewHost : IDisposable
                 _window.CloseFromPage();
                 break;
 
+            case "miniMode":
+                // 迷你播放器模式（契约 §15）：页面只发目标状态，尺寸可选；窗口细节全在
+                // MainWindow.SetMiniMode 里，成功后由宿主回推 window/miniMode 事件。
+                var miniEnabled = ReadBool(root, "enabled", false);
+                var miniWidth = ReadFiniteDouble(root, "width");
+                var miniHeight = ReadFiniteDouble(root, "height");
+                HostLog.Info($"window.action miniMode enabled={miniEnabled} width={miniWidth} height={miniHeight}");
+                _window.SetMiniMode(miniEnabled, miniWidth, miniHeight);
+                break;
+
             default:
                 HostLog.Warn($"window.action ignored: {action ?? "<missing>"}");
                 break;
+        }
+    }
+
+    /// <summary>把迷你态同步给页面：{v:1,type:'window',event:'miniMode',enabled:bool}。</summary>
+    public void NotifyMiniMode(bool enabled)
+    {
+        if (!_pageReady)
+        {
+            // 页面还没 ready：ready 处理里会按当前窗口状态补推一次。
+            return;
+        }
+
+        PostJson("{\"v\":1,\"type\":\"window\",\"event\":\"miniMode\",\"enabled\":" +
+                 (enabled ? "true" : "false") + "}");
+    }
+
+    /// <summary>general 段变化：目录监控开关即时生效（开机自启在 App 里处理）。</summary>
+    private void OnGeneralSettingsChanged()
+    {
+        var settings = _settings;
+        if (settings is null || _disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            _localMusic.SetWatchEnabled(settings.WatchLocalFolder);
+        }
+        catch (Exception exception)
+        {
+            HostLog.Error("[settings] watchLocalFolder apply failed", exception);
+        }
+    }
+
+    /// <summary>本地标签写入成功：让曲库刷新该文件（回调来自 HTTP 线程，必须切回 UI）。</summary>
+    private void NotifyLocalFileChanged(string path)
+    {
+        if (_disposed || string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        try
+        {
+            var dispatcher = _window.Dispatcher;
+            if (dispatcher.HasShutdownStarted || dispatcher.HasShutdownFinished)
+            {
+                return;
+            }
+
+            if (dispatcher.CheckAccess())
+            {
+                _localMusic.NotifyTagWritten(path);
+                return;
+            }
+
+            dispatcher.BeginInvoke(
+                DispatcherPriority.Background,
+                new Action(() =>
+                {
+                    if (!_disposed)
+                    {
+                        _localMusic.NotifyTagWritten(path);
+                    }
+                }));
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[local] tag refresh dispatch failed: {exception.Message}");
         }
     }
 
@@ -1271,6 +1374,11 @@ internal sealed class WebViewHost : IDisposable
         root.TryGetProperty(name, out var element) && element.ValueKind == JsonValueKind.String
             ? element.GetString()
             : null;
+
+    private static bool ReadBool(JsonElement root, string name, bool fallback) =>
+        root.TryGetProperty(name, out var element) && element.ValueKind is JsonValueKind.True or JsonValueKind.False
+            ? element.GetBoolean()
+            : fallback;
 
     private static double ReadFiniteDouble(JsonElement root, string name)
     {

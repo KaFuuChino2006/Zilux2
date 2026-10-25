@@ -331,6 +331,23 @@
   color: var(--danger);
 }
 
+.dlq-row[data-state='paused'] .dlq-cover {
+  color: var(--text-soft);
+}
+
+.dlq-row[data-state='paused'] .dlq-fill {
+  background: var(--text-soft);
+  opacity: 0.45;
+}
+
+.dlq-row[data-state='paused'] .dlq-status {
+  color: var(--text-soft);
+}
+
+.dlq-row[data-state='paused'] .dlq-pct {
+  color: var(--text-soft);
+}
+
 .dlq-text {
   flex: 1;
   min-width: 0;
@@ -509,6 +526,22 @@
   border-color: var(--line-strong);
   background: rgb(var(--overlay-rgb) / 0.08);
   color: var(--text);
+}
+
+/* 「清空已完成」放在打开目录左边：默认低调，hover 时用危险色提示只清记录不删文件。 */
+.dlq-foot-btn.dlq-clear {
+  color: var(--muted);
+}
+
+.dlq-foot-btn.dlq-clear:hover {
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+.dlq-foot-btn.dlq-clear.is-busy {
+  pointer-events: none;
+  opacity: 0.55;
 }
 
 .dlq-hint {
