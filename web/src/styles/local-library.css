@@ -137,7 +137,9 @@
   background: var(--accent-soft);
 }
 
-.local-playlist-cover {
+/* 只作用于「歌单卡片网格」；我的歌单弹层里复用的行封面是 .row-cover（44px）。
+   之前未限定作用域：width:100% + aspect-ratio:1 把行封面撑满整行，歌单名被挤出去。 */
+.local-playlist-card .local-playlist-cover {
   width: 100%;
   aspect-ratio: 1;
   border-radius: var(--radius-sm);
@@ -146,6 +148,13 @@
   color: var(--accent);
   background: linear-gradient(135deg, rgb(var(--overlay-rgb) / .08), rgb(var(--overlay-rgb) / .03));
   border: 1px solid var(--line);
+}
+
+/* 我的歌单弹层：空歌单的行封面用列表图标居中占位 */
+.local-playlist-host .row-cover {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
 }
 
 .local-playlist-name {
