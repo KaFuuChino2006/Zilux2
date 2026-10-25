@@ -5869,3 +5869,55 @@ body,
   border-color: var(--line-strong);
   background: rgb(var(--overlay-rgb) / 0.1);
 }
+
+/* ---- 播放条常驻展开（设置→外观→播放条常驻展开）----
+   与 :hover 展开态同一套外观，只是不依赖鼠标悬停。放在文件末尾，
+   覆盖各断点里的折叠态声明。 */
+html.is-pb-expanded .playerbar,
+html.is-pb-expanded .playerbar:hover,
+html.is-pb-expanded .playerbar:focus-within {
+  width: min(1020px, 88vw);
+  border-radius: 20px;
+}
+html.is-pb-expanded .playerbar .pb-meta {
+  width: 190px;
+  flex: none;
+}
+html.is-pb-expanded .playerbar .pb-cover {
+  max-width: 52px;
+  opacity: 1;
+  margin-right: 0;
+}
+html.is-pb-expanded .playerbar .pb-artist {
+  max-height: 20px;
+  opacity: 1;
+  margin-top: 3px;
+}
+html.is-pb-expanded .playerbar .pb-controls .pb-btn:not(.is-main) {
+  max-width: 38px;
+  opacity: 1;
+  pointer-events: auto;
+}
+html.is-pb-expanded .playerbar .track {
+  display: flex;
+}
+html.is-pb-expanded .playerbar .pb-progress {
+  max-width: 900px;
+  flex: 1 1 auto;
+  opacity: 1;
+  pointer-events: auto;
+  gap: 10px;
+}
+html.is-pb-expanded .playerbar .pb-extra {
+  max-width: 500px;
+  opacity: 1;
+  pointer-events: auto;
+}
+html.is-pb-expanded .playerbar.is-hidden {
+  width: min(1020px, 88vw);
+}
+@media (prefers-reduced-motion: reduce) {
+  html.is-pb-expanded .playerbar {
+    transition: none;
+  }
+}
