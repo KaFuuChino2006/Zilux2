@@ -67,7 +67,7 @@ import { buildAnalysisSection } from './analysisSection';
 import { buildCrossfadeSection, readCrossfadeDebug } from './crossfadeDeck';
 import { confirmDialog } from './confirmDialog';
 import { createEqCurve } from './eqCurve';
-import { localArtists, type LocalArtist } from './localArtists';
+import { localArtists, localTracks, type LocalArtist } from './localArtists';
 import {
   EXPERIMENTAL_SOURCES,
   experimentalSourceEnabled,
@@ -98,13 +98,12 @@ import {
   addTracks as addTracksToPlaylist,
   createPlaylist,
   deletePlaylist,
+  getPlaylist,
   listPlaylists,
-
   renamePlaylist,
   subscribe as subscribeLocalPlaylists,
   trackKeyOfTrack,
   tracksOfKeys,
-
 } from './localPlaylists';
 import { openTagEditor } from './tagEditor';
 import { buildEqPresetManager } from './eqPresets';
@@ -178,6 +177,8 @@ interface WallData {
   title: string;
   subtitle: string;
   tracks: OnlineTrack[];
+  /** 本地歌单墙关联的歌单 id（用于「添加歌曲」）。 */
+  playlistId?: string;
 }
 
 interface WallPagerEntry {
@@ -1269,6 +1270,11 @@ export class App {
       });
       actions.push(refresh);
     }
+    if (this.wall.kind === 'playlist' && this.wall.playlistId) {
+      const addBtn = h('button', { class: 'pill', title: '从本地曲库挑选歌曲加入这个歌单' }, icon('plus', 16), h('span', { text: '添加歌曲' }));
+      addBtn.addEventListener('click', () => this.openPlaylistAddSheet(this.wall.playlistId as string));
+      actions.push(addBtn);
+    }
     if (tracks.length > 0) {
       const btn = h('button', { class: 'pill', title: '播放全部' }, icon('play', 16), h('span', { text: '播放全部' }));
       btn.addEventListener('click', () => playQueue(tracks, 0, true));
@@ -1931,7 +1937,13 @@ export class App {
           this.renderLocalPlaylists(host);
         });
       });
-      actions.append(playBtn, renameBtn, deleteBtn);
+      const addBtn = h('button', { class: 'icon-btn', type: 'button', title: '添加歌曲' }, icon('plus', 16));
+      addBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        this.sheet?.close();
+        this.openPlaylistAddSheet(playlist.id);
+      });
+      actions.append(addBtn, playBtn, renameBtn, deleteBtn);
       row.append(actions);
       list.append(row);
     });
@@ -2746,8 +2758,92 @@ export class App {
       title: playlist.name,
       subtitle: `本地歌单 · ${tracks.length} 首 · 拖动可排序`,
       tracks,
+      playlistId: id,
     };
     this.renderWall();
+    if (tracks.length === 0) {
+      // 空歌单直接打开「添加歌曲」，避免新歌单页面一片空白、不知道怎么加歌。
+      this.openPlaylistAddSheet(id);
+    }
+  }
+
+  /** 从本地曲库挑选歌曲加入指定本地歌单（歌单墙「添加歌曲」入口）。 */
+  private openPlaylistAddSheet(playlistId: string): void {
+    const initial = getPlaylist(playlistId);
+    if (!initial) {
+      toast('歌单不存在', 'error');
+      return;
+    }
+    this.openSheet(`添加歌曲到「${initial.name}」`, (body) => {
+      const search = h('input', { class: 'search-input', type: 'text', placeholder: '搜索本地歌曲（歌名 / 歌手）' });
+      const hint = h('div', { class: 'field-hint', text: '点击歌曲即可加入，可连续添加；已在歌单里的歌曲不会重复出现。' });
+      const list = h('div', { class: 'list' });
+      const render = (): void => {
+        const playlist = getPlaylist(playlistId);
+        if (!playlist) return;
+        const query = search.value.trim().toLowerCase();
+        const inPlaylist = new Set(playlist.trackKeys);
+        const all = localTracks();
+        const matches = all.filter((track) => {
+          const key = trackKeyOfTrack(track);
+          if (!key || inPlaylist.has(key)) return false;
+          if (!query) return true;
+          return `${track.title} ${track.artist}`.toLowerCase().includes(query);
+        });
+        list.textContent = '';
+        if (matches.length === 0) {
+          list.append(
+            h('div', {
+              class: 'empty',
+              text:
+                all.length === 0
+                  ? '本地曲库还没有歌曲，先去「本地曲库」选择音乐文件夹'
+                  : '没有可添加的歌曲（都已在歌单里，或与搜索词不匹配）',
+            }),
+          );
+        }
+        matches.forEach((track) => {
+          const key = trackKeyOfTrack(track);
+          const row = h(
+            'button',
+            { class: 'row', type: 'button', title: `把「${track.title}」加入歌单` },
+            h('div', { class: 'row-cover' }, h('img', { src: onlineArtwork(track), loading: 'lazy' })),
+            h(
+              'div',
+              { class: 'row-meta' },
+              h('div', { class: 'row-name', text: track.title }),
+              h('div', { class: 'row-artist', text: track.artist }),
+            ),
+            h('div', { class: 'row-dur' }, icon('plus', 16)),
+          );
+          row.addEventListener('click', () => {
+            if (!key) return;
+            try {
+              const added = addTracksToPlaylist(playlistId, [key]);
+              toast(added > 0 ? `已加入「${playlist.name}」` : '这首歌已经在歌单里');
+            } catch (err) {
+              toast(err instanceof Error ? err.message : '添加失败', 'error');
+            }
+            this.refreshLocalPlaylistWall(playlistId);
+            render();
+          });
+          list.append(row);
+        });
+      };
+      search.addEventListener('input', render);
+      body.append(search, hint, list);
+      render();
+    });
+  }
+
+  /** 歌单内容变化后刷新歌单墙（仅当当前页面就是这个歌单）。 */
+  private refreshLocalPlaylistWall(playlistId: string): void {
+    if (this.wall.kind !== 'playlist' || this.wall.playlistId !== playlistId) return;
+    const playlist = getPlaylist(playlistId);
+    if (!playlist) return;
+    const tracks = tracksOfKeys(playlist.trackKeys);
+    this.wall = { ...this.wall, title: playlist.name, subtitle: `本地歌单 · ${tracks.length} 首 · 拖动可排序`, tracks };
+    this.renderWall(true);
   }
 
   /** 收藏 / 取消收藏（乐观更新，失败回滚）。 */
