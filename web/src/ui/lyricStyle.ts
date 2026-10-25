@@ -1,27 +1,51 @@
 /**
  * 歌词播放样式：只作用于「播放效果 = 关闭」时默认 DOM 歌词页（纯字 / 房间由 canvas 画字，不受影响）。
  *
- * 经典 = 现状；发光 = 当前行与已唱歌词带主题色辉光；渐变 = 当前行字面走主题色渐变；
- * 频谱律动 = 页面底部随节拍跳动的频谱条（用播放器频谱分析器驱动，见 lyrics.ts 的 spectrum 循环）。
+ * ===== 歌词效果制作模板（新增样式照这 7 条做） =====
+ * 1. 在 LyricStyle 与 LYRIC_STYLES 里登记 id / 中文名 / 一句 hint；需要「逐字时机」的样式加 charTiming: true。
+ * 2. 在 web/src/styles/app.css 末尾加 `.lyrics-view.lyric-style-<id> …` 规则；根节点 class 由本文件 + lyrics.ts 切换。
+ * 3. 只改「动」：颜色一律走 --lyric-* 语义令牌（由「歌词颜色」等设置写入，见 app.css 末尾语义令牌段），
+ *    样式里不要写死颜色，也不要只靠颜色/发光当效果——那属于颜色设置，不是播放动画。
+ * 4. 可用的动效钩子（lyrics.ts 写进 DOM）：
+ *    - 行：.lyric-line.is-active（当前句）/ .is-near（相邻句）；内联 --p（当前句演唱进度 0→1）、
+ *      --fade（离当前句的可见度）、--grow（字号弹入曲线，动效档位控制）；
+ *    - 字：.lyric-char 的 --ci（字在句内的序号，用来错开动画相位）、.is-sung（已唱）、.is-hot（正在唱）；
+ *    - 没有逐字数据的歌词行由 lyrics.ts 合成 --ci 与逐字时机（charTiming 样式才启用），普通 LRC 也能逐字动。
+ * 5. 注意：.lyric-line / .lyric-char 的 transform 被历史规则用 !important 锁死（见 app.css 中段），
+ *    动画请用独立的 translate / rotate / scale 属性（与 transform 叠加），不要抢 transform。
+ * 6. 连续动画只挂当前行（.is-active），别给全页所有字挂无限动画；入退场用 is-sung/is-hot 的状态切换或一次性 keyframes。
+ * 7. 逐字时机必须跟着「演唱」走：优先用 is-sung/is-hot 和 --p，不要用固定 setTimeout/固定 delay 假装逐字。
  */
 
-export type LyricStyle = 'classic' | 'glow' | 'gradient' | 'spectrum';
+export type LyricStyle = 'classic' | 'rise' | 'wave' | 'bounce' | 'typewriter' | 'float';
 
 const STORE_KEY = 'zilux2.lyricStyle';
 
-export const LYRIC_STYLES: Array<{ id: LyricStyle; label: string; hint: string }> = [
+export const LYRIC_STYLES: Array<{ id: LyricStyle; label: string; hint: string; charTiming?: boolean }> = [
   { id: 'classic', label: '经典', hint: '默认样式：当前行放大，远处歌词逐行淡出' },
-  { id: 'glow', label: '发光', hint: '当前行与已唱的字带主题色辉光，像灯牌在暗处发亮' },
-  { id: 'gradient', label: '渐变', hint: '当前行字面沿主题色渐变，随换行流动' },
-  { id: 'spectrum', label: '频谱律动', hint: '页面底部随歌节拍跳动的频谱条，背景随低频起伏' },
+  {
+    id: 'rise',
+    label: '上浮',
+    hint: '唱到的字从下方浮起、归位到行里，一句唱完整齐停在当前行',
+    charTiming: true,
+  },
+  { id: 'wave', label: '波浪', hint: '当前行的字像水波一样依次起伏，随演唱一直流动' },
+  { id: 'bounce', label: '弹跳', hint: '每个字唱到时向上弹一下再落回，节奏感强', charTiming: true },
+  {
+    id: 'typewriter',
+    label: '打字机',
+    hint: '字跟着演唱一个一个出现，还没唱到的先不显形',
+    charTiming: true,
+  },
+  { id: 'float', label: '漂浮', hint: '整句轻轻上下漂浮，像悬在光里缓缓呼吸' },
 ];
 
 function readLyricStyle(): LyricStyle {
   try {
     const value = window.localStorage.getItem(STORE_KEY);
-    if (value === 'classic' || value === 'glow' || value === 'gradient' || value === 'spectrum') {
-      return value;
-    }
+    if (value && LYRIC_STYLES.some((item) => item.id === value)) return value as LyricStyle;
+    // 旧版本存的发光/渐变/频谱样式已下线：直接清掉，避免一直读到无效值。
+    if (value) window.localStorage.removeItem(STORE_KEY);
   } catch {
     // ignore
   }
@@ -35,6 +59,11 @@ const listeners = new Set<() => void>();
 /** 当前歌词播放样式（快捷设置里展示用）。 */
 export function lyricStyle(): LyricStyle {
   return current;
+}
+
+/** 当前样式是否依赖逐字演唱时机（is-sung / is-hot）：普通 LRC 行要靠它合成逐字状态。 */
+export function lyricStyleNeedsCharTiming(): boolean {
+  return LYRIC_STYLES.some((item) => item.id === current && item.charTiming === true);
 }
 
 /** 修改歌词播放样式；歌词页开着时立即生效（不重载歌词）。 */
@@ -56,7 +85,7 @@ export function setLyricStyle(style: LyricStyle): void {
 }
 
 /** 订阅样式变化（lyrics.ts 用它给打开的歌词页换样式）。 */
-export function onLyricStyle(listener: () => void): () => void {
+export function onLyricStyle(listener: () => void): (() => void) {
   listeners.add(listener);
   return () => listeners.delete(listener);
 }
