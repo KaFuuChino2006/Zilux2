@@ -200,6 +200,16 @@ interface SheetHandle {
 }
 
 
+/** 无缝过渡倒计时弹窗停留时长（毫秒）：弹出后几秒自动消失，同一轮准备只弹一次。 */
+const SEAMLESS_HINT_VISIBLE_MS = 4200;
+
+/** 过渡时长文案：整秒省略小数，否则保留一位小数（如 6.9 秒 / 2 分 12 秒以上只会出现在倒计时里）。 */
+function formatFadeSeconds(ms: number): string {
+  const seconds = Math.max(0, ms / 1000);
+  if (Math.abs(seconds - Math.round(seconds)) < 0.05) return `${Math.round(seconds)} 秒`;
+  return `${seconds.toFixed(1)} 秒`;
+}
+
 /** 倒计时文案：秒 / 分+秒（用于「将在 X 分 Y 秒后过渡至…」）。 */
 function formatCountdownSpan(ms: number): string {
   const total = Math.max(0, Math.round(ms / 1000));
@@ -345,8 +355,12 @@ export class App {
   /** 迷你态切换过渡：宿主补间窗口期间页面先切「悬浮小卡」，等 window/miniMode 回推再落最终布局。 */
   private miniTransition: 'idle' | 'entering' | 'exiting' = 'idle';
   private miniFallbackTimer = 0;
-  /** 无缝衔接准备就绪后，播放条下方的「将在 X 分 Y 秒后过渡至 xxx」提示。 */
+  /** 无缝衔接准备就绪后，播放条上方短暂弹出的「将在 X 分 Y 秒后过渡至 xxx」提示。 */
   private seamlessHint!: HTMLDivElement;
+  /** 倒计时弹窗的自动消失定时器。 */
+  private seamlessHintTimer = 0;
+  /** 本轮提示的标识（曲目 + 淡化起点 + 下一首），同一轮准备只弹一次。 */
+  private seamlessHintKey = '';
   private appBgMode: AppBgMode = readAppBgMode();
   private appBgImage = readAppBgImage();
   private appBgEl!: HTMLDivElement;
@@ -6062,7 +6076,7 @@ export class App {
     if (!hint) return;
     const debug = readCrossfadeDebug();
     const remainingMs = debug.fadeStartPosMs - state.positionMs;
-    const visible = Boolean(
+    const ready = Boolean(
       state.track &&
         state.playing &&
         debug.enabled &&
@@ -6072,14 +6086,31 @@ export class App {
         !this.miniMode &&
         this.miniTransition === 'idle',
     );
-    hint.classList.toggle('is-visible', visible);
-    if (!visible) {
-      if (hint.textContent) hint.textContent = '';
+    if (!ready) {
+      this.hideSeamlessHint();
+      this.seamlessHintKey = '';
       return;
     }
     const next = debug.nextTitle || '下一首';
-    const text = `将在 ${formatCountdownSpan(remainingMs)} 后过渡至「${next}」`;
-    if (hint.textContent !== text) hint.textContent = text;
+    const fadeText = debug.fadeMs > 0 ? `（过渡约 ${formatFadeSeconds(debug.fadeMs)}）` : '';
+    const text = `将在 ${formatCountdownSpan(remainingMs)} 后过渡至「${next}」${fadeText}`;
+    const key = `${state.track?.id ?? ''}|${Math.round(debug.fadeStartPosMs)}|${next}`;
+    if (key !== this.seamlessHintKey) {
+      // 新一轮准备就绪：弹出提示并在几秒后自动消失（同一轮只弹一次）。
+      this.seamlessHintKey = key;
+      hint.textContent = text;
+      hint.classList.add('is-visible');
+      this.seamlessHintTimer = window.setTimeout(() => this.hideSeamlessHint(), SEAMLESS_HINT_VISIBLE_MS);
+      return;
+    }
+    // 弹窗仍在显示时继续刷新秒数；自动消失后本轮不再重复弹出。
+    if (hint.classList.contains('is-visible') && hint.textContent !== text) hint.textContent = text;
+  }
+
+  private hideSeamlessHint(): void {
+    window.clearTimeout(this.seamlessHintTimer);
+    this.seamlessHintTimer = 0;
+    if (this.seamlessHint) this.seamlessHint.classList.remove('is-visible');
   }
 
   /** 切歌前把当前封面/文字复制一份留着做「滑出」动画。 */
