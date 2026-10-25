@@ -1076,6 +1076,7 @@ export class LyricsView {
     this.root.classList.add(`lyric-style-${style}`);
     if (style === 'spectrum') this.startSpectrum();
     else this.stopSpectrum();
+    if (this.activeIndex >= 0) this.paintGradientTones();
   }
 
   private startSpectrum(): void {
@@ -1300,6 +1301,35 @@ export class LyricsView {
     return this.mixColor(palette[index], palette[index + 1], scaled - index);
   }
 
+  /**
+   * 「渐变」歌词样式：给当前行每个字写一个 --lyric-grad 色，按色板从行首到行尾过渡；
+   * 没有封面色板时用主题强调色与暖白混出渐变。其它样式下清掉这些变量。
+   */
+  private paintGradientTones(): void {
+    const activeEl = this.lineEls[this.activeIndex];
+    const spans = this.charEls[this.activeIndex] ?? [];
+    if (!activeEl) return;
+    if (lyricStyle() !== 'gradient') {
+      activeEl.style.removeProperty('--lyric-grad');
+      for (const span of spans) span.style.removeProperty('--lyric-grad');
+
+      return;
+    }
+    const accent = getComputedStyle(this.root).getPropertyValue('--accent').trim() || '#d9c08d';
+    const palette = this.palette ?? null;
+    const count = Math.max(1, spans.length - 1);
+    const shift = (performance.now() / 6200) % 1;
+    spans.forEach((span, index) => {
+      const t = (index / count + shift) % 1;
+      const tone = palette && palette.length > 0
+        ? this.readableTint(this.samplePalette(t))
+        : this.mixColor(this.readableTint(accent), '#f4e3bd', t);
+      span.style.setProperty('--lyric-grad', tone);
+    });
+    // 没逐字数据的行（整行 textContent）用中段色兜底
+    activeEl.style.setProperty('--lyric-grad', this.mixColor(this.readableTint(accent), '#f4e3bd', 0.4));
+  }
+
   /** 只给当前行重新上色：已唱字走色板渐变、当前字提亮，未唱字保持主题灰。 */
   private paintActiveLineTint(): void {
     const previous = this.tintedIndex;
@@ -1407,6 +1437,7 @@ export class LyricsView {
       activeEl.style.setProperty('--lyric-hot', hot);
       activeEl.style.setProperty('--lyric-glow', `0 0 18px ${this.mixColor(hot, barC, 0.45)}`);
     }
+    if (lyricStyle() === 'gradient') this.paintGradientTones();
   }
 
 
@@ -1553,6 +1584,7 @@ export class LyricsView {
       const grow = growAt(performance.now() - this.growStartAt);
       activeEl.style.setProperty('--grow', grow.toFixed(4));
       if (this.bgMode === 'gradient') this.paintGradientFlow(performance.now());
+      if (lyricStyle() === 'gradient') this.paintGradientTones();
     }
     if (activeLine && activeLine.words.length > 0) {
       const states = charStates(activeLine, lyricPos);
