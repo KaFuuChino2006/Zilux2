@@ -67,6 +67,14 @@ const DARK: Theme = {
     '--shadow-1': '0 10px 28px rgba(0, 0, 0, 0.34)',
     '--shadow-2': '0 24px 64px rgba(0, 0, 0, 0.5)',
     '--scrim': 'rgba(4, 5, 8, 0.62)',
+    /* 歌词页：深色主题用浅字（原设计）；浅色主题换成深字，见 LIGHT 同名令牌 */
+    '--lyric-dim': 'rgb(255 255 255 / 0.42)',
+    '--lyric-near': 'rgb(255 255 255 / 0.64)',
+    '--lyric-active': '#ffffff',
+    '--lyric-char': 'rgb(255 255 255 / 0.46)',
+    '--lyric-char-active': 'rgb(255 255 255 / 0.5)',
+    '--lyric-sung': '#c9942f',
+    '--lyric-hot': '#e6a92e',
   },
 };
 
@@ -100,6 +108,14 @@ const LIGHT: Theme = {
     '--shadow-1': '0 10px 26px rgba(40, 33, 20, 0.12)',
     '--shadow-2': '0 24px 60px rgba(40, 33, 20, 0.18)',
     '--scrim': 'rgba(240, 237, 229, 0.72)',
+    /* 歌词页（浅色）：浅底上必须用深字，否则「白字压白底」看不清 */
+    '--lyric-dim': 'rgb(24 26 32 / 0.62)',
+    '--lyric-near': 'rgb(24 26 32 / 0.8)',
+    '--lyric-active': '#16181d',
+    '--lyric-char': 'rgb(24 26 32 / 0.66)',
+    '--lyric-char-active': 'rgb(24 26 32 / 0.74)',
+    '--lyric-sung': '#9a6a12',
+    '--lyric-hot': '#8f5d00',
   },
 };
 

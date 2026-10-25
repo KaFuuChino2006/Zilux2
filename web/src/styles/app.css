@@ -6047,3 +6047,55 @@ html.is-pb-expanded .playerbar.is-hidden {
     padding: 6px 12px 6px 10px;
   }
 }
+
+/* ===== 歌词页可读性（语义令牌）：深色主题浅字、浅色主题深字 ===== */
+.lyrics-view .lyric-line {
+  color: var(--lyric-dim);
+}
+.lyrics-view .lyric-line.is-near {
+  color: var(--lyric-near);
+}
+.lyrics-view .lyric-line.is-active {
+  color: var(--lyric-active);
+}
+.lyrics-view .lyric-char {
+  color: var(--lyric-char);
+}
+.lyrics-view .lyric-line.is-active .lyric-char {
+  color: var(--lyric-char-active);
+}
+.lyrics-view .lyric-line.is-active .lyric-char.is-sung {
+  color: var(--lyric-sung);
+  text-shadow: 0 0 18px color-mix(in srgb, var(--lyric-sung) 32%, transparent);
+}
+.lyrics-view .lyric-line.is-active .lyric-char.is-hot {
+  color: var(--lyric-hot);
+  text-shadow:
+    0 0 10px color-mix(in srgb, var(--lyric-hot) 42%, transparent),
+    0 0 26px color-mix(in srgb, var(--lyric-hot) 24%, transparent);
+}
+.lyrics-view .lyric-trans {
+  color: var(--lyric-dim);
+}
+.lyrics-view .lyric-line.is-active .lyric-trans {
+  color: var(--lyric-near);
+}
+
+/* 浅色主题：背景更收敛、去掉未唱行虚化，保证深色歌词清晰 */
+:root[data-theme='light'] .lyrics-view .lyrics-bg {
+  opacity: 0.42;
+}
+:root[data-theme='light'] .lyrics-view .lyric-line {
+  filter: none;
+}
+:root[data-theme='light'] .lyrics-view .lyrics-scrim {
+  background:
+    radial-gradient(80% 60% at 50% 42%, rgb(var(--ink-rgb) / 0.44), rgb(var(--ink-rgb) / 0.94) 78%),
+    linear-gradient(180deg, rgb(var(--ink-rgb) / 0.88), rgb(var(--ink-rgb) / 0.68) 30%, rgb(var(--ink-rgb) / 0.92));
+}
+:root[data-theme='light'] .lyrics-view .lyrics-right .lyric-line {
+  opacity: 0.8;
+}
+:root[data-theme='light'] .lyrics-view .lyrics-right .lyric-line.is-near {
+  opacity: 0.92;
+}
