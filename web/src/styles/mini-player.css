@@ -1,126 +1,382 @@
 /* mini-player.css —— 迷你播放器（置顶紧凑小窗）
  *
- * 页面只负责「迷你态长什么样」；窗口尺寸、置顶、屏幕角落吸附全部由宿主完成
- * （页面发 window/miniMode 指令，宿主回推 window/miniMode 事件后这里才切布局）。
- * 迷你窗口默认 420×120，只保留播放条：封面 + 歌曲信息 + 控制 + 进度 + 退出按钮。
+ * 页面只负责「迷你态长什么样」；窗口尺寸、置顶、屏幕角落吸附、以及进出时的窗口补间
+ * 全部由宿主完成（页面发 window/miniMode 指令，宿主补间窗口并在终点回推事件后这里才落最终布局）。
+ *
+ * 迷你窗口默认 420×120：内容是一张 400×100 的悬浮小卡（封面 / 歌名歌手 / 上一首-播放-下一首 /
+ * 底部细进度条 / 收起按钮），其余界面全部隐藏。窗口收缩/长回期间页面先切到过渡态，让小卡先
+ * 居中贴底出现，窗口边缘围着它运动，避免一帧跳变（用户反馈动画生硬）。
  */
 
-body.is-mini {
-  background: var(--panel-solid);
+/* 迷你态/过渡态整窗铺主题底：系统圆角窗口里看起来是 App 的一张卡片，而不是默认白底。 */
+body.is-mini,
+body.is-mini-entering,
+body.is-mini-exiting {
+  background: var(--bg);
 }
 
-/* 迷你态只保留播放条，其余顶层浮层（顶栏/主区/待播队列/快捷设置/下载面板…）全部隐藏。 */
+.app.is-mini,
+.app.is-mini-entering,
+.app.is-mini-exiting {
+  background:
+    radial-gradient(120% 180% at 0% 0%, var(--accent-soft), transparent 62%),
+    var(--bg);
+}
+
+/* 只有最终迷你态才切 block 布局；过渡态保持原 grid，避免旧界面在幕布下重排跳动。 */
+.app.is-mini {
+  display: block;
+}
+
+/* 进出过渡的「幕布」：进入时用主题色快速盖掉旧界面（窗口同时在收缩）；
+   退出时先保持不透明，等窗口快长回原尺寸再淡出、露出完整界面 —— 避免一帧跳变。 */
+.app.is-mini-entering::before,
+.app.is-mini-exiting::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 79;
+  pointer-events: none;
+  background: var(--bg);
+}
+
+.app.is-mini-entering::before {
+  opacity: 0;
+  animation: mini-veil-in 170ms var(--ease) forwards;
+}
+
+.app.is-mini-exiting::before {
+  opacity: 1;
+  animation: mini-veil-out 190ms var(--ease) 190ms forwards;
+}
+
+@keyframes mini-veil-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes mini-veil-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/* 只保留播放条；其余顶层节点（自定义背景层 / 顶栏 / 主区 / 待播队列 / 浮层…）全部藏掉。 */
 .app.is-mini > :not(.playerbar-wrap) {
   display: none !important;
 }
 
-.app.is-mini {
-  display: block;
-  background: var(--panel-solid);
+.app.is-mini .playerbar-wrap > :not(.playerbar),
+.app.is-mini-entering .playerbar-wrap > :not(.playerbar),
+.app.is-mini-exiting .playerbar-wrap > :not(.playerbar) {
+  display: none !important;
 }
 
-.app.is-mini .playerbar-wrap {
+/* 过渡期间：小卡贴在窗口底部中央，窗口收缩/长回时围绕它运动。 */
+.app.is-mini .playerbar-wrap,
+.app.is-mini-entering .playerbar-wrap,
+.app.is-mini-exiting .playerbar-wrap {
   position: fixed;
   inset: 0;
-  display: block;
-  padding: 0;
-  pointer-events: auto;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 10px;
+  z-index: 80;
 }
 
-.app.is-mini .playerbar {
+/* 播放条本体 —— 用高优先级覆盖普通窗口里「收起胶囊 + hover 展开」的整套规则。 */
+.app.is-mini .playerbar,
+.app.is-mini-entering .playerbar,
+.app.is-mini-exiting .playerbar,
+.app.is-mini .playerbar:hover,
+.app.is-mini .playerbar:focus-within,
+.app.is-mini-entering .playerbar:hover,
+.app.is-mini-exiting .playerbar:hover {
   position: relative;
+  box-sizing: border-box;
   width: 100%;
-  height: 100%;
-  border-radius: 0;
-  border: 0;
-  box-shadow: none;
-  background: var(--panel-solid);
-  backdrop-filter: none;
-  transition: none;
-  padding: 0 10px;
-  gap: 8px;
-  cursor: grab;
+  flex: none;
+  align-items: center;
+  padding: 8px 12px 16px 10px;
+  gap: 10px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: var(--shadow-1);
+  backdrop-filter: blur(28px);
+  transform: none;
+  opacity: 1;
   overflow: hidden;
+  cursor: grab;
+  transition: none !important;
 }
 
-.app.is-mini .playerbar:active {
+.app.is-mini .playerbar:active,
+.app.is-mini-entering .playerbar:active,
+.app.is-mini-exiting .playerbar:active {
   cursor: grabbing;
 }
 
-/* 普通窗口里播放条默认收起（进度/右区 max-width:0）；迷你态强制展开并允许点按。 */
-.app.is-mini .playerbar .pb-progress,
-.app.is-mini .playerbar .pb-extra {
-  max-width: none;
-  opacity: 1;
-  pointer-events: auto;
+/* 静止态铺满窗口（允许用户拉高窗口）；过渡态保持 400×100 小卡，窗口围绕它运动。 */
+.app.is-mini .playerbar {
+  height: 100%;
+  max-height: none;
 }
 
-.app.is-mini .pb-cover {
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
+.app.is-mini-entering .playerbar,
+.app.is-mini-exiting .playerbar {
+  width: 400px;
+  max-width: 400px;
+  height: 100px;
+  max-height: 100px;
 }
 
-.app.is-mini .pb-meta {
-  width: auto;
+/* 封面：普通窗口里默认 max-width:0 收起、hover 才展开，这里强制常显。 */
+.app.is-mini .pb-cover,
+.app.is-mini-entering .pb-cover,
+.app.is-mini-exiting .pb-cover {
+  width: 44px;
+  height: 44px;
+  max-width: 44px !important;
+  border-radius: 11px;
+  margin-right: 0 !important;
+  opacity: 1 !important;
+  flex: none;
+}
+
+.app.is-mini .pb-cover.is-clickable:hover,
+.app.is-mini-entering .pb-cover.is-clickable:hover,
+.app.is-mini-exiting .pb-cover.is-clickable:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+.app.is-mini .pb-cover img,
+.app.is-mini-entering .pb-cover img,
+.app.is-mini-exiting .pb-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* 歌曲信息：占满剩余宽度，标题/歌手单行省略。 */
+.app.is-mini .pb-meta,
+.app.is-mini-entering .pb-meta,
+.app.is-mini-exiting .pb-meta,
+.app.is-mini .playerbar:hover .pb-meta,
+.app.is-mini .playerbar:focus-within .pb-meta {
+  width: auto !important;
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
 }
 
+.app.is-mini .pb-title-line,
+.app.is-mini-entering .pb-title-line,
+.app.is-mini-exiting .pb-title-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
 .app.is-mini .pb-title,
-.app.is-mini .pb-artist {
+.app.is-mini-entering .pb-title,
+.app.is-mini-exiting .pb-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13.5px;
+  font-weight: 650;
+  line-height: 1.3;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.app.is-mini .pb-title {
-  font-size: 13px;
-}
-
-.app.is-mini .pb-artist {
-  font-size: 11px;
-}
-
-/* 迷你态精简：只留上一首/播放/下一首、底部细进度条与退出按钮。 */
-.app.is-mini .pb-actions,
-.app.is-mini .pb-btn-lyrics,
-.app.is-mini .pb-btn-poster,
-.app.is-mini .pb-extra .volume-wrap {
-  display: none;
-}
-
-.app.is-mini .pb-controls {
+.app.is-mini .pb-source,
+.app.is-mini-entering .pb-source,
+.app.is-mini-exiting .pb-source {
   flex: none;
-  gap: 4px;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 5px;
 }
 
-.app.is-mini .pb-btn {
+.app.is-mini .pb-artist,
+.app.is-mini-entering .pb-artist,
+.app.is-mini-exiting .pb-artist {
+  max-height: none !important;
+  margin-top: 2px !important;
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 1 !important;
+}
+
+/* 控制区：上一首 / 播放暂停 / 下一首 常显（普通窗口里非主按钮默认收起）。 */
+.app.is-mini .pb-controls,
+.app.is-mini-entering .pb-controls,
+.app.is-mini-exiting .pb-controls {
+  flex: none;
+  gap: 2px;
+}
+
+.app.is-mini .pb-controls .pb-btn,
+.app.is-mini-entering .pb-controls .pb-btn,
+.app.is-mini-exiting .pb-controls .pb-btn {
   width: 30px;
   height: 30px;
+  max-width: 32px !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
 }
 
-.app.is-mini .pb-progress {
+.app.is-mini .pb-controls .pb-btn.is-main,
+.app.is-mini-entering .pb-controls .pb-btn.is-main,
+.app.is-mini-exiting .pb-controls .pb-btn.is-main {
+  width: 34px;
+  height: 34px;
+}
+
+/* 进度条：细线贴在卡片底部，时间数字收起（小窗里没有空间）。 */
+.app.is-mini .pb-progress,
+.app.is-mini-entering .pb-progress,
+.app.is-mini-exiting .pb-progress,
+.app.is-mini .playerbar:hover .pb-progress,
+.app.is-mini .playerbar:focus-within .pb-progress {
   position: absolute;
-  left: 10px;
-  right: 10px;
-  bottom: 6px;
-  height: 4px;
+  left: 12px;
+  right: 12px;
+  bottom: 7px;
+  height: 3px;
+  min-width: 0;
+  max-width: none !important;
   flex: none;
+  display: flex;
+  align-items: center;
   gap: 0;
+  opacity: 1 !important;
+  pointer-events: auto !important;
 }
 
-.app.is-mini .pb-cur,
-.app.is-mini .pb-dur {
+.app.is-mini .pb-time,
+.app.is-mini-entering .pb-time,
+.app.is-mini-exiting .pb-time {
   display: none;
 }
 
-.app.is-mini .pb-mini {
+.app.is-mini .pb-progress .track,
+.app.is-mini-entering .pb-progress .track,
+.app.is-mini-exiting .pb-progress .track {
+  display: flex !important;
+  flex: 1 1 auto;
+  height: 100%;
+  margin: 0;
+  min-width: 0;
+}
+
+.app.is-mini .track-rail,
+.app.is-mini-entering .track-rail,
+.app.is-mini-exiting .track-rail {
+  height: 3px;
+  border-radius: 2px;
+  background: rgb(255 255 255 / 0.14);
+}
+
+.app.is-mini .track-fill,
+.app.is-mini-entering .track-fill,
+.app.is-mini-exiting .track-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+/* 右侧：只留收起按钮；播放模式 / 收藏 / 下载 / 歌词 / 海报 / 音量在小窗里没有意义。 */
+.app.is-mini .pb-actions,
+.app.is-mini-entering .pb-actions,
+.app.is-mini-exiting .pb-actions,
+.app.is-mini .pb-btn-lyrics,
+.app.is-mini-entering .pb-btn-lyrics,
+.app.is-mini-exiting .pb-btn-lyrics,
+.app.is-mini .pb-btn-poster,
+.app.is-mini-entering .pb-btn-poster,
+.app.is-mini-exiting .pb-btn-poster,
+.app.is-mini .volume-wrap,
+.app.is-mini-entering .volume-wrap,
+.app.is-mini-exiting .volume-wrap {
+  display: none !important;
+}
+
+.app.is-mini .pb-extra,
+.app.is-mini-entering .pb-extra,
+.app.is-mini-exiting .pb-extra,
+.app.is-mini .playerbar:hover .pb-extra,
+.app.is-mini .playerbar:focus-within .pb-extra {
+  flex: none;
+  gap: 0;
+  max-width: none !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+
+.app.is-mini .pb-mini,
+.app.is-mini-entering .pb-mini,
+.app.is-mini-exiting .pb-mini {
+  width: 28px;
+  height: 28px;
+  color: var(--accent);
+  opacity: 0.92;
+}
+
+.app.is-mini .pb-mini:hover,
+.app.is-mini-entering .pb-mini:hover,
+.app.is-mini-exiting .pb-mini:hover {
+  opacity: 1;
+  background: var(--surface-hover);
+}
+
+/* 普通窗口里的迷你按钮：hover 点亮，提示可点。 */
+.pb-mini:hover {
   color: var(--accent);
 }
 
-/* 普通窗口里迷你按钮跟随其余图标；hover 时点亮提示可点。 */
-.pb-mini:hover {
-  color: var(--accent);
+/* 过渡动画：窗口在宿主侧补间，这里给卡片一点进场/退场（与 320/380ms 的窗口动画同时段）。 */
+@keyframes mini-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes mini-card-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0.55;
+    transform: translateY(4px) scale(0.98);
+  }
+}
+
+.app.is-mini-entering .playerbar {
+  animation: mini-card-in 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.app.is-mini-exiting .playerbar {
+  animation: mini-card-out 380ms cubic-bezier(0.4, 0, 0.6, 1) both;
 }

@@ -57,7 +57,12 @@ public partial class MainWindow : Window
     private const double MiniMinWidthDip = 360;
     private const double MiniMinHeightDip = 100;
     private const double MiniScreenMarginDip = 12;
+    // 进出迷你播放器的窗口补间：与页面过渡态（.is-mini-entering/.is-mini-exiting）同时段，
+    // 让窗口本身平滑收缩/长回去，而不是一帧跳变（用户反馈动画生硬）。
+    private const int MiniEnterAnimationMs = 320;
+    private const int MiniExitAnimationMs = 380;
     private bool _miniMode;
+    private bool _miniAnimating;
     private WindowState _miniSavedWindowState = WindowState.Normal;
     private NativeMethods.Rect _miniRestoreRect;
     private bool _miniHasRestoreRect;
@@ -346,6 +351,13 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (_miniAnimating)
+        {
+            // 过渡中来新指令：立即收尾当前动画，从当前实际 rect 重新开始，避免状态错位。
+            StopWindowMotion();
+            _miniAnimating = false;
+        }
+
         if (enabled == _miniMode)
         {
             // 重复指令只补推一次状态：页面导航回来时也会在 ready 里对齐。
@@ -396,17 +408,48 @@ public partial class MainWindow : Window
 
         MinWidth = MiniMinWidthDip;
         MinHeight = MiniMinHeightDip;
-        if (WindowState != WindowState.Normal)
-        {
-            WindowState = WindowState.Normal;
-        }
-
         Topmost = true;
-        if (!TrySetWindowRect(left, top, pixelWidth, pixelHeight))
+
+        // 最大化/最小化或尚未拿到 HWND 时退化为即时落位；正常窗口用补间动画收缩，
+        // 页面同时切到「悬浮小卡」过渡态（.is-mini-entering），视觉上像窗口被吸到角落。
+        if (_hwnd == IntPtr.Zero || _miniSavedWindowState != WindowState.Normal)
         {
-            ApplyRectInDip(left, top, pixelWidth, pixelHeight, scaleX, scaleY);
+            if (WindowState != WindowState.Normal)
+            {
+                WindowState = WindowState.Normal;
+            }
+            if (!TrySetWindowRect(left, top, pixelWidth, pixelHeight))
+            {
+                ApplyRectInDip(left, top, pixelWidth, pixelHeight, scaleX, scaleY);
+            }
+            FinishEnterMiniMode(left, top, pixelWidth, pixelHeight, marginX, marginY);
+            return;
         }
 
+        var target = new NativeMethods.Rect
+        {
+            Left = left,
+            Top = top,
+            Right = left + pixelWidth,
+            Bottom = top + pixelHeight,
+        };
+        _miniAnimating = true;
+        BeginWindowMotion(
+            reference,
+            target,
+            MiniEnterAnimationMs,
+            EaseInOutCubic,
+            () =>
+            {
+                _miniAnimating = false;
+                FinishEnterMiniMode(left, top, pixelWidth, pixelHeight, marginX, marginY);
+            });
+        HostLog.Info(
+            $"window.animate mini entering from={DescribeRect(reference)} to={left},{top} size={pixelWidth}x{pixelHeight}");
+    }
+
+    private void FinishEnterMiniMode(int left, int top, int pixelWidth, int pixelHeight, int marginX, int marginY)
+    {
         _miniMode = true;
         HostLog.Info(
             $"window.miniMode enabled rect={left},{top} size={pixelWidth}x{pixelHeight} margin={marginX},{marginY}");
@@ -416,10 +459,36 @@ public partial class MainWindow : Window
     private void ExitMiniMode()
     {
         StopWindowMotion();
-        _miniMode = false;
+        _miniAnimating = false;
 
         var target = _miniRestoreRect;
         var hasTarget = _miniHasRestoreRect && target.Right > target.Left && target.Bottom > target.Top;
+        var from = CurrentWindowRect();
+
+        // 最大化来源或没有可用 rect：即时还原；普通窗口用补间动画长回去，
+        // 页面同步播放 .is-mini-exiting 过渡态（小卡先浮动、再回到常驻播放条）。
+        if (!hasTarget || _hwnd == IntPtr.Zero || _miniSavedWindowState == WindowState.Maximized)
+        {
+            FinishExitMiniMode(hasTarget, target);
+            return;
+        }
+
+        _miniAnimating = true;
+        BeginWindowMotion(
+            from,
+            target,
+            MiniExitAnimationMs,
+            EaseInOutCubic,
+            () =>
+            {
+                _miniAnimating = false;
+                FinishExitMiniMode(hasTarget, target);
+            });
+        HostLog.Info($"window.animate mini exiting from={DescribeRect(from)} to={DescribeRect(target)}");
+    }
+
+    private void FinishExitMiniMode(bool hasTarget, NativeMethods.Rect target)
+    {
         var restored = hasTarget &&
                        TrySetWindowRect(target.Left, target.Top, target.Right - target.Left, target.Bottom - target.Top);
         if (!restored)
@@ -456,6 +525,7 @@ public partial class MainWindow : Window
         }
 
         _miniHasRestoreRect = false;
+        _miniMode = false;
         HostLog.Info(
             $"window.miniMode disabled restored={(hasTarget ? DescribeRect(target) : "none")} state={_miniSavedWindowState}");
         _host?.NotifyMiniMode(false);
@@ -1239,6 +1309,10 @@ public partial class MainWindow : Window
         $"{rect.Left},{rect.Top} {rect.Right - rect.Left}x{rect.Bottom - rect.Top}";
 
     private static double EaseOutCubic(double t) => 1 - Math.Pow(1 - t, 3);
+
+    // 慢-快-慢：进出迷你播放器时窗口速度更柔和（用户反馈一帧跳变/生硬）。
+    private static double EaseInOutCubic(double t) =>
+        t < 0.5 ? 4 * t * t * t : 1 - Math.Pow(-2 * t + 2, 3) / 2;
 
     private static double EaseInCubic(double t) => t * t * t;
 

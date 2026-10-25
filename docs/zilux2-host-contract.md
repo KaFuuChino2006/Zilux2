@@ -335,9 +335,10 @@ WinRT 不可用或初始化失败时记一次 `[smtc] unavailable: <类型>: <�
 ```
 
 - 同一状态重复发指令是幂等的（只补推一次事件）；页面 `ready` 时若宿主正处于 mini 态，宿主会立即补推一次 `enabled:true`（页面导航回来后据此渲染迷你布局）。
+- 过渡动画：开启 / 关闭现在带窗口补间动画（开启 320ms、关闭 380ms，EaseInOutCubic，与最大化 / 还原同一套 `BeginWindowMotion` 逐帧 SetWindowPos）；动画**结束落位后**才写 `_miniMode` 并回推 `window.miniMode` 事件，页面可据此在动画期间挂过渡态 class、结束后再切最终迷你布局。动画期间再次切换会先 `StopWindowMotion` 再执行新指令。
 - mini 态下 §3.4 的 `drag`（标题栏拖拽）与 `resize`（边缘缩放）仍可用；页面自行渲染迷你布局并留出可拖拽区域（建议顶部整条 `drag` 热区）。
-- 日志：`window.miniMode enabled rect=.. size=..`、`window.miniMode disabled restored=..`。
-- 降级：窗口尚未创建（hwnd=0）时宿主改用 WPF 的 Left/Top/Width/Height 兜底；没有任何可还原 rect 时退回普通状态。
+- 日志：`window.animate mini entering from=.. to=..` / `window.animate mini exiting from=.. to=..`（动画开始）、`window.miniMode enabled rect=.. size=.. margin=..` / `window.miniMode disabled restored=.. state=..`（动画结束落位）。
+- 降级：窗口尚未创建（hwnd=0）时宿主改用 WPF 的 Left/Top/Width/Height 兜底；没有任何可还原 rect 时退回普通状态。从最大化状态退出迷你态时退化为即时落位（不补间），避免与最大化还原动画抢占。
 
 
 ## 16. 附加：本地曲目标签写入（/api/local/tag v1）
