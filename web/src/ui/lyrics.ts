@@ -24,8 +24,7 @@ import { createLumiereStage, lumiereMode, lumiereThemeForCover, setLumiereMode, 
 import { createRoomStage, setRoomLyricTintProvider, type RoomStage } from './room';
 import type { Theme } from './lumiere-folia/types';
 import type { LyricTextSettings } from './lumiereSettings';
-import { lyricStyle, onLyricStyle } from './lyricStyle';
-import { playbackAnalyser } from '../core/audioTap';
+import { LYRIC_STYLES, lyricStyle, lyricStyleNeedsCharTiming, onLyricStyle } from './lyricStyle';
 
 /** 歌词页播放效果（纯字）；导出给快捷设置用。 */
 export type { LumiereMode };
@@ -822,6 +821,26 @@ function charStates(line: LyricLine, positionMs: number): Array<0 | 1 | 2> {  co
 }
 
 
+/** 普通 LRC 行里可动的单元：CJK 单字、外文按词；空白只作为 has-gap 间距，不单独立 span。 */
+const PLAIN_TOKEN_RE =
+  /(\s+)|([\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff])|([^\s\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]+)/gu;
+
+function splitPlainTokens(text: string): Array<{ text: string; spaceBefore: boolean }> {
+  const tokens: Array<{ text: string; spaceBefore: boolean }> = [];
+  let gap = false;
+  for (const match of text.matchAll(PLAIN_TOKEN_RE)) {
+    if (match[1] !== undefined) {
+      gap = tokens.length > 0;
+      continue;
+    }
+    const token = match[2] ?? match[3] ?? '';
+    if (!token) continue;
+    tokens.push({ text: token, spaceBefore: gap });
+    gap = false;
+  }
+  return tokens;
+}
+
 // 供快捷设置面板显示当前正在唱的一句（打开过歌词页后即有效）
 let currentLyricText = '';
 
@@ -901,11 +920,7 @@ export class LyricsView {
   private roomStage: RoomStage | null = null;
   /** 进页时等画布第一次出像的监听（见 watchStagePaint）。 */
   private stageObserver: MutationObserver | null = null;
-  /** 默认歌词页的播放样式（经典/发光/渐变/频谱，见 lyricStyle.ts）：底部频谱条与样式 class。 */
-  private spectrumEl: HTMLDivElement;
-  private spectrumCanvas: HTMLCanvasElement;
-  private spectrumRaf = 0;
-  private spectrumData: Uint8Array<ArrayBuffer> | null = null;
+  /** 默认歌词页的播放样式（见 lyricStyle.ts）：只切 root 上的 lyric-style-<id> class，动画全在 CSS 里。 */
   private styleUnsub: (() => void) | null = null;
 
   constructor(private readonly onClose: () => void) {
@@ -924,10 +939,6 @@ export class LyricsView {
     this.coverWrapEl = h('div', { class: 'lyrics-cover-wrap' }, this.coverEl);
     this.metaEl = h('div', { class: 'lyrics-meta' }, this.titleEl, this.artistEl, this.sourceEl);
 
-    // 频谱律动：默认歌词页底部的频谱条（样式切到「频谱」时才显示，见 lyricStyle.ts）。
-    this.spectrumCanvas = document.createElement('canvas');
-    this.spectrumEl = h('div', { class: 'lyrics-spectrum' }, this.spectrumCanvas) as HTMLDivElement;
-
     const closeBtn = h('button', { class: 'lyrics-close', title: '收起歌词' }, icon('chevron', 22));
     closeBtn.addEventListener('click', () => this.onClose());
 
@@ -940,7 +951,6 @@ export class LyricsView {
       { class: 'lyrics-view' },
       this.bgEl,
       scrim,
-      this.spectrumEl,
       this.lumiereText.root,
       this.roomStage.root,
       closeBtn,
@@ -1068,90 +1078,14 @@ export class LyricsView {
     if (anyOn) this.syncLumiereSong();
   }
 
-  /** 应用默认歌词页的播放样式（经典/发光/渐变/频谱）；切换后立即生效、不重载歌词。 */
+  /** 应用默认歌词页的播放样式；切换后立即生效、不重载歌词（动画定义全在 app.css 的 lyric-style-* 段）。 */
   private applyLyricStyle(): void {
     if (this.disposed) return;
     const style = lyricStyle();
-    this.root.classList.remove('lyric-style-classic', 'lyric-style-glow', 'lyric-style-gradient', 'lyric-style-spectrum');
+    for (const item of LYRIC_STYLES) this.root.classList.remove(`lyric-style-${item.id}`);
     this.root.classList.add(`lyric-style-${style}`);
-    if (style === 'spectrum') this.startSpectrum();
-    else this.stopSpectrum();
-    if (this.activeIndex >= 0) this.paintGradientTones();
-  }
-
-  private startSpectrum(): void {
-    if (this.spectrumRaf || this.disposed) return;
-    const ctx = this.spectrumCanvas.getContext('2d');
-    if (!ctx) return;
-    const render = (now: number): void => {
-      this.spectrumRaf = 0;
-      if (this.disposed || lyricStyle() !== 'spectrum') return;
-      this.drawSpectrum(ctx, now);
-      this.spectrumRaf = window.requestAnimationFrame(render);
-    };
-    this.spectrumRaf = window.requestAnimationFrame(render);
-  }
-
-  private stopSpectrum(): void {
-    if (this.spectrumRaf) window.cancelAnimationFrame(this.spectrumRaf);
-    this.spectrumRaf = 0;
-  }
-
-  /** 频谱条颜色：从主题强调色取 rgb，空值回退到暖金。 */
-  private spectrumAccent(): string {
-    const raw = getComputedStyle(this.root).getPropertyValue('--accent').trim();
-    const hex = /^#([0-9a-f]{6})$/i.exec(raw);
-    if (hex) {
-      const value = parseInt(hex[1], 16);
-      return `${(value >> 16) & 255}, ${(value >> 8) & 255}, ${value & 255}`;
-    }
-    const rgb = /^rgb\((\d+)[ ,]+(\d+)[ ,]+(\d+)\)$/i.exec(raw);
-    if (rgb) return `${rgb[1]}, ${rgb[2]}, ${rgb[3]}`;
-    return '217, 192, 141';
-  }
-
-  /** 画一帧频谱：64 根镜像条，低频在中心、向两侧扩散，底部渐隐。 */
-  private drawSpectrum(ctx: CanvasRenderingContext2D, _now: number): void {
-    const width = this.spectrumEl.clientWidth || this.root.clientWidth || 800;
-    const height = this.spectrumEl.clientHeight || 240;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const pixelWidth = Math.round(width * dpr);
-    const pixelHeight = Math.round(height * dpr);
-    if (this.spectrumCanvas.width !== pixelWidth || this.spectrumCanvas.height !== pixelHeight) {
-      this.spectrumCanvas.width = pixelWidth;
-      this.spectrumCanvas.height = pixelHeight;
-    }
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, width, height);
-    const analyser = playbackAnalyser();
-    if (!analyser) return;
-    const bins = analyser.frequencyBinCount;
-    if (!this.spectrumData || this.spectrumData.length !== bins) this.spectrumData = new Uint8Array(bins);
-    analyser.getByteFrequencyData(this.spectrumData);
-    const data = this.spectrumData;
-    const accent = this.spectrumAccent();
-    const bars = 64;
-    const step = width / bars;
-    const barWidth = Math.max(2, step * 0.56);
-    const maxBin = Math.max(8, Math.floor(bins * 0.62));
-    const gradient = ctx.createLinearGradient(0, height, 0, height * 0.2);
-    gradient.addColorStop(0, `rgba(${accent}, 0.55)`);
-    gradient.addColorStop(0.55, `rgba(${accent}, 0.24)`);
-    gradient.addColorStop(1, `rgba(${accent}, 0)`);
-    ctx.fillStyle = gradient;
-    ctx.shadowColor = `rgba(${accent}, 0.35)`;
-    ctx.shadowBlur = 16;
-    for (let i = 0; i < bars; i += 1) {
-      const t = i / (bars - 1);
-      const bin = Math.min(maxBin - 1, Math.floor(Math.pow(t, 1.35) * maxBin));
-      const level = data[bin] / 255;
-      const barHeight = Math.max(2, level * height * 0.9);
-      const x = i * step + (step - barWidth) / 2;
-      ctx.beginPath();
-      ctx.roundRect(x, height - barHeight, barWidth, barHeight, barWidth / 2);
-      ctx.fill();
-    }
-    ctx.shadowBlur = 0;
+    // 需要逐字时机的样式（上浮/弹跳/打字机）切过来后立刻补算当前句的逐字状态，不等下一帧。
+    if (this.state) this.syncProgress();
   }
 
   /** 等舞台第一次出像（或确认失败）就撤掉 is-lumiere-fresh；6 秒兜底别一直暗着。 */
@@ -1301,35 +1235,6 @@ export class LyricsView {
     return this.mixColor(palette[index], palette[index + 1], scaled - index);
   }
 
-  /**
-   * 「渐变」歌词样式：给当前行每个字写一个 --lyric-grad 色，按色板从行首到行尾过渡；
-   * 没有封面色板时用主题强调色与暖白混出渐变。其它样式下清掉这些变量。
-   */
-  private paintGradientTones(): void {
-    const activeEl = this.lineEls[this.activeIndex];
-    const spans = this.charEls[this.activeIndex] ?? [];
-    if (!activeEl) return;
-    if (lyricStyle() !== 'gradient') {
-      activeEl.style.removeProperty('--lyric-grad');
-      for (const span of spans) span.style.removeProperty('--lyric-grad');
-
-      return;
-    }
-    const accent = getComputedStyle(this.root).getPropertyValue('--accent').trim() || '#d9c08d';
-    const palette = this.palette ?? null;
-    const count = Math.max(1, spans.length - 1);
-    const shift = (performance.now() / 6200) % 1;
-    spans.forEach((span, index) => {
-      const t = (index / count + shift) % 1;
-      const tone = palette && palette.length > 0
-        ? this.readableTint(this.samplePalette(t))
-        : this.mixColor(this.readableTint(accent), '#f4e3bd', t);
-      span.style.setProperty('--lyric-grad', tone);
-    });
-    // 没逐字数据的行（整行 textContent）用中段色兜底
-    activeEl.style.setProperty('--lyric-grad', this.mixColor(this.readableTint(accent), '#f4e3bd', 0.4));
-  }
-
   /** 只给当前行重新上色：已唱字走色板渐变、当前字提亮，未唱字保持主题灰。 */
   private paintActiveLineTint(): void {
     const previous = this.tintedIndex;
@@ -1437,7 +1342,6 @@ export class LyricsView {
       activeEl.style.setProperty('--lyric-hot', hot);
       activeEl.style.setProperty('--lyric-glow', `0 0 18px ${this.mixColor(hot, barC, 0.45)}`);
     }
-    if (lyricStyle() === 'gradient') this.paintGradientTones();
   }
 
 
@@ -1496,17 +1400,19 @@ export class LyricsView {
     for (const line of this.doc.lines) {
       const lineEl = h('div', { class: 'lyric-line' });
       const chars: HTMLSpanElement[] = [];
-      if (line.words.length > 0) {
-        for (let index = 0; index < line.words.length; index += 1) {
-          const word = line.words[index]!;
-          const gap = index > 0 && word.spaceBefore === true;
-          const span = h('span', { class: gap ? 'lyric-char has-gap' : 'lyric-char', text: word.text });
-          chars.push(span);
-          lineEl.append(span);
-        }
-      } else {
-        lineEl.textContent = line.text || ' ';
-      }
+      // 逐字数据优先；没有逐字数据的行（普通 LRC 的非 CJK 行）按「CJK 单字 / 外文词」切成可动 span，
+      // 让上浮/波浪/弹跳/打字机这些播放动画整首歌都有落点。--ci 是字在句内的序号，CSS 用它错开动画相位。
+      const tokens: Array<{ text: string; spaceBefore: boolean }> = line.words.length > 0
+        ? line.words.map((word) => ({ text: word.text, spaceBefore: word.spaceBefore === true }))
+        : splitPlainTokens(line.text);
+      tokens.forEach((token, index) => {
+        const gap = index > 0 && token.spaceBefore;
+        const span = h('span', { class: gap ? 'lyric-char has-gap' : 'lyric-char', text: token.text });
+        span.style.setProperty('--ci', String(index));
+        chars.push(span);
+        lineEl.append(span);
+      });
+      if (tokens.length === 0) lineEl.textContent = line.text || ' ';
       if (line.translation) {
         lineEl.append(h('span', { class: 'lyric-trans', text: line.translation }));
       }
@@ -1584,7 +1490,6 @@ export class LyricsView {
       const grow = growAt(performance.now() - this.growStartAt);
       activeEl.style.setProperty('--grow', grow.toFixed(4));
       if (this.bgMode === 'gradient') this.paintGradientFlow(performance.now());
-      if (lyricStyle() === 'gradient') this.paintGradientTones();
     }
     if (activeLine && activeLine.words.length > 0) {
       const states = charStates(activeLine, lyricPos);
@@ -1595,8 +1500,30 @@ export class LyricsView {
         span.classList.toggle('is-sung', value >= 1);
         span.classList.toggle('is-hot', value === 2);
       });
+    } else if (activeLine) {
+      // 没有逐字数据的歌词行：只有「上浮/弹跳/打字机」这类需要逐字时机的样式才合成逐字状态
+      // （按句内进度均匀铺开），普通 LRC 也能跟着演唱逐字动；其它样式保持经典式的整行状态。
+      this.syncPlainCharStates(activeLine, lyricPos);
     }
     this.paintActiveLineTint();
+  }
+
+  /** 普通 LRC 行的合成逐字状态（charTiming 样式专用）；切到别的样式时把残留状态清掉。 */
+  private syncPlainCharStates(line: LyricLine, lyricPos: number): void {
+    const spans = this.charEls[this.activeIndex] ?? [];
+    if (spans.length === 0) return;
+    if (!lyricStyleNeedsCharTiming()) {
+      for (const span of spans) span.classList.remove('is-sung', 'is-hot');
+      return;
+    }
+    const spanMs = Math.max(400, line.durationMs || 2600);
+    const ratio = Math.min(1, Math.max(0, (lyricPos - line.timeMs) / spanMs));
+    const sung = ratio * spans.length;
+    spans.forEach((span, index) => {
+      const state = sung >= index + 1 ? 1 : sung > index ? 2 : 0;
+      span.classList.toggle('is-sung', state >= 1);
+      span.classList.toggle('is-hot', state === 2);
+    });
   }
 
   /** 切换动效档位后，让当前行立刻按新曲线重播一次（快捷设置里能直接看到效果）。 */
@@ -1777,10 +1704,8 @@ export class LyricsView {
     this.roomStage = null;
     this.stageObserver?.disconnect();
     this.stageObserver = null;
-    this.stopSpectrum();
     this.styleUnsub?.();
     this.styleUnsub = null;
-    this.spectrumData = null;
     this.root.remove();
   }
 }

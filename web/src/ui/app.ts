@@ -5145,7 +5145,8 @@ export class App {
           h('div', { class: 'quick-cell-title', text: title }),
           ...children,
         );
-      // 歌词样式：经典 / 发光 / 渐变 / 频谱律动（只对「关闭」档的 DOM 歌词生效，画布效果下没有意义）
+      // 歌词样式：经典 / 上浮 / 波浪 / 弹跳 / 打字机 / 漂浮（只对「关闭」档的 DOM 歌词生效，画布效果下没有意义）。
+      // 这些样式只改「播放动画」（字的进出场与律动），颜色仍归上面的「歌词颜色」管；新增样式的制作模板见 lyricStyle.ts 顶部注释。
       const styleThumb = h('div', { class: 'quick-seg-thumb' });
       const styleBtns: HTMLButtonElement[] = LYRIC_STYLES.map((item) => {
         const btn = h('button', {
@@ -5172,7 +5173,7 @@ export class App {
         styleThumb.style.width = `${active.offsetWidth}px`;
         styleThumb.style.transform = `translateX(${active.offsetLeft}px)`;
       };
-      const styleControl = h('div', { class: 'quick-seg-slider' }, styleThumb, ...styleBtns);
+      const styleControl = h('div', { class: 'quick-seg-slider quick-lyric-style-seg' }, styleThumb, ...styleBtns);
       paintLyricStyle();
       window.requestAnimationFrame(() => paintLyricStyle());
       // 动效（逐字生长）+ 歌词样式：只对「关闭」档的 DOM 歌词生效，画布效果（纯字/房间）下没有意义，因此仅关闭档显示。
