@@ -230,6 +230,8 @@ export interface Settings {
     lyricsSize: LyricsSize;
     /** 窗口过渡：custom=应用内快照动画，native=交给 Windows 原生过渡。 */
     windowAnimation: WindowAnimation;
+    /** 底部播放条常驻展开：开着时不再依赖鼠标悬停，播放条始终保持展开形态。 */
+    playerBarExpanded: boolean;
   };
   playback: {
     defaultSource: OnlineSourceId;
@@ -298,6 +300,7 @@ export const DEFAULT_SETTINGS: Settings = {
     heroAutoRotate: true,
     lyricsSize: 'medium',
     windowAnimation: 'custom',
+    playerBarExpanded: false,
   },
   playback: {
     defaultSource: 'netease',
@@ -426,6 +429,7 @@ export function normalizeSettings(raw: unknown): Settings {
       heroAutoRotate: asBool(appearance.heroAutoRotate, DEFAULT_SETTINGS.appearance.heroAutoRotate),
       lyricsSize: asEnum(appearance.lyricsSize, LYRICS_SIZES, DEFAULT_SETTINGS.appearance.lyricsSize),
       windowAnimation: asEnum(appearance.windowAnimation, WINDOW_ANIMATIONS, DEFAULT_SETTINGS.appearance.windowAnimation),
+      playerBarExpanded: asBool(appearance.playerBarExpanded, DEFAULT_SETTINGS.appearance.playerBarExpanded),
     },
     playback: {
       defaultSource:
@@ -480,6 +484,7 @@ export function applySettings(next: Settings): void {
   root.dataset.lyricsSize = next.appearance.lyricsSize;
   root.classList.toggle('reduce-motion', next.appearance.reduceMotion);
   root.classList.toggle('no-glow', !next.appearance.glow);
+  root.classList.toggle('is-pb-expanded', next.appearance.playerBarExpanded);
   listeners.forEach((listener) => listener(next));
   // 播放引擎（player.ts / audioTap.ts）不订阅设置对象，避免循环依赖：这里广播音效偏好。
   window.dispatchEvent(

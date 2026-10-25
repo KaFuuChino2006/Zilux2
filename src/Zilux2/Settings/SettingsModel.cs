@@ -60,6 +60,10 @@ internal sealed class AppearanceSettings
     // 窗口过渡方式：custom=应用内自绘（快照缩放/淡出），native=交给 Windows 原生过渡。
     // 追加在最后，保证旧 settings.json 的字段顺序不变。
     public string WindowAnimation { get; set; } = WindowAnimationCustom;
+
+    // 底部播放条常驻展开：开着时不再依赖鼠标悬停，播放条始终保持展开形态。
+    // 追加在最后，保证旧 settings.json 的字段顺序不变。
+    public bool PlayerBarExpanded { get; set; }
 }
 
 internal sealed class PlaybackSettings

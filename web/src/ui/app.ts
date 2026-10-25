@@ -2415,6 +2415,12 @@ export class App {
           (value) => patchSettings({ appearance: { windowAnimation: value } }),
           '应用内：最大化/最小化/关闭都用自绘过渡（关闭快照淡出），不依赖系统设置；系统原生：最大化/最小化交给 Windows，关闭没有系统动画会直接消失。',
         ),
+        toggleField(
+          '播放条常驻展开',
+          '打开后底部播放条不再依赖鼠标悬停，始终保持展开形态（显示进度、音量与完整控制）。',
+          settings.appearance.playerBarExpanded,
+          (value) => patchSettings({ appearance: { playerBarExpanded: value } }),
+        ),
       );
 
       // 播放

@@ -31,7 +31,9 @@
     "reduceMotion": false,
     "glow": true,
     "heroAutoRotate": true,
-    "lyricsSize": "medium"
+    "lyricsSize": "medium",
+    "windowAnimation": "custom",
+    "playerBarExpanded": false
   },
   "playback": {
     "defaultSource": "netease",
@@ -73,6 +75,8 @@
 | `appearance.glow` | bool | `true` | — | 背景氛围光晕 |
 | `appearance.heroAutoRotate` | bool | `true` | — | 首页 3D 封面环缓慢自转 |
 | `appearance.lyricsSize` | enum | `"medium"` | `small` / `medium` / `large` | 歌词面板字号 |
+| `appearance.windowAnimation` | enum | `"custom"` | `custom` / `native` | 窗口过渡：应用内自绘 / Windows 原生 |
+| `appearance.playerBarExpanded` | bool | `false` | — | 底部播放条常驻展开（不依赖鼠标悬停，始终显示进度/控制/封面） |
 | `playback.defaultSource` | enum | `"netease"` | `netease` / `qq` | 搜索面板默认来源 |
 | `playback.searchLimit` | int | `20` | `10` / `20` / `30` | 每次搜索返回条数 |
 | `playback.lyricsAutoOpen` | bool | `true` | — | 在线播放时自动展开歌词面板 |

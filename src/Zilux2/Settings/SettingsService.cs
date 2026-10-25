@@ -475,6 +475,8 @@ internal sealed class SettingsService : IDisposable
                 state.Appearance.WindowAnimation,
                 "appearance.windowAnimation",
                 keys);
+            state.Appearance.PlayerBarExpanded = ReadBool(
+                appearance, "playerBarExpanded", state.Appearance.PlayerBarExpanded, "appearance.playerBarExpanded", keys);
         }
 
         if (TryGetObject(document, "playback", out var playback))
