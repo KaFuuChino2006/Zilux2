@@ -12,8 +12,24 @@
 
 export type AppBgMode = 'none' | 'cover' | 'image';
 
+/** 背景图在镜头里的取景位置（对应 background-position）。 */
+export type AppBgPosition = 'center' | 'top' | 'bottom' | 'left' | 'right';
+
+export const APP_BG_POSITIONS: ReadonlyArray<{ value: AppBgPosition; label: string }> = [
+  { value: 'center', label: '居中' },
+  { value: 'top', label: '顶部' },
+  { value: 'bottom', label: '底部' },
+  { value: 'left', label: '左侧' },
+  { value: 'right', label: '右侧' },
+];
+
+/** 模糊度可调范围（px）。默认 34 = 之前的固定模糊量，保持默认观感不变。 */
+export const APP_BG_BLUR = { min: 0, max: 140, step: 2, fallback: 34 } as const;
+
 const MODE_KEY = 'zilux2.appBgMode';
 const IMAGE_KEY = 'zilux2.appBgImage';
+const BLUR_KEY = 'zilux2.appBgBlur';
+const POS_KEY = 'zilux2.appBgPosition';
 /** 旧版本的开关：'0' = 关闭，其他 = 跟随封面（用于迁移）。 */
 const LEGACY_KEY = 'zilux2.appCoverBg';
 
@@ -51,6 +67,59 @@ export function readAppBgImage(): string {
   } catch {
     return '';
   }
+}
+
+/** 模糊度（px）：0–140，默认 34（未设置时用 fallback）。 */
+export function readAppBgBlur(): number {
+  try {
+    const raw = localStorage.getItem(BLUR_KEY);
+    if (raw === null) return APP_BG_BLUR.fallback;
+    const value = Number(raw);
+    if (!Number.isFinite(value)) return APP_BG_BLUR.fallback;
+    return Math.max(APP_BG_BLUR.min, Math.min(APP_BG_BLUR.max, Math.round(value)));
+  } catch {
+    return APP_BG_BLUR.fallback;
+  }
+}
+
+export function writeAppBgBlur(px: number): void {
+  try {
+    const value = Math.max(APP_BG_BLUR.min, Math.min(APP_BG_BLUR.max, Math.round(px)));
+    localStorage.setItem(BLUR_KEY, String(value));
+  } catch {
+    /* 忽略隐私模式写入失败 */
+  }
+}
+
+export function readAppBgPosition(): AppBgPosition {
+  try {
+    const stored = localStorage.getItem(POS_KEY);
+    return (APP_BG_POSITIONS.find((item) => item.value === stored)?.value ?? 'center') as AppBgPosition;
+  } catch {
+    return 'center';
+  }
+}
+
+export function writeAppBgPosition(position: AppBgPosition): void {
+  try {
+    localStorage.setItem(POS_KEY, position);
+  } catch {
+    /* 忽略隐私模式写入失败 */
+  }
+}
+
+/**
+ * 把模糊度与取景位置写到 :root 的 CSS 变量：
+ * - `--app-bg-blur`：模糊半径
+ * - `--app-bg-scale`：固定 1.08（保持原来的轻微放大观感；模糊度调大时不再进一步放大）
+ * - `--app-bg-pos`：background-position
+ */
+export function applyAppBgStyle(): void {
+  const root = document.documentElement;
+  const blur = readAppBgBlur();
+  root.style.setProperty('--app-bg-blur', `${blur}px`);
+  root.style.setProperty('--app-bg-scale', '1.08');
+  root.style.setProperty('--app-bg-pos', readAppBgPosition());
 }
 
 export function writeAppBgImage(dataUrl: string): void {
