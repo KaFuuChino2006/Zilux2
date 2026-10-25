@@ -334,6 +334,9 @@ export class App {
   /** 迷你播放器（紧凑置顶小窗）：状态以宿主回推的 window/miniMode 事件为准。 */
   private miniMode = false;
   private miniBtn!: HTMLButtonElement;
+  /** 迷你态切换过渡：宿主补间窗口期间页面先切「悬浮小卡」，等 window/miniMode 回推再落最终布局。 */
+  private miniTransition: 'idle' | 'entering' | 'exiting' = 'idle';
+  private miniFallbackTimer = 0;
   private appBgMode: AppBgMode = readAppBgMode();
   private appBgImage = readAppBgImage();
   private appBgEl!: HTMLDivElement;
@@ -395,12 +398,13 @@ export class App {
       /* 忽略：localStorage 不可用时按普通窗口处理。 */
     }
     const onMiniKey = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || !this.miniMode) return;
+      if (event.key !== 'Escape' || !this.miniMode || this.miniTransition !== 'idle') return;
       event.preventDefault();
       this.toggleMiniMode();
     };
     window.addEventListener('keydown', onMiniKey);
     this.disposers.add(() => window.removeEventListener('keydown', onMiniKey));
+    this.disposers.add(() => this.clearMiniFallback());
     this.playerDispose = onPlayer((state) => this.syncPlayer(state));
     this.localDispose = onLocalLibraryChange(() => {
       if (this.wall.kind === 'local') {
@@ -4358,13 +4362,13 @@ export class App {
     this.playerbarWrap = wrap;
     // 迷你态整条播放条即拖动区（控件/进度条除外）；双击空白处退出迷你。
     bar.addEventListener('pointerdown', (event) => {
-      if (!this.miniMode || event.button !== 0) return;
+      if (!this.miniMode || this.miniTransition !== 'idle' || event.button !== 0) return;
       const target = event.target as HTMLElement | null;
       if (target && target.closest('button, input, a, .slider, .pb-progress')) return;
       host.drag();
     });
     bar.addEventListener('dblclick', (event) => {
-      if (!this.miniMode) return;
+      if (!this.miniMode || this.miniTransition !== 'idle') return;
       const target = event.target as HTMLElement | null;
       if (target && target.closest('button, input, a, .slider, .pb-progress')) return;
       this.toggleMiniMode();
@@ -4373,11 +4377,45 @@ export class App {
 
   /** 迷你播放器按钮：只向宿主发请求，实际状态以 window/miniMode 回推为准。 */
   private toggleMiniMode(): void {
-    host.setMiniMode(!this.miniMode);
+    if (this.miniTransition !== 'idle') return;
+    const enabled = !this.miniMode;
+    this.beginMiniTransition(enabled);
+    host.setMiniMode(enabled);
+  }
+
+  /**
+   * 进入过渡态：宿主会把窗口从当前大小平滑补间到迷你尺寸（320/380ms），
+   * 页面先切到「只有一张悬浮小卡」的过渡布局，窗口边缘围着卡片运动；
+   * 宿主动画结束回推 window/miniMode 后再落到最终布局（事件丢失时 900ms 兜底）。
+   */
+  private beginMiniTransition(enabled: boolean): void {
+    this.clearMiniFallback();
+    this.miniTransition = enabled ? 'entering' : 'exiting';
+    const cls = enabled ? 'is-mini-entering' : 'is-mini-exiting';
+    this.root.classList.add(cls);
+    document.body.classList.add(cls);
+    this.miniFallbackTimer = window.setTimeout(() => {
+      this.miniFallbackTimer = 0;
+      this.applyMiniMode(enabled);
+    }, 900);
+  }
+
+  private clearMiniFallback(): void {
+    if (!this.miniFallbackTimer) return;
+    window.clearTimeout(this.miniFallbackTimer);
+    this.miniFallbackTimer = 0;
+  }
+
+  private endMiniTransition(): void {
+    this.clearMiniFallback();
+    this.miniTransition = 'idle';
+    this.root.classList.remove('is-mini-entering', 'is-mini-exiting');
+    document.body.classList.remove('is-mini-entering', 'is-mini-exiting');
   }
 
   /** 应用迷你态：只改页面布局；窗口尺寸/置顶由宿主负责。 */
   private applyMiniMode(enabled: boolean): void {
+    this.endMiniTransition();
     this.miniMode = enabled;
     this.root.classList.toggle('is-mini', enabled);
     document.body.classList.toggle('is-mini', enabled);
