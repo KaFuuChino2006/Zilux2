@@ -74,8 +74,8 @@ GET http://127.0.0.1:<port>/api/analysis?source=local&rel=<rel>&token=<token>
 
 | 字段 | 含义 |
 |---|---|
-| `audibleEndMs` | **响应顶层字段**。「可听结尾」位置（ms，相对音频文件起点，`0..durationMs`）：排除尾部静音后最后一个可听样本的结束位置（向上取整到 ms）。没有有效尾部静音时等于 `durationMs`。供无缝衔接把交叉淡化终点对齐到音乐结束。 |
-| `tailSilenceMs` | **响应顶层字段**。尾端静音长度 = `durationMs - audibleEndMs`；尾部静音不足阈值（300 ms）时为 `0`。 |
+| `audibleEndMs` | **响应顶层字段**。「可听结尾」位置（ms，相对音频文件起点，`0..durationMs`）：排除尾部静音/渐弱收尾后最后一个可听样本的结束位置（向上取整到 ms）。没有有效尾部静音且没有可判定的渐弱收尾时等于 `durationMs`。供无缝衔接把交叉淡化终点对齐到音乐结束。 |
+| `tailSilenceMs` | **响应顶层字段**。尾端静音/渐弱收尾长度 = `durationMs - audibleEndMs`；两者都不足阈值（300 ms）时为 `0`。 |
 | `beatIntervalMs` | 平均拍间隔（毫秒，浮点）；P0 假设全曲恒定速度 |
 | `firstBeatMs` | 第一拍的时间（相对音频文件起点） |
 | `firstDownbeatMs` | 第一小节强拍时间，`(firstDownbeatMs-firstBeatMs)/beatIntervalMs` 是整数相位 |
@@ -88,11 +88,13 @@ GET http://127.0.0.1:<port>/api/analysis?source=local&rel=<rel>&token=<token>
 时间基准：**相对音频文件起点**。本地 CUE 分轨（`track.startAt > 0`）时，页面用
 `positionMs + startAt` 对齐到文件时间轴后使用。
 
-尾端静音检测（analyzer `p0-4` 起，宿主在解码重采样后的单声道 PCM 上计算）：
+尾端静音/渐弱收尾检测（analyzer `p0-5` 起，宿主在解码重采样后的单声道 PCM 上计算）：
 
-- 阈值 `-50 dBFS`（RMS）；按 20 ms 窗口从尾部向前扫描，连续静音 ≥300 ms 才视为有效尾部静音；
-- 至少保留 10% 时长（防止把整首/近乎整首误判成静音）；结果钳制在 `0..durationMs`；
-- 无有效尾部静音（含尾部静音 <300 ms）时 `audibleEndMs = durationMs`、`tailSilenceMs = 0`；
+- 真静音：阈值 `-50 dBFS`（RMS）；按 20 ms 窗口从尾部向前扫描，连续静音 ≥300 ms 才视为有效尾部静音；
+- 渐弱收尾（`p0-5` 起）：真静音不足 300 ms 时再尝试——按 250 ms 能量块求 dB，曲身电平取 80 分位、尾块电平取末 4 块中位数；尾块须低于曲身 ≥8 dB，从尾部向前用 2 s 滑窗最小二乘拟合斜率，斜率持续 ≤ -0.7 dB/s 的起点即渐弱开始处；
+- 渐弱段需满足：时长 2–20 s、不超过全曲 40%、整体衰减 ≥8 dB、起点电平不低于曲身电平 6 dB（否则不算渐弱收尾）；
+- 两种收尾都至少保留 10% 时长（防止把整首/近乎整首误判成静音）；结果钳制在 `0..durationMs`；
+- 无有效尾部静音/渐弱收尾时 `audibleEndMs = durationMs`、`tailSilenceMs = 0`；
 - 全静音音频按「至少保留 10%」返回 `audibleEndMs ≈ durationMs*10%`；
 - 字段放在响应顶层（与 `durationMs` 同级），不改动 `analysis` 子对象已有字段语义。
 

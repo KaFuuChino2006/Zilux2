@@ -183,6 +183,8 @@ powershell -File tools/release.ps1 -DryRun   # 演练；去掉 -DryRun 真发版
 
 - 2026-10-25 第十三轮（横条视图封面异步回填修复，已推 main、**未发版**，1 处修复）：`web/src/ui/app.ts` 的 `buildSearchList` 行封面改为与海报网格同一套补图逻辑——先 `onlineArtwork(track)` 占位，若 `!track.cover` 则 `lookupCover(track)` 异步查找并回填 `track.cover` + 更新 `img.src`。原先网格 `posterNode` 有异步补图、横条没有，导致同一批曲目网格能刷新封面而横条停在程序化渐变占位。验证：横条（本地曲库 19 首）进入 0.7s 时 17 张占位/2 张真实 → 6s 后 17 张真实/2 张占位，与网格一致；剩余 2 首（霽れを待つ、スペア）为原封面 URL 加载失败回退渐变（网格同样），console 0 error。详见 `research/UPDATES-2026-10-25.md` §15。
 
+- 2026-10-25 第十四轮（尾部渐弱收尾也计入不可听结尾，analyzer p0-5，已推 main、**未发版**，1 处增强）：`src/Zilux2/Analysis/TailSilenceDetector.cs` 在真静音不足 300 ms 时增加渐弱检测——250 ms 能量块 RMS dB（曲身 80 分位、末 4 块中位数），尾块须低于曲身 ≥8 dB；2 s 滑窗最小二乘斜率持续 ≤ -0.7 dB/s 的起点即渐弱开始；校验渐弱段 2–20 s、≤40% 时长、整体衰减 ≥8 dB、起点不低于曲身 6 dB，通过则 `audibleEndMs` 前移到渐弱开始、剩余段计入 `tailSilenceMs`。`AnalyzerVersion` p0-4 → p0-5（缓存键必须 bump）；`docs/zilux2-beat-analysis-contract.md` §2.1 同步字段语义与检测规则；前端 `crossfadeDeck.ts` 设置文案改为「跳过曲尾静音与明显渐弱收尾」。验证（合成夹具）：fade26 → 34000/27000/tail 7000；fade40 → 36000/28500/tail 7500；silence3s → 23000/20000/tail 3000 不变；真实曲目无回归（晴天(深情版).mp3 279028/275268/3760）。详见 `research/UPDATES-2026-10-25.md` §16。
+
 ## 9. 版本与发版节奏（约定）
 
 - 版本号只递增第三位（patch）：`1.1.x`；小修小补也**不要**跳到 `1.2.0`。
