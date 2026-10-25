@@ -5921,3 +5921,26 @@ html.is-pb-expanded .playerbar.is-hidden {
     transition: none;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* v4：待播队列操作 / 播放条「下一首」胶囊收窄 / 歌词关闭按钮避让顶栏 */
+/* ------------------------------------------------------------------ */
+
+/* 「下一首」信息展示框收窄：标题与歌手最多各 120px，整体不再被长歌名撑开 */
+.upnext-summary .upnext-title,
+.upnext-summary .upnext-artist,
+.upnext-summary .upnext-meta{max-width:120px}
+
+/* 待播队列行内操作：上移 / 下移 / 移出（跳过），悬停或选中时出现 */
+.upnext-actions{display:flex;align-items:center;gap:2px;margin-left:2px;flex:none;opacity:0;transition:opacity .16s var(--ease)}
+.upnext-row:hover .upnext-actions,
+.upnext-row.is-selected .upnext-actions{opacity:1}
+.upnext-act{width:24px;height:24px;display:grid;place-items:center;border-radius:7px;color:var(--muted);transition:background .16s var(--ease),color .16s var(--ease)}
+.upnext-act:hover{background:rgb(var(--overlay-rgb) / .08);color:var(--text)}
+.upnext-act.is-remove:hover{background:rgb(var(--overlay-rgb) / .08);color:#e07a7a}
+.upnext-act:disabled{opacity:.28;pointer-events:none}
+.upnext-hint{padding:7px 12px 9px;border-top:1px solid var(--line);color:var(--muted);font-size:11px;letter-spacing:.02em;text-align:center}
+
+/* 顶部窗口栏（鼠标靠近顶部滑下的通栏）展开时，歌词页右上角关闭按钮下移让位，不被窗口按钮遮挡 */
+.lyrics-close{transition:top .3s var(--ease),background var(--dur-mid) var(--ease),transform var(--dur-mid) var(--ease)}
+.app.is-topbar-peek .lyrics-close{top:58px}

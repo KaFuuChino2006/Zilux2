@@ -189,6 +189,8 @@ powershell -File tools/release.ps1 -DryRun   # 演练；去掉 -DryRun 真发版
 
 - 2026-10-25 第十六轮（播放条下载按钮改为下载菜单，已推 main、**未发版**，1 处体验增强）：`downloadPicker.ts` 抽出共用浮层骨架 `openPopover()` 并新增 `openDownloadMenu()`（下载当前歌曲 / 打开下载队列；无歌曲或本地曲时下载项置灰）；`downloadQueue.createDownloadEntryButton(onActivate?)` 支持回调，app 播放条按钮改弹菜单（`aria-haspopup="menu"`），「下载当前歌曲」继续走 `beginDownload()` 音质选择（标准/高品质/无损，仅本次生效）。QA `downloads.mjs` 入口步骤同步为「入口 → 菜单 → 打开下载队列」并通过（15 PASS / 0 FAIL，25.4s）。详见 `research/UPDATES-2026-10-25.md` §18。
 
+- 2026-10-25 第十七轮（**本地记录、未推送**，按用户要求「先不同步 hub」）：①rail「我喜欢的音乐」「最近播放」支持双击直接播放（单击仍只进页面，title 提示「双击直接播放」，`playRailList()` 进页后整列表播放）；②歌词页右上角关闭按钮在顶部窗口栏展开（`.app.is-topbar-peek`）时下移 58px 避让，不再被窗口按钮遮挡；③播放条「下一首」胶囊收窄（标题/歌手限 120px）；④待播队列面板新增每行「上移 / 下移 / 移出队列（跳过）」按钮与提示，`player.ts` 新增 `moveQueueItem()/removeQueueItem()`（移动/移除后自动重新准备无缝衔接）。详见 `research/UPDATES-2026-10-25.md` §19、§20。远端 main 仍停在 `5e596ef`。
+
 ## 9. 版本与发版节奏（约定）
 
 - 版本号只递增第三位（patch）：`1.1.x`；小修小补也**不要**跳到 `1.2.0`。

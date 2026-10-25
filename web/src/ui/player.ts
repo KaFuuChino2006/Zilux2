@@ -643,6 +643,42 @@ export function playTrack(track: OnlineTrack): void {
   playQueue([track], 0, true);
 }
 
+/**
+ * 跳过待播队列里的某首歌（从队列移除）。当前正在播放的曲目不会被移除；
+ * 队列变化后重新准备无缝衔接的下一首。
+ */
+export function removeQueueItem(index: number): void {
+  const target = Math.trunc(index);
+  if (!Number.isFinite(target)) return;
+  if (target < 0 || target >= state.queue.length) return;
+  if (target === state.index) return;
+  const queue = state.queue.slice();
+  queue.splice(target, 1);
+  const nextIndex = target < state.index ? state.index - 1 : state.index;
+  cancelSeamless('queue');
+  state = { ...state, queue, index: nextIndex };
+  setState({ queue, index: nextIndex });
+  prepareSeamlessNext();
+}
+
+/** 调整队列里某首歌的位置（上移/下移/优先播放），当前播放曲目的队列下标会同步修正。 */
+export function moveQueueItem(from: number, to: number): void {
+  if (from === to) return;
+  if (from < 0 || from >= state.queue.length || to < 0 || to >= state.queue.length) return;
+  const queue = state.queue.slice();
+  const [item] = queue.splice(from, 1);
+  if (!item) return;
+  queue.splice(to, 0, item);
+  let index = state.index;
+  if (from === index) index = to;
+  else if (from < index && to >= index) index -= 1;
+  else if (from > index && to <= index) index += 1;
+  cancelSeamless('queue');
+  state = { ...state, queue, index };
+  setState({ queue, index });
+  prepareSeamlessNext();
+}
+
 export function playAt(index: number, tracks?: OnlineTrack[]): void {
   if (tracks) {
     playQueue(tracks, index, true);

@@ -85,6 +85,8 @@ const ICONS: Record<string, string> = {
   minimize: '<path d="M5 12h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
   maximize: '<rect x="5.5" y="5.5" width="13" height="13" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.7"/>',
   chevron: '<path d="M8 10l4 4 4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/>',
+  chevronUp: '<path d="M8 14l4-4 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/>',
+  chevronDown: '<path d="M8 10l4 4 4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/>',
   logout:
     '<path d="M14.5 8V6.2c0-.9-.7-1.6-1.6-1.6H6.1c-.9 0-1.6.7-1.6 1.6v11.6c0 .9.7 1.6 1.6 1.6h6.8c.9 0 1.6-.7 1.6-1.6V16" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" fill="none"/><path d="M11 12h9m0 0l-3-3m3 3l-3 3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" fill="none"/>',
   refresh:

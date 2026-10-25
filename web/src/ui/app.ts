@@ -91,19 +91,21 @@ import {
 import { currentLyricSource, lyricGrowMode, lyricMatchMinScore, lyricOffsetOf, lyricsBackgroundMode, lyricsLumiereMode, LyricsView, primeLyrics, setLyricGrowMode, setLyricsBackgroundMode, setLyricsLumiereMode, setLyricMatchMinScore, setLyricOffset, updateCurrentLyricLine, lyricMatchText } from './lyrics';
 import { LUMIERE_MODES } from './lumiere';
 import {
+  cycleMode,
+  moveQueueItem,
   next,
   onPlayer,
   playAt,
   playQueue,
   playerState,
   prev,
+  removeQueueItem,
+  refreshCurrentLiked,
+  replaceQueue,
   seek,
   setVolume,
   toggle,
   toggleLiked,
-  refreshCurrentLiked,
-  replaceQueue,
-  cycleMode,
   type PlayerState,
 } from './player';
 import { host, hostAvailable, getShortcutsState, onShortcutsState, type UpdateSnapshot } from '../core/bridge';
@@ -3801,7 +3803,7 @@ export class App {
       else this.openUpNext();
     });
 
-    const skip = h('button', { class: 'btn upnext-skip', text: '跳过这首' });
+    const skip = h('button', { class: 'btn upnext-skip', title: '切换到下一首（当前这首不再播放）', text: '跳过这首' });
     skip.addEventListener('click', () => {
       next();
       this.closeUpNext();
@@ -3812,6 +3814,7 @@ export class App {
       { class: 'upnext-panel' },
       h('div', { class: 'upnext-head' }, h('div', { class: 'upnext-head-title', text: '待播队列' }), skip),
       this.upnextList,
+      h('div', { class: 'upnext-hint', text: '双击播放 · ↑↓ 调整顺序 · 垃圾桶移出队列' }),
     );
     this.upnextRoot = h('div', { class: 'upnext is-hidden' }, this.upnextPanel, this.upnextSummary);
     // 待播与快捷设置都是挂在播放条右侧的独立胶囊
@@ -4952,6 +4955,21 @@ export class App {
     }
     upcoming.forEach((track, offset) => {
       const index = state.index + 1 + offset;
+      // 待播行的操作：上移 / 下移 / 移出队列（跳过）。点击不会触发行的选中与双击播放。
+      const upBtn = h('button', { class: 'upnext-act', title: '上移', 'aria-label': '上移' }, icon('chevronUp', 14));
+      const downBtn = h('button', { class: 'upnext-act', title: '下移', 'aria-label': '下移' }, icon('chevronDown', 14));
+      const removeBtn = h('button', { class: 'upnext-act is-remove', title: '跳过这首（移出队列）', 'aria-label': '跳过这首' }, icon('trash', 14));
+      (upBtn as HTMLButtonElement).disabled = offset === 0;
+      (downBtn as HTMLButtonElement).disabled = offset === upcoming.length - 1;
+      for (const btn of [upBtn, downBtn, removeBtn]) {
+        btn.addEventListener('pointerdown', (event) => event.stopPropagation());
+        btn.addEventListener('click', (event) => {
+          event.stopPropagation();
+        });
+      }
+      upBtn.addEventListener('click', () => moveQueueItem(index, index - 1));
+      downBtn.addEventListener('click', () => moveQueueItem(index, index + 1));
+      removeBtn.addEventListener('click', () => removeQueueItem(index));
       const row = h(
         'li',
         { class: 'upnext-row' },
@@ -4962,6 +4980,7 @@ export class App {
           h('div', { class: 'upnext-title', text: track.title }),
           h('div', { class: 'upnext-artist', text: track.artist || '未知歌手' }),
         ),
+        h('div', { class: 'upnext-actions' }, upBtn, downBtn, removeBtn),
         h('span', { class: 'upnext-index', text: String(offset + 1) }),
       );
       row.addEventListener('click', () => {
