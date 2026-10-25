@@ -231,14 +231,17 @@ export async function fetchLyric(source: OnlineSource, id: string): Promise<Onli
   return api<OnlineLyric>('/api/lyric', { source, id });
 }
 
+/** /api/library/feed 的 kind：最近播放 / 每日推荐 / 私人雷达（网易云）。 */
+export type FeedKind = 'recent' | 'daily' | 'radar';
+
 /** 发现面板：最近播放 / 每日推荐（/api/library/feed）。 */
 export async function fetchFeed(
   source: OnlineSource,
-  kind: 'recent' | 'daily',
+  kind: FeedKind,
   limit = 60,
-): Promise<{ source: OnlineSource; kind: 'recent' | 'daily'; tracks: OnlineTrack[] }> {
+): Promise<{ source: OnlineSource; kind: FeedKind; tracks: OnlineTrack[] }> {
   if (mockMode) {
-    const label = kind === 'daily' ? '每日推荐' : '最近播放';
+    const label = kind === 'daily' ? '每日推荐' : kind === 'radar' ? '私人雷达' : '最近播放';
     const platform = source === 'qq' ? 'QQ 音乐' : '网易云音乐';
     const tracks: OnlineTrack[] = Array.from({ length: 8 }, (_, index) => ({
       source,
@@ -252,7 +255,7 @@ export async function fetchFeed(
     }));
     return { source, kind, tracks };
   }
-  return api<{ source: OnlineSource; kind: 'recent' | 'daily'; tracks: OnlineTrack[] }>('/api/library/feed', {
+  return api<{ source: OnlineSource; kind: FeedKind; tracks: OnlineTrack[] }>('/api/library/feed', {
     source,
     kind,
     limit: String(limit),

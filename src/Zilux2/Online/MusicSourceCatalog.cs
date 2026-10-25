@@ -84,7 +84,7 @@ internal static class MusicSourceCatalog
             Accent = "#ff5a5f",
             LoginMode = "code",
             LoginHint = "在网易云 App 扫码后确认登录",
-            FeedKinds = ["recent", "daily"],
+            FeedKinds = ["recent", "daily", "radar"],
             SupportsWordLyrics = true,
             SupportsLikedWrite = true,
             HasDaily30 = false,

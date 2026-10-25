@@ -57,6 +57,9 @@ public partial class MainWindow : Window
     private const double MiniMinWidthDip = 360;
     private const double MiniMinHeightDip = 100;
     private const double MiniScreenMarginDip = 12;
+    // 迷你小窗的窗口圆角：无边框窗口本身是直角的，进迷你态后用 SetWindowRgn 把窗口裁剪成圆角
+    // （页面此时是满窗卡片，所以圆角直接就是卡片轮廓）；退出时恢复直角。
+    private const double MiniCornerRadiusDip = 16;
     // 进出迷你播放器的窗口补间：与页面过渡态（.is-mini-entering/.is-mini-exiting）同时段，
     // 让窗口本身平滑收缩/长回去，而不是一帧跳变（用户反馈动画生硬）。
     private const int MiniEnterAnimationMs = 320;
@@ -110,6 +113,7 @@ public partial class MainWindow : Window
         SourceInitialized += OnSourceInitialized;
         Loaded += OnLoaded;
         StateChanged += OnStateChanged;
+        SizeChanged += OnWindowSizeChanged;
         Closing += OnClosing;
         Closed += OnClosed;
     }
@@ -409,6 +413,9 @@ public partial class MainWindow : Window
         MinWidth = MiniMinWidthDip;
         MinHeight = MiniMinHeightDip;
         Topmost = true;
+        // 迷你态窗口会被裁成圆角、页面满窗铺卡片：把 WebView 边距清零，否则窗口四周会露出
+        // 6px 的 WPF 主题底色（用户看到的「正方形框」的来源之一）。
+        Browser.Margin = new Thickness(0);
 
         // 最大化/最小化或尚未拿到 HWND 时退化为即时落位；正常窗口用补间动画收缩，
         // 页面同时切到「悬浮小卡」过渡态（.is-mini-entering），视觉上像窗口被吸到角落。
@@ -451,15 +458,73 @@ public partial class MainWindow : Window
     private void FinishEnterMiniMode(int left, int top, int pixelWidth, int pixelHeight, int marginX, int marginY)
     {
         _miniMode = true;
+        // 落位时再清一次（最大化进入时会先切 WindowState，OnStateChanged 会把边距改回 6px）。
+        Browser.Margin = new Thickness(0);
         HostLog.Info(
             $"window.miniMode enabled rect={left},{top} size={pixelWidth}x{pixelHeight} margin={marginX},{marginY}");
+        ApplyMiniWindowRegion(true);
         _host?.NotifyMiniMode(true);
+    }
+
+    /// <summary>
+    /// 迷你态把窗口裁剪成圆角，退出时恢复直角。页面在迷你态是「满窗卡片」，所以窗口圆角就是
+    /// 卡片轮廓 —— 用户看到一张贴边的圆角小卡，而不是带主题底色的直角矩形窗口。
+    /// 圆角半径按当前 DPI 缩放；SetWindowRgn 成功后区域归系统所有，不要再 DeleteObject。
+    /// </summary>
+    private void ApplyMiniWindowRegion(bool rounded)
+    {
+        if (_hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        if (!rounded)
+        {
+            NativeMethods.SetWindowRgn(_hwnd, IntPtr.Zero, true);
+            return;
+        }
+
+        if (!NativeMethods.GetWindowRect(_hwnd, out var rect))
+        {
+            return;
+        }
+
+        var width = rect.Right - rect.Left;
+        var height = rect.Bottom - rect.Top;
+        if (width <= 0 || height <= 0)
+        {
+            return;
+        }
+
+        var (scaleX, scaleY) = CurrentDpiScale();
+        var scale = Math.Max(scaleX, scaleY);
+        var radius = Math.Max(4, (int)Math.Round(MiniCornerRadiusDip * scale));
+        var region = NativeMethods.CreateRoundRectRgn(0, 0, width + 1, height + 1, radius * 2, radius * 2);
+        if (region == IntPtr.Zero)
+        {
+            return;
+        }
+
+        NativeMethods.SetWindowRgn(_hwnd, region, true);
+    }
+
+    private void OnWindowSizeChanged(object? sender, SizeChangedEventArgs e)
+    {
+        // 迷你态允许用户继续拉伸小窗：尺寸一变就按新尺寸重做圆角，否则角会被裁掉/留直角。
+        if (!_miniMode || _miniAnimating)
+        {
+            return;
+        }
+
+        ApplyMiniWindowRegion(true);
     }
 
     private void ExitMiniMode()
     {
         StopWindowMotion();
         _miniAnimating = false;
+        // 先把窗口恢复成直角再长回去：圆角区域是按迷你尺寸裁的，直接放大只会把内容裁掉。
+        ApplyMiniWindowRegion(false);
 
         var target = _miniRestoreRect;
         var hasTarget = _miniHasRestoreRect && target.Right > target.Left && target.Bottom > target.Top;
@@ -511,6 +576,8 @@ public partial class MainWindow : Window
         MinWidth = _miniSavedMinWidth;
         MinHeight = _miniSavedMinHeight;
         Topmost = _miniSavedTopmost;
+        // 恢复普通窗口的 WebView 边距（无边框窗口的拖拽/缩放描边区）。
+        Browser.Margin = _miniSavedWindowState == WindowState.Maximized ? new Thickness(0) : new Thickness(ResizeGrip);
 
         if (_miniSavedWindowState == WindowState.Maximized)
         {

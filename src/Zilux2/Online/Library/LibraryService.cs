@@ -356,15 +356,20 @@ internal sealed class LibraryService : IDisposable
         Refresh(source);
     }
 
-    // 发现面板：最近播放 / 每日推荐。数据实时性强，不进歌单缓存。
+    // 发现面板：最近播放 / 每日推荐 / 私人雷达。数据实时性强，不进歌单缓存。
     public async Task<LibraryFeed> GetFeedAsync(string source, string kind, int limit, CancellationToken cancellationToken)
     {
         ThrowIfDisposed();
         source = NormalizeSource(source);
         kind = (kind ?? string.Empty).Trim().ToLowerInvariant();
-        if (kind is not ("recent" or "daily"))
+        if (kind is not ("recent" or "daily" or "radar"))
         {
-            throw new OnlineUpstreamException("kind 参数必须是 recent 或 daily", 400);
+            throw new OnlineUpstreamException("kind 参数必须是 recent、daily 或 radar", 400);
+        }
+
+        if (kind == "radar" && source != AccountSources.Netease)
+        {
+            throw new OnlineUpstreamException("私人雷达目前只支持网易云音乐", 400);
         }
 
         limit = limit <= 0 ? 60 : Math.Min(limit, 200);

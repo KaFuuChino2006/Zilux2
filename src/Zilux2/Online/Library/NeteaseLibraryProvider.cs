@@ -18,6 +18,12 @@ internal sealed class NeteaseLibraryProvider
     private const string PlaylistDetailEndpoint = "https://music.163.com/api/v6/playlist/detail";
     private const string LegacyPlaylistDetailEndpoint = "https://music.163.com/api/playlist/detail";
     private const string SongDetailEndpoint = "https://music.163.com/api/song/detail";
+
+    // 「私人雷达」是网易云每天 6:00 刷新的个人化歌单：歌单 id 全局固定，
+    // 内容按登录用户的 cookie 生成，所以直接复用歌单详情链路即可，不需要额外加密接口。
+    private const string PrivateRadarPlaylistId = "3136952023";
+    private const string PrivateRadarTitle = "私人雷达";
+
     private const int MaxPlaylists = 60;
     private const int SongDetailBatchSize = 500;
 
@@ -250,7 +256,22 @@ internal sealed class NeteaseLibraryProvider
         return tracks;
     }
 
-    // 发现面板：最近播放（/api/v1/play/record）与每日推荐（/api/v3/discovery/recommend/songs）。
+    // 私人雷达：歌单 id 固定、内容随登录用户与日期变化，直接复用 GetPlaylistAsync（v6 详情 + 歌曲详情）。
+    private async Task<List<OnlineTrack>> GetPrivateRadarAsync(int limit, CancellationToken cancellationToken)
+    {
+        var detail = await GetPlaylistAsync(PrivateRadarPlaylistId, 0, limit, cancellationToken).ConfigureAwait(false);
+        if (!detail.Meta.Title.Contains(PrivateRadarTitle, StringComparison.Ordinal))
+        {
+            OnlineHttp.Warn(
+                $"GET netease/library radar unexpected playlist id={PrivateRadarPlaylistId} title={detail.Meta.Title} tracks={detail.Tracks.Count}");
+        }
+
+        OnlineHttp.Info($"GET netease/library radar ok {detail.Tracks.Count} total");
+        return detail.Tracks;
+    }
+
+    // 发现面板：最近播放（/api/v1/play/record）、每日推荐（/api/v3/discovery/recommend/songs）
+    // 与私人雷达（固定 id 的个人化歌单，复用歌单详情链路）。
     internal async Task<List<OnlineTrack>> GetFeedAsync(string kind, int limit, CancellationToken cancellationToken)
     {
         if (!IsLoggedIn)
@@ -259,6 +280,10 @@ internal sealed class NeteaseLibraryProvider
         }
 
         limit = Math.Clamp(limit, 1, 200);
+        if (string.Equals(kind, "radar", StringComparison.Ordinal))
+        {
+            return await GetPrivateRadarAsync(limit, cancellationToken).ConfigureAwait(false);
+        }
         var daily = string.Equals(kind, "daily", StringComparison.Ordinal);
         string url;
         if (daily)

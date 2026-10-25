@@ -8,14 +8,22 @@
  * 居中贴底出现，窗口边缘围着它运动，避免一帧跳变（用户反馈动画生硬）。
  */
 
-/* 迷你态/过渡态整窗铺主题底：系统圆角窗口里看起来是 App 的一张卡片，而不是默认白底。 */
+/* 迷你态整窗铺「卡片底色」：宿主会把窗口本身裁成圆角，页面满窗铺同色后，
+   用户看到的就是一张悬浮小卡，而不是带主题底色的直角矩形窗口（用户反馈「有一个正方形框」）。 */
 body.is-mini,
 body.is-mini-entering,
 body.is-mini-exiting {
   background: var(--bg);
 }
 
-.app.is-mini,
+body.is-mini {
+  background: var(--panel-solid);
+}
+
+.app.is-mini {
+  background: var(--panel-solid);
+}
+
 .app.is-mini-entering,
 .app.is-mini-exiting {
   background:
@@ -92,6 +100,12 @@ body.is-mini-exiting {
   z-index: 80;
 }
 
+/* 最终迷你态：窗口本身正好是小卡尺寸（宿主已把窗口裁成圆角），页面满窗铺卡片底色，
+   不再留 10px 主题底色边 —— 否则用户会看到「一张卡 + 一圈灰框」。 */
+.app.is-mini .playerbar-wrap {
+  padding: 0;
+}
+
 /* 播放条本体 —— 用高优先级覆盖普通窗口里「收起胶囊 + hover 展开」的整套规则。 */
 .app.is-mini .playerbar,
 .app.is-mini-entering .playerbar,
@@ -125,18 +139,28 @@ body.is-mini-exiting {
   cursor: grabbing;
 }
 
-/* 静止态铺满窗口（允许用户拉高窗口）；过渡态保持 400×100 小卡，窗口围绕它运动。 */
+/* 静止态铺满窗口（允许用户拉伸小窗）；过渡态保持 400×100 小卡，窗口围绕它运动。
+   满窗 + 无边框 + 卡片底色，配合宿主的圆角裁剪，窗口本身就是一张圆角小卡。 */
 .app.is-mini .playerbar {
-  height: 100%;
-  max-height: none;
+  width: 100% !important;
+  max-width: 100% !important;
+  height: 100% !important;
+  max-height: none !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: var(--panel-solid) !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  padding: 0 14px !important;
+  transition: none !important;
 }
 
 .app.is-mini-entering .playerbar,
 .app.is-mini-exiting .playerbar {
-  width: 400px;
-  max-width: 400px;
-  height: 100px;
-  max-height: 100px;
+  width: 400px !important;
+  max-width: 400px !important;
+  height: 100px !important;
+  max-height: 100px !important;
 }
 
 /* 封面：普通窗口里默认 max-width:0 收起、hover 才展开，这里强制常显。 */
@@ -172,9 +196,12 @@ body.is-mini-exiting {
 .app.is-mini-entering .pb-meta,
 .app.is-mini-exiting .pb-meta,
 .app.is-mini .playerbar:hover .pb-meta,
-.app.is-mini .playerbar:focus-within .pb-meta {
+.app.is-mini .playerbar:focus-within .pb-meta,
+html.is-pb-expanded .app.is-mini .playerbar .pb-meta {
   width: auto !important;
-  flex: 1 1 auto;
+  flex: 1 1 auto !important;
+  max-width: none !important;
+  margin-left: 6px !important;
   min-width: 0;
   overflow: hidden;
 }
