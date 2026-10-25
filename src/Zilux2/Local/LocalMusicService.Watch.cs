@@ -31,6 +31,9 @@ internal sealed partial class LocalMusicService : IDisposable
     private readonly object _selfWriteGate = new();
     private readonly Dictionary<string, long> _recentHostWrites = new(StringComparer.OrdinalIgnoreCase);
     private LocalFolderWatcher? _folderWatcher;
+
+    // 目录监控开关（settings.general.watchLocalFolder）。关闭时 Load() 只扫盘不挂 watcher。
+    private bool _watchEnabled = true;
     private volatile bool _disposed;
     private int _rescanBusy;
     private int _rescanPending;
@@ -78,6 +81,42 @@ internal sealed partial class LocalMusicService : IDisposable
         catch (Exception exception)
         {
             HostLog.Warn($"[local] watch dispose failed: {exception.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 目录监控开关（settings.general.watchLocalFolder）：关闭时立刻停 watcher，打开时按当前曲库
+    /// 目录重新挂上（同一目录幂等）。由 WebViewHost 在 general 段 patch 后从 UI 线程调用。
+    /// </summary>
+    internal void SetWatchEnabled(bool enabled)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        if (_watchEnabled == enabled)
+        {
+            // 值没变时不重复启停；唯一例外是「开着但 watcher 没起来」（上次启动失败），
+            // 这时再试一次，避免设置面板开关失效。
+            if (!enabled || _folderWatcher is not null || _currentFolder.Length == 0)
+            {
+                return;
+            }
+        }
+
+        _watchEnabled = enabled;
+        if (!enabled)
+        {
+            HostLog.Info("[local] watch disabled by settings");
+            StopFolderWatch();
+            return;
+        }
+
+        HostLog.Info("[local] watch enabled by settings");
+        if (_currentFolder.Length > 0)
+        {
+            StartFolderWatch(_currentFolder);
         }
     }
 

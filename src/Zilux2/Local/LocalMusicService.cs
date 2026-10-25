@@ -12,7 +12,10 @@ namespace Zilux2.Local;
 
 /// <summary>
 /// 本地歌曲库：让用户选一个文件夹，递归扫描其中的音频文件，
-/// 并把该文件夹映射成 WebView2 虚拟主机 https://localmusic.local/，页面即可直接用 &lt;audio&gt; 播放。
+/// 页面通过虚拟主机 https://localmusic.local/ 直接用 &lt;audio&gt; 播放。
+/// 注意：虚拟主机只用 WebResourceRequested 响应（OnWebResourceRequested），绝不调用
+/// SetVirtualHostNameToFolderMapping —— 文件夹映射由 WebView2 进程直接解析，页面导航后会优先于
+/// WebResourceRequested，把 /__dl/、/__cover、Range 分段与 DSF/ALAC 转码全部旁路掉（1.1.8 真机 bug）。
 /// </summary>
 internal sealed partial class LocalMusicService
 {
@@ -33,6 +36,9 @@ internal sealed partial class LocalMusicService
     private readonly Func<CoreWebView2?> _core;
     private readonly Action<string> _post;
     private readonly Func<string>? _downloadFolderProvider;
+
+    // 目录监控开关（settings.general.watchLocalFolder）：构造时取初值（_watchEnabled 字段在
+    // Watch.cs 里声明），patch 后由 SetWatchEnabled 即时启停 watcher。
     private string _currentFolder = string.Empty;
     private string _downloadFolder = string.Empty;
     private List<LocalTrackDto> _folderTracks = new();
@@ -46,12 +52,14 @@ internal sealed partial class LocalMusicService
         MainWindow window,
         Func<CoreWebView2?> core,
         Action<string> post,
-        Func<string>? downloadFolderProvider = null)
+        Func<string>? downloadFolderProvider = null,
+        Func<bool>? watchEnabledProvider = null)
     {
         _window = window;
         _core = core;
         _post = post;
         _downloadFolderProvider = downloadFolderProvider;
+        _watchEnabled = watchEnabledProvider?.Invoke() ?? true;
         SmtcArtwork.LocalResolver = TryReadCoverBytes;
     }
 
@@ -103,7 +111,22 @@ internal sealed partial class LocalMusicService
             core.AddWebResourceRequestedFilter($"https://{VirtualHost}/*", CoreWebView2WebResourceContext.All);
             core.WebResourceRequested += OnWebResourceRequested;
             _attachedCore = core;
-            HostLog.Info("[local] resource bridge attached");
+
+            // 防御性清理：旧版本/外部可能在同一个 CoreWebView2 上设置过文件夹映射。映射会让
+            // https://localmusic.local/* 在 WebView2 进程内直接解析、不再触发 WebResourceRequested，
+            // 导致 /__dl/<rel> 被当成 <曲库根>/__dl/<rel> 去找文件（ERR_FILE_NOT_FOUND）。
+            try
+            {
+                core.ClearVirtualHostNameToFolderMapping(VirtualHost);
+                HostLog.Info($"[local] cleared stale virtual host mapping host={VirtualHost}");
+            }
+            catch (Exception exception)
+            {
+                // 没有可清理的映射时不同 WebView2 版本可能抛异常，忽略即可。
+                HostLog.Info($"[local] no virtual host mapping to clear: {exception.Message}");
+            }
+
+            HostLog.Info($"[local] resource bridge attached host={VirtualHost} filter=all core={core.GetHashCode()}");
         }
         catch (Exception exception)
         {
@@ -134,6 +157,8 @@ internal sealed partial class LocalMusicService
         {
             return;
         }
+
+        HostLog.Info($"[local] req {uri.AbsolutePath}");
 
         if (string.Equals(uri.AbsolutePath, "/__cover", StringComparison.OrdinalIgnoreCase))
         {
@@ -436,6 +461,14 @@ internal sealed partial class LocalMusicService
             ".aif" => "audio/aiff",
             ".ape" => "audio/x-ape",
             ".dsf" => "audio/x-dsf",
+            ".lrc" => "text/plain; charset=utf-8",
+            ".json" => "application/json; charset=utf-8",
+            ".jpg" => "image/jpeg",
+            ".jpeg" => "image/jpeg",
+            ".png" => "image/png",
+            ".webp" => "image/webp",
+            ".gif" => "image/gif",
+            ".bmp" => "image/bmp",
             _ => "application/octet-stream",
         };
     }
@@ -760,20 +793,24 @@ internal sealed partial class LocalMusicService
             return;
         }
 
-        try
-        {
-            core.SetVirtualHostNameToFolderMapping(VirtualHost, fullPath, CoreWebView2HostResourceAccessKind.Allow);
-        }
-        catch (Exception exception)
-        {
-            HostLog.Error("[local] virtual host mapping failed", exception);
-            StopFolderWatch();
-            PostError(fullPath, $"无法把文件夹映射给页面：{exception.Message}");
-            return;
-        }
+        // 关键：不要调用 SetVirtualHostNameToFolderMapping。
+        // 文件夹映射由 WebView2 进程直接解析（比 WebResourceRequested 快），但对同一主机设置映射后，
+        // 页面下一次导航/刷新会用映射接管 https://localmusic.local/*，不再触发 OnWebResourceRequested：
+        //  - /__dl/<rel> 会被解析成 <曲库根>/__dl/<rel>（不存在）→ net::ERR_FILE_NOT_FOUND → 媒体格式错误；
+        //  - /__cover、Range 分段、DSF→WAV / ALAC→WAV 转码也都会失效。
+        // 这里所有本地文件统一走 WebResourceRequested（见 OnWebResourceRequested），不依赖任何映射。
+        HostLog.Info($"[local] serve mode=handler root={fullPath} (no virtual host mapping)");
 
         // 先起 watcher 再扫盘：初扫期间的新增/改名会攒成批次，扫完后增量补上。
-        StartFolderWatch(fullPath);
+        // 目录监控被设置关掉时（general.watchLocalFolder=false）只扫一次，不再挂 watcher。
+        if (_watchEnabled)
+        {
+            StartFolderWatch(fullPath);
+        }
+        else
+        {
+            HostLog.Info("[local] watch disabled by settings (general.watchLocalFolder=false)");
+        }
 
         List<LocalTrackDto> tracks;
         var lyrics = new List<string>();
@@ -1138,6 +1175,71 @@ internal sealed partial class LocalMusicService
         MarkHostWrite(path);
         RescanDownloads();
         PostOnUi(PostMergedTracks);
+    }
+
+    /// <summary>
+    /// 标签写入成功后的曲库刷新（UI 线程调用）：下载目录重扫下载列表，曲库目录就地重建该曲目。
+    /// 目录监控开着时 watcher 也会触发一次，但宿主自己写过的事件会被抑制窗口吃掉，所以这里
+    /// 必须显式刷新——设置里关掉监控时页面同样要立刻看到新标签。
+    /// </summary>
+    internal void NotifyTagWritten(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        string fullPath;
+        try
+        {
+            fullPath = Path.GetFullPath(path);
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[tag] refresh skipped: {exception.Message}");
+            return;
+        }
+
+        MarkHostWrite(fullPath);
+
+        EnsureDownloadFolder();
+        if (_downloadFolder.Length > 0
+            && fullPath.StartsWith(_downloadFolder + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        {
+            RescanDownloads();
+            PostOnUi(PostMergedTracks);
+            return;
+        }
+
+        if (_currentFolder.Length == 0
+            || !fullPath.StartsWith(_currentFolder + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        {
+            // 文件不在曲库/下载目录里（例如页面用绝对路径之外的副本），没有可刷新的列表项。
+            return;
+        }
+
+        var relative = Path.GetRelativePath(_currentFolder, fullPath).Replace('\\', '/');
+        var track = TryBuildTrack(fullPath, relative);
+        var upserts = new List<LocalTrackDto>();
+        var removals = new List<string>();
+        if (track is null)
+        {
+            removals.Add(relative);
+        }
+        else
+        {
+            upserts.Add(track);
+        }
+
+        ApplyWatchChanges(
+            _currentFolder,
+            removals,
+            upserts,
+            new List<string>(),
+            new List<string>(),
+            new List<string>(),
+            0);
+        HostLog.Info($"[tag] refreshed track {relative}");
     }
 
     /// <summary>打开下载目录（设置页「打开」按钮）。</summary>

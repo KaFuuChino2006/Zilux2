@@ -10,18 +10,23 @@
 
 import { onMediaControl, reportMedia, type MediaControl } from '../core/bridge';
 import { fetchStreamInfo, onlineInfo, qualityForSource, streamUrl, checkLiked, addLikedTrack, removeLikedTrack, recordRecent } from '../online/client';
-import { analyzeTrack } from '../online/analysis';
+import { analyzeTrack, type AnalysisResult } from '../online/analysis';
 import type { OnlineTrack } from '../online/types';
 import { getSettings } from '../core/settings';
 import { attachAudioTap, audioTapGraphActive, deckGraphConnected, ensureEqualizerGraph, setAudioTapVolume, setEqualizer, setVocalFade } from '../core/audioTap';
 import {
   cancelCrossfade,
+  crossfadeApplyPlaybackRate,
   crossfadeApplyVolume,
   crossfadeFinishNow,
   crossfadeIsFading,
   crossfadeTick,
+  MANUAL_FADE_DEFAULT_MS,
   prepareCrossfade,
+  prepareLoopCrossfade,
   readCrossfadeSettings,
+  setPrefetchDebug,
+  startManualCrossfade,
 } from './crossfadeDeck';
 import { fetchVocalStartMs } from './vocalStart';
 
@@ -33,6 +38,68 @@ const MODE_KEY = 'zilux2.playMode';
 let srcPort = 0;
 /** 恢复上次播放时暂存的进度（等用户点播放、拿到新地址后再 seek）。 */
 let pendingResumeMs = 0;
+
+/* ------------------------------------------------------------------ */
+/* 播放倍速（Phase 2 D：0.5–2.0，默认 1 = 与旧行为完全一致）            */
+/* ------------------------------------------------------------------ */
+
+const RATE_KEY = 'zilux2.playbackRate';
+const RATE_MIN = 0.5;
+const RATE_MAX = 2;
+
+function clampRate(rate: number): number {
+  const clamped = Math.max(RATE_MIN, Math.min(RATE_MAX, rate));
+  return Math.round(clamped * 100) / 100;
+}
+
+function readUserRate(): number {
+  try {
+    const raw = localStorage.getItem(RATE_KEY);
+    if (raw !== null) {
+      const parsed = Number(raw);
+      if (Number.isFinite(parsed)) return clampRate(parsed);
+    }
+  } catch {
+    /* 忽略：localStorage 不可用 */
+  }
+  return 1;
+}
+
+let userRate = readUserRate();
+
+/** 给 deck 设置用户倍速（preservesPitch = 变速不变调；越界夹到 0.5–2.0）。 */
+function applyDeckRate(element: HTMLAudioElement, rate = userRate): void {
+  try {
+    element.preservesPitch = true;
+    (element as HTMLAudioElement & { webkitPreservesPitch?: boolean }).webkitPreservesPitch = true;
+    element.playbackRate = clampRate(rate);
+  } catch {
+    /* 忽略 */
+  }
+}
+
+/**
+ * 设置播放倍速（0.5–2.0，越界夹取；非数字忽略），返回实际生效值。
+ * 与无缝衔接的 WSOLA tempoRate 相乘组合：过渡期间 B 的速度由引擎接管，结束后恢复用户倍速。
+ */
+export function setPlaybackSpeed(rate: number): number {
+  if (!Number.isFinite(rate)) return userRate;
+  userRate = clampRate(rate);
+  try {
+    localStorage.setItem(RATE_KEY, String(userRate));
+  } catch {
+    /* 忽略 */
+  }
+  applyDeckRate(audio);
+  applyDeckRate(standby);
+  // 过渡计划存在时把新倍速同步进引擎（B = 用户倍速 × tempoRate）。
+  crossfadeApplyPlaybackRate();
+  return userRate;
+}
+
+export function getPlaybackSpeed(): number {
+  return userRate;
+}
 
 function readMode(): PlayMode {
   try {
@@ -230,6 +297,9 @@ let state: PlayerState = {
 
 attachAudioTap(audio);
 setAudioTapVolume(state.volume);
+// 恢复用户上次的播放倍速（默认 1.0，行为与旧版一致）。
+applyDeckRate(deckA);
+applyDeckRate(deckB);
 
 /** CUE 分轨：整轨开始秒数 */
 let startAt = 0;
@@ -481,15 +551,17 @@ function applyCue(track: OnlineTrack | null): void {
 function onEnded(element: HTMLAudioElement): void {
   // 只有活跃 deck 的 ended 有意义：B 在淡化中被忽略（预加载失败等场景也不切歌）。
   if (element !== audio) return;
-  // 淡化进行中 A 先放完：直接收尾到 B，不要再 load 一次。
+  // 过渡进行中 A 先放完：直接收尾到 B，不要再 load 一次（自动/手动/单曲循环过渡同理）。
   if (crossfadeFinishNow('ended')) return;
+  // 自然播完：用准备阶段就选好的下一首（shuffle 的随机结果在切换时不再重算）。
+  const planned = takePlannedNextIndex();
   cancelSeamless('ended');
   if (state.mode === 'single') {
     seek(0);
     void audio.play().catch(() => undefined);
     return;
   }
-  advance();
+  advance(planned);
 }
 
 function onError(element: HTMLAudioElement): void {
@@ -531,13 +603,9 @@ function load(index: number, autoplay = true): void {
   }
   // 任何显式切歌都放弃上一首的无缝衔接计划（B 的预加载一并清掉）。
   cancelSeamless('load');
-  // 过渡期的 WSOLA 变速不跨曲残留：新的一首始终从原速开始。
-  try {
-    audio.playbackRate = 1;
-    audio.preservesPitch = true;
-  } catch {
-    /* 忽略 */
-  }
+  // 过渡期的 WSOLA 变速不跨曲残留：新的一首从用户倍速开始（默认 1 = 原速）。
+  applyDeckRate(audio);
+  applyDeckRate(standby);
   applyCue(track);
   setState({
     track,
@@ -684,8 +752,10 @@ export function playAt(index: number, tracks?: OnlineTrack[]): void {
     playQueue(tracks, index, true);
     return;
   }
+  if (state.queue.length === 0) return;
   const safe = Math.max(0, Math.min(index, state.queue.length - 1));
-  load(safe, true);
+  // 点列表换曲：播放中走 1.2–2.0 秒短过渡，暂停中/无法过渡时回退硬切。
+  manualSwitch(safe);
 }
 
 /** 懒加载音频地址：恢复出来的歌第一次播放时才拼 URL，并顺带校验宿主端口是否变了。 */
@@ -820,27 +890,121 @@ function pausePlayback(): void {
   }
 }
 
-function advance(): void {
-  if (state.queue.length === 0) return;
-  if (state.mode === 'shuffle' && state.queue.length > 1) {
-    let index = state.index;
-    while (index === state.index) index = Math.floor(Math.random() * state.queue.length);
+/** 取「预选的下一首」下标：准备无缝衔接时已定好（shuffle 随机在那一刻选定），切歌时不再重算。 */
+function takePlannedNextIndex(): number | null {
+  const planned = plannedNextIndex;
+  plannedNextIndex = null;
+  plannedFor = '';
+  if (planned === null || planned < 0 || planned >= state.queue.length) return null;
+  if (planned === state.index) return null;
+  return planned;
+}
+
+/** 随机挑一首「不是当前曲」的下标；队列只有一首时返回当前下标。 */
+function randomOtherIndex(): number {
+  const queue = state.queue;
+  if (queue.length < 2) return state.index;
+  let index = state.index;
+  while (index === state.index) index = Math.floor(Math.random() * queue.length);
+  return index;
+}
+
+/** 硬切（非过渡）时的下一首：shuffle = 随机，其余模式顺延。 */
+function resolvePlainNextIndex(): number {
+  const queue = state.queue;
+  if (queue.length === 0) return state.index;
+  if (state.mode === 'shuffle') return randomOtherIndex();
+  const index = state.index + 1;
+  return index >= queue.length ? 0 : index;
+}
+
+/** 播放中手动切歌的连续点击防抖窗口（同一目标 450ms 内只处理一次）。 */
+let manualGuard = { key: '', at: 0 };
+const MANUAL_SWITCH_DEBOUNCE_MS = 450;
+
+/**
+ * 手动切歌：播放中且无缝衔接开启时，用双 deck 做 1.2–2.0 秒等功率短过渡
+ * （B 从这首开头起播，不等节拍分析、不做 BPM 对齐）；否则回退原来的硬切 load。
+ * 连续快速点击时：旧计划的 token 立即失效，只保留最后一次切换。
+ */
+function manualSwitch(index: number): void {
+  if (index < 0 || index >= state.queue.length) return;
+  const target = state.queue[index];
+  if (!target) return;
+  const now = performance.now();
+  const guardKey = `${target.source}:${target.id}:${index}`;
+  if (guardKey === manualGuard.key && now - manualGuard.at < MANUAL_SWITCH_DEBOUNCE_MS) return;
+  manualGuard = { key: guardKey, at: now };
+
+  if (!state.track || !state.playing || audio.paused) {
     load(index, true);
     return;
   }
-  const index = state.index + 1;
-  load(index >= state.queue.length ? 0 : index, true);
+  if (!readCrossfadeSettings().enabled) {
+    load(index, true);
+    return;
+  }
+  let nextUrl = '';
+  try {
+    nextUrl = streamUrl(target);
+  } catch (err) {
+    console.warn('[player] manual switch streamUrl failed', err);
+    load(index, true);
+    return;
+  }
+  const fromTrack = state.track;
+  const fromDeck = audio;
+  const nextDeck = standby;
+  // 旧计划/预取先作废（之后所有异步回调看到 token 变化就放弃）。
+  cancelSeamless('manual');
+  const token = seamlessToken;
+  srcPort = onlineInfo()?.port ?? 0;
+  const started = startManualCrossfade({
+    active: fromDeck,
+    standby: nextDeck,
+    fromTitle: fromTrack.title,
+    nextTitle: target.title,
+    nextStartFileMs: Math.max(0, Number(target.startAt ?? 0)) * 1000,
+    currentPositionMs: positionMs(),
+    fadeMs: MANUAL_FADE_DEFAULT_MS,
+    nextUrl,
+    baseVolume: () => state.volume,
+    baseRate: () => userRate,
+    isValid: () =>
+      token === seamlessToken &&
+      state.playing &&
+      audio === fromDeck &&
+      state.track === fromTrack &&
+      readCrossfadeSettings().enabled,
+    onFinish: () => commitSeamless(fromDeck, nextDeck, target, index),
+    onFail: (reason) => {
+      if (token !== seamlessToken) return;
+      console.debug('[player] manual crossfade failed，回退硬切', reason);
+      if (state.queue[index] === target) load(index, true);
+    },
+  });
+  if (!started) {
+    if (token === seamlessToken) load(index, true);
+    return;
+  }
+  transitionTarget = target;
+  console.debug(`[player] manual crossfade → ${target.title}（${MANUAL_FADE_DEFAULT_MS} ms）`);
 }
 
-/** 下一首（单曲循环时也跳下一首）。 */
+function advance(plannedIndex: number | null = null): void {
+  if (state.queue.length === 0) return;
+  const index = plannedIndex ?? resolvePlainNextIndex();
+  load(index, true);
+}
+
+/** 下一首（单曲循环时也跳下一首）：播放中走交叉淡化。 */
 export function next(): void {
   if (state.queue.length === 0) return;
   if (state.mode === 'single' && state.queue.length > 1) {
-    const index = state.index + 1;
-    load(index >= state.queue.length ? 0 : index, true);
+    manualSwitch((state.index + 1) % state.queue.length);
     return;
   }
-  advance();
+  manualSwitch(takePlannedNextIndex() ?? resolvePlainNextIndex());
 }
 
 /** 切换播放模式（列表 → 单曲循环 → 随机 → 列表）。 */
@@ -852,7 +1016,8 @@ export function cycleMode(): PlayMode {
   } catch {
     /* 忽略 */
   }
-  // 无缝衔接只在列表循环下成立：切模式先放弃旧计划，再按新模式决定是否重新准备。
+  // 模式变了：旧计划与预分析目标都作废，再按新模式重建（list/shuffle 自然播完可衔接，
+  // single 在曲尾做同曲淡出→淡入重启）。
   cancelSeamless('mode');
   setState({ mode: nextMode });
   prepareSeamlessNext();
@@ -866,13 +1031,11 @@ export function prev(): void {
     return;
   }
   if (state.mode === 'shuffle' && state.queue.length > 1) {
-    let index = state.index;
-    while (index === state.index) index = Math.floor(Math.random() * state.queue.length);
-    load(index, true);
+    manualSwitch(randomOtherIndex());
     return;
   }
   const index = state.index - 1;
-  load(index < 0 ? state.queue.length - 1 : index, true);
+  manualSwitch(index < 0 ? state.queue.length - 1 : index);
 }
 
 export function seek(ms: number): void {
@@ -924,6 +1087,113 @@ export function stop(): void {
 /** 作废进行中的异步准备（分析回来的闭包看到 token != 当前值就放弃）。 */
 let seamlessToken = 0;
 
+/** 预选的下一首下标：进入准备阶段时定好（shuffle 的随机在这一刻选出），切换时不再重算。 */
+let plannedNextIndex: number | null = null;
+/** plannedNextIndex 属于哪首当前曲目（曲目换了就失效）。 */
+let plannedFor = '';
+/** 正在过渡（自动/手动/单曲循环）的目标曲目：预告条 UI 用它显示正确的「即将播放」。 */
+let transitionTarget: OnlineTrack | null = null;
+
+/** 分析结果缓存：同一首重复准备（seek / 暂停恢复 / 切模式）不再请求宿主分析器。 */
+const analysisCache = new Map<string, Promise<AnalysisResult>>();
+const ANALYSIS_CACHE_LIMIT = 8;
+
+type PrefetchState = 'idle' | 'pending' | 'ready' | 'failed';
+interface PrefetchRecord {
+  key: string;
+  title: string;
+  state: PrefetchState;
+}
+let prefetch: PrefetchRecord = { key: '', title: '', state: 'idle' };
+let prefetchToken = 0;
+
+function trackKeyOf(track: OnlineTrack): string {
+  return `${track.source}:${track.id}:${track.durationMs ?? 0}`;
+}
+
+/** 取分析结果：内存缓存命中直接复用；失败从缓存删掉以便重试。 */
+function analysisFor(track: OnlineTrack): Promise<AnalysisResult> {
+  const key = trackKeyOf(track);
+  const cached = analysisCache.get(key);
+  if (cached) return cached;
+  const promise = analyzeTrack(track).catch((err: unknown) => {
+    analysisCache.delete(key);
+    throw err;
+  });
+  analysisCache.set(key, promise);
+  if (analysisCache.size > ANALYSIS_CACHE_LIMIT) {
+    const oldest = analysisCache.keys().next().value;
+    if (typeof oldest === 'string') analysisCache.delete(oldest);
+  }
+  return promise;
+}
+
+function setPrefetch(patch: Partial<PrefetchRecord>): void {
+  prefetch = { ...prefetch, ...patch };
+  setPrefetchDebug({
+    nextAnalysisReady: prefetch.state === 'ready',
+    prefetchState: prefetch.state,
+    prefetchTitle: prefetch.title,
+  });
+}
+
+/** 后台预分析「队列里接下来会播的那首」（模式感知 + 缓存复用，不重复请求宿主）。 */
+function prefetchNextAnalysis(track: OnlineTrack | null): void {
+  prefetchToken += 1;
+  const token = prefetchToken;
+  if (!track) {
+    setPrefetch({ key: '', title: '', state: 'idle' });
+    return;
+  }
+  const key = trackKeyOf(track);
+  if (analysisCache.has(key)) {
+    setPrefetch({ key, title: track.title, state: 'ready' });
+    console.debug(`[player] prefetch hit：${track.title}（分析结果已在缓存，切歌无需等待）`);
+    return;
+  }
+  setPrefetch({ key, title: track.title, state: 'pending' });
+  console.debug(`[player] prefetch start：${track.title}`);
+  analysisFor(track).then(
+    () => {
+      if (token !== prefetchToken || prefetch.key !== key) return;
+      setPrefetch({ state: 'ready' });
+      console.debug(`[player] prefetch ready：${track.title}`);
+    },
+    (err: unknown) => {
+      if (token !== prefetchToken || prefetch.key !== key) return;
+      setPrefetch({ state: 'failed' });
+      console.debug('[player] prefetch failed', track.title, err instanceof Error ? err.message : err);
+    },
+  );
+}
+
+/** 预选下一首（模式感知）：list = 顺延、shuffle = 随机且本次固定、single = 无（同曲重启）。 */
+function planUpcoming(): { index: number; track: OnlineTrack } | null {
+  const queue = state.queue;
+  const current = state.track;
+  if (!current || queue.length === 0) return null;
+  if (state.mode === 'single') return null;
+  const currentKey = trackKeyOf(current);
+  if (plannedNextIndex !== null && plannedFor === currentKey) {
+    const planned = queue[plannedNextIndex];
+    if (planned && plannedNextIndex !== state.index) return { index: plannedNextIndex, track: planned };
+    plannedNextIndex = null;
+    plannedFor = '';
+  }
+  if (queue.length < 2) return null;
+  const index = state.mode === 'shuffle' ? randomOtherIndex() : (state.index + 1) % queue.length;
+  const track = queue[index];
+  if (!track || index === state.index) return null;
+  plannedNextIndex = index;
+  plannedFor = currentKey;
+  return { index, track };
+}
+
+/** 正在过渡的目标曲目（预告条 UI 用；没有过渡时为 null）。 */
+export function getTransitionTarget(): OnlineTrack | null {
+  return transitionTarget;
+}
+
 function clearStandbyDeck(): void {
   try {
     standby.pause();
@@ -935,19 +1205,74 @@ function clearStandbyDeck(): void {
 }
 
 /**
- * 取消无缝衔接：作废异步准备、中止引擎里的计划/淡化（引擎会恢复 A 的音量），
+ * 取消无缝衔接：作废异步准备与预取、中止引擎里的计划/淡化（引擎会恢复 A 的音量），
  * 并清掉 B 的预加载。任何显式切歌/暂停/seek/停止/改队列/关开关都走这里。
  */
 function cancelSeamless(reason: string): void {
   seamlessToken += 1;
+  plannedNextIndex = null;
+  plannedFor = '';
+  prefetchToken += 1;
+  transitionTarget = null;
+  // 预分析目标跟着计划一起作废（队列/模式/seek/暂停都会走到这里）。
+  setPrefetch({ key: '', title: '', state: 'idle' });
   cancelCrossfade(reason);
   clearStandbyDeck();
 }
 
 /**
+ * 单曲循环的无缝重启：曲尾前约 1.5 秒淡出，同时同曲从该段开头淡入（B 从头播）。
+ * 不需要节拍分析/歌词，只要流地址可解析、当前段时长足够。
+ */
+function planSingleLoop(current: OnlineTrack, token: number): void {
+  setPrefetch({ key: '', title: current.title, state: 'idle' });
+  const activeDeck = audio;
+  const activeStandby = standby;
+  const loopIndex = state.index;
+  const total = durationMs();
+  const fadeMs = MANUAL_FADE_DEFAULT_MS;
+  if (!(total > fadeMs + 500)) return;
+  let nextUrl = '';
+  try {
+    nextUrl = streamUrl(current);
+  } catch (err) {
+    console.warn('[player] loop crossfade streamUrl failed', err);
+    return;
+  }
+  const ok = prepareLoopCrossfade({
+    active: activeDeck,
+    standby: activeStandby,
+    fromTitle: current.title,
+    nextTitle: current.title,
+    nextStartFileMs: Math.max(0, startAt) * 1000,
+    currentPositionMs: positionMs(),
+    fadeMs,
+    triggerPosMs: Math.max(0, total - fadeMs),
+    nextUrl,
+    baseVolume: () => state.volume,
+    baseRate: () => userRate,
+    isValid: () =>
+      token === seamlessToken &&
+      state.playing &&
+      audio === activeDeck &&
+      state.track === current &&
+      state.mode === 'single' &&
+      readCrossfadeSettings().enabled,
+    onFinish: () => commitSeamless(activeDeck, activeStandby, current, loopIndex),
+    onFail: (reason) => {
+      if (token !== seamlessToken) return;
+      console.debug('[player] loop crossfade failed，曲尾回退硬重启', reason);
+    },
+  });
+  if (ok) transitionTarget = current;
+  else console.debug('[player] loop crossfade 准备跳过（回退 ended 硬重启）');
+}
+
+/**
  * 异步准备下一首：先分析 A（已知）与 B，再让引擎排淡化时间表并预加载 B。
- * 分析失败（AnalysisError）、单曲循环/随机、队列只有一首时静默放弃，行为回退为原来的硬切
- * （ended → load 下一首）。Web Audio 图已建立时改走图内增益淡化（引擎会把两个 deck 接图）。
+ * 模式感知：list = 顺延下一首、shuffle = 已选好的随机下一首、single = 曲尾同曲重启；
+ * 队列只有一首 / 开关关闭 / 分析失败时静默放弃，回退为原来的硬切。
+ * Web Audio 图已建立时改走图内增益淡化（引擎会把两个 deck 接图）。
  */
 function prepareSeamlessNext(): void {
   seamlessToken += 1;
@@ -955,18 +1280,41 @@ function prepareSeamlessNext(): void {
   // 上一份计划作废（引擎内部会恢复 A 音量、暂停 B）。
   cancelCrossfade('replace');
   clearStandbyDeck();
+  // 预分析状态跟着重排（同一首重排会命中缓存，不重复请求宿主）。
+  prefetchToken += 1;
+  transitionTarget = null;
 
-  if (!state.playing) return;
-  const settings = readCrossfadeSettings();
-  if (!settings.enabled) return;
-  if (state.mode !== 'list') return;
-  const queue = state.queue;
-  if (queue.length < 2) return;
+  const idlePrefetch = (): void => setPrefetch({ key: '', title: '', state: 'idle' });
+  if (!state.playing) {
+    idlePrefetch();
+    return;
+  }
+  if (!readCrossfadeSettings().enabled) {
+    idlePrefetch();
+    return;
+  }
   const current = state.track;
-  if (!current) return;
-  const nextIndex = state.index + 1 >= queue.length ? 0 : state.index + 1;
-  const nextTrack = queue[nextIndex];
-  if (!nextTrack || nextIndex === state.index) return;
+  if (!current) {
+    idlePrefetch();
+    return;
+  }
+  // 单曲循环：曲尾同曲淡出 → 同曲从该段开头淡入重启（B 从头播，不等节拍分析）。
+  if (state.mode === 'single') {
+    planSingleLoop(current, token);
+    return;
+  }
+  const queue = state.queue;
+  if (queue.length < 2) {
+    idlePrefetch();
+    return;
+  }
+  const upcoming = planUpcoming();
+  if (!upcoming) {
+    idlePrefetch();
+    return;
+  }
+  const nextTrack = upcoming.track;
+  const nextIndex = upcoming.index;
 
   // 捕获准备时的 deck 引用：过程中若发生过 deck 交换则这次准备作废。
   const activeDeck = audio;
@@ -974,8 +1322,17 @@ function prepareSeamlessNext(): void {
   const currentStartAt = startAt;
   const currentDurationMs = durationMs();
   const currentPositionMs = positionMs();
+  // 预分析「接下来会播的那首」：命中缓存时切歌瞬间无需等待宿主分析。
+  const currentCacheHit = analysisCache.has(trackKeyOf(current));
+  const nextCacheHit = analysisCache.has(trackKeyOf(nextTrack));
+  console.debug(
+    `[player] seamless prepare ${currentCacheHit || nextCacheHit ? 'prefetch-hit' : 'prefetch-miss'}：` +
+      `${current.title}${currentCacheHit ? '(缓存)' : ''} → ${nextTrack.title}${nextCacheHit ? '(已预分析)' : ''}`,
+  );
+  setPrefetchDebug({ prefetchHit: nextCacheHit });
+  prefetchNextAnalysis(nextTrack);
 
-  Promise.all([analyzeTrack(current), analyzeTrack(nextTrack)])
+  Promise.all([analysisFor(current), analysisFor(nextTrack)])
     .then(async ([currentResult, nextResult]) => {
       if (token !== seamlessToken) return;
       if (!state.playing || audio !== activeDeck || state.track !== current) return;
@@ -1005,6 +1362,7 @@ function prepareSeamlessNext(): void {
         nextVocalStartMs,
         nextUrl,
         baseVolume: () => state.volume,
+        baseRate: () => userRate,
         isValid: () =>
           token === seamlessToken &&
           state.playing &&
@@ -1013,7 +1371,11 @@ function prepareSeamlessNext(): void {
           readCrossfadeSettings().enabled,
         onFinish: () => commitSeamless(activeDeck, standbyDeck, nextTrack, nextIndex),
       });
-      if (!prepared) console.warn('[player] seamless prepare skipped（回退硬切）');
+      if (prepared) {
+        transitionTarget = nextTrack;
+      } else {
+        console.warn('[player] seamless prepare skipped（回退硬切）');
+      }
     })
     .catch((err: unknown) => {
       // 分析失败是常态（不支持 / 宿主返回错误）：静默回退，不影响正常播放。
@@ -1040,6 +1402,12 @@ function commitSeamless(
   seamlessToken += 1;
   audio = nextDeck;
   standby = previousDeck;
+  // 过渡结束：新 deck 回到用户倍速（引擎已把 WSOLA tempoRate 平滑拉回），旧预选/过渡目标作废。
+  applyDeckRate(audio, userRate);
+  applyDeckRate(standby, userRate);
+  plannedNextIndex = null;
+  plannedFor = '';
+  transitionTarget = null;
   // 图内模式时 B 已在 deckMix 里（gain=1），切换后继续走图；只有元素模式的硬切需要标记
   // 「当前 deck 不在图里」以便 applyPlaybackVolume 走元素音量。
   activeDeckOutsideGraph = audioTapGraphActive() && !deckGraphConnected(audio);

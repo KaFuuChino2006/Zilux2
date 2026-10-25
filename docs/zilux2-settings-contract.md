@@ -1,6 +1,6 @@
 # Zilux2 设置契约（Settings v1）
 
-> 状态：v1 冻结 · 2026-10-18
+> 状态：v1 冻结 · 2026-10-18（v1.2 ~ v1.4 为增量协议，最近更新 2026-10-25）
 > 关联：`docs/zilux2-host-contract.md`（消息通道）、`docs/zilux2-online-music.md`（在线服务）
 > 本文档是在宿主契约 v1 之上的**增量协议**，不修改既有消息语义。
 
@@ -24,7 +24,9 @@
   "version": 1,
   "general": {
     "splash": true,
-    "startMaximized": false
+    "startMaximized": false,
+    "autoLaunch": false,
+    "watchLocalFolder": true
   },
   "appearance": {
     "theme": "dark",
@@ -70,6 +72,8 @@
 | --- | --- | --- | --- | --- |
 | `general.splash` | bool | `true` | — | 启动动画（关闭则直接进首页） |
 | `general.startMaximized` | bool | `false` | — | 宿主下次启动时最大化窗口 |
+| `general.autoLaunch` | bool | `false` | — | 开机自启：宿主写/删 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 下的 `Zilux2` 值（命令为当前 exe 全路径加引号）；设置变更即时生效（v1.4 新增） |
+| `general.watchLocalFolder` | bool | `true` | — | 本地曲库目录监控开关；`false` 时宿停止 `FileSystemWatcher`（新增/删除/改名不再自动刷新，手动「重新扫描」仍可用），改回 `true` 立即恢复监控（v1.4 新增） |
 | `appearance.theme` | enum | `"dark"`（旧值） | 前端固定按 `frost`（白色磨砂）呈现；`dark` / `midnight` 仅为历史值兼容 | 主题（v1.1 起仅白色磨砂，不再暴露选择项） |
 | `appearance.reduceMotion` | bool | `false` | — | 减少动效（关闭入场/过渡/粒子与 3D 自动旋转） |
 | `appearance.glow` | bool | `true` | — | 背景氛围光晕 |
@@ -112,6 +116,9 @@
 
 > v1.3 变更（2026-10-25）：新增 `shortcuts` 段（全局快捷键）。与其余设置不同，该段**由宿主解析并注册**
 > （见 §5），页面只负责编辑字符串；旧版 setting.json 缺该段时按默认值补齐，不影响兼容。
+
+> v1.4 变更（2026-10-25）：`general` 段新增 `autoLaunch`（开机自启）与 `watchLocalFolder`（本地目录监控）。
+> 两者都由宿主解释并即时应用（见 §5），页面只需读写设置值；旧版 setting.json 缺这两个键时按默认值补齐。
 
 未知键：忽略并保留写回（宿主不主动删除不能识别的键，以兼容未来版本）。
 
@@ -180,6 +187,12 @@
 ## 5. 宿主应用规则
 
 - `general.startMaximized`：宿主在**下一次**创建主窗口后应用（`WindowState=Maximized` 或等价 `ShowWindow`），并回推 `windowState`。
+- `general.autoLaunch`（v1.4）：宿主启动时按当前值幂等 apply 一次；`patch`/`reset` 命中 `general` 段后立即重新 apply。
+  - 实现：`HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 下值名 `Zilux2`，数据为 `"<当前 exe 全路径>"`（带引号）；
+    `true`=写入/覆盖，`false`=删除该值；重复 apply 不产生重复项；日志 `[autolaunch] registered|unregistered|apply failed`。
+  - 失败不阻断启动（例如注册表被策略限制），页面仍以快照里的值为准。
+- `general.watchLocalFolder`（v1.4）：`false` 时宿主停止本地曲库目录监控（先 `StopFolderWatch`），`true` 时按当前曲库目录重新开始；
+  切换即时生效，不需要重启；手动扫描/刷新不受影响。日志 `[local] watch disabled by settings` / `watch enabled by settings`。
 - `shortcuts` 段：由宿主解析并注册全局热键（唯一由宿主解释的业务设置，v1.3 新增）：
   - `enabled=false` → 注销全部热键；某条为 `""` → 只关闭该条；
   - 组合键语法见 §2；用户改过的组合只注册配置值；
@@ -192,7 +205,7 @@
 
 ## 6. 非目标（本版不做）
 
-- 账号 / 云同步、i18n、开机自启、代理配置 UI、窗口尺寸记忆（仅 `startMaximized`）。
+- 账号 / 云同步、i18n、代理配置 UI、窗口尺寸记忆（仅 `startMaximized`）。
 - 主题包 / 自定义配色（v1.1 起界面固定白色磨砂，无主题选择）。
 - 快捷键的多套方案/按场景切换（v1.3 只做一组全局快捷键）。
 
@@ -209,6 +222,13 @@
 7. 设置消息不影响既有 `ready` / `windowState` / 在线服务流程。
 8. `shortcuts`：`patch` 后宿主重新注册热键并回推 `shortcuts` 状态事件；`enabled=false` 后热键全部失效；
    非法组合保留上一次可用注册且状态 `fallback=true`；`reset` 后恢复默认热键（默认值可回落候选链）。
+9. `general.autoLaunch`（v1.4）：`patch {general:{autoLaunch:true}}` 后注册表出现 `Run\Zilux2` 且值为带引号的 exe 全路径；
+   置 `false` 后该值被删除；重复 patch 不报错。启动宿主时按设置幂等 apply。
+10. `general.watchLocalFolder`（v1.4）：`patch {general:{watchLocalFolder:false}}` 后日志出现 `watch disabled by settings`，
+    在曲库目录新增音频文件不再自动出现在列表（手动 rescan 仍可）；置回 `true` 后日志出现 `watch enabled by settings`，
+    新增文件重新自动刷新。
+
+> 第 9、10 条为 v1.4 手工验证项（`tools/settings-selftest.ps1` 本轮仍只覆盖第 1–8 条，未扩展脚本）。
 
 前端侧（手工/截图验收）：
 

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -28,7 +29,7 @@ internal sealed class DownloadJob
     /// <summary>实际请求的音质（standard/high/lossless，平台不支持时会自动降级）。</summary>
     [JsonPropertyName("quality")] public string Quality { get; set; } = "high";
 
-    /// <summary>running / done / error</summary>
+    /// <summary>running / paused / done / error</summary>
     [JsonPropertyName("state")] public string State { get; set; } = "running";
 
     [JsonPropertyName("received")] public long Received { get; set; }
@@ -92,6 +93,7 @@ internal sealed class DownloadService : IDisposable
     private readonly Action<string>? _fileReady;
     private readonly CancellationTokenSource _shutdown = new();
     private readonly ConcurrentDictionary<string, DownloadJob> _jobs = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, DownloadControl> _controls = new(StringComparer.Ordinal);
     private int _disposed;
 
     public DownloadService(
@@ -146,9 +148,129 @@ internal sealed class DownloadService : IDisposable
             Quality = resolvedQuality,
         };
         _jobs[job.Id] = job;
-        _ = Task.Run(() => RunAsync(provider, trackId, job, resolvedQuality));
+        var control = new DownloadControl();
+        _controls[job.Id] = control;
+        _ = Task.Run(() => RunAsync(provider, trackId, job, resolvedQuality, control));
         TrimOldJobs();
         return job;
+    }
+
+    /// <summary>暂停一个进行中的任务：保留 received/total，state 变为 paused（幂等）。</summary>
+    public bool Pause(string jobId)
+    {
+        if (!TryGetJob(jobId, out var job, out var control))
+        {
+            return false;
+        }
+
+        if (!control.Pause())
+        {
+            return string.Equals(job.State, "paused", StringComparison.Ordinal);
+        }
+
+        job.State = "paused";
+        OnlineHttp.Info($"[download] paused {job.Source}:{job.TrackId} ({job.Received}/{job.Total}B)");
+        return true;
+    }
+
+    /// <summary>继续一个已暂停的任务（幂等：running 状态下调用也返回 true）。</summary>
+    public bool Resume(string jobId)
+    {
+        if (!TryGetJob(jobId, out var job, out var control))
+        {
+            return false;
+        }
+
+        if (!control.Resume())
+        {
+            return string.Equals(job.State, "running", StringComparison.Ordinal);
+        }
+
+        if (string.Equals(job.State, "paused", StringComparison.Ordinal))
+        {
+            job.State = "running";
+        }
+
+        OnlineHttp.Info($"[download] resumed {job.Source}:{job.TrackId}");
+        return true;
+    }
+
+    /// <summary>取消一个进行中/已暂停的任务：保留列表项并标记 error「已取消」，不删磁盘文件。</summary>
+    public bool Cancel(string jobId)
+    {
+        if (!TryGetJob(jobId, out var job, out var control))
+        {
+            return false;
+        }
+
+        if (job.State is not ("running" or "paused"))
+        {
+            return false;
+        }
+
+        control.Cancel();
+        job.State = "error";
+        job.Error = "已取消";
+        OnlineHttp.Info($"[download] canceled {job.Source}:{job.TrackId}");
+        return true;
+    }
+
+    /// <summary>
+    /// 清空队列里已完成/失败的任务（只从内存列表移除，绝不删除磁盘文件），返回移除条数。
+    /// 进行中/已暂停的任务不受影响。
+    /// </summary>
+    public int ClearFinished()
+    {
+        var cleared = 0;
+        foreach (var pair in _jobs)
+        {
+            if (pair.Value.State is not ("done" or "error"))
+            {
+                continue;
+            }
+
+            if (!_jobs.TryRemove(pair.Key, out _))
+            {
+                continue;
+            }
+
+            if (_controls.TryRemove(pair.Key, out var control))
+            {
+                control.MarkCompleted();
+                control.Dispose();
+            }
+
+            cleared += 1;
+        }
+
+        if (cleared > 0)
+        {
+            OnlineHttp.Info($"[download] cleared {cleared} finished jobs");
+        }
+
+        return cleared;
+    }
+
+    private bool TryGetJob(
+        string? jobId,
+        [NotNullWhen(true)] out DownloadJob? job,
+        [NotNullWhen(true)] out DownloadControl? control)
+    {
+        job = null;
+        control = null;
+        if (string.IsNullOrWhiteSpace(jobId) || !_jobs.TryGetValue(jobId, out var found))
+        {
+            return false;
+        }
+
+        if (!_controls.TryGetValue(jobId, out var foundControl))
+        {
+            return false;
+        }
+
+        job = found;
+        control = foundControl;
+        return true;
     }
 
     private static string NormalizeQuality(string? quality)
@@ -206,15 +328,35 @@ internal sealed class DownloadService : IDisposable
             // 已经释放过。
         }
 
+        // 取消所有任务（包括暂停中的：它们挂在 TaskCompletionSource 上，必须靠 token 唤醒）。
+        foreach (var control in _controls.Values)
+        {
+            control.Cancel();
+        }
+
+        foreach (var control in _controls.Values)
+        {
+            control.Dispose();
+        }
+
+        _controls.Clear();
         _shutdown.Dispose();
     }
 
-    private async Task RunAsync(IOnlineMusicProvider provider, string trackId, DownloadJob job, string quality)
+    private async Task RunAsync(
+        IOnlineMusicProvider provider,
+        string trackId,
+        DownloadJob job,
+        string quality,
+        DownloadControl control)
     {
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token, control.Cancellation.Token);
+        var token = linked.Token;
         var partPath = string.Empty;
         try
         {
-            var resolution = await provider.ResolveStreamAsync(trackId, quality, _shutdown.Token).ConfigureAwait(false);
+            await control.WaitWhilePausedAsync(token).ConfigureAwait(false);
+            var resolution = await provider.ResolveStreamAsync(trackId, quality, token).ConfigureAwait(false);
             if (!resolution.IsPlayable || string.IsNullOrWhiteSpace(resolution.Url))
             {
                 throw new InvalidOperationException(
@@ -231,6 +373,7 @@ internal sealed class DownloadService : IDisposable
             partPath = targetPath + ".part";
             job.FileName = fileName;
 
+            await control.WaitWhilePausedAsync(token).ConfigureAwait(false);
             using var request = new HttpRequestMessage(HttpMethod.Get, resolution.Url);
             foreach (var header in resolution.Headers)
             {
@@ -238,19 +381,27 @@ internal sealed class DownloadService : IDisposable
             }
 
             using var response = await Client
-                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, _shutdown.Token)
+                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token)
                 .ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
             job.Total = response.Content.Headers.ContentLength ?? 0;
 
-            await using (var input = await response.Content.ReadAsStreamAsync(_shutdown.Token).ConfigureAwait(false))
+            await using (var input = await response.Content.ReadAsStreamAsync(token).ConfigureAwait(false))
             await using (var output = new FileStream(partPath, FileMode.Create, FileAccess.Write, FileShare.None, 64 * 1024, useAsync: true))
             {
                 var buffer = new byte[64 * 1024];
-                int read;
-                while ((read = await input.ReadAsync(buffer, _shutdown.Token).ConfigureAwait(false)) > 0)
+                while (true)
                 {
-                    await output.WriteAsync(buffer.AsMemory(0, read), _shutdown.Token).ConfigureAwait(false);
+                    // 暂停点放在读写之间：暂停期间不再继续往磁盘写，已收字节计入 received。
+                    await control.WaitWhilePausedAsync(token).ConfigureAwait(false);
+                    var read = await input.ReadAsync(buffer, token).ConfigureAwait(false);
+                    if (read <= 0)
+                    {
+                        break;
+                    }
+
+                    await control.WaitWhilePausedAsync(token).ConfigureAwait(false);
+                    await output.WriteAsync(buffer.AsMemory(0, read), token).ConfigureAwait(false);
                     job.Received += read;
                 }
             }
@@ -275,6 +426,7 @@ internal sealed class DownloadService : IDisposable
         }
         catch (OperationCanceledException)
         {
+            // 取消（控制台按钮或宿主退出）统一落到 error「已取消」；磁盘上的 .part 在 finally 清掉。
             job.State = "error";
             job.Error = "已取消";
         }
@@ -286,6 +438,7 @@ internal sealed class DownloadService : IDisposable
         }
         finally
         {
+            control.MarkCompleted();
             if (partPath.Length > 0)
             {
                 try
@@ -370,11 +523,153 @@ internal sealed class DownloadService : IDisposable
             return;
         }
 
-        foreach (var pair in _jobs.OrderBy(item => item.Value.StartedAt).Take(_jobs.Count - MaxRememberedJobs))
+        foreach (var pair in _jobs.OrderBy(item => item.Value.StartedAt).Take(_jobs.Count - MaxRememberedJobs).ToList())
         {
-            if (pair.Value.State != "running")
+            if (pair.Value.State is "running" or "paused")
             {
-                _jobs.TryRemove(pair.Key, out _);
+                continue;
+            }
+
+            if (!_jobs.TryRemove(pair.Key, out _))
+            {
+                continue;
+            }
+
+            if (_controls.TryRemove(pair.Key, out var control))
+            {
+                control.MarkCompleted();
+                control.Dispose();
+            }
+        }
+    }
+
+    /// <summary>
+    /// 单个下载任务的控制块：暂停闸门（TaskCompletionSource，暂停时 await，恢复时完成）+ 取消源。
+    /// 状态读写都在 _gate 锁内，避免 pause/resume/cancel 与下载线程竞争。
+    /// </summary>
+    private sealed class DownloadControl : IDisposable
+    {
+        private readonly object _gate = new();
+        private TaskCompletionSource? _resume;
+        private bool _paused;
+        private bool _completed;
+        private bool _disposed;
+
+        public CancellationTokenSource Cancellation { get; } = new();
+
+        public bool Pause()
+        {
+            lock (_gate)
+            {
+                if (_completed || _paused)
+                {
+                    return false;
+                }
+
+                _paused = true;
+                _resume = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                return true;
+            }
+        }
+
+        public bool Resume()
+        {
+            TaskCompletionSource? resume;
+            lock (_gate)
+            {
+                if (_completed || !_paused)
+                {
+                    return false;
+                }
+
+                _paused = false;
+                resume = _resume;
+                _resume = null;
+            }
+
+            resume?.TrySetResult();
+            return true;
+        }
+
+        public bool Cancel()
+        {
+            lock (_gate)
+            {
+                if (_completed)
+                {
+                    return false;
+                }
+            }
+
+            try
+            {
+                Cancellation.Cancel();
+                return true;
+            }
+            catch (ObjectDisposedException)
+            {
+                return false;
+            }
+        }
+
+        /// <summary>暂停时挂起；<paramref name="token"/> 取消（宿主退出/取消任务）时抛出唤醒调用方。</summary>
+        public async Task WaitWhilePausedAsync(CancellationToken token)
+        {
+            while (true)
+            {
+                Task? wait;
+                lock (_gate)
+                {
+                    if (!_paused || _completed)
+                    {
+                        return;
+                    }
+
+                    wait = _resume?.Task;
+                }
+
+                if (wait is null)
+                {
+                    return;
+                }
+
+                await wait.WaitAsync(token).ConfigureAwait(false);
+            }
+        }
+
+        public void MarkCompleted()
+        {
+            TaskCompletionSource? resume;
+            lock (_gate)
+            {
+                _completed = true;
+                _paused = false;
+                resume = _resume;
+                _resume = null;
+            }
+
+            resume?.TrySetResult();
+        }
+
+        public void Dispose()
+        {
+            lock (_gate)
+            {
+                if (_disposed)
+                {
+                    return;
+                }
+
+                _disposed = true;
+            }
+
+            try
+            {
+                Cancellation.Dispose();
+            }
+            catch (ObjectDisposedException)
+            {
+                // 已经释放过。
             }
         }
     }

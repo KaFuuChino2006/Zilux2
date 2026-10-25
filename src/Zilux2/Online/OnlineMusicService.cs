@@ -56,6 +56,12 @@ internal sealed class OnlineMusicService : IDisposable
     /// </summary>
     internal Func<string?, string?>? LocalPathResolver { get; set; }
 
+    /// <summary>
+    /// 标签写入成功回调（/api/local/tag 用），参数是写成功的磁盘全路径。由 WebViewHost 接到
+    /// LocalMusicService.NotifyTagWritten（必须在回调里切回 UI 线程）。
+    /// </summary>
+    internal Action<string>? LocalFileChanged { get; set; }
+
     public OnlineEndpoint? Endpoint { get; private set; }
 
     public string? FailureMessage { get; private set; }
@@ -81,7 +87,12 @@ internal sealed class OnlineMusicService : IDisposable
                 _providers,
                 () => DownloadQualityProvider?.Invoke(),
                 rel => LocalPathResolver?.Invoke(rel));
-            var server = new LocalMusicServer(_providers, Sources, token, Accounts, Library, _download, _analysis);
+            var server = new LocalMusicServer(_providers, Sources, token, Accounts, Library, _download, _analysis)
+            {
+                // Lambda 每次都读属性：WebViewHost 在窗口创建后才接线，而服务更早 Start。
+                LocalPathResolver = rel => LocalPathResolver?.Invoke(rel),
+                LocalFileChanged = path => LocalFileChanged?.Invoke(path),
+            };
             var port = server.Start();
             _server = server;
             Endpoint = new OnlineEndpoint(port, token, Sources.ToList());

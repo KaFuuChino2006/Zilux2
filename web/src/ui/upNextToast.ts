@@ -1,14 +1,14 @@
 import { onlineArtwork } from '../online/artwork';
 import type { OnlineTrack } from '../online/types';
 import { h } from './dom';
-import type { PlayerState } from './player';
+import { getTransitionTarget, type PlayerState } from './player';
 
 /**
  * 顶部「正在播放 / 即将播放」预告条（单框形态）。
  *
  *   - 一个玻璃胶囊里始终只有一份内容：预告阶段显示「即将播放」的下一首 + 倒计时；
  *   - 无缝衔接（B 版 Phase 1）淡化进行中时，同一框内改为「正在无缝过渡到」下一首，
- *     进度条显示淡化进度、隐藏倒计时；
+ *     进度条显示淡化进度、隐藏倒计时；手动切歌 / 单曲循环的短过渡同样走这个形态；
  *   - 切歌后同一个框内切换为「正在播放」并展示新歌曲，约 2.6 秒后收起；
  *   - 内容切换使用淡入淡出，倒计时数字用透明度渐变（不做弹跳）；
  *   - 点击框（预告阶段）立即切到下一首。
@@ -160,7 +160,8 @@ export function createUpNextToast(onSkip: () => void): UpNextToastHandle {
 
   /** 无缝衔接淡化进行中：同一框内显示「正在无缝过渡到」+ 淡化进度，隐藏倒计时。 */
   const renderTransition = (snapshot: CrossfadeSnapshotLike, state: PlayerState): void => {
-    const next = upcoming(state);
+    // 手动切歌 / 单曲循环过渡时「下一首」不是队列里的下一项，改用 player 暴露的过渡目标。
+    const next = getTransitionTarget() ?? upcoming(state);
     if (next) {
       lastTransitionKey = `${next.source}:${next.id}`;
       swapContent(next, '正在无缝过渡到');

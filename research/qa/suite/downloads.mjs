@@ -1570,15 +1570,25 @@ await runSuite('downloads', '下载队列（T2）', async (suite) => {
       const settled = await waitJobSettled(cdp, appeared.id, { timeoutMs: DOWNLOAD_TIMEOUT_MS });
       if (!settled) throw new Error(`无损任务 ${appeared.id} 在 ${DOWNLOAD_TIMEOUT_MS}ms 内没有终态`);
       if (settled.state === 'done') {
-        suite.assert(/\.flac$/i.test(settled.fileName || ''), `无损 job fileName 应以 .flac 结尾，实际「${settled.fileName}」`);
+        // 平台可能不支持无损：此时宿主「自动降级」下载 mp3/m4a（job.quality 仍是请求值 lossless）。
+        // 按套件约定（文件头第 8-9 条）：降级不算产品失败，记 SKIP 并附证据；真的是 flac 才 PASS。
         const stat = fs.statSync(settled.path);
         suite.assert(stat.isFile() && stat.size > 0, `无损文件落盘校验失败：${settled.path}`);
-        suite.record(
-          'PASS',
-          '无损下载：浮层选 lossless → job.quality=lossless / .flac 落盘',
-          `${settled.fileName}（${Math.round(stat.size / 1024)}KB）→ ${settled.path}`,
-        );
-        suite.note(`无损落盘：${settled.path}`);
+        if (/\.flac$/i.test(settled.fileName || '')) {
+          suite.record(
+            'PASS',
+            '无损下载：浮层选 lossless → job.quality=lossless / .flac 落盘',
+            `${settled.fileName}（${Math.round(stat.size / 1024)}KB）→ ${settled.path}`,
+          );
+          suite.note(`无损落盘：${settled.path}`);
+        } else {
+          suite.record(
+            'SKIP',
+            '无损下载：浮层选 lossless → job.quality=lossless / .flac 落盘',
+            `平台未提供无损，宿主自动降级为「${settled.fileName}」（${Math.round(stat.size / 1024)}KB，已落盘）；quality 请求值仍为 lossless\nhost.log: ${hostLogTail(5)}`,
+          );
+          suite.note(`无损降级落盘：${settled.path}`);
+        }
       } else {
         suite.record(
           'SKIP',

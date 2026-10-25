@@ -86,9 +86,30 @@ export function trackOf(entry: LocalEntry): OnlineTrack {
   return track;
 }
 
+/** 从 localmusic.local 的曲目 URL 反解 rel（恢复的队列不经过 trackOf，映射表里没有）。 */
+function relFromId(id: string): string | null {
+  if (!id.startsWith(`${LOCAL_ORIGIN}/`)) return null;
+  let path = id.slice(LOCAL_ORIGIN.length + 1);
+  if (path.startsWith('?')) return null;
+  const isDownload = path.startsWith('__dl/');
+  if (isDownload) path = path.slice('__dl/'.length);
+  if (path.length === 0) return null;
+  try {
+    const decoded = path.split('/').map(decodeURIComponent).join('/');
+    return isDownload ? `@downloads/${decoded}` : decoded;
+  } catch {
+    return null;
+  }
+}
+
 export function relOf(track: OnlineTrack): string | null {
   if (track.source !== 'local') return null;
-  return relOfTrack.get(track.id) ?? null;
+  const mapped = relOfTrack.get(track.id);
+  if (mapped) return mapped;
+  // 断点续播/上次会话恢复的队列是序列化曲目，没走 trackOf，映射表里查不到：从 URL 反解并补登记。
+  const derived = relFromId(track.id);
+  if (derived) relOfTrack.set(track.id, derived);
+  return derived;
 }
 
 /** 本地曲目对应的 lrc（相对路径），没有则 null。 */

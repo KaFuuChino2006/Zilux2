@@ -51,6 +51,22 @@ public partial class MainWindow : Window
     private NativeMethods.Rect _restoreRect;
     private bool _hasRestoreRect;
 
+    // 迷你播放器模式（契约 docs/zilux2-host-contract.md §15）：进入前保存原窗口状态，退出时精确还原。
+    private const double MiniDefaultWidthDip = 420;
+    private const double MiniDefaultHeightDip = 120;
+    private const double MiniMinWidthDip = 360;
+    private const double MiniMinHeightDip = 100;
+    private const double MiniScreenMarginDip = 12;
+    private bool _miniMode;
+    private WindowState _miniSavedWindowState = WindowState.Normal;
+    private NativeMethods.Rect _miniRestoreRect;
+    private bool _miniHasRestoreRect;
+    private NativeMethods.Rect _miniSavedRestoreRect;
+    private bool _miniSavedHasRestoreRect;
+    private bool _miniSavedTopmost;
+    private double _miniSavedMinWidth = 1100;
+    private double _miniSavedMinHeight = 700;
+
     // 后台常驻：关闭窗口只隐藏到托盘，进程继续跑（听歌/下载/热键）；只有托盘「退出」或更新安装
     // 才真正退出。_pendingHideToTray 用于让自绘关闭动画结束后走「隐藏」而不是「关闭」。
     private bool _isHiddenToTray;
@@ -308,6 +324,186 @@ public partial class MainWindow : Window
         }
 
         HostLog.Info("window.animate close (snapshot)");
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // 迷你播放器模式
+    // ---------------------------------------------------------------------------------------
+
+    /// <summary>窗口当前是否处于迷你播放器模式。</summary>
+    internal bool IsMiniMode => _miniMode;
+
+    /// <summary>
+    /// 页面命令 window.miniMode 的宿主实现：开启时保存原 bounds/WindowState/Topmost/MinWidth，
+    /// 切到紧凑尺寸（默认 420×120，最小宽 360）置顶并吸附到当前显示器工作区右下角（留安全边距）；
+    /// 关闭时精确还原。成功后通过 WebViewHost 回推 window/miniMode 事件。
+    /// </summary>
+    public void SetMiniMode(bool enabled, double width, double height)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(() => SetMiniMode(enabled, width, height)), DispatcherPriority.Normal);
+            return;
+        }
+
+        if (enabled == _miniMode)
+        {
+            // 重复指令只补推一次状态：页面导航回来时也会在 ready 里对齐。
+            _host?.NotifyMiniMode(_miniMode);
+            return;
+        }
+
+        if (enabled)
+        {
+            EnterMiniMode(width, height);
+        }
+        else
+        {
+            ExitMiniMode();
+        }
+    }
+
+    private void EnterMiniMode(double width, double height)
+    {
+        CancelPendingDrag("miniMode");
+        StopWindowMotion();
+
+        _miniSavedWindowState = WindowState == WindowState.Minimized ? WindowState.Normal : WindowState;
+        _miniSavedTopmost = Topmost;
+        _miniSavedMinWidth = MinWidth;
+        _miniSavedMinHeight = MinHeight;
+        _miniSavedRestoreRect = _restoreRect;
+        _miniSavedHasRestoreRect = _hasRestoreRect;
+
+        var (scaleX, scaleY) = CurrentDpiScale();
+        var widthDip = width > 0 ? Math.Clamp(width, MiniMinWidthDip, 1600) : MiniDefaultWidthDip;
+        var heightDip = height > 0 ? Math.Clamp(height, MiniMinHeightDip, 900) : MiniDefaultHeightDip;
+        var pixelWidth = Math.Max(1, (int)Math.Round(widthDip * scaleX));
+        var pixelHeight = Math.Max(1, (int)Math.Round(heightDip * scaleY));
+
+        var reference = CurrentWindowRect();
+        // 最大化进入 mini 时，用 RestoreBounds 当作退出目标，退出后才能回到最大化前的尺寸再最大化。
+        _miniRestoreRect = _miniSavedWindowState == WindowState.Maximized
+            ? RestoreRectInPixels(reference)
+            : reference;
+        _miniHasRestoreRect = true;
+
+        var work = WorkAreaOf(reference);
+        var marginX = Math.Max(0, (int)Math.Round(MiniScreenMarginDip * scaleX));
+        var marginY = Math.Max(0, (int)Math.Round(MiniScreenMarginDip * scaleY));
+        var left = Math.Max(work.Left + marginX, work.Right - marginX - pixelWidth);
+        var top = Math.Max(work.Top + marginY, work.Bottom - marginY - pixelHeight);
+
+        MinWidth = MiniMinWidthDip;
+        MinHeight = MiniMinHeightDip;
+        if (WindowState != WindowState.Normal)
+        {
+            WindowState = WindowState.Normal;
+        }
+
+        Topmost = true;
+        if (!TrySetWindowRect(left, top, pixelWidth, pixelHeight))
+        {
+            ApplyRectInDip(left, top, pixelWidth, pixelHeight, scaleX, scaleY);
+        }
+
+        _miniMode = true;
+        HostLog.Info(
+            $"window.miniMode enabled rect={left},{top} size={pixelWidth}x{pixelHeight} margin={marginX},{marginY}");
+        _host?.NotifyMiniMode(true);
+    }
+
+    private void ExitMiniMode()
+    {
+        StopWindowMotion();
+        _miniMode = false;
+
+        var target = _miniRestoreRect;
+        var hasTarget = _miniHasRestoreRect && target.Right > target.Left && target.Bottom > target.Top;
+        var restored = hasTarget &&
+                       TrySetWindowRect(target.Left, target.Top, target.Right - target.Left, target.Bottom - target.Top);
+        if (!restored)
+        {
+            // 没有可用 rect（窗口还没显示过）：至少退回到普通状态，避免停在小尺寸。
+            WindowState = WindowState.Normal;
+            if (hasTarget)
+            {
+                var (scaleX, scaleY) = CurrentDpiScale();
+                ApplyRectInDip(
+                    target.Left,
+                    target.Top,
+                    target.Right - target.Left,
+                    target.Bottom - target.Top,
+                    scaleX,
+                    scaleY);
+            }
+        }
+
+        MinWidth = _miniSavedMinWidth;
+        MinHeight = _miniSavedMinHeight;
+        Topmost = _miniSavedTopmost;
+
+        if (_miniSavedWindowState == WindowState.Maximized)
+        {
+            _restoreRect = target;
+            _hasRestoreRect = hasTarget;
+            WindowState = WindowState.Maximized;
+        }
+        else
+        {
+            _restoreRect = _miniSavedRestoreRect;
+            _hasRestoreRect = _miniSavedHasRestoreRect;
+        }
+
+        _miniHasRestoreRect = false;
+        HostLog.Info(
+            $"window.miniMode disabled restored={(hasTarget ? DescribeRect(target) : "none")} state={_miniSavedWindowState}");
+        _host?.NotifyMiniMode(false);
+    }
+
+    private NativeMethods.Rect CurrentWindowRect()
+    {
+        if (_hwnd != IntPtr.Zero &&
+            NativeMethods.GetWindowRect(_hwnd, out var current) &&
+            current.Right > current.Left &&
+            current.Bottom > current.Top)
+        {
+            return current;
+        }
+
+        var (scaleX, scaleY) = CurrentDpiScale();
+        var left = (int)Math.Round(Left * scaleX);
+        var top = (int)Math.Round(Top * scaleY);
+        var width = Math.Max(1, (int)Math.Round(ActualWidth * scaleX));
+        var height = Math.Max(1, (int)Math.Round(ActualHeight * scaleY));
+        return new NativeMethods.Rect { Left = left, Top = top, Right = left + width, Bottom = top + height };
+    }
+
+    private bool TrySetWindowRect(int left, int top, int width, int height)
+    {
+        if (_hwnd == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        return NativeMethods.SetWindowPos(
+            _hwnd,
+            IntPtr.Zero,
+            left,
+            top,
+            Math.Max(1, width),
+            Math.Max(1, height),
+            NativeMethods.SwpNoZOrder | NativeMethods.SwpNoActivate);
+    }
+
+    private void ApplyRectInDip(int left, int top, int width, int height, double scaleX, double scaleY)
+    {
+        var safeX = Math.Max(0.1, scaleX);
+        var safeY = Math.Max(0.1, scaleY);
+        Left = left / safeX;
+        Top = top / safeY;
+        Width = Math.Max(1, width) / safeX;
+        Height = Math.Max(1, height) / safeY;
     }
 
     // ---------------------------------------------------------------------------------------

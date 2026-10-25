@@ -62,6 +62,14 @@ public partial class App : Application
         // only costs persistence, never the window.
         Settings = CreateSettingsService();
 
+        // general.autoLaunch is applied once at startup (idempotent: it compares the current
+        // registry value first) and re-applied on every general-section patch/reset below.
+        if (Settings is not null)
+        {
+            AutoLaunchService.Apply(Settings.AutoLaunch);
+            Settings.GeneralChanged += OnGeneralSettingsChanged;
+        }
+
         var plan = WebContentPlan.Resolve(out var failure);
         if (plan is null)
         {
@@ -250,6 +258,15 @@ public partial class App : Application
     }
 
     private static void MarkShutdownFinished() => Volatile.Write(ref _shutdownFinished, 1);
+
+    /// <summary>
+    /// general 段变更后的即时应用：开机自启写/删 HKCU Run；本地目录监控由 WebViewHost 订阅同一
+    /// 事件后调 LocalMusicService.SetWatchEnabled。
+    /// </summary>
+    private static void OnGeneralSettingsChanged()
+    {
+        AutoLaunchService.Apply(Settings?.AutoLaunch == true);
+    }
 
     private static SettingsService? CreateSettingsService()
     {

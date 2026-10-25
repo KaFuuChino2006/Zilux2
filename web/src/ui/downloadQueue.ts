@@ -16,7 +16,7 @@
  */
 import '../styles/download-queue.css';
 import '../styles/download-queue-embed.css';
-import { fetchDownloads, revealDownload, startDownload, type DownloadJob } from '../online/download';
+import { fetchDownloads, revealDownload, startDownload, pauseDownload, resumeDownload, cancelDownload, clearFinishedDownloads, type DownloadJob } from '../online/download';
 import type { OnlineTrack, StreamQuality } from '../online/types';
 import { getSettings } from '../core/settings';
 import { host } from '../core/bridge';
@@ -29,6 +29,7 @@ export interface DownloadQueueSnapshot {
   jobs: DownloadJob[];
   directory: string;
   running: number;
+  paused: number;
   done: number;
   error: number;
   filter: DownloadFilter;
@@ -48,6 +49,9 @@ interface RowRefs {
   fill: HTMLDivElement;
   reveal: HTMLButtonElement;
   retry: HTMLButtonElement;
+  pause: HTMLButtonElement;
+  resume: HTMLButtonElement;
+  cancel: HTMLButtonElement;
   actions: HTMLDivElement;
 }
 
@@ -62,6 +66,7 @@ interface PanelRefs {
   error: HTMLDivElement;
   refreshBtn: HTMLButtonElement;
   sumRunning: HTMLElement;
+  sumPaused: HTMLElement;
   sumDone: HTMLElement;
   sumError: HTMLElement;
   view: DownloadQueueViewImpl;
@@ -154,16 +159,18 @@ function trackKey(source: string, trackId: string): string {
   return `${source}:${trackId}`;
 }
 
-function countJobs(): { running: number; done: number; error: number } {
+function countJobs(): { running: number; paused: number; done: number; error: number } {
   let running = 0;
+  let paused = 0;
   let done = 0;
   let error = 0;
   for (const job of jobs) {
     if (job.state === 'running') running += 1;
+    else if (job.state === 'paused') paused += 1;
     else if (job.state === 'done') done += 1;
     else error += 1;
   }
-  return { running, done, error };
+  return { running, paused, done, error };
 }
 
 function findJob(id: string | undefined): DownloadJob | undefined {
@@ -213,6 +220,7 @@ function syncPanel(): void {
   refs.root.classList.toggle('is-open', panelOpen);
   refs.root.setAttribute('aria-hidden', panelOpen ? 'false' : 'true');
   setText(refs.sumRunning, String(summary.running));
+  setText(refs.sumPaused, String(summary.paused));
   setText(refs.sumDone, String(summary.done));
   setText(refs.sumError, String(summary.error));
   const errorText = lastError ? `刷新下载列表失败：${lastError}` : '';
@@ -224,8 +232,13 @@ function syncPanel(): void {
 }
 
 function visibleJobs(): DownloadJob[] {
-  const priority: Record<string, number> = { running: 0, error: 1, done: 2 };
-  const list = filter === 'all' ? jobs.slice() : jobs.filter((job) => job.state === filter);
+  const priority: Record<string, number> = { running: 0, paused: 0, error: 1, done: 2 };
+  const list =
+    filter === 'all'
+      ? jobs.slice()
+      : filter === 'running'
+        ? jobs.filter((job) => job.state === 'running' || job.state === 'paused')
+        : jobs.filter((job) => job.state === filter);
   // Array.prototype.sort 稳定，同状态内保留宿主 startedAt 倒序。
   return list.sort((a, b) => (priority[a.state] ?? 3) - (priority[b.state] ?? 3));
 }
@@ -280,6 +293,14 @@ function rowTexts(job: DownloadJob): {
     pct = '失败';
     fillWidth = '100%';
     status = `失败：${job.error || '未知错误'}`;
+  } else if (job.state === 'paused') {
+    // 已暂停：进度条停在当前百分比，状态行显示「已暂停」+ 当前大小。
+    const progress = progressOf(job);
+    const sizeText = `${formatBytes(job.received)}${job.total > 0 ? ` / ${formatBytes(job.total)}` : ''}`;
+    pct = progress === null ? '已暂停' : `${Math.round(progress)}%`;
+    fillWidth = progress === null ? '0%' : `${progress.toFixed(1)}%`;
+    status = `已暂停 · ${sizeText}`;
+    indeterminate = false;
   } else {
     const progress = progressOf(job);
     const speed = speeds.get(job.id);
@@ -312,7 +333,11 @@ function applyRow(handle: RowHandle, job: DownloadJob, key: string): void {
   refs.fill.classList.toggle('is-indeterminate', texts.indeterminate);
   refs.reveal.hidden = job.state !== 'done';
   refs.retry.hidden = job.state !== 'error';
-  refs.actions.hidden = job.state === 'running';
+  refs.pause.hidden = job.state !== 'running';
+  refs.resume.hidden = job.state !== 'paused';
+  refs.cancel.hidden = job.state !== 'running' && job.state !== 'paused';
+  // 进行中/已暂停的行也要露出暂停/继续/取消按钮，所以 actions 容器常显。
+  refs.actions.hidden = false;
   handle.key = key;
 }
 
@@ -332,7 +357,22 @@ function createRow(): RowHandle {
     { class: 'dlq-act dlq-retry', type: 'button', title: '重新下载', 'aria-label': '重新下载' },
     icon('refresh', 15),
   );
-  const actions = h('div', { class: 'dlq-actions' }, reveal, retry);
+  const pause = h(
+    'button',
+    { class: 'dlq-act dlq-pause', type: 'button', title: '暂停下载', 'aria-label': '暂停下载' },
+    icon('pause', 15),
+  );
+  const resume = h(
+    'button',
+    { class: 'dlq-act dlq-resume', type: 'button', title: '继续下载', 'aria-label': '继续下载' },
+    icon('play', 15),
+  );
+  const cancel = h(
+    'button',
+    { class: 'dlq-act dlq-cancel', type: 'button', title: '取消下载（不删除已下载文件）', 'aria-label': '取消下载' },
+    icon('close', 15),
+  );
+  const actions = h('div', { class: 'dlq-actions' }, reveal, retry, pause, resume, cancel);
   const bar = h('div', { class: 'dlq-bar' }, fill);
   const cover = h('div', { class: 'dlq-cover', 'aria-hidden': 'true' }, icon('music', 13));
   const top = h(
@@ -354,10 +394,25 @@ function createRow(): RowHandle {
     const job = findJob(el.dataset.jobId);
     if (job) void doRetry(job, retry);
   });
+  pause.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const job = findJob(el.dataset.jobId);
+    if (job) void doPause(job, pause);
+  });
+  resume.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const job = findJob(el.dataset.jobId);
+    if (job) void doResume(job, resume);
+  });
+  cancel.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const job = findJob(el.dataset.jobId);
+    if (job) void doCancel(job, cancel);
+  });
   return {
     el,
     key: '',
-    refs: { name, meta, pct, status, fill, reveal, retry, actions },
+    refs: { name, meta, pct, status, fill, reveal, retry, pause, resume, cancel, actions },
   };
 }
 
@@ -396,6 +451,71 @@ async function doRetry(job: DownloadJob, button: HTMLButtonElement): Promise<voi
     kick();
   } catch (error) {
     toast(`重试失败：${errorMessage(error)}`, 'error');
+  } finally {
+    button.classList.remove('is-busy');
+  }
+}
+
+async function doPause(job: DownloadJob, button: HTMLButtonElement): Promise<void> {
+  if (job.state !== 'running' || button.classList.contains('is-busy')) return;
+  button.classList.add('is-busy');
+  try {
+    await pauseDownload(job.id);
+    toast(`已暂停：${job.title || job.fileName || '歌曲'}`);
+    await refresh();
+    kick();
+  } catch (error) {
+    toast(`暂停失败：${errorMessage(error)}`, 'error');
+  } finally {
+    button.classList.remove('is-busy');
+  }
+}
+
+async function doResume(job: DownloadJob, button: HTMLButtonElement): Promise<void> {
+  if (job.state !== 'paused' || button.classList.contains('is-busy')) return;
+  button.classList.add('is-busy');
+  try {
+    await resumeDownload(job.id);
+    toast(`继续下载：${job.title || job.fileName || '歌曲'}`);
+    await refresh();
+    kick();
+  } catch (error) {
+    toast(`继续下载失败：${errorMessage(error)}`, 'error');
+  } finally {
+    button.classList.remove('is-busy');
+  }
+}
+
+async function doCancel(job: DownloadJob, button: HTMLButtonElement): Promise<void> {
+  if ((job.state !== 'running' && job.state !== 'paused') || button.classList.contains('is-busy')) return;
+  button.classList.add('is-busy');
+  try {
+    await cancelDownload(job.id);
+    toast(`已取消下载：${job.title || job.fileName || '歌曲'}`);
+    await refresh();
+    kick();
+  } catch (error) {
+    toast(`取消失败：${errorMessage(error)}`, 'error');
+  } finally {
+    button.classList.remove('is-busy');
+  }
+}
+
+async function doClearFinished(button: HTMLButtonElement): Promise<void> {
+  if (button.classList.contains('is-busy')) return;
+  const finished = jobs.filter((job) => job.state === 'done' || job.state === 'error').length;
+  if (finished === 0) {
+    toast('没有可清空的已完成记录');
+    return;
+  }
+  button.classList.add('is-busy');
+  try {
+    const cleared = await clearFinishedDownloads();
+    toast(cleared > 0 ? `已清空 ${cleared} 条下载记录` : '已清空下载记录');
+    await refresh();
+    kick();
+  } catch (error) {
+    toast(`清空失败：${errorMessage(error)}`, 'error');
   } finally {
     button.classList.remove('is-busy');
   }
@@ -456,7 +576,14 @@ class DownloadQueueViewImpl implements DownloadQueueView {
       '打开目录',
     );
     openDirBtn.addEventListener('click', () => this.openDirectory());
-    const foot = h('div', { class: 'dlq-foot' }, this.dirPath, openDirBtn);
+    const clearBtn = h(
+      'button',
+      { class: 'dlq-foot-btn dlq-clear', type: 'button', title: '清空已完成/失败记录（不删除磁盘文件）' },
+      icon('trash', 14),
+      '清空已完成',
+    );
+    clearBtn.addEventListener('click', () => void doClearFinished(clearBtn));
+    const foot = h('div', { class: 'dlq-foot' }, this.dirPath, clearBtn, openDirBtn);
 
     if (embedded) {
       // 快捷设置第 5 页：容器独立一层 .dlq-embed，内部仍沿用 .dlq-* 契约类名。
@@ -530,8 +657,8 @@ class DownloadQueueViewImpl implements DownloadQueueView {
     setText(this.dirPath, dirText);
     this.dirPath.title = dirText;
     if (this.status) {
-      const { running, done, error } = countJobs();
-      setText(this.status, `下载中 ${running} · 已完成 ${done}${error > 0 ? ` · 失败 ${error}` : ''}`);
+      const { running, paused, done, error } = countJobs();
+      setText(this.status, `下载中 ${running} · 已完成 ${done}${paused > 0 ? ` · 已暂停 ${paused}` : ''}${error > 0 ? ` · 失败 ${error}` : ''}`);
     }
     if (this.refreshBtn) this.refreshBtn.classList.toggle('is-busy', refreshing);
     if (this.renderedFilter !== null && this.renderedFilter !== filter) this.playSwitch();
@@ -635,12 +762,15 @@ export function createDownloadQueueView(): DownloadQueueView {
 function ensurePanel(): void {
   if (panel || disposed) return;
   const sumRunning = h('b', { text: '0' });
+  const sumPaused = h('b', { text: '0' });
   const sumDone = h('b', { text: '0' });
   const sumError = h('b', { text: '0' });
   const summary = h(
     'div',
     { class: 'dlq-summary' },
     h('span', { class: 'dlq-sum-item', 'data-kind': 'running' }, '下载中 ', sumRunning),
+    h('span', { class: 'dlq-sum-sep', 'data-kind': 'paused' }, '·'),
+    h('span', { class: 'dlq-sum-item', 'data-kind': 'paused' }, '已暂停 ', sumPaused),
     h('span', { class: 'dlq-sum-sep' }, '·'),
     h('span', { class: 'dlq-sum-item', 'data-kind': 'done' }, '已完成 ', sumDone),
     h('span', { class: 'dlq-sum-sep' }, '·'),
@@ -667,7 +797,7 @@ function ensurePanel(): void {
   const view = new DownloadQueueViewImpl(false);
   const hint = h('div', {
     class: 'dlq-hint',
-    text: '宿主暂不支持取消或清空任务；已完成的记录保留在本次宿主会话中。',
+    text: '支持暂停/继续/取消任务；「清空已完成」只移除列表记录，不删除磁盘文件。',
   });
   const root = h(
     'aside',
@@ -679,7 +809,7 @@ function ensurePanel(): void {
     hint,
   );
   document.body.append(root);
-  panel = { root, error, refreshBtn, sumRunning, sumDone, sumError, view };
+  panel = { root, error, refreshBtn, sumRunning, sumPaused, sumDone, sumError, view };
   bindDocument();
 
   refreshBtn.addEventListener('click', () => {
@@ -856,7 +986,12 @@ export async function beginQueueDownload(track: OnlineTrack, quality?: StreamQua
   const key = trackKey(track.source, track.id);
   if (
     pendingKeys.has(key) ||
-    jobs.some((job) => job.state === 'running' && job.source === track.source && job.trackId === track.id)
+    jobs.some(
+      (job) =>
+        (job.state === 'running' || job.state === 'paused') &&
+        job.source === track.source &&
+        job.trackId === track.id,
+    )
   ) {
     toast('这首歌已在下载队列中');
     return false;
@@ -972,11 +1107,12 @@ export function toggleDownloadPanel(force?: boolean): void {
 }
 
 export function downloadQueueState(): DownloadQueueSnapshot {
-  const { running, done, error } = countJobs();
+  const { running, paused, done, error } = countJobs();
   return {
     jobs: jobs.slice(),
     directory,
     running,
+    paused,
     done,
     error,
     filter,
