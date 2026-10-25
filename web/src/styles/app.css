@@ -5910,6 +5910,8 @@ html.is-pb-expanded .playerbar:focus-within {
 html.is-pb-expanded .playerbar .pb-meta {
   width: 190px;
   flex: none;
+  /* 与 hover 展开态取同一值：否则基础规则 8px ↔ hover 规则 6px 会让悬停时右侧整排内容位移 2px */
+  margin-left: 6px;
 }
 html.is-pb-expanded .playerbar .pb-cover {
   max-width: 52px;
