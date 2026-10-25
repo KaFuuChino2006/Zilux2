@@ -328,16 +328,13 @@ html.is-pb-expanded .app.is-mini .playerbar .pb-meta {
   background: var(--accent);
 }
 
-/* 右侧：只留收起按钮；播放模式 / 收藏 / 下载 / 歌词 / 海报 / 音量在小窗里没有意义。 */
+/* 右侧：只留收起按钮；播放模式 / 收藏 / 下载 / 歌词 / 音量在小窗里没有意义。 */
 .app.is-mini .pb-actions,
 .app.is-mini-entering .pb-actions,
 .app.is-mini-exiting .pb-actions,
 .app.is-mini .pb-btn-lyrics,
 .app.is-mini-entering .pb-btn-lyrics,
 .app.is-mini-exiting .pb-btn-lyrics,
-.app.is-mini .pb-btn-poster,
-.app.is-mini-entering .pb-btn-poster,
-.app.is-mini-exiting .pb-btn-poster,
 .app.is-mini .volume-wrap,
 .app.is-mini-entering .volume-wrap,
 .app.is-mini-exiting .volume-wrap {

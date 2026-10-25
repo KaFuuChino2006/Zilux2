@@ -82,6 +82,7 @@ export function createUpNextToast(onSkip: () => void): UpNextToastHandle {
   const setPhase = (nextPhase: ToastPhase): void => {
     if (phase === nextPhase) return;
     phase = nextPhase;
+    element.classList.toggle('is-preview', nextPhase === 'preview');
     element.classList.toggle('is-current', nextPhase === 'current');
     element.classList.toggle('is-transition', nextPhase === 'transition');
     element.setAttribute(
@@ -234,7 +235,9 @@ export function createUpNextToast(onSkip: () => void): UpNextToastHandle {
     // 临近切歌（倒计时读秒结束）时保持同一框可见，等下一帧自然过渡到「正在播放」，
     // 不要先收起再弹出——那样会看起来像两次独立动画。
     if (remaining <= MIN_REMAIN_MS && visible) {
+      // 读秒结束后不再显示「秒后切换」的单位文案：把倒计时行一起收起，只留曲目内容。
       setSeconds('');
+      element.classList.remove('is-preview');
       return;
     }
     if (remaining <= MIN_REMAIN_MS) {
