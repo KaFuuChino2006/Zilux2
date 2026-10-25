@@ -1030,7 +1030,13 @@ to{opacity:1;transform:none}
 .lyrics-bg-btn:hover{background:rgb(var(--overlay-rgb) / .1);color:var(--text)}
 .lyrics-bg-btn.is-on{background:var(--accent-soft);color:var(--accent-strong);font-weight:600}
 .lyric-char.is-hot:after{display:none}
-.lyrics-right,.lyrics-right .lyrics-lines{-webkit-mask-image:linear-gradient(180deg,transparent 0%,#000 12%,#000 88%,transparent 100%),linear-gradient(90deg,transparent 0%,#000 6%,#000 100%);-webkit-mask-composite:source-in;mask-image:linear-gradient(180deg,transparent 0%,#000 12%,#000 88%,transparent 100%),linear-gradient(90deg,transparent 0%,#000 6%,#000 100%);mask-composite:intersect}
+/* 只保留上下淡出：原来的 90deg 横向遮罩会按容器宽度的 6% 吃掉左对齐歌词的首字，
+   窗口越大淡出区越宽（父层 + 歌词层还各遮一次），看起来就是「歌词左侧虚掉」。
+   注意：上下淡出只能挂在承载视口的 .lyrics-right 上；如果同时挂到会被 translateY
+   平移的 .lyrics-lines 上，遮罩会按「歌词内容的 12%」而不是「视口的 12%」计算，
+   歌曲首尾那几行就永远处在淡出区里，看起来就是「接近尾部时歌词明显变淡」。 */
+.lyrics-right{-webkit-mask-image:linear-gradient(180deg,transparent 0%,#000 12%,#000 88%,transparent 100%);mask-image:linear-gradient(180deg,transparent 0%,#000 12%,#000 88%,transparent 100%)}
+.lyrics-right .lyrics-lines{-webkit-mask-image:none;mask-image:none}
 .lyrics-right .lyrics-lines{padding:0 18px 0 46px}
 .lyrics-right .lyric-line.is-active .lyric-char.is-hot{text-shadow:0 0 14px color-mix(in srgb,var(--accent) 76%,transparent),0 0 34px color-mix(in srgb,var(--accent) 50%,transparent),0 0 68px color-mix(in srgb,var(--accent) 30%,transparent)}
 .lyrics-right .lyric-line.is-active:before{left:-12px;width:3px;height:64%;border-radius:999px;background:linear-gradient(180deg,transparent 0%,color-mix(in srgb,var(--accent) 82%,transparent) 22%,color-mix(in srgb,var(--accent) 82%,transparent) 78%,transparent 100%);box-shadow:0 0 10px color-mix(in srgb,var(--accent) 42%,transparent),0 0 28px color-mix(in srgb,var(--accent) 20%,transparent);filter:blur(.3px);animation:lyric-bar-breathe 2.4s ease-in-out infinite}
