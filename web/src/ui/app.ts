@@ -108,11 +108,10 @@ import {
 } from './localPlaylists';
 import { openTagEditor } from './tagEditor';
 import { buildEqPresetManager } from './eqPresets';
-import { openLyricPosterSheet } from './lyricPoster';
 import { buildSearchHistoryPanel, recordSearch, type SearchHistoryPanelHandle } from './searchHistory';
 import { buildSettingsIOActions } from './settingsIO';
 import { buildSleepTimerPanel, completeSleepTimer, getSleepTimerState } from './sleepTimer';
-import { currentLyricLine, currentLyricSource, lyricGrowMode, lyricMatchMinScore, lyricOffsetOf, lyricsBackgroundMode, lyricsLumiereMode, LyricsView, primeLyrics, setLyricGrowMode, setLyricsBackgroundMode, setLyricsLumiereMode, setLyricMatchMinScore, setLyricOffset, updateCurrentLyricLine, lyricMatchText } from './lyrics';
+import { currentLyricSource, lyricGrowMode, lyricMatchMinScore, lyricOffsetOf, lyricsBackgroundMode, lyricsLumiereMode, LyricsView, primeLyrics, setLyricGrowMode, setLyricsBackgroundMode, setLyricsLumiereMode, setLyricMatchMinScore, setLyricOffset, updateCurrentLyricLine, lyricMatchText } from './lyrics';
 import { LUMIERE_MODES } from './lumiere';
 import {
   cycleMode,
@@ -4335,32 +4334,6 @@ export class App {
       { passive: false },
     );
 
-    // 歌词海报：把当前封面 + 歌名 + 正在唱的一句画成 1080×1440 分享图。
-    const posterBtn = h(
-      'button',
-      { class: 'pb-btn pb-btn-poster', title: '歌词海报' },
-      h('span', { class: 'pb-glyph', text: '享' }),
-    );
-    posterBtn.addEventListener('pointerdown', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      const track = playerState().track;
-      if (!track) {
-        toast('先播放一首歌');
-        return;
-      }
-      void openLyricPosterSheet({
-        title: track.title,
-        artist: track.artist,
-        album: track.album,
-        coverUrl: track.cover || undefined,
-        lyricLine: currentLyricLine(),
-        sourceLabel: SOURCE_LABEL[track.source] ?? track.source,
-      }).catch((error: unknown) => {
-        toast(`生成海报失败：${error instanceof Error ? error.message : String(error)}`, 'error');
-      });
-    });
-
     const downloadBtn = createDownloadEntryButton((anchor) => this.openPlaybarDownloadMenu(anchor));
     // 迷你播放器入口：只发指令，窗口切换由宿主完成并回推事件。
     this.miniBtn = h(
@@ -4382,14 +4355,7 @@ export class App {
       // 播放模式 / 收藏 / 下载队列常驻显示，不随播放条收起而隐藏
       h('div', { class: 'pb-actions' }, this.pbModeBtn, this.pbLikeBtn, downloadBtn),
       h('div', { class: 'pb-progress' }, this.pbCur, track, this.pbDur),
-      h(
-        'div',
-        { class: 'pb-extra' },
-        lyricsBtn,
-        posterBtn,
-        volumeWrap,
-        this.miniBtn,
-      ),
+      h('div', { class: 'pb-extra' }, lyricsBtn, volumeWrap, this.miniBtn),
     );
 
     const wrap = h('div', { class: 'playerbar-wrap' }, bar);

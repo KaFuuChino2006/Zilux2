@@ -5734,12 +5734,22 @@ body,
   align-items: baseline;
   gap: 3px;
   margin-top: 0;
-  max-width: 140px;
+  max-width: 0;
   overflow: hidden;
   color: var(--accent);
+  opacity: 0;
+  transform: translateX(6px);
+  transition: opacity 0.2s ease, transform 0.22s ease, max-width 0.24s ease;
+}
+/* 倒计时只在「即将播放」预告阶段出现：收回/正在播放/过渡时连单位文案一起收起，避免「秒后切换」闪一帧 */
+.upnext-toast.is-preview .unt-count {
+  max-width: 140px;
   opacity: 1;
   transform: translateX(0);
-  transition: opacity 0.2s ease, transform 0.22s ease, max-width 0.24s ease;
+}
+/* 离开预告阶段（过渡已开始 / 已切歌 / 收回）时倒计时必须瞬间消失，不做淡出，否则会看到「秒后切换」闪一下 */
+.upnext-toast:not(.is-preview) .unt-count {
+  transition: none;
 }
 .unt-seconds {
   font-size: 24px;

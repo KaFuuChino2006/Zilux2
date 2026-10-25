@@ -1,6 +1,6 @@
 /* ==========================================================================
    polish-tools.css — Zilux2 桌面向小工具（搜索历史 / EQ 自定义预设 /
-   睡眠定时 / 设置导入导出 / 歌词海报）共用样式。
+   睡眠定时 / 设置导入导出）共用样式。
    由 Lead 在 app.ts 中 `import '../styles/polish-tools.css'` 后生效。
    复用 app.css 的 :root 令牌与既有 .seg/.seg-btn/.slider/.btn/.icon-btn 视觉。
    ========================================================================== */
@@ -9,8 +9,7 @@
 .sh-panel [hidden],
 .eqp [hidden],
 .st [hidden],
-.sio [hidden],
-.lyp-sheet [hidden] {
+.sio [hidden] {
   display: none !important;
 }
 
@@ -18,8 +17,7 @@
 .sh-panel :is(button, input):focus-visible,
 .eqp :is(button, input):focus-visible,
 .st :is(button, input):focus-visible,
-.sio :is(button):focus-visible,
-.lyp-sheet :is(button):focus-visible {
+.sio :is(button):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -504,149 +502,10 @@
 }
 
 /* ==========================================================================
-   5) 歌词海报预览（.lyp-sheet）
-   ========================================================================== */
-
-.lyp-sheet {
-  position: fixed;
-  inset: 0;
-  z-index: 1200;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 32px;
-  background: var(--scrim, rgba(0, 0, 0, 0.64));
-  backdrop-filter: blur(16px);
-  animation: lyp-fade 0.18s var(--ease);
-}
-
-.lyp-panel {
-  display: flex;
-  flex-direction: column;
-  width: min(560px, 100%);
-  max-height: calc(100vh - 64px);
-  padding: 18px;
-  border: 1px solid var(--line-strong, rgba(255, 255, 255, 0.14));
-  border-radius: var(--radius-lg, 22px);
-  background: var(--surface-strong, rgba(25, 27, 33, 0.94));
-  box-shadow: var(--shadow-2, 0 30px 80px rgba(0, 0, 0, 0.55));
-  animation: lyp-pop 0.22s var(--ease);
-}
-
-.lyp-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 0 2px 12px;
-}
-
-.lyp-title {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
-.lyp-close {
-  flex: none;
-}
-
-.lyp-body {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-  align-items: center;
-  justify-content: center;
-  padding: 12px;
-  overflow: auto;
-  border: 1px solid var(--line);
-  border-radius: var(--radius, 14px);
-  background: rgb(var(--overlay-rgb) / 0.05);
-}
-
-.lyp-status {
-  padding: 54px 18px;
-  font-size: 12.5px;
-  letter-spacing: 0.04em;
-  color: var(--muted);
-  text-align: center;
-  animation: lyp-breathe 1.6s ease-in-out infinite;
-}
-
-.lyp-status.is-error {
-  color: var(--danger);
-  animation: none;
-}
-
-.lyp-preview {
-  display: block;
-  max-width: 100%;
-  max-height: min(64vh, 720px);
-  border-radius: 10px;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
-  animation: lyp-fade 0.26s var(--ease);
-}
-
-.lyp-actions {
-  display: flex;
-  justify-content: flex-end;
-  padding-top: 14px;
-}
-
-.lyp-download svg {
-  margin-right: 6px;
-}
-
-@keyframes lyp-fade {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
-@keyframes lyp-pop {
-  from {
-    opacity: 0;
-    transform: translateY(10px) scale(0.985);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
-
-@keyframes lyp-breathe {
-  0%,
-  100% {
-    opacity: 0.55;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-
-/* ==========================================================================
    窄屏 / 减少动画
    ========================================================================== */
 
 @media (max-width: 720px) {
-  .lyp-sheet {
-    padding: 14px;
-  }
-
-  .lyp-panel {
-    max-height: calc(100vh - 28px);
-    padding: 14px;
-  }
-
-  .lyp-preview {
-    max-height: 58vh;
-  }
-
   .sh-pick {
     max-width: 200px;
   }
@@ -682,11 +541,7 @@
   .eqp-input,
   .eqp-chip-wrap,
   .eqp-icon-btn,
-  .st-status,
-  .lyp-sheet,
-  .lyp-panel,
-  .lyp-preview,
-  .lyp-status {
+  .st-status {
     animation: none !important;
     transition: none !important;
   }
