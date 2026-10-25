@@ -35,7 +35,7 @@ export type CrossfadeLength = 'auto' | number;
 
 export interface CrossfadeSettings {
   enabled: boolean;
-  /** auto = 按当前歌曲 4 小节自动决定（夹在 5–10 秒）；3–30 的整数 = 固定秒数 */
+  /** auto = 按两首歌的拍点/小节与前后奏空间自适应（不固定 5–10 秒）；3–30 的整数 = 固定秒数 */
   length: CrossfadeLength;
 }
 
@@ -49,10 +49,19 @@ const LENGTH_MAX_SEC = 30;
 const DEFAULT_SETTINGS: CrossfadeSettings = { enabled: true, length: 'auto' };
 const LENGTH_VALUES: CrossfadeLength[] = [...CROSSFADE_LENGTH_CHOICES, 'auto'];
 
-/** auto 长度 = 4 小节（按 A 的拍号与拍间隔），再夹在这个范围内。用户反馈过渡太短，保守取 5–10 秒。 */
+/**
+ * auto 过渡时长（自由变换，不再固定「当前歌曲 4 小节 + 5–10 秒」）：
+ * - 基准小节：两首歌都能变速对齐时用 A 的小节（B 会被 WSOLA 拉齐），对不齐时取两首的谐波平均；
+ * - 小节数默认一个乐句（4 小节）；小节很短（<1.3 s，快歌或双拍被分析成两倍速）时取两个乐句；
+ * - 再用歌曲结构伸缩小节数：B 到「开始唱词」的前奏空间不足一个乐句时按整小节缩短；
+ *   A 的尾奏与 B 的前奏都足够宽裕时放宽到 6/8 小节（否则会在最后的副歌里就开淡）；
+ * - 最终只受产品安全下限/上限（MIN_FADE_MS–MAX_FADE_MS）约束，实际时长随两首歌自由变化。
+ */
 const AUTO_BARS = 4;
-const AUTO_MIN_MS = 5_000;
-const AUTO_MAX_MS = 10_000;
+const AUTO_BARS_MID = 6;
+const AUTO_BARS_LONG = 8;
+/** 小节短于这个值（≈ >185 BPM，或节拍器把双拍分析成两倍速）时，一个乐句太短，取两个乐句。 */
+const AUTO_SHORT_BAR_MS = 1_300;
 const AUTO_FALLBACK_MS = 7_000;
 
 /** 淡化太短听不出、太长会盖住半首歌，都夹住。上限按手动 30 秒留余量。 */
@@ -163,6 +172,14 @@ export interface CrossfadeDebugState {
   currentAudibleEndMs: number;
   /** A 的尾部静音（毫秒）= 曲内时长 - currentAudibleEndMs；无静音为 0 */
   tailSilenceMs: number;
+  /** auto 本次的目标时长（毫秒）：= autoBars × autoBarMs；手动档位/回退为 0 */
+  autoFadeMs: number;
+  /** auto 本次算出的小节数（手动档位/回退为 0） */
+  autoBars: number;
+  /** auto 使用的小节长（毫秒，两首协调后的实时长度；手动档位/回退为 0） */
+  autoBarMs: number;
+  /** auto 决策说明（手动档位 / 默认乐句 / 快歌两乐句 / B 前奏较短 / 尾奏前奏宽裕 / 无拍点回退） */
+  autoNote: string;
   progress: number;
   baseVolume: number;
   events: CrossfadeDebugEvent[];
@@ -186,6 +203,10 @@ const debug: CrossfadeDebugState = {
   vocalAligned: false,
   currentAudibleEndMs: 0,
   tailSilenceMs: 0,
+  autoFadeMs: 0,
+  autoBars: 0,
+  autoBarMs: 0,
+  autoNote: '',
   progress: 0,
   baseVolume: 0,
   events: [],
@@ -260,6 +281,14 @@ interface FadeSchedule {
   nextVocalStartMs: number;
   /** true = B 起播点按唱词反推（前奏够长跳过 / 前奏较短整段过渡） */
   vocalAligned: boolean;
+  /** auto 本次目标时长（毫秒）：= autoBars × autoBarMs；手动档位/回退为 0 */
+  autoFadeMs: number;
+  /** auto 本次算出的小节数（手动档位/回退为 0） */
+  autoBars: number;
+  /** auto 使用的小节长（毫秒，两首协调后的实时长度；手动档位/回退为 0） */
+  autoBarMs: number;
+  /** auto 决策说明（调试/QA 用） */
+  autoNote: string;
 }
 
 interface ActivePlan {
@@ -394,16 +423,133 @@ function pickDownbeatAtOrAfter(analysis: BeatAnalysis, fromFileMs: number, limit
   return best;
 }
 
-/** 本次淡化目标时长：手动秒数 或 auto（A 的 4 小节，夹 5–10 秒）。 */
-function resolveFadeLength(options: CrossfadePrepareOptions): number {
-  const settings = readCrossfadeSettings();
-  if (settings.length !== 'auto') return settings.length * 1000;
-  const analysis = options.currentAnalysis.analysis;
-  const beat = analysis.beatIntervalMs > 0 ? analysis.beatIntervalMs : 500;
+/** 拍间隔：优先用分析给的 beatIntervalMs，其次由 BPM 反推；都没有 = 0。 */
+function beatIntervalOf(analysis: BeatAnalysis): number {
+  if (analysis.beatIntervalMs > 0 && Number.isFinite(analysis.beatIntervalMs)) return analysis.beatIntervalMs;
+  if (analysis.bpm >= 40 && Number.isFinite(analysis.bpm)) return 60_000 / analysis.bpm;
+  return 0;
+}
+
+/** 一小节的实时时长（毫秒）；拍点未知 = 0。 */
+function barIntervalOf(analysis: BeatAnalysis): number {
+  const beat = beatIntervalOf(analysis);
+  if (!(beat > 0)) return 0;
   const meter = analysis.meter >= 2 && analysis.meter <= 16 ? analysis.meter : 4;
-  const autoMs = beat * meter * AUTO_BARS;
-  if (!(autoMs > 0)) return AUTO_FALLBACK_MS;
-  return Math.min(AUTO_MAX_MS, Math.max(AUTO_MIN_MS, autoMs));
+  return beat * meter;
+}
+
+/**
+ * 两首协调后的一小节：能做 WSOLA 变速对齐时 B 跟随 A（用 A 的小节），
+ * 拍速差太大对不齐时取两首的谐波平均，让两首歌的拍子都算数。
+ */
+function coordinatedBarMs(a: BeatAnalysis, b: BeatAnalysis): { barMs: number; tempoAligned: boolean } {
+  const barA = barIntervalOf(a);
+  const barB = barIntervalOf(b);
+  const tempoAligned =
+    a.bpm >= 40 &&
+    b.bpm >= 40 &&
+    a.bpm / b.bpm >= TEMPO_RATE_MIN &&
+    a.bpm / b.bpm <= TEMPO_RATE_MAX;
+  if (barA > 0 && barB > 0) {
+    return { barMs: tempoAligned ? barA : (2 * barA * barB) / (barA + barB), tempoAligned };
+  }
+  if (barA > 0) return { barMs: barA, tempoAligned: false };
+  if (barB > 0) return { barMs: barB, tempoAligned: false };
+  return { barMs: 0, tempoAligned: false };
+}
+
+/** A 最后一个「outro」段落的起点（文件毫秒）；没有则 null。 */
+function lastOutroStartMs(analysis: BeatAnalysis): number | null {
+  const sections = Array.isArray(analysis.sections) ? analysis.sections : [];
+  let best: number | null = null;
+  for (const section of sections) {
+    if (section.label !== 'outro' || !Number.isFinite(section.startMs)) continue;
+    if (best === null || section.startMs > best) best = section.startMs;
+  }
+  return best;
+}
+
+interface AutoFadePlan {
+  /** 本次目标淡化时长（毫秒）；手动 = 固定秒数 */
+  ms: number;
+  /** true = 本次是 auto 决策（false = 手动固定档位） */
+  auto: boolean;
+  /** auto 算出的小节数（手动/回退为 0） */
+  bars: number;
+  /** auto 使用的小节长（毫秒；手动/回退为 0） */
+  barMs: number;
+  /** 决策说明（调试/QA 用） */
+  note: string;
+}
+
+/**
+ * auto 过渡时长：以两首歌的小节为基准，再用 A 的尾奏 / B 的前奏-唱词空间伸展或缩小小节数。
+ * 不再夹 5–10 秒：慢歌 4 小节可以到十几秒，快歌/双拍取两个乐句，实际时长随两首歌自由变化。
+ */
+function buildAutoFadePlan(
+  options: CrossfadePrepareOptions,
+  ctx: {
+    currentStartMs: number;
+    fileAudibleEndMs: number;
+    baseBStartFileMs: number;
+    vocalFileMs: number;
+  },
+): AutoFadePlan {
+  const a = options.currentAnalysis.analysis;
+  const b = options.nextAnalysis.analysis;
+  const { barMs, tempoAligned } = coordinatedBarMs(a, b);
+  if (!(barMs > 0)) {
+    return { ms: AUTO_FALLBACK_MS, auto: true, bars: 0, barMs: 0, note: '无拍点，回退固定时长' };
+  }
+
+  let bars = AUTO_BARS;
+  let note = tempoAligned ? '两首变速对齐，默认一个乐句' : '两首拍速差较大，取平均小节';
+  // 小节特别短（快歌 / 双拍被分析成两倍速）：一个乐句只有 4 秒上下，取两个乐句更合适。
+  if (barMs < AUTO_SHORT_BAR_MS) {
+    bars = AUTO_BARS_LONG;
+    note = '小节很短，取两个乐句';
+  }
+
+  // B 从第一个强拍到「开始唱词」的可用前奏（文件毫秒）；没有歌词数据时为 0。
+  const bRoomMs = ctx.vocalFileMs > 0 ? ctx.vocalFileMs - ctx.baseBStartFileMs : 0;
+  if (bRoomMs > 0 && bRoomMs < bars * barMs) {
+    // 前奏不足一个乐句：按整小节缩短；剩余部分由 B 侧「整段前奏当过渡」的逻辑兜底。
+    bars = Math.max(2, Math.min(bars, Math.floor(bRoomMs / barMs)));
+    note = 'B 前奏较短，按整小节缩短';
+  } else if (bRoomMs >= AUTO_BARS_LONG * barMs) {
+    // 想放宽到两个乐句：A 的尾奏也要够宽，否则会在最后的副歌里就开淡。
+    const outroStartMs = lastOutroStartMs(a);
+    const aTailMs = outroStartMs === null ? 0 : ctx.fileAudibleEndMs - (ctx.currentStartMs + outroStartMs);
+    const roomMs = Math.min(aTailMs, bRoomMs);
+    if (roomMs >= AUTO_BARS_LONG * barMs) {
+      bars = AUTO_BARS_LONG;
+      note = 'A 尾奏 + B 前奏宽裕，取两个乐句';
+    } else if (roomMs >= AUTO_BARS_MID * barMs) {
+      bars = AUTO_BARS_MID;
+      note = '一侧空间宽裕，取一个半乐句';
+    }
+  }
+
+  const rawMs = Math.round(barMs * bars);
+  return {
+    ms: Math.min(MAX_FADE_MS, Math.max(MIN_FADE_MS, rawMs)),
+    auto: true,
+    bars,
+    barMs: Math.round(barMs),
+    note,
+  };
+}
+
+/** 本次淡化目标时长：手动固定秒数，或 auto 的「两首歌小节 + 结构空间」方案。 */
+function resolveFadePlan(
+  options: CrossfadePrepareOptions,
+  ctx: Parameters<typeof buildAutoFadePlan>[1],
+): AutoFadePlan {
+  const settings = readCrossfadeSettings();
+  if (settings.length !== 'auto') {
+    return { ms: settings.length * 1000, auto: false, bars: 0, barMs: 0, note: '手动档位' };
+  }
+  return buildAutoFadePlan(options, ctx);
 }
 
 /**
@@ -428,8 +574,6 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
   const tailSilenceMs = Math.max(0, durationMs - audibleEndPosMs);
   const fileAudibleEndMs = currentStartMs + audibleEndPosMs;
 
-  const desiredMs = resolveFadeLength(options);
-
   // ---- B 侧：优先让「淡化结束」正好落在下一首的开始唱词 ----
   const nextStartMs = options.next.startAt * 1000;
   const nextDurationMs =
@@ -447,6 +591,15 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
       ? Math.round(Math.min(rawVocalStart, nextDurationMs > 0 ? nextDurationMs : rawVocalStart))
       : 0;
   const vocalFileMs = vocalPosMs > 0 ? nextStartMs + vocalPosMs : 0;
+
+  // 过渡时长（auto 需要 B 的起播点/唱词位置来判断前奏空间，所以放在 B 侧基础信息之后算）。
+  const fadePlan = resolveFadePlan(options, {
+    currentStartMs,
+    fileAudibleEndMs,
+    baseBStartFileMs,
+    vocalFileMs,
+  });
+  const desiredMs = fadePlan.ms;
 
   let plannedFadeMs = desiredMs;
   let bStartFileMs = baseBStartFileMs;
@@ -534,6 +687,10 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
     tailSilenceMs: Math.round(tailSilenceMs),
     nextVocalStartMs: vocalPosMs,
     vocalAligned,
+    autoFadeMs: fadePlan.auto ? fadePlan.ms : 0,
+    autoBars: fadePlan.bars,
+    autoBarMs: fadePlan.barMs,
+    autoNote: fadePlan.note,
   };
 }
 
@@ -553,6 +710,10 @@ function applySchedule(plan: ActivePlan, schedule: FadeSchedule): void {
   debug.tailSilenceMs = schedule.tailSilenceMs;
   debug.nextVocalStartMs = schedule.nextVocalStartMs;
   debug.vocalAligned = schedule.vocalAligned;
+  debug.autoFadeMs = schedule.autoFadeMs;
+  debug.autoBars = schedule.autoBars;
+  debug.autoBarMs = schedule.autoBarMs;
+  debug.autoNote = schedule.autoNote;
 }
 
 /** seek 到指定文件秒数；元数据还没到时挂一次性 loadedmetadata 兜底。 */
@@ -936,7 +1097,7 @@ export function buildCrossfadeSection(scope: Disposers | null): HTMLElement {
         'aria-pressed': 'false',
         title:
           value === 'auto'
-            ? '自动：按当前歌曲 4 小节决定（5–10 秒）'
+            ? '自动：按两首歌的拍点/小节与前后奏空间自由决定，不再固定 5–10 秒'
             : `固定 ${value} 秒交叉淡化`,
       },
       value === 'auto' ? '自动' : `${value} 秒`,
@@ -981,7 +1142,7 @@ export function buildCrossfadeSection(scope: Disposers | null): HTMLElement {
     h('h3', { class: 'section-title', text: '无缝衔接（实验）' }),
     h('p', {
       class: 'analysis-desc',
-      text: '当前歌曲结束前，按鼓点提前开始下一首，并按等功率曲线交叉淡化（B 用更慢的进入曲线，避免一上来就大声；A 多留一点尾音），避免曲间静音；淡化终点对齐歌曲的可听结尾，自动跳过曲尾静音与明显渐弱收尾（需宿主分析支持 audibleEndMs，p0-5 起）。淡化结束时机对齐下一首的「开始唱词」（有歌词时）：前奏较长会跳过前奏、从唱词前若干秒切入；前奏较短则把整段前奏当作过渡，结束时正好进入唱词。两首 BPM 不同时会用 WSOLA 变速不变调（±12% 内）把 B 的节拍拉齐，过渡结束后平滑恢复原速；图内路径下 A 的伴奏先退、B 的伴奏慢慢回正，人声先出现、伴奏后融进来。仅在列表循环、下一首分析成功时生效；均衡器/人声保留淡出等 Web Audio 音效开启时自动改走图内增益淡化，否则回退为原来的硬切。',
+      text: '当前歌曲结束前，按鼓点提前开始下一首，并按等功率曲线交叉淡化（B 用更慢的进入曲线，避免一上来就大声；A 多留一点尾音），避免曲间静音；淡化终点对齐歌曲的可听结尾，自动跳过曲尾静音与明显渐弱收尾（需宿主分析支持 audibleEndMs，p0-5 起）。淡化结束时机对齐下一首的「开始唱词」（有歌词时）：前奏较长会跳过前奏、从唱词前若干秒切入；前奏较短则把整段前奏当作过渡，结束时正好进入唱词。过渡时长「自动」不再固定 5–10 秒：以两首歌的小节为基准（默认一个乐句 4 小节，拍速差大时取两首的平均小节），B 前奏到唱词的空间不足时按整小节缩短、A 尾奏与 B 前奏都宽裕时放宽到 6–8 小节、小节很短（快歌/双拍）时取两个乐句，实际时长随歌曲自由变化。两首 BPM 不同时会用 WSOLA 变速不变调（±12% 内）把 B 的节拍拉齐，过渡结束后平滑恢复原速；图内路径下 A 的伴奏先退、B 的伴奏慢慢回正，人声先出现、伴奏后融进来。仅在列表循环、下一首分析成功时生效；均衡器/人声保留淡出等 Web Audio 音效开启时自动改走图内增益淡化，否则回退为原来的硬切。',
     }),
     h(
       'div',
@@ -1004,7 +1165,7 @@ export function buildCrossfadeSection(scope: Disposers | null): HTMLElement {
           'div',
           {},
           h('div', { class: 'field-label', text: '过渡时长' }),
-          h('div', { class: 'field-hint', text: '自动 = 当前歌曲 4 小节（5–10 秒）；手动可选 3–30 秒' }),
+          h('div', { class: 'field-hint', text: '自动 = 两首歌的拍点/小节 + 前奏尾奏空间自适应，时长自由变化；手动可选 3–30 秒' }),
         ),
         lengthRow,
       ),
