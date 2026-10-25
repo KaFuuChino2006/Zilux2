@@ -132,7 +132,7 @@ import { openTextSettingsSheet } from './textSettingsPanel';
 import { openRoomSettingsSheet } from './roomSettingsPanel';
 import { readPosterLayout, writePosterLayout, type PosterLayout } from './posterLayout';
 import { ACCENT_PRESETS, applyAccentColor, readAccentColor, writeAccentColor } from './theme';
-import { pickBackgroundImageFile, readAppBgImage, readAppBgMode, writeAppBgImage, writeAppBgMode, type AppBgMode } from './appBackground';
+import { APP_BG_BLUR, APP_BG_POSITIONS, applyAppBgStyle, pickBackgroundImageFile, readAppBgBlur, readAppBgImage, readAppBgMode, readAppBgPosition, writeAppBgBlur, writeAppBgImage, writeAppBgMode, writeAppBgPosition, type AppBgMode } from './appBackground';
 import {
   UPDATE_STATE_TEXT,
   cancelUpdate,
@@ -314,6 +314,8 @@ export class App {
   constructor() {
     // 控制色是整站主题的一部分：先按本机保存的颜色覆盖语义令牌，再建界面。
     applyAccentColor(readAccentColor());
+    // 背景模糊度/取景位置也走 CSS 变量，先写入再挂载，避免首帧跳变。
+    applyAppBgStyle();
     this.root = h('div', { class: 'app' });
     this.appBgEl = h('div', { class: 'app-bg' });
     // 每层写成「淡入淡出壳 + 固定模糊图片」：透明度动画在外层、模糊在内层，
@@ -4930,6 +4932,47 @@ export class App {
     clear.addEventListener('click', () => {
       void this.clearBackgroundImage().then(refresh);
     });
+    // 模糊度：0–140px，默认 64px；改完立即写回 :root 的 CSS 变量。
+    const blurValue = readAppBgBlur();
+    const blurLabel = h('span', { class: 'field-slider-value', text: `${blurValue}px` });
+    const blurInput = h('input', {
+      class: 'slider',
+      type: 'range',
+      min: String(APP_BG_BLUR.min),
+      max: String(APP_BG_BLUR.max),
+      step: String(APP_BG_BLUR.step),
+      value: String(blurValue),
+    });
+    blurInput.addEventListener('input', () => {
+      const value = Number(blurInput.value);
+      blurLabel.textContent = `${value}px`;
+      writeAppBgBlur(value);
+      applyAppBgStyle();
+    });
+    const blurField = h(
+      'div',
+      { class: 'field field-slider' },
+      h('div', { class: 'field-label', text: '背景模糊度' }),
+      h('div', { class: 'field-slider-control' }, blurLabel, blurInput),
+    );
+    // 壁纸取景位置：居中/顶部/底部/左侧/右侧。
+    const posSeg = h('div', { class: 'seg' });
+    const posButtons: HTMLButtonElement[] = [];
+    const paintPos = (): void => {
+      const active = readAppBgPosition();
+      posButtons.forEach((button, index) => button.classList.toggle('is-on', APP_BG_POSITIONS[index].value === active));
+    };
+    for (const item of APP_BG_POSITIONS) {
+      const button = h('button', { class: 'seg-btn', type: 'button', text: item.label });
+      button.addEventListener('click', () => {
+        writeAppBgPosition(item.value);
+        applyAppBgStyle();
+        paintPos();
+      });
+      posButtons.push(button);
+      posSeg.append(button);
+    }
+    paintPos();
     refresh();
     return h(
       'div',
@@ -4937,7 +4980,10 @@ export class App {
       h('div', { class: 'field-label', text: '页面背景' }),
       seg,
       h('div', { class: 'bg-image-row' }, pick, clear, status),
-      h('div', { class: 'field-hint', text: '关闭 = 纯页面底色；跟随封面 = 随当前歌曲封面模糊变化；自定义图片会压缩到 1600px 内保存到本机。' }),
+      blurField,
+      h('div', { class: 'field-label', text: '壁纸位置' }),
+      posSeg,
+      h('div', { class: 'field-hint', text: '关闭 = 纯页面底色；跟随封面 = 随当前歌曲封面模糊变化；自定义图片会压缩到 1600px 内保存到本机。模糊度与取景位置对封面/自定义图都生效。' }),
     );
   }
 

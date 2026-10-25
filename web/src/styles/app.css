@@ -1251,7 +1251,9 @@ to{transform:translate(28px);opacity:0}
 .app-bg-layer {
   will-change: opacity;
   backface-visibility: hidden;
-  transform: translateZ(0) scale(1.15);
+  transform: translateZ(0) scale(var(--app-bg-scale, 1.15));
+  filter: blur(var(--app-bg-blur, 64px)) saturate(1.4);
+  background-position: var(--app-bg-pos, center);
 }
 .app-bg::after {
   background: rgb(var(--overlay-rgb) / 0.46);
@@ -1275,10 +1277,11 @@ body,
   letter-spacing: 0.004em;
 }
 
-/* 封面背景模糊收敛一些（原来 64px 太糊） */
+/* 封面背景模糊收敛一些（原来 64px 太糊）；模糊度与取景位置由设置控制 */
 .app-bg-layer {
-  filter: blur(34px) saturate(1.35);
-  transform: translateZ(0) scale(1.08);
+  filter: blur(var(--app-bg-blur, 34px)) saturate(1.4);
+  transform: translateZ(0) scale(var(--app-bg-scale, 1.08));
+  background-position: var(--app-bg-pos, center);
 }
 .lyrics-view .lyrics-bg {
   inset: -8%;
