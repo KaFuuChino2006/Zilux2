@@ -254,6 +254,15 @@ const initialSettings = readCrossfadeSettings();
 debug.enabled = initialSettings.enabled;
 debug.length = initialSettings.length;
 
+/**
+ * 当前过渡调度快照（只读副本）。
+ * 播放条用它显示「将在 X 分 Y 秒后过渡至 xxx」：phase === 'prepared' 且 fadeStartPosMs 已知时有效；
+ * 手动切歌 / 单曲循环的短过渡只在 prepared 停留极短时间，不会触发长倒计时提示。
+ */
+export function readCrossfadeDebug(): CrossfadeDebugState {
+  return debug.snapshot();
+}
+
 function logEvent(event: string, detail = ''): void {
   debug.events.push({ at: Date.now(), event, detail });
   if (debug.events.length > 40) debug.events.splice(0, debug.events.length - 40);

@@ -64,7 +64,7 @@ import {
 } from '../online/sources';
 import { onlineArtwork } from '../online/artwork';
 import { buildAnalysisSection } from './analysisSection';
-import { buildCrossfadeSection } from './crossfadeDeck';
+import { buildCrossfadeSection, readCrossfadeDebug } from './crossfadeDeck';
 import { confirmDialog } from './confirmDialog';
 import { createEqCurve } from './eqCurve';
 import { localArtists, type LocalArtist } from './localArtists';
@@ -199,6 +199,15 @@ interface SheetHandle {
   close(): void;
 }
 
+
+/** 倒计时文案：秒 / 分+秒（用于「将在 X 分 Y 秒后过渡至…」）。 */
+function formatCountdownSpan(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  if (total < 60) return `${total} 秒`;
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return seconds > 0 ? `${minutes} 分 ${seconds} 秒` : `${minutes} 分`;
+}
 
 /** 热门歌单播放次数展示。 */
 function formatPlays(value: number): string {
@@ -336,6 +345,8 @@ export class App {
   /** 迷你态切换过渡：宿主补间窗口期间页面先切「悬浮小卡」，等 window/miniMode 回推再落最终布局。 */
   private miniTransition: 'idle' | 'entering' | 'exiting' = 'idle';
   private miniFallbackTimer = 0;
+  /** 无缝衔接准备就绪后，播放条下方的「将在 X 分 Y 秒后过渡至 xxx」提示。 */
+  private seamlessHint!: HTMLDivElement;
   private appBgMode: AppBgMode = readAppBgMode();
   private appBgImage = readAppBgImage();
   private appBgEl!: HTMLDivElement;
@@ -4358,7 +4369,8 @@ export class App {
       h('div', { class: 'pb-extra' }, lyricsBtn, volumeWrap, this.miniBtn),
     );
 
-    const wrap = h('div', { class: 'playerbar-wrap' }, bar);
+    this.seamlessHint = h('div', { class: 'pb-seamless-hint', 'aria-live': 'polite' });
+    const wrap = h('div', { class: 'playerbar-wrap' }, bar, this.seamlessHint);
     this.root.append(wrap);
     this.playerbar = bar;
     this.playerbarWrap = wrap;
@@ -5964,6 +5976,7 @@ export class App {
       this.paintModeBtn(state.mode);
     this.syncQuickBody();
       this.upnextRoot.classList.add('is-hidden');
+      this.syncSeamlessHint(state);
       return;
     }
     this.playerbar.classList.remove('is-idle');
@@ -6037,6 +6050,36 @@ export class App {
     });
     this.syncUpNext(state);
     this.upNextToast?.update(state);
+    this.syncSeamlessHint(state);
+  }
+
+  /**
+   * 无缝衔接准备完成后，在播放条下方提示距离曲内淡化起点还剩多久。
+   * 依赖 crossfadeDeck 的调试快照：phase = prepared、fadeStartPosMs = A 曲内的淡化起点。
+   */
+  private syncSeamlessHint(state: PlayerState): void {
+    const hint = this.seamlessHint;
+    if (!hint) return;
+    const debug = readCrossfadeDebug();
+    const remainingMs = debug.fadeStartPosMs - state.positionMs;
+    const visible = Boolean(
+      state.track &&
+        state.playing &&
+        debug.enabled &&
+        debug.phase === 'prepared' &&
+        debug.nextPrepared &&
+        remainingMs > 1000 &&
+        !this.miniMode &&
+        this.miniTransition === 'idle',
+    );
+    hint.classList.toggle('is-visible', visible);
+    if (!visible) {
+      if (hint.textContent) hint.textContent = '';
+      return;
+    }
+    const next = debug.nextTitle || '下一首';
+    const text = `将在 ${formatCountdownSpan(remainingMs)} 后过渡至「${next}」`;
+    if (hint.textContent !== text) hint.textContent = text;
   }
 
   /** 切歌前把当前封面/文字复制一份留着做「滑出」动画。 */
