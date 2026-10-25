@@ -615,6 +615,11 @@ export class App {
         h('span', { class: 'rail-label', text: item.label }),
       );
       btn.addEventListener('click', () => item.onClick());
+      // 「我喜欢的音乐」与「最近播放」支持双击直接开播：单击仍然只是进入页面。
+      if (item.key === 'liked' || item.key === 'recent') {
+        btn.title = `${item.label}（双击直接播放）`;
+        btn.addEventListener('dblclick', () => void this.playRailList(item.key as 'liked' | 'recent'));
+      }
       this.railButtons.set(item.key, btn);
       rail.append(btn);
     }
@@ -1354,6 +1359,19 @@ export class App {
       return;
     }
     playQueue(tracks, 0);
+  }
+
+  /** rail 双击快捷播放：先进入对应列表页，再从第一首开始整列表播放（单击仍然只进页面）。 */
+  private async playRailList(kind: 'liked' | 'recent'): Promise<void> {
+    if (kind === 'liked') {
+      await this.showLiked();
+      if (this.wall.kind === 'liked' && this.wall.tracks.length > 0) playQueue(this.wall.tracks, 0, true);
+      else toast('收藏列表还没有可播放的歌曲', 'error');
+      return;
+    }
+    await this.showRecentWall();
+    if (this.wall.kind === 'recent' && this.wall.tracks.length > 0) playQueue(this.wall.tracks, 0, true);
+    else toast('最近播放还没有可播放的歌曲', 'error');
   }
 
   private async fetchLikedTracks(source: OnlineSource): Promise<OnlineTrack[] | null> {
