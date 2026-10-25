@@ -6148,27 +6148,16 @@ html.is-pb-expanded .playerbar.is-hidden {
   text-shadow: 0 0 12px color-mix(in srgb, var(--accent) 16%, transparent);
 }
 
-/* 渐变：当前行字面走主题色→文字色渐变（浅色主题下也保持对比）。
-   渐变画在行上、把字填充设为透明（-webkit-text-fill-color），逐字 span 也透明，
-   这样整行是一条连续渐变，而不是每个字各一段。 */
+/* 渐变：当前行按色板逐字过渡，每个字一个 --lyric-grad 色（lyrics.ts 的 paintGradientTones 写入）。
+   不要用 background-clip:text：行上画渐变 + 字上透明填充会让每层文字各画一遍，叠出重影。 */
 .lyrics-view.lyric-style-gradient .lyrics-right .lyric-line.is-active {
-  background-image: linear-gradient(
-    96deg,
-    color-mix(in srgb, var(--accent) 78%, var(--text)),
-    var(--text) 42%,
-    color-mix(in srgb, var(--accent) 66%, var(--text)) 72%,
-    var(--accent)
-  );
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent !important;
-  -webkit-text-fill-color: transparent;
-  text-shadow: none;
+  color: var(--lyric-grad, var(--lyric-line, var(--text))) !important;
+  -webkit-text-fill-color: var(--lyric-grad, var(--lyric-line, var(--text)));
+  text-shadow: none !important;
 }
 .lyrics-view.lyric-style-gradient .lyrics-right .lyric-line.is-active .lyric-char {
-  background-image: none;
-  color: transparent !important;
-  -webkit-text-fill-color: transparent;
+  color: var(--lyric-grad, var(--lyric-line)) !important;
+  -webkit-text-fill-color: var(--lyric-grad, var(--lyric-line));
   text-shadow: none !important;
 }
 
