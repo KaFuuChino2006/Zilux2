@@ -119,9 +119,10 @@ import {
   disposeDownloadQueue,
   initDownloadQueue,
   isDownloadPanelOpen,
+  openDownloadPanel,
   type DownloadQueueView,
 } from './downloadQueue';
-import { closeQualityPicker, openQualityPicker } from './downloadPicker';
+import { closeQualityPicker, openDownloadMenu, openQualityPicker } from './downloadPicker';
 import type { PlayScope } from './home';
 import type { HomeCollection, HomeData } from './home';
 import { openLyricPicker } from './lyricPicker';
@@ -2061,6 +2062,24 @@ export class App {
     });
   }
 
+  /**
+   * 播放条下载按钮：先弹小菜单，提供「下载当前歌曲」（继续走音质选择）与「打开下载队列」。
+   * 没有正在播放的歌曲时，菜单里下载项置灰，仍可打开队列。
+   */
+  private openPlaybarDownloadMenu(anchor: HTMLElement): void {
+    const track = playerState().track;
+    openDownloadMenu({
+      anchor,
+      track: track ? { title: track.title, artist: track.artist, local: track.source === 'local' } : null,
+      onDownloadTrack: () => {
+        const current = playerState().track;
+        if (!current || current.source === 'local') return;
+        this.beginDownload(current, anchor);
+      },
+      onOpenQueue: () => openDownloadPanel(),
+    });
+  }
+
   /** 搜索结果行：封面 + 歌名/作者 + VIP + 平台角标 + 下载 + 收藏。 */
   private buildSearchList(tracks: OnlineTrack[]): HTMLDivElement {
     const list = h('div', { class: 'track-list' });
@@ -3718,7 +3737,7 @@ export class App {
       { passive: false },
     );
 
-    const downloadBtn = createDownloadEntryButton();
+    const downloadBtn = createDownloadEntryButton((anchor) => this.openPlaybarDownloadMenu(anchor));
     const bar = h(
       'div',
       { class: 'playerbar' },

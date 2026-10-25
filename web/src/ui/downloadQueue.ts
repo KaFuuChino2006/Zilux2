@@ -886,8 +886,15 @@ export async function beginQueueDownload(track: OnlineTrack, quality?: StreamQua
   }
 }
 
-/** 由 app 在播放条里创建入口按钮，返回同一个实例。 */
-export function createDownloadEntryButton(): HTMLButtonElement {
+/**
+ * 由 app 在播放条里创建入口按钮，返回同一个实例。
+ *
+ * onActivate 为空时保持旧行为（点一下展开/收起下载队列浮层）；app 传入回调后，
+ * 按钮会改为弹出下载菜单（下载当前歌曲 / 打开下载队列）。
+ */
+export function createDownloadEntryButton(
+  onActivate?: (anchor: HTMLButtonElement) => void,
+): HTMLButtonElement {
   if (entryBtn) return entryBtn;
   const badge = h('span', { class: 'dlq-badge', 'aria-hidden': 'true' });
   badge.hidden = true;
@@ -896,26 +903,30 @@ export function createDownloadEntryButton(): HTMLButtonElement {
     {
       class: 'pb-btn pb-download',
       type: 'button',
-      title: '下载队列',
+      title: '下载（当前歌曲 / 下载队列）',
       'data-qa': 'download-entry',
-      'aria-haspopup': 'dialog',
+      'aria-haspopup': 'menu',
       'aria-expanded': 'false',
     },
     icon('download', 17),
     badge,
   );
+  const activate = (): void => {
+    if (onActivate) onActivate(button);
+    else toggleDownloadPanel();
+  };
   button.addEventListener('pointerdown', (event) => {
     if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
     lastPointerToggleAt = Date.now();
-    toggleDownloadPanel();
+    activate();
   });
   button.addEventListener('click', (event) => {
     event.stopPropagation();
     // pointerdown 已经处理过本次点击，避免播放条展开时二次触发。
     if (Date.now() - lastPointerToggleAt < 500) return;
-    toggleDownloadPanel();
+    activate();
   });
   entryBtn = button;
   entryBadge = badge;
