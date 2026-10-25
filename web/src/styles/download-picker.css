@@ -201,6 +201,46 @@
   outline: none;
 }
 
+/* ---------- 播放条下载菜单（下载当前歌曲 / 打开下载队列） ---------- */
+
+.dlqm-panel {
+  width: min(286px, calc(100vw - 20px));
+  gap: 6px;
+}
+
+.dlqm-items {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.dlqm-item {
+  min-height: 44px;
+}
+
+.dlqm-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  background: rgb(var(--overlay-rgb, 24 26 32) / 0.06);
+  color: var(--accent-strong, var(--accent, #b08d4f));
+}
+
+.dlqm-item.is-disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.dlqm-item.is-disabled:hover,
+.dlqm-item.is-disabled:focus-visible {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-soft, #333);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .dlqp-panel,
   .dlqp-overlay.is-open .dlqp-panel {

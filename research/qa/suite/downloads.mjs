@@ -49,6 +49,24 @@ import {
 } from './lib/fixtures.mjs';
 
 /* -------------------------------------------------------------------------- */
+/* 打开下载面板：新版播放条入口先弹「下载」菜单（下载当前歌曲 / 打开下载队列），   */
+/* 旧版入口直接开面板；两种都兼容（task-16 起入口改为菜单）。                     */
+/* -------------------------------------------------------------------------- */
+
+async function openDownloadPanelViaEntry(cdp, desc = '播放条下载入口') {
+  if (await cdp.eval(`!!document.querySelector('.dlq-panel.is-open')`)) return;
+  await cdp.click(DLQ.entry, { desc });
+  await cdp.waitFor(
+    `!!document.querySelector('[data-qa="download-menu"]') || !!document.querySelector('.dlq-panel.is-open')`,
+    { desc: '下载菜单或下载面板出现', timeoutMs: 8000 },
+  );
+  if (await cdp.eval(`!!document.querySelector('[data-qa="download-menu"]')`)) {
+    await cdp.click('.dlqm-item[data-action="open-queue"]', { desc: '下载菜单 → 打开下载队列' });
+  }
+  await cdp.waitFor(`!!document.querySelector('.dlq-panel.is-open')`, { desc: '下载面板打开（.dlq-panel.is-open）', timeoutMs: 8000 });
+}
+
+/* -------------------------------------------------------------------------- */
 /* 页面内函数（通过 toString 注入）                                             */
 /* -------------------------------------------------------------------------- */
 
@@ -676,7 +694,7 @@ await runSuite('downloads', '下载队列（T2）', async (suite) => {
       };
     })()`);
     suite.assert(entry.cls.includes('pb-btn'), `入口按钮应有 .pb-btn 类，实际 class=${entry.cls}`);
-    suite.assert(entry.haspopup === 'dialog', `入口按钮 aria-haspopup 应为 dialog，实际 ${entry.haspopup}`);
+    suite.assert(entry.haspopup === 'menu', `入口按钮 aria-haspopup 应为 menu（播放条下载菜单），实际 ${entry.haspopup}`);
 
     const debug = await dlqDebug(cdp);
     suite.assert(debug, '页面缺少 window.__zilux2DownloadQueue 调试入口（initDownloadQueue 未挂载？）');
@@ -694,11 +712,7 @@ await runSuite('downloads', '下载队列（T2）', async (suite) => {
 
   /* ---------------------------------------------------------------------- */
   await suite.step('面板开合：入口点击打开 / 关闭按钮收起', async () => {
-    await cdp.click(DLQ.entry, { desc: '下载队列入口按钮' });
-    await cdp.waitFor(`!!document.querySelector('.dlq-panel.is-open')`, {
-      desc: '面板打开（.dlq-panel.is-open）',
-      timeoutMs: 8000,
-    });
+    await openDownloadPanelViaEntry(cdp, '下载队列入口按钮');
     await sleep(250);
     let snap = await dlqSnapshot(cdp);
     suite.assert(snap.exists, '面板 .dlq-panel 未创建');
@@ -722,8 +736,7 @@ await runSuite('downloads', '下载队列（T2）', async (suite) => {
 
   /* ---------------------------------------------------------------------- */
   await suite.step('面板结构：标题、摘要、筛选 tab、目录、空态、单例 DOM', async () => {
-    await cdp.click(DLQ.entry, { desc: '再次打开下载面板' });
-    await cdp.waitFor(`!!document.querySelector('.dlq-panel.is-open')`, { desc: '面板打开', timeoutMs: 8000 });
+    await openDownloadPanelViaEntry(cdp, '再次打开下载面板');
     let snap = await dlqSnapshot(cdp);
     snapshotAtStart = snap;
 
@@ -828,22 +841,38 @@ await runSuite('downloads', '下载队列（T2）', async (suite) => {
     suite.note(`rail 共 ${state.railBtnCount} 个入口：${state.railTitles.join(' / ')}`);
     suite.assert(state.playerEntry.exists, '播放条缺少下载入口 [data-qa="download-entry"]');
     suite.assert(
-      state.playerEntry.haspopup === 'dialog',
-      `播放条入口 aria-haspopup 应为 dialog，实际 ${state.playerEntry.haspopup}`,
+      state.playerEntry.haspopup === 'menu',
+      `播放条入口 aria-haspopup 应为 menu（播放条下载菜单），实际 ${state.playerEntry.haspopup}`,
     );
     suite.assert(state.playerEntry.hidden === false, '播放条下载入口不应隐藏');
     const emptySession = baseline.jobs.length === 0;
 
-    // 1) 播放条入口点击 → 打开（面板是独立队列视图，不依赖当前有没有歌曲）
+    // 1) 播放条入口点击 → 先弹下载菜单（下载当前歌曲 / 打开下载队列）
     await cdp.click(DLQ.entry, { desc: '播放条下载入口' });
-    await cdp.waitFor(`!!document.querySelector('.dlq-panel.is-open')`, {
-      desc: '播放条入口打开下载面板（.dlq-panel.is-open）',
-      timeoutMs: 6000,
-    });
+    await cdp.waitFor(`!!document.querySelector('[data-qa="download-menu"]')`, { desc: '下载菜单出现', timeoutMs: 6000 });
+    const menu = await cdp.eval(`(() => {
+      const m = document.querySelector('[data-qa="download-menu"]');
+      return {
+        title: (m.querySelector('.dlqp-title')?.textContent || '').trim(),
+        actions: Array.from(m.querySelectorAll('.dlqm-item')).map((b) => b.getAttribute('data-action')),
+        track: (m.querySelector('.dlqp-track')?.textContent || '').trim(),
+      };
+    })()`);
+    suite.assert(menu.title === '下载', `菜单标题应为「下载」，实际「${menu.title}」`);
+    suite.assert(
+      menu.actions.join('|') === 'download-current|open-queue',
+      `菜单动作应为「下载当前歌曲 / 打开下载队列」，实际 ${JSON.stringify(menu.actions)}`,
+    );
+    suite.note(`下载菜单：${menu.track || '（无当前歌曲）'} → 动作 ${menu.actions.join(' / ')}`);
+    await suite.shot('entry-menu');
+
+    // 菜单 → 打开下载队列
+    await cdp.eval(`(() => { const b = document.querySelector('.dlqm-item[data-action="open-queue"]'); if (b) b.click(); return true; })()`);
+    await cdp.waitFor(`!!document.querySelector('.dlq-panel.is-open')`, { desc: '菜单 → 下载面板打开', timeoutMs: 8000 });
     await sleep(150);
     state = await entryState(cdp);
-    suite.assert(state.panelExists, '点击播放条入口后 .dlq-panel 未创建');
-    suite.assert(state.panelOpen, '点击播放条入口后面板未带 .is-open');
+    suite.assert(state.panelExists, '经菜单打开后 .dlq-panel 未创建');
+    suite.assert(state.panelOpen, '经菜单打开后面板未带 .is-open');
     suite.assert(state.ariaHidden === 'false', `面板打开时 aria-hidden 应为 false，实际 ${state.ariaHidden}`);
     suite.assert(
       state.playerEntry.expanded === 'true',
@@ -852,16 +881,15 @@ await runSuite('downloads', '下载队列（T2）', async (suite) => {
     // 零任务会话的空态/文案断言在「面板结构」步骤覆盖；这里只保证入口可用。
     await suite.shot('entry-player-open');
 
-    // 2) 再点入口 → 收起（toggle）
-    await cdp.click(DLQ.entry, { desc: '再次点击播放条下载入口' });
-    await cdp.waitFor(`!document.querySelector('.dlq-panel.is-open')`, { desc: '播放条入口再点收起面板', timeoutMs: 6000 });
+    // 2) 关闭按钮 → 收起（入口不再是 toggle，而是弹菜单）
+    await cdp.click(DLQ.close, { desc: '收起下载面板' });
+    await cdp.waitFor(`!document.querySelector('.dlq-panel.is-open')`, { desc: '面板收起', timeoutMs: 6000 });
     state = await entryState(cdp);
-    suite.assert(!state.panelOpen, '再点播放条入口后面板仍打开（toggle 失效）');
+    suite.assert(!state.panelOpen, '点关闭后面板仍打开');
     suite.assert(state.ariaHidden === 'true', `收起后 aria-hidden 应为 true，实际 ${state.ariaHidden}`);
 
-    // 3) 点面板外 → 关闭
-    await cdp.click(DLQ.entry, { desc: '播放条入口重新打开面板' });
-    await cdp.waitFor(`!!document.querySelector('.dlq-panel.is-open')`, { desc: '面板再次打开', timeoutMs: 6000 });
+    // 3) 入口 → 菜单 → 点面板外关闭（菜单消失，面板仍开）→ 再点面板外关闭面板
+    await openDownloadPanelViaEntry(cdp, '播放条入口重新打开面板');
     await cdp.eval(`(() => {
       const target = document.querySelector('.stage') || document.body;
       target.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
@@ -870,8 +898,7 @@ await runSuite('downloads', '下载队列（T2）', async (suite) => {
     await cdp.waitFor(`!document.querySelector('.dlq-panel.is-open')`, { desc: '点击面板外收起', timeoutMs: 6000 });
 
     // 4) Esc → 关闭（main.ts 全局快捷键 → app.escapeTopLayer 关下载面板）
-    await cdp.click(DLQ.entry, { desc: '播放条入口再次打开面板（Esc 前）' });
-    await cdp.waitFor(`!!document.querySelector('.dlq-panel.is-open')`, { desc: '面板打开（Esc 前）', timeoutMs: 6000 });
+    await openDownloadPanelViaEntry(cdp, '播放条入口再次打开面板（Esc 前）');
     await pressEscape(cdp);
     await cdp.waitFor(`!document.querySelector('.dlq-panel.is-open')`, { desc: 'Esc 收起下载面板', timeoutMs: 6000 });
 
@@ -881,8 +908,7 @@ await runSuite('downloads', '下载队列（T2）', async (suite) => {
   /* ---------------------------------------------------------------------- */
   await suite.step('分段控件：.seg 类名 / is-on / .seg-thumb 滑块定位', async () => {
     if (!(await cdp.eval(`!!document.querySelector('.dlq-panel.is-open')`))) {
-      await cdp.click(DLQ.entry, { desc: '播放条入口打开下载面板' });
-      await cdp.waitFor(`!!document.querySelector('.dlq-panel.is-open')`, { desc: '面板打开', timeoutMs: 6000 });
+      await openDownloadPanelViaEntry(cdp, '播放条入口打开下载面板');
     }
     // 等 app.ts enhanceSegs 注入 .seg-thumb 并完成首帧定位（rAF×2 + 无动画 place(false)）
     await cdp.waitFor(
@@ -945,8 +971,7 @@ await runSuite('downloads', '下载队列（T2）', async (suite) => {
   /* ---------------------------------------------------------------------- */
   await suite.step('tab 切换动画：is-switch / dlq-switch-in / 700ms 移除 / 滑块位移', async () => {
     if (!(await cdp.eval(`!!document.querySelector('.dlq-panel.is-open')`))) {
-      await cdp.click(DLQ.entry, { desc: '播放条入口打开下载面板' });
-      await cdp.waitFor(`!!document.querySelector('.dlq-panel.is-open')`, { desc: '面板打开', timeoutMs: 6000 });
+      await openDownloadPanelViaEntry(cdp, '播放条入口打开下载面板');
     }
     // 基线筛选复位到「全部」，保证下面的切换一定发生 filter 变化
     const currentTab = await cdp.eval(
@@ -1211,8 +1236,7 @@ await runSuite('downloads', '下载队列（T2）', async (suite) => {
     }
     // 面板可能在上一步已被打开/关闭；确保打开以便观察进度
     if (!(await cdp.eval(`!!document.querySelector('.dlq-panel.is-open')`))) {
-      await cdp.click(DLQ.entry, { desc: '打开下载面板' });
-      await cdp.waitFor(`!!document.querySelector('.dlq-panel.is-open')`, { desc: '面板打开', timeoutMs: 6000 });
+      await openDownloadPanelViaEntry(cdp, '打开下载面板');
     }
     await sleep(200);
     return `${targetTrack.title}（${targetTrack.sourceTag}）→ job ${jobId} done（候选 ${attempts.length} 个）`;
@@ -1573,8 +1597,7 @@ await runSuite('downloads', '下载队列（T2）', async (suite) => {
     }
     // 后续筛选步骤需要面板打开
     if (!(await cdp.eval(`!!document.querySelector('.dlq-panel.is-open')`))) {
-      await cdp.click(DLQ.entry, { desc: '打开下载面板' });
-      await cdp.waitFor(`!!document.querySelector('.dlq-panel.is-open')`, { desc: '面板打开', timeoutMs: 6000 });
+      await openDownloadPanelViaEntry(cdp, '打开下载面板');
     }
     await sleep(200);
   }
@@ -1643,8 +1666,7 @@ await runSuite('downloads', '下载队列（T2）', async (suite) => {
   await suite.step('刷新按钮 + 关闭重开：状态保持', async () => {
     if (!jobId) throw new Error('前序步骤没有拿到 jobId');
     if (!(await cdp.eval(`!!document.querySelector('.dlq-panel.is-open')`))) {
-      await cdp.click(DLQ.entry, { desc: '打开下载面板' });
-      await cdp.waitFor(`!!document.querySelector('.dlq-panel.is-open')`, { desc: '面板打开', timeoutMs: 6000 });
+      await openDownloadPanelViaEntry(cdp, '打开下载面板');
     }
     const prev = await dlqSnapshot(cdp);
     await cdp.click(DLQ.refresh, { desc: '刷新下载列表按钮' });
@@ -1658,8 +1680,7 @@ await runSuite('downloads', '下载队列（T2）', async (suite) => {
     // 关闭 → 重开：DOM 保留、状态保持
     await cdp.click(DLQ.close, { desc: '关闭下载面板' });
     await cdp.waitFor(`!document.querySelector('.dlq-panel.is-open')`, { desc: '面板收起', timeoutMs: 5000 });
-    await cdp.click(DLQ.entry, { desc: '重新打开下载面板' });
-    await cdp.waitFor(`!!document.querySelector('.dlq-panel.is-open')`, { desc: '面板再次打开', timeoutMs: 6000 });
+      await openDownloadPanelViaEntry(cdp, '重新打开下载面板');
     await sleep(300);
     const reopened = await dlqSnapshot(cdp);
     suite.assert(reopened.count === 1, `重开后 .dlq-panel 应仍为单例，实际 ${reopened.count} 个`);

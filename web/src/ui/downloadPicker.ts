@@ -1,12 +1,15 @@
 /// <reference types="vite/client" />
 /**
- * 下载音质选择浮层。
+ * 下载相关浮层（音质选择 + 播放条下载菜单）。
  *
- * 所有「下载」入口统一从 app.beginDownload() 进来，先在这里选一次音质（标准 / 高品质 / 无损），
- * 选中后才真正入队。默认值取设置里的下载音质，但本轮选择只对这一次生效 —— 不回写设置。
+ * 1) 音质选择：所有「下载」入口统一从 app.beginDownload() 进来，先在这里选一次音质
+ *    （标准 / 高品质 / 无损），选中后才真正入队。默认值取设置里的下载音质，
+ *    但本轮选择只对这一次生效 —— 不回写设置。
+ * 2) 播放条下载菜单：播放条上的下载按钮先弹这个小菜单，提供「下载当前歌曲」
+ *    （继续走音质选择）与「打开下载队列」两个动作。
  *
- * 浮层锚定在触发按钮附近（下方优先、放不下翻到上方），点浮层外 / Esc / 再点按钮都能关闭；
- * 键盘可达：↑↓ 在选项间移动、Enter 选定、Tab 在浮层内循环、Esc 取消。
+ * 两种浮层共用同一套定位/关闭/键盘逻辑，锚定在触发按钮附近（下方优先、放不下翻到上方），
+ * 点浮层外 / Esc / 再点按钮都能关闭；键盘可达：↑↓ 在选项间移动、Enter 选定、Tab 在浮层内循环、Esc 取消。
  */
 import '../styles/download-picker.css';
 import type { StreamQuality } from '../online/types';
@@ -22,6 +25,24 @@ export interface QualityPickerOptions {
   defaultQuality: StreamQuality;
   /** 用户选定后回调；不选（取消）时不会回调 */
   onPick: (quality: StreamQuality) => void;
+}
+
+export interface DownloadMenuTrack {
+  title: string;
+  artist: string;
+  /** 本地歌曲不需要下载，菜单里会置灰 */
+  local: boolean;
+}
+
+export interface DownloadMenuOptions {
+  /** 触发按钮（播放条下载按钮），用于定位与关闭后恢复焦点 */
+  anchor: HTMLElement | null;
+  /** 当前播放歌曲；没有歌曲时传 null */
+  track: DownloadMenuTrack | null;
+  /** 选择「下载当前歌曲」后回调（app 里继续弹音质选择） */
+  onDownloadTrack: () => void;
+  /** 选择「打开下载队列」后回调 */
+  onOpenQueue: () => void;
 }
 
 interface QualityItem {
@@ -105,6 +126,10 @@ function close(): void {
   if (focusTarget && focusTarget.isConnected) focusTarget.focus({ preventScroll: true });
 }
 
+function isActionable(element: Element): boolean {
+  return element.classList.contains('dlqp-option') || element.classList.contains('dlqm-item');
+}
+
 function onKeyDown(event: KeyboardEvent): void {
   if (!overlay) return;
   if (event.key === 'Escape') {
@@ -119,7 +144,7 @@ function onKeyDown(event: KeyboardEvent): void {
   }
   if (event.key === 'Enter' || event.key === ' ') {
     const active = document.activeElement;
-    if (active instanceof HTMLElement && overlay.contains(active) && active.classList.contains('dlqp-option')) {
+    if (active instanceof HTMLElement && overlay.contains(active) && isActionable(active)) {
       event.preventDefault();
       event.stopPropagation();
       active.click();
@@ -135,7 +160,9 @@ function onKeyDown(event: KeyboardEvent): void {
 
 function focusableItems(): HTMLElement[] {
   if (!panel) return [];
-  return Array.from(panel.querySelectorAll<HTMLElement>('.dlqp-option, .dlqp-cancel'));
+  return Array.from(
+    panel.querySelectorAll<HTMLElement>('.dlqp-option, .dlqm-item, .dlqp-cancel'),
+  ).filter((item) => !(item instanceof HTMLButtonElement && item.disabled));
 }
 
 function moveFocus(direction: number): void {
@@ -155,7 +182,37 @@ function cycleFocus(event: KeyboardEvent): void {
   moveFocus(event.shiftKey ? -1 : 1);
 }
 
-function buildPanel(options: QualityPickerOptions): HTMLDivElement {
+/** 共用的浮层骨架：清掉上一次浮层、定位、入场动画、关闭监听。 */
+function openPopover(root: HTMLDivElement, anchor: HTMLElement | null): void {
+  closePicker?.();
+  previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  currentAnchor = anchor && anchor.isConnected ? anchor : null;
+
+  panel = root;
+  const layer = h('div', { class: 'dlqp-overlay' }, root);
+  layer.addEventListener('pointerdown', (event) => {
+    // 点在浮层外（overlay 自身）即关闭；面板内的点击不处理。
+    if (event.target === layer) {
+      event.preventDefault();
+      close();
+    }
+  });
+  overlay = layer;
+  closePicker = close;
+  document.body.append(layer);
+
+  // 先摆位置再播入场动画，避免从 (0,0) 飞过来。
+  placePanel();
+  window.requestAnimationFrame(() => {
+    if (overlay) overlay.classList.add('is-open');
+  });
+
+  document.addEventListener('keydown', onKeyDown, true);
+  window.addEventListener('resize', placePanel);
+  window.addEventListener('scroll', close, true);
+}
+
+function buildQualityPanel(options: QualityPickerOptions): HTMLDivElement {
   const selected = qualityItemOf(options.defaultQuality);
   const title = h('div', { class: 'dlqp-title', text: '选择下载音质' });
   const track = h(
@@ -244,42 +301,107 @@ function buildPanel(options: QualityPickerOptions): HTMLDivElement {
   return root;
 }
 
+/** 播放条下载按钮的小菜单：下载当前歌曲（继续选音质）/ 打开下载队列。 */
+function buildDownloadMenu(options: DownloadMenuOptions): HTMLDivElement {
+  const track = options.track;
+  const downloadable = !!track && !track.local;
+
+  const trackLine = h(
+    'div',
+    { class: 'dlqp-track', title: track ? `${track.title} — ${track.artist}` : '' },
+    track
+      ? h('span', { class: 'dlqp-track-name', text: track.title || '未命名歌曲' })
+      : h('span', { class: 'dlqp-track-name', text: '当前没有播放歌曲' }),
+    track && track.artist ? h('span', { class: 'dlqp-track-artist', text: ` · ${track.artist}` }) : null,
+  );
+
+  const currentNote = track
+    ? track.local
+      ? '本地歌曲无需下载'
+      : '选择音质后下载「' + track.title + '」'
+    : '当前没有正在播放的歌曲';
+  const downloadItem = h(
+    'button',
+    {
+      class: `dlqp-option dlqm-item${downloadable ? '' : ' is-disabled'}`,
+      type: 'button',
+      role: 'menuitem',
+      'data-action': 'download-current',
+      'aria-disabled': downloadable ? 'false' : 'true',
+      ...(downloadable ? {} : { disabled: 'true' }),
+    },
+    h('span', { class: 'dlqm-icon', 'aria-hidden': 'true' }, icon('download', 15)),
+    h('span', { class: 'dlqp-option-label', text: '下载当前歌曲' }),
+    h('span', { class: 'dlqp-option-note', text: currentNote }),
+  );
+  downloadItem.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (!downloadable) return;
+    close();
+    options.onDownloadTrack();
+  });
+
+  const queueItem = h(
+    'button',
+    {
+      class: 'dlqp-option dlqm-item',
+      type: 'button',
+      role: 'menuitem',
+      'data-action': 'open-queue',
+    },
+    h('span', { class: 'dlqm-icon', 'aria-hidden': 'true' }, icon('list', 15)),
+    h('span', { class: 'dlqp-option-label', text: '打开下载队列' }),
+    h('span', { class: 'dlqp-option-note', text: '查看下载进度与已完成文件' }),
+  );
+  queueItem.addEventListener('click', (event) => {
+    event.stopPropagation();
+    close();
+    options.onOpenQueue();
+  });
+
+  const hint = h('div', {
+    class: 'dlqp-hint',
+    text: '「下载当前歌曲」会先选音质（仅本次生效）；下载中可随时打开队列查看进度。',
+  });
+
+  return h(
+    'div',
+    {
+      class: 'dlqp-panel dlqm-panel',
+      role: 'menu',
+      'aria-label': '下载',
+      'data-qa': 'download-menu',
+    },
+    h(
+      'div',
+      { class: 'dlqp-head' },
+      h('div', { class: 'dlqp-head-icon', 'aria-hidden': 'true' }, icon('download', 15)),
+      h('div', { class: 'dlqp-title', text: '下载' }),
+    ),
+    trackLine,
+    h('div', { class: 'dlqm-items' }, downloadItem, queueItem),
+    hint,
+  );
+}
+
 /** 打开音质选择浮层；同一时间只存在一个（再次调用会先关旧的）。 */
 export function openQualityPicker(options: QualityPickerOptions): void {
-  closePicker?.();
-  previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-  currentAnchor = options.anchor && options.anchor.isConnected ? options.anchor : null;
-
-  const root = buildPanel(options);
-  panel = root;
-  const layer = h('div', { class: 'dlqp-overlay' }, root);
-  layer.addEventListener('pointerdown', (event) => {
-    // 点在浮层外（overlay 自身）即关闭；面板内的点击不处理。
-    if (event.target === layer) {
-      event.preventDefault();
-      close();
-    }
-  });
-  overlay = layer;
-  closePicker = close;
-  document.body.append(layer);
-
-  // 先摆位置再播入场动画，避免从 (0,0) 飞过来。
-  placePanel();
-  window.requestAnimationFrame(() => {
-    if (overlay) overlay.classList.add('is-open');
-  });
-
-  document.addEventListener('keydown', onKeyDown, true);
-  window.addEventListener('resize', placePanel);
-  window.addEventListener('scroll', close, true);
-
+  const root = buildQualityPanel(options);
+  openPopover(root, options.anchor);
   const focusIndex = Number(root.dataset.defaultIndex ?? '0');
   const focusTarget = root.querySelectorAll<HTMLButtonElement>('.dlqp-option')[focusIndex];
   (focusTarget ?? root.querySelector<HTMLButtonElement>('.dlqp-option'))?.focus({ preventScroll: true });
 }
 
-/** 关闭音质浮层（不触发 onPick）；app.destroy() 时调用避免残留浮层。 */
+/** 打开播放条下载菜单；同一时间只存在一个（再次调用会先关旧的）。 */
+export function openDownloadMenu(options: DownloadMenuOptions): void {
+  const root = buildDownloadMenu(options);
+  openPopover(root, options.anchor);
+  const first = root.querySelector<HTMLButtonElement>('.dlqm-item:not(.is-disabled)');
+  first?.focus({ preventScroll: true });
+}
+
+/** 关闭下载浮层（音质选择或菜单；不触发 onPick）；app.destroy() 时调用避免残留浮层。 */
 export function closeQualityPicker(): void {
   closePicker?.();
 }
