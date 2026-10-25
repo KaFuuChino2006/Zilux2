@@ -6004,38 +6004,44 @@ html.is-pb-expanded .playerbar.is-hidden {
 .local-playlist-actions .icon-btn:hover{color:var(--accent);background:var(--surface-hover);border-color:var(--line)}
 .local-playlist-login{display:flex;justify-content:center;padding:6px 0 14px}
 
-/* 无缝衔接准备就绪：播放条下方的「将在 X 分 Y 秒后过渡至 xxx」提示（绝对定位不改变底栏布局）。 */
+/* 无缝衔接准备就绪：播放条上方短暂弹出「将在 X 分 Y 秒后过渡至 xxx」，几秒后自动淡出。 */
 .pb-seamless-hint {
   position: absolute;
   left: 50%;
-  bottom: 2px;
-  z-index: 0;
-  max-width: min(1020px, 88vw);
-  padding: 0 4px;
-  font-size: 11px;
+  bottom: calc(100% + 10px);
+  z-index: 1;
+  max-width: min(680px, 78vw);
+  padding: 7px 14px 7px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: var(--shadow-1);
+  backdrop-filter: blur(18px);
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;
   line-height: 1.2;
-  color: var(--muted);
+  color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   opacity: 0;
   pointer-events: none;
-  transform: translate(-50%, 4px);
-  transition: opacity 0.24s var(--ease), transform 0.3s var(--ease);
+  transform: translate(-50%, 8px) scale(0.98);
+  transition: opacity 0.22s var(--ease), transform 0.34s cubic-bezier(0.22, 1.28, 0.36, 1);
 }
 .pb-seamless-hint.is-visible {
   opacity: 1;
-  transform: translate(-50%, 0);
+  transform: translate(-50%, 0) scale(1);
 }
-.pb-seamless-hint.is-visible::before {
+.pb-seamless-hint::before {
   content: '◈';
   margin-right: 6px;
   color: var(--accent);
 }
 @media (max-width: 720px) {
   .pb-seamless-hint {
-    font-size: 10px;
+    font-size: 11px;
+    padding: 6px 12px 6px 10px;
   }
 }
