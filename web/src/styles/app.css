@@ -6217,8 +6217,11 @@ html.is-pb-expanded .playerbar.is-hidden {
   /* 旋入：还没唱到的字散落在句子周围（--drift-* 由 lyrics.ts 按字写入稳定的随机偏移），
      唱到哪个字就从那个随机方向飘回来、带一点旋转落进原位，一句唱完正好组成完整的句子。 */
   .lyrics-view.lyric-style-spin .lyrics-right .lyric-line.is-active .lyric-char {
-    translate: var(--drift-x, 0.42em) var(--drift-y, 0.4em) !important;
-    rotate: var(--drift-rot, -16deg) !important;
+    /* 还没唱的字按 --scatter（0~1）缩放各自的随机偏移：当前行 0.6 半散着开始，
+       唱到哪个字哪个字归位；换行时沿用上一行末尾的散开状态，不会重新组装。 */
+    translate: calc(var(--drift-x, 0.42em) * var(--scatter, 1))
+      calc(var(--drift-y, 0.4em) * var(--scatter, 1)) !important;
+    rotate: calc(var(--drift-rot, -16deg) * var(--scatter, 1)) !important;
     opacity: 0.12 !important;
     transition: color 0.18s linear,
       translate var(--drift-dur, 0.6s) cubic-bezier(0.22, 1, 0.36, 1),
@@ -6242,9 +6245,9 @@ html.is-pb-expanded .playerbar.is-hidden {
   .lyrics-view.lyric-style-spin .lyrics-right .lyric-line.is-active ~ .lyric-line {
     opacity: 0.2 !important;
   }
-  /* 旋入：还没轮到的整行歌词本身也是「打乱」的——每个字带着自己的随机偏移散开，
-     越靠近当前行散得越少（--scatter 由 lyrics.ts 按距离写入），看起来越来越整齐；
-     轮到自己播放时切回上面的逐字飘入。上方已唱过的行 --scatter 为 0，保持整齐。 */
+  /* 旋入：整列歌词按距当前行的远近使用同一份散开系数（--scatter 由 lyrics.ts 写入）：
+     当前行 0.6 半散，往后每远一行更散一点（0.75 / 0.9 / 1.0…），已唱过的行整齐。
+     所以越靠近播放越整齐，且轮到某行播放时是接着这份半散状态逐字归位，不会重新组装。 */
   .lyrics-view.lyric-style-spin .lyrics-right .lyric-line:not(.is-active) .lyric-char {
     translate: calc(var(--drift-x, 0.42em) * var(--scatter, 0))
       calc(var(--drift-y, 0.4em) * var(--scatter, 0)) !important;
