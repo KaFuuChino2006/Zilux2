@@ -3496,7 +3496,7 @@ body,
   letter-spacing: -0.02em;
 }
 
-/* 快捷设置里的歌词样式档位：6 个按钮（经典/上浮/波浪/弹跳/打字机/旋入）也要挤进一行 */
+/* 快捷设置里的歌词样式档位：6 个按钮（经典/上浮/波浪/摇曳/打字机/旋入）也要挤进一行 */
 .quick-lyric-style-seg .quick-seg-btn {
   font-size: 11px;
   padding: 0 2px;
@@ -6114,7 +6114,7 @@ html.is-pb-expanded .playerbar.is-hidden {
 }
 
 /* ===== 歌词播放样式（播放效果 = 关闭时的默认歌词页）＝「播放动画」模板 =====
-   只保留经典，其余全部是播放动画：经典 / 上浮 / 波浪 / 弹跳 / 打字机 / 旋入。
+   只保留经典，其余全部是播放动画：经典 / 上浮 / 波浪 / 摇曳 / 打字机 / 旋入。
    制作模板（新增样式照这 7 条做；详细说明见 lyricStyle.ts 顶部注释）：
    1. 只改「动」，不改颜色：颜色一律走上面的 --lyric-* 语义令牌（由「歌词颜色」设置写入），
       这里不写死任何颜色，也不把「变色 / 发光」当效果。
@@ -6140,21 +6140,27 @@ html.is-pb-expanded .playerbar.is-hidden {
     translate: 0 -0.24em;
   }
 }
-@keyframes lyric-style-bounce {
+@keyframes lyric-style-swing {
   0% {
-    translate: 0 0;
+    rotate: 0deg;
     scale: 1;
   }
-  35% {
-    translate: 0 -0.55em;
-    scale: 1.1;
+  18% {
+    rotate: -7deg;
+    scale: 1.04;
   }
-  70% {
-    translate: 0 0.04em;
-    scale: 0.98;
+  44% {
+    rotate: 6deg;
+    scale: 1.02;
+  }
+  68% {
+    rotate: -3deg;
+  }
+  86% {
+    rotate: 1.2deg;
   }
   100% {
-    translate: 0 0;
+    rotate: 0deg;
     scale: 1;
   }
 }
@@ -6198,11 +6204,12 @@ html.is-pb-expanded .playerbar.is-hidden {
     animation-delay: calc(var(--ci, 0) * -0.12s) !important;
   }
 
-  /* 弹跳：每个字唱到时弹起一次再落回（一次性 keyframes，由 is-hot 触发；唱完保持静止不晃）。 */
-  .lyrics-view.lyric-style-bounce .lyrics-right .lyric-line.is-active .lyric-char.is-hot {
-    animation: lyric-style-bounce 0.46s cubic-bezier(0.3, 1.25, 0.55, 1) !important;
+  /* 摇曳：每个字唱完的瞬间像被轻轻拨了一下，左右摆两下再停稳（一次性 keyframes，由 is-sung 触发）。
+     唱到时的放大与回落仍是经典 transform 过渡，摇摆的 rotate / scale 叠加在它上面；唱完立刻静止，不整句乱晃。 */
+  .lyrics-view.lyric-style-swing .lyrics-right .lyric-line.is-active .lyric-char.is-sung {
+    animation: lyric-style-swing 0.52s cubic-bezier(0.36, 0.07, 0.19, 0.97) !important;
   }
-  .lyrics-view.lyric-style-bounce .lyrics-right .lyric-line.is-active .lyric-char.is-sung {
+  .lyrics-view.lyric-style-swing .lyrics-right .lyric-line.is-active .lyric-char.is-hot {
     animation: none !important;
   }
 

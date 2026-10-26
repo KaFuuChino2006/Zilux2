@@ -1103,7 +1103,7 @@ export class LyricsView {
     const style = lyricStyle();
     for (const item of LYRIC_STYLES) this.root.classList.remove(`lyric-style-${item.id}`);
     this.root.classList.add(`lyric-style-${style}`);
-    // 需要逐字时机的样式（上浮/弹跳/打字机）切过来后立刻补算当前句的逐字状态，不等下一帧。
+    // 需要逐字时机的样式（上浮/摇曳/打字机）切过来后立刻补算当前句的逐字状态，不等下一帧。
     if (this.state) this.syncProgress();
   }
 
@@ -1420,7 +1420,7 @@ export class LyricsView {
       const lineEl = h('div', { class: 'lyric-line' });
       const chars: HTMLSpanElement[] = [];
       // 逐字数据优先；没有逐字数据的行（普通 LRC 的非 CJK 行）按「CJK 单字 / 外文词」切成可动 span，
-      // 让上浮/波浪/弹跳/打字机/旋入这些播放动画整首歌都有落点。--ci 是字在句内的序号，CSS 用它错开动画相位；
+      // 让上浮/波浪/摇曳/打字机/旋入这些播放动画整首歌都有落点。--ci 是字在句内的序号，CSS 用它错开动画相位；
       // --drift-x / --drift-y / --drift-rot / --drift-dur 是每个字稳定的随机「飘入」偏移（旋入用，随机方向飘回来组成句子）。
       const tokens: Array<{ text: string; spaceBefore: boolean }> = line.words.length > 0
         ? line.words.map((word) => ({ text: word.text, spaceBefore: word.spaceBefore === true }))
@@ -1526,7 +1526,7 @@ export class LyricsView {
         span.classList.toggle('is-hot', value === 2);
       });
     } else if (activeLine) {
-      // 没有逐字数据的歌词行：只有「上浮/弹跳/打字机」这类需要逐字时机的样式才合成逐字状态
+      // 没有逐字数据的歌词行：只有「上浮/摇曳/打字机」这类需要逐字时机的样式才合成逐字状态
       // （按句内进度均匀铺开），普通 LRC 也能跟着演唱逐字动；其它样式保持经典式的整行状态。
       this.syncPlainCharStates(activeLine, lyricPos);
     }
