@@ -6171,6 +6171,11 @@ html.is-pb-expanded .playerbar.is-hidden {
     translate: 0 0 !important;
     opacity: 1 !important;
   }
+  /* 上浮：当前行下方的歌词统一压到最低可见度，不再按距离逐行渐隐，
+     避免下面还没唱到的句子比正在上浮的字更抢眼；当前行和上方的已唱行不受影响。 */
+  .lyrics-view.lyric-style-rise .lyrics-right .lyric-line.is-active ~ .lyric-line {
+    opacity: 0.2 !important;
+  }
 
   /* 波浪：当前行的字像水波一样依次起伏（--ci 错开相位），随演唱一直流动。 */
   .lyrics-view.lyric-style-wave .lyrics-right .lyric-line.is-active .lyric-char {
