@@ -10,6 +10,8 @@
  *    - 行：.lyric-line.is-active（当前句）/ .is-near（相邻句）；内联 --p（当前句演唱进度 0→1）、
  *      --fade（离当前句的可见度）、--grow（字号弹入曲线，动效档位控制）；
  *    - 字：.lyric-char 的 --ci（字在句内的序号，用来错开动画相位）、.is-sung（已唱）、.is-hot（正在唱）；
+ *      --drift-x / --drift-y / --drift-rot / --drift-dur（每个字一组稳定的随机「飘入」偏移，供旋入这类
+ *      「先散在各处、唱到再飘回来组成句子」的动画用），四个变量由 lyrics.ts 在 render() 时按字写好。
  *    - 没有逐字数据的歌词行由 lyrics.ts 合成 --ci 与逐字时机（charTiming 样式才启用），普通 LRC 也能逐字动。
  * 5. 注意：.lyric-line / .lyric-char 的 transform 被历史规则用 !important 锁死（见 app.css 中段），
  *    动画请用独立的 translate / rotate / scale 属性（与 transform 叠加），不要抢 transform。
@@ -40,7 +42,7 @@ export const LYRIC_STYLES: Array<{ id: LyricStyle; label: string; hint: string; 
   {
     id: 'spin',
     label: '旋入',
-    hint: '唱到的字从下方带着一点旋转落进位置，像逐字转进来',
+    hint: '还没唱到的字散在句子周围，唱到哪个字就从随机方向飘回来、带一点旋转落进原位，一句唱完组成完整的句子',
     charTiming: true,
   },
 ];
