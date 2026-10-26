@@ -6213,12 +6213,13 @@ html.is-pb-expanded .playerbar.is-hidden {
     animation: none !important;
   }
 
-  /* 打字机：字跟着演唱一个一个显形，还没唱到的先不显形（位置留着，不挤动整行）。 */
+  /* 打字机：字跟着演唱一个一个显形，还没唱到的先不显形（位置留着，不挤动整行）。
+     opacity 一定不要带过渡：换行瞬间 line 级 opacity 立刻变 1，若字还带 40ms 的 opacity 过渡，
+     原本 1 的未唱字会先亮着再淡到 0——看起来就是整句闪一下；这里直接瞬间置 0 / 显形。 */
   .lyrics-view.lyric-style-typewriter .lyrics-right .lyric-line.is-active .lyric-char {
     opacity: 0 !important;
     transition: color 0.16s linear,
-      transform 0.34s cubic-bezier(0.22, 1, 0.36, 1),
-      opacity 0.04s linear !important;
+      transform 0.34s cubic-bezier(0.22, 1, 0.36, 1) !important;
   }
   .lyrics-view.lyric-style-typewriter .lyrics-right .lyric-line.is-active .lyric-char.is-hot,
   .lyrics-view.lyric-style-typewriter .lyrics-right .lyric-line.is-active .lyric-char.is-sung {
@@ -6227,6 +6228,11 @@ html.is-pb-expanded .playerbar.is-hidden {
   /* 打字机：还没唱到的整行歌词完全不可见（只留当前行逐字显形 + 上方已唱过的行）。 */
   .lyrics-view.lyric-style-typewriter .lyrics-right .lyric-line.is-active ~ .lyric-line {
     opacity: 0 !important;
+  }
+  /* 打字机：下方整行里的字平时也提前定成 0（下一行渐入的那一帧字不会亮），轮到它播放时不会从 1 闪到 0。 */
+  .lyrics-view.lyric-style-typewriter .lyrics-right .lyric-line.is-active ~ .lyric-line .lyric-char {
+    opacity: 0 !important;
+    transition: none !important;
   }
 
   /* 旋入：还没唱到的字散落在句子周围（--drift-* 由 lyrics.ts 按字写入稳定的随机偏移），
