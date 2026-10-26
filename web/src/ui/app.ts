@@ -3673,7 +3673,7 @@ export class App {
         'div',
         {},
         h('div', { class: 'field-label', text: '启用全局快捷键' }),
-        h('div', { class: 'field-hint', text: '关闭后宿主会注销全部组合；应用在后台或最小化到托盘时同样生效。' }),
+        h('div', { class: 'field-hint', text: '关闭后宿主会注销全部组合、交还系统媒体键；应用在后台或最小化到托盘时同样生效。' }),
       ),
       toggles.root,
     );
@@ -3873,6 +3873,14 @@ export class App {
         h('div', {
           class: 'shortcut-tip',
           text: '全局快捷键在应用后台 / 最小化到托盘时也会生效；组合被系统或其它程序占用时，宿主会回落到默认组合或在行内提示占用；修改后立即生效，仅保存在本机设置里。',
+        }),
+      ),
+      h(
+        'div',
+        { class: 'field' },
+        h('div', {
+          class: 'shortcut-tip',
+          text: '系统媒体键（键盘上的播放 / 暂停、上一首、下一首）：Zilux2 是当前播放器时由 Zilux2 接管，即使系统媒体键已被 QQ 音乐等程序抢占也能用；其它程序在放歌时仍交给它们，保持系统原生「媒体键跟着当前播放器走」的习惯。',
         }),
       ),
     );

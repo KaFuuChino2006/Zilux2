@@ -90,6 +90,10 @@ public partial class MainWindow : Window
     private string? _shortcutStateJson;
     private bool _shortcutsEnabled = true;
 
+    // 系统媒体键接管：别的程序用 RegisterHotKey 抢注媒体键后，本机 SMTC 收不到 ButtonPressed，
+    // 由底层键盘钩子在本机是「当前媒体会话」时兜底（详见 MediaKeyHookService）。
+    private MediaKeyHookService? _mediaKeyHook;
+
     internal MainWindow(
         WebContentPlan plan,
         SettingsService? settings,
@@ -128,6 +132,7 @@ public partial class MainWindow : Window
         _hwnd = new WindowInteropHelper(this).Handle;
         HwndSource.FromHwnd(_hwnd)?.AddHook(WndProc);
         ApplyShortcutSettings("startup");
+        InstallMediaKeyHook();
     }
 
     private void OnLoaded(object? sender, RoutedEventArgs e)
@@ -172,6 +177,8 @@ public partial class MainWindow : Window
         }
 
         App.ArmShutdownWatchdog();
+        _mediaKeyHook?.Dispose();
+        _mediaKeyHook = null;
         HostLog.Info("window.closed dispose begin");
         try
         {
@@ -1054,6 +1061,37 @@ public partial class MainWindow : Window
     {
         HostLog.Info($"hotkey.fire action={action}");
         SendCommand(action);
+    }
+
+    /// <summary>
+    /// 系统媒体键接管：Windows 的媒体键常被别的程序用 RegisterHotKey 抢注（例如 QQ 音乐），
+    /// 被抢注后本机 SMTC 永远收不到 ButtonPressed。底层键盘钩子仍能看到按键，所以这里只在
+    /// 「本机是当前媒体会话」时吞下媒体键并走自家命令链，其余情况放行——既覆盖了被抢注的场景，
+    /// 又保留系统「媒体键跟着当前播放器走」的原生行为。快捷键总开关关闭时也不接管。
+    /// </summary>
+    private void InstallMediaKeyHook()
+    {
+        if (_media is null || _mediaKeyHook is not null)
+        {
+            return;
+        }
+
+        _mediaKeyHook = new MediaKeyHookService(
+            () => _shortcutsEnabled && _media.IsCurrentSession,
+            action =>
+            {
+                HostLog.Info($"mediakey.fire action={action}");
+                SendCommand(action);
+            });
+
+        if (_mediaKeyHook.Install())
+        {
+            return;
+        }
+
+        HostLog.Warn($"[mediakey] hook unavailable error={Marshal.GetLastWin32Error()}");
+        _mediaKeyHook.Dispose();
+        _mediaKeyHook = null;
     }
 
     /// <summary>
