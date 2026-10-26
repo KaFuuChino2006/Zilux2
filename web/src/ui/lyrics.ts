@@ -841,6 +841,25 @@ function splitPlainTokens(text: string): Array<{ text: string; spaceBefore: bool
   return tokens;
 }
 
+/** 稳定的字级 hash：同一句、同一位置每次渲染得到同一组「飘入」偏移，避免重渲染时字乱跳。 */
+function scatterHash(lineText: string, index: number): number {
+  let hash = 2166136261;
+  const key = `${index}:${lineText}`;
+  for (let i = 0; i < key.length; i += 1) {
+    hash ^= key.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+/** 由 hash 派生的 0~1 伪随机数（salt 区分不同维度，同一字不同维度各自随机）。 */
+function scatterRandom(hash: number, salt: number): number {
+  let value = (hash ^ Math.imul(salt + 1, 0x9e3779b1)) >>> 0;
+  value = Math.imul(value ^ (value >>> 15), 0x85ebca6b) >>> 0;
+  value = Math.imul(value ^ (value >>> 13), 0xc2b2ae35) >>> 0;
+  return ((value ^ (value >>> 16)) >>> 0) / 4294967296;
+}
+
 // 供快捷设置面板显示当前正在唱的一句（打开过歌词页后即有效）
 let currentLyricText = '';
 
@@ -1401,7 +1420,8 @@ export class LyricsView {
       const lineEl = h('div', { class: 'lyric-line' });
       const chars: HTMLSpanElement[] = [];
       // 逐字数据优先；没有逐字数据的行（普通 LRC 的非 CJK 行）按「CJK 单字 / 外文词」切成可动 span，
-      // 让上浮/波浪/弹跳/打字机这些播放动画整首歌都有落点。--ci 是字在句内的序号，CSS 用它错开动画相位。
+      // 让上浮/波浪/弹跳/打字机/旋入这些播放动画整首歌都有落点。--ci 是字在句内的序号，CSS 用它错开动画相位；
+      // --drift-x / --drift-y / --drift-rot / --drift-dur 是每个字稳定的随机「飘入」偏移（旋入用，随机方向飘回来组成句子）。
       const tokens: Array<{ text: string; spaceBefore: boolean }> = line.words.length > 0
         ? line.words.map((word) => ({ text: word.text, spaceBefore: word.spaceBefore === true }))
         : splitPlainTokens(line.text);
@@ -1409,6 +1429,11 @@ export class LyricsView {
         const gap = index > 0 && token.spaceBefore;
         const span = h('span', { class: gap ? 'lyric-char has-gap' : 'lyric-char', text: token.text });
         span.style.setProperty('--ci', String(index));
+        const hash = scatterHash(line.text, index);
+        span.style.setProperty('--drift-x', `${(scatterRandom(hash, 0) * 3.2 - 1.6).toFixed(2)}em`);
+        span.style.setProperty('--drift-y', `${(scatterRandom(hash, 1) * 2.2 - 1.1).toFixed(2)}em`);
+        span.style.setProperty('--drift-rot', `${(scatterRandom(hash, 2) * 60 - 30).toFixed(1)}deg`);
+        span.style.setProperty('--drift-dur', `${(0.5 + scatterRandom(hash, 3) * 0.35).toFixed(2)}s`);
         chars.push(span);
         lineEl.append(span);
       });
