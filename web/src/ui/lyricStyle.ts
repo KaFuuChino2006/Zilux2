@@ -21,7 +21,7 @@
  * 7. 逐字时机必须跟着「演唱」走：优先用 is-sung/is-hot 和 --p，不要用固定 setTimeout/固定 delay 假装逐字。
  */
 
-export type LyricStyle = 'classic' | 'rise' | 'wave' | 'bounce' | 'typewriter' | 'spin';
+export type LyricStyle = 'classic' | 'rise' | 'wave' | 'swing' | 'typewriter' | 'spin';
 
 const STORE_KEY = 'zilux2.lyricStyle';
 
@@ -34,7 +34,7 @@ export const LYRIC_STYLES: Array<{ id: LyricStyle; label: string; hint: string; 
     charTiming: true,
   },
   { id: 'wave', label: '波浪', hint: '当前行的字像水波一样依次起伏，随演唱一直流动' },
-  { id: 'bounce', label: '弹跳', hint: '每个字唱到时向上弹一下再落回，一下一下跟着节拍', charTiming: true },
+  { id: 'swing', label: '摇曳', hint: '每个字唱完的瞬间像被轻轻拨了一下，左右摆两下再停稳，跟着演唱一个字一个字摇', charTiming: true },
   {
     id: 'typewriter',
     label: '打字机',
@@ -49,10 +49,20 @@ export const LYRIC_STYLES: Array<{ id: LyricStyle; label: string; hint: string; 
   },
 ];
 
+/** 已下线的旧样式 → 新的等价样式：老存档尽量落在接近的效果上，而不是直接回到经典。 */
+const LEGACY_STYLES: Record<string, LyricStyle> = {
+  bounce: 'swing',
+};
+
 function readLyricStyle(): LyricStyle {
   try {
     const value = window.localStorage.getItem(STORE_KEY);
     if (value && LYRIC_STYLES.some((item) => item.id === value)) return value as LyricStyle;
+    const migrated = value ? LEGACY_STYLES[value] : undefined;
+    if (migrated) {
+      window.localStorage.setItem(STORE_KEY, migrated);
+      return migrated;
+    }
     // 旧版本存的发光/渐变/频谱样式已下线：直接清掉，避免一直读到无效值。
     if (value) window.localStorage.removeItem(STORE_KEY);
   } catch {
