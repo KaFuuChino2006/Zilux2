@@ -264,7 +264,7 @@ powershell -File tools/release.ps1 -DryRun   # 演练；去掉 -DryRun 真发版
 - 匿名/失效 mvmp3 曲目 403（上游下架）。
 - 房间效果为 Canvas2D + DOM，低配机可调低「渲染像素比」。
 - 回归靠 `research/qa/suite/`（CDP 套件 + 截图 + results JSON），`node research/qa/suite/run-all.mjs` 一键跑；前提是应用带 `--remote-debugging-port=9223` 运行，且依赖真实在线网络（搜索/下载用例）。
-- 歌词播放动画是纯前端实现：样式注册表在 `web/src/ui/lyricStyle.ts`，动画在 `web/src/styles/app.css` 末尾「播放动画模板」段（上浮 / 旋入把当前行下方未播放行压到 `opacity: 0.2`，打字机为 `0`），逐字的随机「飘入」偏移（`--drift-x / --drift-y / --drift-rot / --drift-dur`）由 `web/src/ui/lyrics.ts` 的 `render()` 用稳定伪随机写入（同一字每次渲染一致）；旧存档里的 `float` 会因校验失败自动回落 `classic`。修改后需重建并覆盖安装目录 `web/`，重启应用加载。
+- 歌词播放动画是纯前端实现：样式注册表在 `web/src/ui/lyricStyle.ts`，动画在 `web/src/styles/app.css` 末尾「播放动画模板」段（上浮 / 旋入把当前行下方未播放行压到 `opacity: 0.2`，打字机为 `0`），逐字的随机「飘入」偏移（`--drift-x / --drift-y / --drift-rot / --drift-dur`）由 `web/src/ui/lyrics.ts` 的 `render()` 用稳定伪随机写入（同一字每次渲染一致）；旧存档里的 `float` 会因校验失败自动回落 `classic`。修改后需重建并覆盖安装目录 `web/`，**部署后自动重启应用**（用户约定）加载。
 - 后续可做：歌词页多效果、更多平台能力；下载队列暂无「取消/清空」宿主接口（面板如实提示）；本地目录监控无设置开关（默认开启）。
 - 后台常驻/托盘/热键的已知限制：全局热键每动作有候选回退（全部被占用时该动作无热键，只记 WARN）；托盘依赖资源管理器通知区域，初始化失败时关窗即退出（日志 `tray.unavailable`）；托盘气泡只弹一次；播放条下载按钮打开下载队列浮层而不是直接下载当前曲目；真正退出只有托盘菜单「退出」与更新安装两条路径。
 - 系统媒体键接管的已知限制（第三十三轮）：仅当 Zilux2 是当前媒体会话且快捷键总开关开启时吞键；接管期间其它播放器收不到媒体键（这是接管目标，若希望其它程序优先可关总开关或让其它程序成为当前会话）；`VK_MEDIA_STOP` 不接管；底层键盘钩子对全屏独占游戏等场景不保证生效。
@@ -284,9 +284,11 @@ taskkill /IM Zilux2.exe /F
 # 启动带调试
 $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS='--remote-debugging-port=9223'; Start-Process "$env:LOCALAPPDATA\Programs\Zilux2\Zilux2.exe"
 
-# 只部署前端
+# 只部署前端（部署后必须重启应用：用户约定「记得自动重启软件」）
 Copy-Item -Recurse -Force web/dist/assets dist/Zilux2/web/; Copy-Item -Force web/dist/index.html dist/Zilux2/web/
 Copy-Item -Recurse -Force web/dist/assets "$env:LOCALAPPDATA\Programs\Zilux2\web/"; Copy-Item -Force web/dist/index.html "$env:LOCALAPPDATA\Programs\Zilux2\web/"
+taskkill /IM Zilux2.exe /F
+$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS='--remote-debugging-port=9223'; Start-Process "$env:LOCALAPPDATA\Programs\Zilux2\Zilux2.exe"
 
 # QA 回归套件（应用需带 --remote-debugging-port=9223 运行；node 用 DSH 自带路径）
 node research/qa/suite/run-all.mjs        # 全部套件（约 100s，退出码 0/1）
