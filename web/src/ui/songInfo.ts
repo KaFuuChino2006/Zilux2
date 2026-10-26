@@ -232,7 +232,9 @@ export function mountSongInfoPage(target: SongInfoTarget, handlers: SongInfoHand
     if (closed) return;
     closed = true;
     document.removeEventListener('keydown', onKey);
-    root.remove();
+    // 先播 160ms 退场动画再移除节点，避免整页浮窗「啪」地消失。
+    root.classList.add('is-closing');
+    window.setTimeout(() => root.remove(), 170);
     handlers.onClose?.();
   };
 

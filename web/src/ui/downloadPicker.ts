@@ -120,7 +120,10 @@ function close(): void {
   document.removeEventListener('keydown', onKeyDown, true);
   window.removeEventListener('resize', placePanel);
   window.removeEventListener('scroll', close, true);
-  root.remove();
+  // 先播退场动画再移除节点（120ms），避免浮层「啪」地消失。
+  root.classList.remove('is-open');
+  root.classList.add('is-closing');
+  window.setTimeout(() => root.remove(), 170);
   const focusTarget = previousFocus;
   previousFocus = null;
   if (focusTarget && focusTarget.isConnected) focusTarget.focus({ preventScroll: true });

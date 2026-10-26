@@ -559,3 +559,34 @@
     width: min(360px, calc(100vw - 24px));
   }
 }
+
+/* 新任务行入场（JS 加 is-new，插入后 rAF 移除类）；
+ * 完成 / 失败一次性落地反馈（每行只在状态跃迁时加一次类）。 */
+@keyframes dlq-row-in {
+  from { opacity: 0; translate: 0 -6px; }
+  to { opacity: 1; translate: 0 0; }
+}
+.dlq-row.is-new {
+  animation: dlq-row-in 0.24s cubic-bezier(0.22, 0.82, 0.3, 1) both;
+}
+@keyframes dlq-just-done {
+  0% { box-shadow: 0 0 0 0 var(--accent-soft); border-color: var(--accent); }
+  100% { box-shadow: 0 0 0 7px transparent; border-color: var(--line); }
+}
+@keyframes dlq-just-error {
+  0%, 100% { border-color: var(--line); }
+  30%, 70% { border-color: var(--danger); }
+}
+.dlq-row.is-just-done { animation: dlq-just-done 0.5s ease-out both; }
+.dlq-row.is-just-error { animation: dlq-just-error 0.5s ease-out both; }
+
+/* 面板收起：JS 先加 is-closing 再移除 is-open，给 160ms 退场动画留出显示期 */
+@keyframes dlq-out {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: translateY(8px) scale(0.98); }
+}
+.dlq-panel.is-closing {
+  display: flex;
+  animation: dlq-out 0.16s var(--ease) both;
+  pointer-events: none;
+}

@@ -217,7 +217,15 @@ function syncPanel(): void {
   const refs = panel;
   if (!refs || disposed) return;
   const summary = countJobs();
-  refs.root.classList.toggle('is-open', panelOpen);
+  // 收起：先播 160ms 退场动画再交给 display:none，避免面板「啪」地消失。
+  if (panelOpen) {
+    refs.root.classList.remove('is-closing');
+    refs.root.classList.add('is-open');
+  } else if (refs.root.classList.contains('is-open')) {
+    refs.root.classList.remove('is-open');
+    refs.root.classList.add('is-closing');
+    window.setTimeout(() => refs.root.classList.remove('is-closing'), 180);
+  }
   refs.root.setAttribute('aria-hidden', panelOpen ? 'false' : 'true');
   setText(refs.sumRunning, String(summary.running));
   setText(refs.sumPaused, String(summary.paused));
@@ -321,8 +329,17 @@ function rowTexts(job: DownloadJob): {
 
 function applyRow(handle: RowHandle, job: DownloadJob, key: string): void {
   const { refs } = handle;
+  const previousState = handle.el.dataset.state;
   handle.el.dataset.jobId = job.id;
   handle.el.dataset.state = job.state;
+  // 完成 / 失败瞬间给行一次落地反馈（只在状态跃迁时触发，不会每次轮询都闪）。
+  if (previousState && previousState !== job.state && (job.state === 'done' || job.state === 'error')) {
+    const flash = job.state === 'done' ? 'is-just-done' : 'is-just-error';
+    handle.el.classList.remove('is-just-done', 'is-just-error');
+    handle.el.classList.add(flash);
+    const flashEl = handle.el;
+    window.setTimeout(() => flashEl.classList.remove(flash), 560);
+  }
   const texts = rowTexts(job);
   setText(refs.name, texts.name);
   setText(refs.meta, texts.meta);
@@ -693,6 +710,12 @@ class DownloadQueueViewImpl implements DownloadQueueView {
         handle = createRow();
         this.rows.set(job.id, handle);
         applyRow(handle, job, key);
+        // 新任务行入场：插入后下一帧移除类，交给 CSS 播一次淡入。
+        handle.el.classList.add('is-new');
+        const newEl = handle.el;
+        window.requestAnimationFrame(() =>
+          window.requestAnimationFrame(() => newEl.classList.remove('is-new')),
+        );
       } else if (handle.key !== key) {
         applyRow(handle, job, key);
       }
