@@ -17,7 +17,7 @@
  * 7. 逐字时机必须跟着「演唱」走：优先用 is-sung/is-hot 和 --p，不要用固定 setTimeout/固定 delay 假装逐字。
  */
 
-export type LyricStyle = 'classic' | 'rise' | 'wave' | 'bounce' | 'typewriter' | 'float';
+export type LyricStyle = 'classic' | 'rise' | 'wave' | 'bounce' | 'typewriter' | 'spin';
 
 const STORE_KEY = 'zilux2.lyricStyle';
 
@@ -30,14 +30,19 @@ export const LYRIC_STYLES: Array<{ id: LyricStyle; label: string; hint: string; 
     charTiming: true,
   },
   { id: 'wave', label: '波浪', hint: '当前行的字像水波一样依次起伏，随演唱一直流动' },
-  { id: 'bounce', label: '弹跳', hint: '每个字唱到时向上弹一下再落回，节奏感强', charTiming: true },
+  { id: 'bounce', label: '弹跳', hint: '每个字唱到时向上弹一下再落回，一下一下跟着节拍', charTiming: true },
   {
     id: 'typewriter',
     label: '打字机',
-    hint: '字跟着演唱一个一个出现，还没唱到的先不显形',
+    hint: '字跟着演唱一个一个出现，还没唱到的字和下面的歌词都不显形',
     charTiming: true,
   },
-  { id: 'float', label: '漂浮', hint: '整句轻轻上下漂浮，像悬在光里缓缓呼吸' },
+  {
+    id: 'spin',
+    label: '旋入',
+    hint: '唱到的字从下方带着一点旋转落进位置，像逐字转进来',
+    charTiming: true,
+  },
 ];
 
 function readLyricStyle(): LyricStyle {
