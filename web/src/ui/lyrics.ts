@@ -1623,6 +1623,14 @@ export class LyricsView {
       const distance = Math.abs(index - base);
       const fade = browsing || distance === 0 ? 1 : Math.max(0, 1 - (distance - 1) * 0.3);
       el.style.setProperty('--fade', fade.toFixed(3));
+      // 旋入样式里「还没轮到的歌词」按距当前行的远近打乱：越远散得越开、越近越整齐，
+      // 轮到自己播放时再切回逐字飘入（--scatter 是 0~1 的缩放系数，0 = 完全整齐）。
+      // 手动浏览歌词时不打乱（要能看清），当前行与上方已唱过的行始终整齐。
+      const scatter =
+        browsing || this.activeIndex < 0 || index <= this.activeIndex
+          ? 0
+          : Math.min(1, (index - this.activeIndex - 1) * 0.3);
+      el.style.setProperty('--scatter', scatter.toFixed(3));
     });
   }
 
