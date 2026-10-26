@@ -6237,4 +6237,9 @@ html.is-pb-expanded .playerbar.is-hidden {
     rotate: 0deg !important;
     opacity: 1 !important;
   }
+  /* 旋入：还没轮到的整行歌词统一压到最低可见度（和「上浮」一致），不再按距离逐行渐隐；
+     当前行与上方已唱过的行不受影响。 */
+  .lyrics-view.lyric-style-spin .lyrics-right .lyric-line.is-active ~ .lyric-line {
+    opacity: 0.2 !important;
+  }
 }
