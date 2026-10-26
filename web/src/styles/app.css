@@ -6347,17 +6347,20 @@ html.is-pb-expanded .playerbar.is-hidden {
   transition-duration: 0.06s;
 }
 
-/* 2. 主视图切换：首页 ↔ 歌单墙 淡入（display:none 重新显示时动画会重启） */
-.home-host:not(.is-hidden),
-.wall:not(.is-hidden) {
-  animation: ui-fade-in 0.22s var(--ease) both;
+/* 2. 主视图切换：首页 ↔ 歌单墙 淡入（display:none 重新显示时动画会重启）
+   注意只做入场、用 backwards 而不是 both：both 会把 opacity:1 一直填满，
+   盖掉歌词页打开时 `.app.is-lyrics-open .wall/.home-host { opacity: 0 }` 的隐藏，
+   导致歌词页被首页整个压在下面（第四十三轮回归，第四十四轮修复）。 */
+.app:not(.is-lyrics-open) .home-host:not(.is-hidden),
+.app:not(.is-lyrics-open) .wall:not(.is-hidden) {
+  animation: ui-fade-in 0.22s var(--ease) backwards;
 }
 /* 墙面换页 / 首次进入时挂载淡入；流式搜索重建列表时不再重放 */
 .wall.is-fresh .wall-head {
-  animation: ui-fade-rise 0.3s var(--ease) both;
+  animation: ui-fade-rise 0.3s var(--ease) backwards;
 }
 .wall.is-fresh .track-list {
-  animation: ui-fade-in 0.26s var(--ease) both;
+  animation: ui-fade-in 0.26s var(--ease) backwards;
 }
 
 /* 3. 搜索框聚焦过渡 + 柔和焦点环 */
@@ -6443,7 +6446,7 @@ html.is-pb-expanded .playerbar.is-hidden {
 .home-host .home-daily,
 .home-host .home-recent,
 .home-host .home-collections {
-  animation: ui-fade-rise 0.34s var(--ease) both;
+  animation: ui-fade-rise 0.34s var(--ease) backwards;
 }
 
 /* 10. 弹层/列表里的小按钮统一按压反馈（此前只有颜色变化） */
@@ -6467,7 +6470,7 @@ html.is-pb-expanded .playerbar.is-hidden {
   to { opacity: 1; translate: 0 0; }
 }
 .airplay-device {
-  animation: airplay-device-in 0.22s var(--ease) both;
+  animation: airplay-device-in 0.22s var(--ease) backwards;
 }
 .airplay-device:nth-child(2) { animation-delay: 0.024s; }
 .airplay-device:nth-child(3) { animation-delay: 0.048s; }
@@ -6482,7 +6485,7 @@ html.is-pb-expanded .playerbar.is-hidden {
 }
 .airplay-password:not([hidden]),
 .airplay-notice:not([hidden]) {
-  animation: airplay-form-in 0.2s var(--ease) both;
+  animation: airplay-form-in 0.2s var(--ease) backwards;
 }
 
 /* 13. 发现页简介展开：用 max-height 补间代替 display 切换，不再「啪」地撑开 */
@@ -6499,7 +6502,7 @@ html.is-pb-expanded .playerbar.is-hidden {
 .wall-empty,
 .empty,
 .search-empty {
-  animation: ui-fade-in 0.24s var(--ease) both;
+  animation: ui-fade-in 0.24s var(--ease) backwards;
 }
 
 /* 15. 点赞「点亮」反馈：颜色变化之外再弹一下 */
@@ -6511,7 +6514,7 @@ html.is-pb-expanded .playerbar.is-hidden {
 .pb-like.is-liked,
 .track-like.is-liked,
 .quick-like.is-liked {
-  animation: like-pop 0.34s var(--ease-pop) both;
+  animation: like-pop 0.34s var(--ease-pop) backwards;
 }
 
 /* 16. 摘要胶囊 / 入口按钮按压反馈（--dur-pop 是 600ms，必须显式覆盖时长） */
