@@ -1,6 +1,8 @@
 using System.Globalization;
+using System.IO;
 using System.Windows.Threading;
 using Windows.Media;
+using Windows.Media.Control;
 
 namespace Zilux2.Media;
 
@@ -42,6 +44,14 @@ internal sealed class MediaSessionService : IDisposable
     private CancellationTokenSource? _coverCts;
     private string? _coverSource;
 
+    // 「当前媒体会话」跟随：媒体键接管（MediaKeyHookService）只在 Zilux2 是当前会话时吞键，
+    // 这样别的程序（QQ 音乐等）在放歌时媒体键仍然归它们，贴近系统原生行为。
+    private GlobalSystemMediaTransportControlsSessionManager? _sessionManager;
+    private string? _lastCurrentSessionId;
+    private bool _lastCurrentSessionOurs;
+    private bool _currentSessionLogged;
+    private volatile bool _isCurrentSession;
+
     public MediaSessionService()
     {
         _coalescer = new Timer(_ => FlushPending(), null, Timeout.Infinite, Timeout.Infinite);
@@ -60,6 +70,12 @@ internal sealed class MediaSessionService : IDisposable
             }
         }
     }
+
+    /// <summary>
+    /// 本机是否是 Windows 的「当前媒体会话」。媒体键接管只用这个判断：是当前会话才吞媒体键，
+    /// 否则放行给真正的当前播放器。
+    /// </summary>
+    public bool IsCurrentSession => _isCurrentSession;
 
     /// <summary>
     /// Creates the SMTC session for the host window. Called after the page is ready; repeated
@@ -105,6 +121,7 @@ internal sealed class MediaSessionService : IDisposable
             }
 
             HostLog.Info("[smtc] enabled");
+            _ = InitializeSessionManagerAsync();
         }
         catch (Exception exception)
         {
@@ -113,6 +130,96 @@ internal sealed class MediaSessionService : IDisposable
                 _unavailableLogged = true;
                 HostLog.Warn($"[smtc] unavailable: {Describe(exception)}");
             }
+        }
+    }
+
+    // 会话管理器只用来回答一个问题：Windows 现在的「当前媒体会话」是不是本机。媒体键被别的
+    // 程序抢注时，系统不会再路由 ButtonPressed，只能靠底层键盘钩子兜底；但钩子要在本机不是
+    // 当前会话时放行，否则会抢走正在放歌的其它程序的媒体键。
+    private async Task InitializeSessionManagerAsync()
+    {
+        try
+        {
+            var manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
+            if (_disposed)
+            {
+                return;
+            }
+
+            _sessionManager = manager;
+            manager.CurrentSessionChanged += OnCurrentSessionChanged;
+            RefreshCurrentSession();
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[smtc] session manager unavailable: {Describe(exception)}");
+        }
+    }
+
+    private void OnCurrentSessionChanged(
+        GlobalSystemMediaTransportControlsSessionManager sender,
+        CurrentSessionChangedEventArgs args)
+    {
+        RefreshCurrentSession();
+    }
+
+    private void RefreshCurrentSession()
+    {
+        string? sessionId = null;
+        try
+        {
+            sessionId = _sessionManager?.GetCurrentSession()?.SourceAppUserModelId;
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[smtc] current session read failed: {Describe(exception)}");
+        }
+
+        var isOurs = IsOwnSession(sessionId);
+        _isCurrentSession = isOurs;
+        if (_currentSessionLogged &&
+            _lastCurrentSessionOurs == isOurs &&
+            string.Equals(_lastCurrentSessionId, sessionId, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _currentSessionLogged = true;
+        _lastCurrentSessionOurs = isOurs;
+        _lastCurrentSessionId = sessionId;
+        HostLog.Info(
+            $"[smtc] current session id={(string.IsNullOrEmpty(sessionId) ? "none" : sessionId)} " +
+            $"ours={isOurs.ToString().ToLowerInvariant()}");
+    }
+
+    /// <summary>会话 id 对未打包的 Win32 应用就是 exe 文件名（探测到的是 Zilux2.exe）。</summary>
+    private static bool IsOwnSession(string? sessionId)
+    {
+        if (string.IsNullOrEmpty(sessionId))
+        {
+            return false;
+        }
+
+        try
+        {
+            var executable = Environment.ProcessPath;
+            if (!string.IsNullOrEmpty(executable))
+            {
+                var fileName = Path.GetFileName(executable);
+                if (!string.IsNullOrEmpty(fileName) &&
+                    string.Equals(sessionId, fileName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            var process = System.Diagnostics.Process.GetCurrentProcess();
+            return string.Equals(sessionId, process.ProcessName + ".exe", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[smtc] own session compare failed: {Describe(exception)}");
+            return false;
         }
     }
 
@@ -161,6 +268,20 @@ internal sealed class MediaSessionService : IDisposable
         _coverCts?.Dispose();
         _coverCts = null;
         _coalescer.Dispose();
+
+        var sessionManager = _sessionManager;
+        _sessionManager = null;
+        if (sessionManager is not null)
+        {
+            try
+            {
+                sessionManager.CurrentSessionChanged -= OnCurrentSessionChanged;
+            }
+            catch (Exception exception)
+            {
+                HostLog.Warn($"[smtc] session manager dispose failed: {Describe(exception)}");
+            }
+        }
 
         SystemMediaTransportControls? controls;
         lock (_gate)

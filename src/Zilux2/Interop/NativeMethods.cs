@@ -31,6 +31,31 @@ internal static class NativeMethods
     public const uint VkK = 0x4B;
     public const uint VkZ = 0x5A;
 
+    // 系统媒体键接管（WH_KEYBOARD_LL）：媒体键常被别的程序用 RegisterHotKey 抢注（例如 QQ 音乐），
+    // 被抢注后本机 SMTC 永远收不到 ButtonPressed；底层键盘钩子仍然能看到这些按键，可以在本机是
+    // 当前媒体会话时吞下并自行处理，其余情况原样放行。
+    public const int WhKeyboardLl = 13;
+    public const int WmKeyDown = 0x0100;
+    public const int WmKeyUp = 0x0101;
+    public const int WmSysKeyDown = 0x0104;
+    public const int WmSysKeyUp = 0x0105;
+    public const uint VkMediaNextTrack = 0xB0;
+    public const uint VkMediaPrevTrack = 0xB1;
+    public const uint VkMediaStop = 0xB2;
+    public const uint VkMediaPlayPause = 0xB3;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct KbdLlHookStruct
+    {
+        public uint VirtualKeyCode;
+        public uint ScanCode;
+        public uint Flags;
+        public uint Time;
+        public IntPtr ExtraInfo;
+    }
+
+    public delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+
     private const uint ShfoDelete = 0x0003;
     private const ushort FofAllowUndo = 0x0040;
     private const ushort FofNoConfirmation = 0x0010;
@@ -218,6 +243,23 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr SetWindowsHookEx(
+        int idHook,
+        LowLevelKeyboardProc callback,
+        IntPtr module,
+        uint threadId);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool UnhookWindowsHookEx(IntPtr hook);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr CallNextHookEx(IntPtr hook, int nCode, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr GetModuleHandle(string? moduleName);
 
     /// <summary>
     /// Keep the window's restore rect at <paramref name="normal"/> while it is minimized, so the
