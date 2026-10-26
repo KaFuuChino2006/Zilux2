@@ -6281,3 +6281,248 @@ html.is-pb-expanded .playerbar.is-hidden {
       rotate 0.9s cubic-bezier(0.22, 1.1, 0.36, 1) !important;
   }
 }
+
+
+/* ==========================================================================
+   交互动画补全（第四十三轮）：按压反馈 / 视图切换进场 / 细节过渡
+   只补「手感」，不改布局；全部复用现有设计 token（--ease / --ease-pop / --dur-*）。
+   ========================================================================== */
+
+@keyframes ui-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes ui-fade-rise {
+  from { opacity: 0; translate: 0 10px; }
+  to { opacity: 1; translate: 0 0; }
+}
+
+/* 1. 按压反馈：按钮类统一「按下回弹」，不再只有颜色变化 */
+.btn:active,
+.icon-btn:active,
+.win-btn:active,
+.seg-btn:active,
+.rail-btn:active,
+.pb-btn:active,
+.quick-tab:active,
+.quick-seg-btn:active,
+.ui-confirm-btn:active,
+.theme-swatch:active,
+.account-btn:active {
+  transform: scale(0.95);
+  transition-duration: 0.06s;
+}
+.btn:active {
+  transform: translateY(0) scale(0.97);
+}
+.poster:active {
+  transform: scale(1.05);
+  transition-duration: 0.1s;
+}
+.poster-play:active {
+  transform: scale(0.9);
+}
+.track-row:active {
+  background: var(--surface-hover);
+  border-color: var(--line-strong);
+}
+
+/* 1-1. 按压组松手回落：按下 60ms、松手 ~120ms，避免硬回弹 */
+.icon-btn,
+.win-btn,
+.pb-btn,
+.seg-btn,
+.rail-btn,
+.quick-tab {
+  transition-property: color, background-color, border-color, box-shadow, transform;
+  transition-duration: var(--dur-fast, 0.18s);
+  transition-timing-function: var(--ease);
+}
+.icon-btn:active,
+.win-btn:active,
+.pb-btn:active,
+.seg-btn:active,
+.rail-btn:active,
+.quick-tab:active {
+  transition-duration: 0.06s;
+}
+
+/* 2. 主视图切换：首页 ↔ 歌单墙 淡入（display:none 重新显示时动画会重启） */
+.home-host:not(.is-hidden),
+.wall:not(.is-hidden) {
+  animation: ui-fade-in 0.22s var(--ease) both;
+}
+/* 墙面换页 / 首次进入时挂载淡入；流式搜索重建列表时不再重放 */
+.wall.is-fresh .wall-head {
+  animation: ui-fade-rise 0.3s var(--ease) both;
+}
+.wall.is-fresh .track-list {
+  animation: ui-fade-in 0.26s var(--ease) both;
+}
+
+/* 3. 搜索框聚焦过渡 + 柔和焦点环 */
+.search-input {
+  transition: border-color 0.2s var(--ease), background 0.2s var(--ease),
+    box-shadow 0.2s var(--ease);
+}
+.search-input:focus {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+/* 4. 播放条进度轨道 hover 变粗；音量滑块按下时拇指轻微放大 */
+.track-rail {
+  transition: height 0.16s var(--ease);
+}
+.track:hover .track-rail {
+  height: 5px;
+}
+.slider::-webkit-slider-thumb {
+  transition: transform 0.16s var(--ease);
+}
+.slider:active::-webkit-slider-thumb {
+  transform: scale(1.18);
+}
+
+/* 5. 漏掉的 hover / focus 过渡：小按钮与输入框（此前是瞬变） */
+.si-close,
+.sd-back,
+.quick-reset,
+.quick-mode,
+.search-dock-close,
+.local-sheet-actions .local-sheet-action,
+.disc-cmt {
+  transition: color 0.16s var(--ease), background-color 0.16s var(--ease),
+    border-color 0.16s var(--ease), box-shadow 0.16s var(--ease);
+}
+/* 搜索页 tab 切到选中态时轻弹一下（列表整体重建，轻量反馈最稳） */
+@keyframes tab-pop {
+  0% { transform: scale(0.92); }
+  60% { transform: scale(1.04); }
+  100% { transform: scale(1); }
+}
+.search-tab.is-on {
+  animation: tab-pop 0.22s var(--ease);
+}
+.lp-input,
+.airplay-input,
+.updates-input {
+  transition: border-color 0.18s var(--ease), background-color 0.18s var(--ease),
+    box-shadow 0.18s var(--ease);
+}
+.lp-input:focus,
+.airplay-input:focus,
+.updates-input:focus {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+/* 7. 开关按压反馈：按下时整颗开关微微收缩、旋钮压扁一点 */
+.switch {
+  transition: background 0.2s var(--ease), transform 0.16s var(--ease);
+}
+.switch:active {
+  transform: scale(0.96);
+}
+.switch:active:after {
+  transform: scale(0.9);
+}
+.switch.is-on:active:after {
+  transform: translate(20px) scale(0.9);
+}
+
+/* 8. 左栏切换页面时，选中图标轻微弹一下，提示「已切到这里」 */
+@keyframes rail-icon-pop {
+  0% { scale: 0.86; }
+  55% { scale: 1.08; }
+  100% { scale: 1; }
+}
+.rail-btn.is-active svg {
+  animation: rail-icon-pop 0.34s cubic-bezier(0.22, 1.3, 0.36, 1);
+}
+
+/* 9. 首页内容挂载进场：异步数据回来时逐块淡入上浮，不再直接跳出来 */
+.home-host .home-daily,
+.home-host .home-recent,
+.home-host .home-collections {
+  animation: ui-fade-rise 0.34s var(--ease) both;
+}
+
+/* 10. 弹层/列表里的小按钮统一按压反馈（此前只有颜色变化） */
+.si-close:active,
+.sd-back:active,
+.search-dock-close:active,
+.local-sheet-actions .local-sheet-action:active,
+.disc-cmt:active,
+.quick-reset:active,
+.quick-mode:active,
+.upnext-act:active,
+.poster-play:active,
+.pb-like:active,
+.pb-download:active {
+  transform: scale(0.94);
+}
+
+/* 11. 投送设备逐条入场：扫描 / 连接完成时列表整表重建，不再齐刷刷一起出现 */
+@keyframes airplay-device-in {
+  from { opacity: 0; translate: 0 6px; }
+  to { opacity: 1; translate: 0 0; }
+}
+.airplay-device {
+  animation: airplay-device-in 0.22s var(--ease) both;
+}
+.airplay-device:nth-child(2) { animation-delay: 0.024s; }
+.airplay-device:nth-child(3) { animation-delay: 0.048s; }
+.airplay-device:nth-child(4) { animation-delay: 0.072s; }
+.airplay-device:nth-child(5) { animation-delay: 0.096s; }
+.airplay-device:nth-child(n + 6) { animation-delay: 0.12s; }
+
+/* 12. 投送密码 / 配对码 / 提示条从 hidden 恢复时淡入（不动 hidden 语义） */
+@keyframes airplay-form-in {
+  from { opacity: 0; translate: 0 -4px; }
+  to { opacity: 1; translate: 0 0; }
+}
+.airplay-password:not([hidden]),
+.airplay-notice:not([hidden]) {
+  animation: airplay-form-in 0.2s var(--ease) both;
+}
+
+/* 13. 发现页简介展开：用 max-height 补间代替 display 切换，不再「啪」地撑开 */
+.disc-desc {
+  max-height: 3.44em;
+  transition: max-height 0.24s var(--ease);
+}
+.disc-desc.is-open {
+  display: -webkit-box;
+  max-height: 40em;
+}
+
+/* 14. 空态出现时淡入（纯 opacity，列表重建时重放也不刺眼） */
+.wall-empty,
+.empty,
+.search-empty {
+  animation: ui-fade-in 0.24s var(--ease) both;
+}
+
+/* 15. 点赞「点亮」反馈：颜色变化之外再弹一下 */
+@keyframes like-pop {
+  0% { transform: scale(0.78); }
+  55% { transform: scale(1.16); }
+  100% { transform: scale(1); }
+}
+.pb-like.is-liked,
+.track-like.is-liked,
+.quick-like.is-liked {
+  animation: like-pop 0.34s var(--ease-pop) both;
+}
+
+/* 16. 摘要胶囊 / 入口按钮按压反馈（--dur-pop 是 600ms，必须显式覆盖时长） */
+.upnext-summary:active,
+.ui-entry:active {
+  transform: scale(0.985);
+  transition-duration: 0.08s !important;
+}
+
+/* 17. 键盘可达性：统一 focus-visible 焦点环（鼠标点击不出环，滑块除外） */
+:where(.btn, .icon-btn, .rail-btn, .pb-btn, .seg-btn, .search-tab, .quick-tab, .ui-confirm-btn):focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 2px;
+}

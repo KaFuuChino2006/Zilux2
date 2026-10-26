@@ -1184,6 +1184,9 @@ export class App {
     this.closeLyrics();
     this.homeHost.classList.add('is-hidden');
     this.wallHost.classList.remove('is-hidden');
+    // 只有整页进入 / 换页时才播挂载动画；流式搜索每批 renderWall(true) 不再重放。
+    this.wallHost.classList.toggle('is-fresh', !skipEnter);
+    if (!skipEnter) window.setTimeout(() => this.wallHost.classList.remove('is-fresh'), 620);
     this.wallHost.textContent = '';
     const { title, subtitle, tracks } = this.wall;
     const actions: HTMLElement[] = [];

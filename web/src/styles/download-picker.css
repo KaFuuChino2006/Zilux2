@@ -247,3 +247,8 @@
     transition: none;
   }
 }
+
+/* 关闭：面板的 opacity/transform 过渡需要节点多留 170ms，期间别再交互 */
+.dlqp-overlay.is-closing {
+  pointer-events: none;
+}

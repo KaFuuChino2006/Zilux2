@@ -469,3 +469,24 @@
   flex: none;
 }
 
+
+/* 歌曲信息整页详情：关闭时淡出 + 面板轻微下移，不再整块瞬删 */
+.sd-modal.is-closing {
+  animation: sheet-fade-out 0.16s var(--ease, ease) both;
+}
+.sd-modal.is-closing .sd-modal-panel {
+  animation: sd-panel-out 0.16s var(--ease, ease) both;
+}
+@keyframes sd-panel-out {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: translateY(14px) scale(0.985); }
+}
+
+/* 设置页切 pane：nav 滑块有动画，内容也补一个淡入上浮 */
+.settings-pane:not([hidden]) {
+  animation: settings-pane-in 0.26s var(--ease, ease) both;
+}
+@keyframes settings-pane-in {
+  from { opacity: 0; translate: 0 8px; }
+  to { opacity: 1; translate: 0 0; }
+}
