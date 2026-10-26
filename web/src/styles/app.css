@@ -6242,4 +6242,14 @@ html.is-pb-expanded .playerbar.is-hidden {
   .lyrics-view.lyric-style-spin .lyrics-right .lyric-line.is-active ~ .lyric-line {
     opacity: 0.2 !important;
   }
+  /* 旋入：还没轮到的整行歌词本身也是「打乱」的——每个字带着自己的随机偏移散开，
+     越靠近当前行散得越少（--scatter 由 lyrics.ts 按距离写入），看起来越来越整齐；
+     轮到自己播放时切回上面的逐字飘入。上方已唱过的行 --scatter 为 0，保持整齐。 */
+  .lyrics-view.lyric-style-spin .lyrics-right .lyric-line:not(.is-active) .lyric-char {
+    translate: calc(var(--drift-x, 0.42em) * var(--scatter, 0))
+      calc(var(--drift-y, 0.4em) * var(--scatter, 0)) !important;
+    rotate: calc(var(--drift-rot, -16deg) * var(--scatter, 0)) !important;
+    transition: translate 0.9s cubic-bezier(0.22, 1, 0.36, 1),
+      rotate 0.9s cubic-bezier(0.22, 1.1, 0.36, 1) !important;
+  }
 }
