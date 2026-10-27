@@ -19,13 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-例外（Third-party notice）
-
-`web/src/ui/lumiere-folia/` 目录下的文件改编自 Folia
-(https://github.com/chthollyphile/folia-major)，版权归其原作者所有，
-遵循 GNU Affero General Public License v3.0（AGPL-3.0）发布。
-该目录及其衍生作品的使用、修改与分发需同时遵守 AGPL-3.0；
-本仓库其余部分（除上述目录外）按上方 MIT 许可发布。

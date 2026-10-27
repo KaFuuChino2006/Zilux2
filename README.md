@@ -214,7 +214,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\release.ps1 -Version 1
 
 本项目以 **MIT License** 开源（见仓库根目录 [`LICENSE`](LICENSE)）：代码可自由使用、修改、分发（含商用），保留原作者版权声明即可。
 
-> **例外说明**：「纯字」播放效果的歌词渲染部分曾参考 / 改编自 Folia（[chthollyphile/folia-major](https://github.com/chthollyphile/folia-major)，AGPL-3.0）。`web/src/ui/lumiere-folia/` 目录下的文件版权归原作者所有，遵循 AGPL-3.0 许可（详见 `LICENSE` 文末例外条款）；后续版本已推进自研渲染替换，历史版本与包含该部分代码的构建仍按 AGPL-3.0 约束使用。
+> **例外说明**：「纯字」播放效果的歌词渲染部分曾参考 / 改编自 Folia（[chthollyphile/folia-major](https://github.com/chthollyphile/folia-major)，AGPL-3.0）。`web/src/ui/lumiere-folia/` 目录下的文件版权归原作者所有，遵循 AGPL-3.0 许可（详见 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)）；后续版本已推进自研渲染替换，历史版本与包含该部分代码的构建仍按 AGPL-3.0 约束使用。
 
 架构与工程方法参考了以下开源项目（未复制其界面资源）：
 
