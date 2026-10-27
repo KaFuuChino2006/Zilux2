@@ -18,7 +18,8 @@
  *   cancel/commit 状态机与 seek 取消逻辑；玩家倍速（0.5–2.0）作为 deck 基础速率参与，过渡结束后
  *   B 恢复用户倍速，WSOLA tempoRate 只在检测器允许时叠加在自动衔接上。
  * - 歌词衔接（handoff，仅 auto 档）：A 的最后一句歌词唱完时，B 的第一句歌词正好开始——
- *   B 的起播点 = 首句位置、淡化窗口 = A 末句到可听结尾（尾奏不够 MIN_FADE_MS 时自动回退普通淡化）。
+ *   B 的起播点 = 首句位置、淡化窗口 = A 末句起（尾奏较多时再往后挪一点，保留一段尾奏听感）、
+ *   最长 HANDOFF_MAX_FADE_MS（8 秒）——不把整段无词尾奏都算成过渡时间（尾奏不够 MIN_FADE_MS 时自动回退普通淡化）。
  *   B 的人声不做硬切：起音用 smoothstep 在约 2–6 秒内缓慢浮现（淡化越长越慢）；前几秒再用「人声聚焦」EQ
  *   （低频 -15 dB / 高频 -11 dB / 1.8 kHz +4.5 dB）压住伴奏、突出中频人声，随后慢慢打开；
  *   A 的尾奏在约 2 秒内让位到 45% 再随淡化收干。首句/末句都由 lyricRange.ts 过滤掉制作人员行。
@@ -49,8 +50,8 @@ export interface CrossfadeSettings {
   length: CrossfadeLength;
   /**
    * 歌词衔接（仅过渡时长为 auto 时生效）：上一首最后一句歌词唱完的瞬间接下一首第一句，
-   * 人声缓慢浮现（约 2–6 秒，随淡化长度）、伴奏先被 EQ 压住再慢慢打开；上一首尾奏不够长（< MIN_FADE_MS）
-   * 时自动回退普通淡化。
+   * 人声缓慢浮现（约 2–6 秒，随淡化长度）、伴奏先被 EQ 压住再慢慢打开；过渡时长封顶 8 秒（不拿
+   * 整段无词尾奏当过渡时间），上一首尾奏不够长（< MIN_FADE_MS）时自动回退普通淡化。
    */
   handoff: boolean;
 }
@@ -83,6 +84,18 @@ const AUTO_FALLBACK_MS = 7_000;
 /** 淡化太短听不出、太长会盖住半首歌，都夹住。上限按手动 30 秒留余量。 */
 const MIN_FADE_MS = 1_200;
 const MAX_FADE_MS = 32_000;
+/** 歌词衔接的过渡时长上限：A 末句唱完后最多用这么多秒完成交接，不把整段无词尾奏都算成过渡时间。 */
+const HANDOFF_MAX_FADE_MS = 8_000;
+/**
+ * 歌词衔接的「先保留尾奏」上限（毫秒）：A 末句唱完后如果还有较多纯音乐尾奏，
+ * 先把交接点往后挪一点、保留一段尾奏听感再开始淡化（挪动量见 HANDOFF_HOLD_RATIO）。
+ */
+const HANDOFF_HOLD_MAX_MS = 6_000;
+/**
+ * 尾奏里用于「保留听感」的比例：只把「超出淡化时长」的那部分尾奏的一半留给 A，
+ * 这样淡化仍会在可听结尾之前结束，不会又把整段尾奏拖成过渡。
+ */
+const HANDOFF_HOLD_RATIO = 0.5;
 
 /** WSOLA 变速不变调：用原生 preservesPitch 时间拉伸，把 B 的拍间隔拉到与 A 一致（±12% 内才做）。 */
 const TEMPO_RATE_MIN = 0.88;
@@ -199,6 +212,8 @@ export interface CrossfadeDebugState {
   handoffActive: boolean;
   /** A 的「最后一句歌词唱完」位置（曲内毫秒）；0 = 无数据/未启用 */
   lastVocalEndPosMs: number;
+  /** 歌词衔接时先保留尾奏的后移量（毫秒）：0 = 末句唱完立刻开始交接 */
+  handoffHoldMs: number;
   /** A 的「可听结尾」（曲内毫秒）：调度以它为终点；旧宿主无 audibleEndMs 时 = 曲内时长 */
   currentAudibleEndMs: number;
   /** A 的尾部静音（毫秒）= 曲内时长 - currentAudibleEndMs；无静音为 0 */
@@ -247,6 +262,7 @@ const debug: CrossfadeDebugState = {
   vocalAligned: false,
   handoffActive: false,
   lastVocalEndPosMs: 0,
+  handoffHoldMs: 0,
   currentAudibleEndMs: 0,
   tailSilenceMs: 0,
   autoFadeMs: 0,
@@ -384,6 +400,8 @@ interface FadeSchedule {
   handoff: boolean;
   /** A 的「最后一句歌词唱完」位置（曲内毫秒）；0 = 未启用 */
   lastVocalEndPosMs: number;
+  /** 本次歌词衔接先保留尾奏的后移量（毫秒）：0 = 末句唱完立刻开始交接 */
+  handoffHoldMs: number;
   /** auto 本次目标时长（毫秒）：= autoBars × autoBarMs；手动档位/回退为 0 */
   autoFadeMs: number;
   /** auto 本次算出的小节数（手动档位/回退为 0） */
@@ -410,6 +428,8 @@ interface ActivePlan {
   handoff: boolean;
   /** A 的「最后一句歌词唱完」位置（曲内毫秒）；0 = 未启用 */
   lastVocalEndPosMs: number;
+  /** 本次歌词衔接先保留尾奏的后移量（毫秒）：0 = 末句唱完立刻开始交接 */
+  handoffHoldMs: number;
   fadeStartFileMs: number;
   fadeStartPosMs: number;
   fadeMs: number;
@@ -769,7 +789,8 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
       ? Math.round(Math.min(rawLastVocalEnd, durationMs))
       : 0;
   const tailAfterVocalMs = lastVocalEndPosMs > 0 ? audibleEndPosMs - lastVocalEndPosMs : 0;
-  const handoffFadeMs = Math.round(Math.min(MAX_FADE_MS, Math.max(MIN_FADE_MS, tailAfterVocalMs)));
+  // 尾奏再长也只把过渡控制在这个上限内，不把整段无词尾奏都算成过渡时间。
+  const handoffFadeMs = Math.round(Math.min(HANDOFF_MAX_FADE_MS, Math.max(MIN_FADE_MS, tailAfterVocalMs)));
   const bTailAfterVocalMs = nextDurationMs > 0 ? nextDurationMs - vocalPosMs : Number.POSITIVE_INFINITY;
   const canHandoff =
     settings.handoff &&
@@ -781,9 +802,17 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
     bTailAfterVocalMs >= handoffFadeMs + 400;
   let handoff = canHandoff;
 
-  let plannedFadeMs = handoff ? handoffFadeMs : desiredMs;
+  // 尾奏较多时把交接点往后挪一点：先保留一段「A 唱完之后」的纯音乐听感再开始淡化。
+  // 挪动量 = min(上限, (尾奏 - 淡化时长) × 比例)，保证淡化仍在可听结尾之前结束。
+  const handoffTailExtraMs = Math.max(0, tailAfterVocalMs - handoffFadeMs);
+  const handoffHoldMs = handoff
+    ? Math.round(Math.min(HANDOFF_HOLD_MAX_MS, handoffTailExtraMs * HANDOFF_HOLD_RATIO))
+    : 0;
+
   let bStartFileMs = handoff ? vocalFileMs : baseBStartFileMs;
   let vocalAligned = handoff;
+  // 普通淡化时：B 前奏比目标淡化还短时，把整段前奏当成过渡，淡化时长随之缩短。
+  let fadeMsTarget = desiredMs;
   if (!handoff && vocalFileMs > 0) {
     const candidate = vocalFileMs - desiredMs;
     if (candidate >= nextStartMs + 250) {
@@ -794,32 +823,51 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
       vocalAligned = true;
     } else if (vocalFileMs - baseBStartFileMs >= MIN_FADE_MS) {
       // 前奏比目标淡化还短：把整段前奏当成过渡，淡化终点 = 唱词起点。
-      plannedFadeMs = Math.max(MIN_FADE_MS, Math.min(desiredMs, vocalFileMs - baseBStartFileMs));
+      fadeMsTarget = Math.max(MIN_FADE_MS, Math.min(desiredMs, vocalFileMs - baseBStartFileMs));
       bStartFileMs = baseBStartFileMs;
       vocalAligned = true;
     }
     // 前奏太短（< MIN_FADE_MS）或数据异常：保持普通淡化，B 从第一个强拍起播。
   }
 
-  // ---- A 侧：终点固定为可听结尾，按本次淡化时长反推起点，并尽量贴强拍 ----
-  // 歌词衔接时起点就是「最后一句唱完」，不再贴强拍（要正好接上人声）。
-  const targetFileMs = fileAudibleEndMs - plannedFadeMs;
-  const downbeat = handoff ? null : pickDownbeatNear(analysis, targetFileMs, currentStartMs);
-  let fadeStartFile = downbeat === null ? targetFileMs : downbeat;
+  // ---- A 侧 ----
+  // 歌词衔接：起点 = 「A 最后一句唱完」+ 先保留的尾奏（handoffHoldMs），不再贴强拍；
+  // 过渡时长封顶 HANDOFF_MAX_FADE_MS，不把整段无词尾奏都算成过渡时间。
+  // 其它情况：终点固定为可听结尾、按淡化时长反推起点，并尽量贴强拍。
+  let fadeStartFile = currentStartMs;
+  if (handoff) {
+    fadeStartFile = currentStartMs + lastVocalEndPosMs + handoffHoldMs;
+    const earliestStart = currentStartMs + currentPosMs + 80;
+    if (fadeStartFile < earliestStart) {
+      // 已经错过末句（分析回来太晚 / 用户 seek 过）：回退普通淡化。
+      handoff = false;
+      vocalAligned = false;
+      bStartFileMs = baseBStartFileMs;
+    }
+  }
+  if (!handoff) {
+    const targetFileMs = fileAudibleEndMs - fadeMsTarget;
+    const downbeat = pickDownbeatNear(analysis, targetFileMs, currentStartMs);
+    fadeStartFile = downbeat === null ? targetFileMs : downbeat;
 
-  // 淡化窗口终点固定为可听结尾（不把淡化拖进尾部静音），只对起点夹取时长：
-  // 早不过 MAX_FADE_MS、晚不过可听结尾前 MIN_FADE_MS，且不早于曲目/分段起点。
-  if (fileAudibleEndMs - fadeStartFile > MAX_FADE_MS) fadeStartFile = fileAudibleEndMs - MAX_FADE_MS;
-  if (fileAudibleEndMs - fadeStartFile < MIN_FADE_MS) fadeStartFile = fileAudibleEndMs - MIN_FADE_MS;
-  if (fadeStartFile < currentStartMs) fadeStartFile = currentStartMs;
+    // 淡化窗口终点固定为可听结尾（不把淡化拖进尾部静音），只对起点夹取时长：
+    // 早不过 MAX_FADE_MS、晚不过可听结尾前 MIN_FADE_MS，且不早于曲目/分段起点。
+    if (fileAudibleEndMs - fadeStartFile > MAX_FADE_MS) fadeStartFile = fileAudibleEndMs - MAX_FADE_MS;
+    if (fileAudibleEndMs - fadeStartFile < MIN_FADE_MS) fadeStartFile = fileAudibleEndMs - MIN_FADE_MS;
+    if (fadeStartFile < currentStartMs) fadeStartFile = currentStartMs;
 
-  // 已经错过起点（分析回来太晚 / 用户 seek 过）：从当前位置开始缩短淡化，否则放弃。
-  const earliestStart = currentStartMs + currentPosMs + 80;
-  if (fadeStartFile < earliestStart) fadeStartFile = earliestStart;
-  if (fileAudibleEndMs - fadeStartFile < MIN_FADE_MS) return null;
-  if (fileAudibleEndMs - fadeStartFile > MAX_FADE_MS) fadeStartFile = fileAudibleEndMs - MAX_FADE_MS;
+    // 已经错过起点（分析回来太晚 / 用户 seek 过）：从当前位置开始缩短淡化，否则放弃。
+    const earliestStart = currentStartMs + currentPosMs + 80;
+    if (fadeStartFile < earliestStart) fadeStartFile = earliestStart;
+    if (fileAudibleEndMs - fadeStartFile < MIN_FADE_MS) return null;
+    if (fileAudibleEndMs - fadeStartFile > MAX_FADE_MS) fadeStartFile = fileAudibleEndMs - MAX_FADE_MS;
+  }
 
-  const fadeMs = Math.round(fileAudibleEndMs - fadeStartFile);
+  const fadeMs = Math.round(
+    handoff
+      ? Math.min(HANDOFF_MAX_FADE_MS, Math.max(MIN_FADE_MS, tailAfterVocalMs))
+      : fileAudibleEndMs - fadeStartFile,
+  );
   if (fadeMs < MIN_FADE_MS) return null;
 
   // B 太短，撑不到淡化结束：回退普通方案（B 从开头/第一个强拍起播）；仍不行就放弃。
@@ -872,11 +920,16 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
     vocalAligned,
     handoff,
     lastVocalEndPosMs,
+    handoffHoldMs,
     autoFadeMs: fadePlan.auto ? fadePlan.ms : 0,
     autoBars: fadePlan.bars,
     autoBarMs: fadePlan.barMs,
     autoNote: handoff
-      ? `歌词衔接：A 末句 ${lastVocalEndPosMs} ms 唱完，接下一首首句 ${vocalPosMs} ms`
+      ? `歌词衔接：A 末句 ${lastVocalEndPosMs} ms 唱完${
+          handoffHoldMs > 0 ? `，先保留 ${handoffHoldMs} ms 尾奏` : ''
+        }，接下一首首句 ${vocalPosMs} ms${
+          tailAfterVocalMs > HANDOFF_MAX_FADE_MS ? `（尾奏 ${Math.round(tailAfterVocalMs)} ms 较长，过渡封顶 ${HANDOFF_MAX_FADE_MS} ms）` : ''
+        }`
       : fadePlan.note,
   };
 }
@@ -889,6 +942,7 @@ function applySchedule(plan: ActivePlan, schedule: FadeSchedule): void {
   plan.tempoRate = schedule.tempoRate;
   plan.handoff = schedule.handoff;
   plan.lastVocalEndPosMs = schedule.lastVocalEndPosMs;
+  plan.handoffHoldMs = schedule.handoffHoldMs;
   plan.audibleEndPosMs = schedule.audibleEndPosMs;
   debug.fadeStartPosMs = schedule.fadeStartPosMs;
   debug.fadeMs = schedule.fadeMs;
@@ -901,6 +955,7 @@ function applySchedule(plan: ActivePlan, schedule: FadeSchedule): void {
   debug.vocalAligned = schedule.vocalAligned;
   debug.handoffActive = schedule.handoff;
   debug.lastVocalEndPosMs = schedule.lastVocalEndPosMs;
+  debug.handoffHoldMs = schedule.handoffHoldMs;
   debug.autoFadeMs = schedule.autoFadeMs;
   debug.autoBars = schedule.autoBars;
   debug.autoBarMs = schedule.autoBarMs;
@@ -978,6 +1033,7 @@ export function prepareCrossfade(options: CrossfadePrepareOptions): boolean {
     tempoRate: 1,
     handoff: false,
     lastVocalEndPosMs: 0,
+    handoffHoldMs: 0,
     fadeStartFileMs: 0,
     fadeStartPosMs: 0,
     fadeMs: 0,
@@ -1010,7 +1066,9 @@ export function prepareCrossfade(options: CrossfadePrepareOptions): boolean {
   logEvent(
     'prepared',
     plan.handoff
-      ? `「${options.current.track.title}」→「${options.next.track.title}」，歌词衔接：A 末句 ${plan.lastVocalEndPosMs} ms 唱完接 B 首句，${plan.fadeMs} ms 人声缓慢浮现、伴奏渐入`
+      ? `「${options.current.track.title}」→「${options.next.track.title}」，歌词衔接：A 末句 ${plan.lastVocalEndPosMs} ms 唱完${
+          plan.handoffHoldMs > 0 ? `、先保留 ${plan.handoffHoldMs} ms 尾奏` : ''
+        }接 B 首句，${plan.fadeMs} ms 人声缓慢浮现、伴奏渐入`
       : `「${options.current.track.title}」→「${options.next.track.title}」，${plan.fadeMs} ms 后在曲内 ${Math.round(plan.fadeStartPosMs)} ms 处淡化（可听结尾 ${plan.audibleEndPosMs} ms，尾部静音/渐弱 ${debug.tailSilenceMs} ms）`,
   );
   return true;
@@ -1058,6 +1116,7 @@ function createManualPlan(options: ManualCrossfadeOptions, kind: 'manual' | 'loo
     tempoRate: 1,
     handoff: false,
     lastVocalEndPosMs: 0,
+    handoffHoldMs: 0,
     fadeStartFileMs: 0,
     fadeStartPosMs: Math.max(0, Math.round(options.currentPositionMs || 0)),
     fadeMs,
@@ -1088,6 +1147,7 @@ function createManualPlan(options: ManualCrossfadeOptions, kind: 'manual' | 'loo
   debug.vocalAligned = false;
   debug.handoffActive = false;
   debug.lastVocalEndPosMs = 0;
+  debug.handoffHoldMs = 0;
   debug.currentAudibleEndMs = 0;
   debug.tailSilenceMs = 0;
   debug.autoFadeMs = 0;
@@ -1626,7 +1686,7 @@ export function buildCrossfadeSection(scope: Disposers | null): HTMLElement {
     h('h3', { class: 'section-title', text: '无缝衔接（实验）' }),
     h('p', {
       class: 'analysis-desc',
-      text: '当前歌曲结束前，按鼓点提前开始下一首，并按等功率曲线交叉淡化（B 用更慢的进入曲线，避免一上来就大声；A 多留一点尾音），避免曲间静音；淡化终点对齐歌曲的可听结尾，自动跳过曲尾静音与明显渐弱收尾（需宿主分析支持 audibleEndMs，p0-5 起）。淡化结束时机对齐下一首的「开始唱词」（有歌词时）：前奏较长会跳过前奏、从唱词前若干秒切入；前奏较短则把整段前奏当作过渡，结束时正好进入唱词。过渡时长「自动」不再固定 5–10 秒：以两首歌的小节为基准（默认一个乐句 4 小节，拍速差大时取两首的平均小节），B 前奏到唱词的空间不足时按整小节缩短、A 尾奏与 B 前奏都宽裕时放宽到 6–8 小节、小节很短（快歌/双拍）时取两个乐句，实际时长随歌曲自由变化。两首 BPM 不同时会用 WSOLA 变速不变调（±12% 内）把 B 的节拍拉齐，过渡结束后平滑恢复原速；图内路径下 A 的伴奏先退、B 的伴奏慢慢回正，人声先出现、伴奏后融进来。自然播完（列表循环 / 随机播放）与单曲循环都会自动衔接；手动切歌（下一首 / 上一首 / 点列表）走 1.2–2.0 秒等功率短过渡，不等节拍分析。均衡器/人声保留淡出等 Web Audio 音效开启时自动改走图内增益淡化，否则回退为原来的硬切。「歌词衔接」（默认开启，仅过渡时长=自动时生效）：上一首最后一句歌词唱完的瞬间接下一首第一句——B 的起播点直接对准首句，B 的人声用约 2–6 秒缓慢浮现（淡化越长越慢）、不再硬切入，前几秒用「人声聚焦」把 B 的低频/高频压住、抬高 1.8 kHz 临场感，让中频人声先出来，伴奏随后慢慢打开；如果上一首末句之后没有足够长的尾奏（不足 1.2 秒），自动回退成上面的普通淡化。首句/末句都会过滤歌词里的制作人员名单（作词、作曲、Lyrics by…）和间奏标记，避免过渡点落到没人唱的地方。',
+      text: '当前歌曲结束前，按鼓点提前开始下一首，并按等功率曲线交叉淡化（B 用更慢的进入曲线，避免一上来就大声；A 多留一点尾音），避免曲间静音；淡化终点对齐歌曲的可听结尾，自动跳过曲尾静音与明显渐弱收尾（需宿主分析支持 audibleEndMs，p0-5 起）。淡化结束时机对齐下一首的「开始唱词」（有歌词时）：前奏较长会跳过前奏、从唱词前若干秒切入；前奏较短则把整段前奏当作过渡，结束时正好进入唱词。过渡时长「自动」不再固定 5–10 秒：以两首歌的小节为基准（默认一个乐句 4 小节，拍速差大时取两首的平均小节），B 前奏到唱词的空间不足时按整小节缩短、A 尾奏与 B 前奏都宽裕时放宽到 6–8 小节、小节很短（快歌/双拍）时取两个乐句，实际时长随歌曲自由变化。两首 BPM 不同时会用 WSOLA 变速不变调（±12% 内）把 B 的节拍拉齐，过渡结束后平滑恢复原速；图内路径下 A 的伴奏先退、B 的伴奏慢慢回正，人声先出现、伴奏后融进来。自然播完（列表循环 / 随机播放）与单曲循环都会自动衔接；手动切歌（下一首 / 上一首 / 点列表）走 1.2–2.0 秒等功率短过渡，不等节拍分析。均衡器/人声保留淡出等 Web Audio 音效开启时自动改走图内增益淡化，否则回退为原来的硬切。「歌词衔接」（默认开启，仅过渡时长=自动时生效）：上一首最后一句歌词唱完的瞬间接下一首第一句——B 的起播点直接对准首句，B 的人声用约 2–6 秒缓慢浮现（淡化越长越慢）、不再硬切入，前几秒用「人声聚焦」把 B 的低频/高频压住、抬高 1.8 kHz 临场感，让中频人声先出来，伴奏随后慢慢打开；如果上一首末句之后没有足够长的尾奏（不足 1.2 秒），自动回退成上面的普通淡化；过渡时长会封顶在 8 秒内，不会把整段无词尾奏都当成过渡时间；尾奏较多时会先把交接点往后挪一点（按「尾奏减去过渡时长」的一半、最多 6 秒），先保留一段上一首唱完后的纯音乐听感再开始交接，这样不会一唱完就切走。首句/末句都会过滤歌词里的制作人员名单（作词、作曲、Lyrics by…）和间奏标记，避免过渡点落到没人唱的地方。',
     }),
     h(
       'div',
@@ -1662,7 +1722,7 @@ export function buildCrossfadeSection(scope: Disposers | null): HTMLElement {
           h('div', { class: 'field-label', text: '歌词衔接' }),
           h('div', {
             class: 'field-hint',
-            text: '上一首末句唱完立刻接下一首首句，人声先出、伴奏渐入；尾奏不够长时自动回退普通淡化（需过渡时长 = 自动）',
+            text: '上一首末句唱完接下一首首句，人声先出、伴奏渐入；尾奏较多时先保留一点尾奏听感再交接；尾奏不够长时自动回退普通淡化（需过渡时长 = 自动）',
           }),
         ),
         handoffToggle,
