@@ -75,18 +75,20 @@ export interface VinylStyleSettings {
   /* ── 布局 ─────────────────────────────────── */
   /** 当前句歌词的纵向位置（占画面高）。 */
   lyricY: number;
+  /** 当前句歌词的横向中心位置（占画面宽）。 */
+  lyricX: number;
   /** 歌词最大宽度（占画面宽）。 */
   lyricWidth: number;
   /** 同时显示前后各几句（0 = 只看当前句）。 */
   neighborLines: 0 | 1 | 2;
-  /** 画面底部显示歌名/歌手/进度条。 */
-  showInfo: boolean;
 
   /* ── 唱臂与动效 ───────────────────────────── */
   /** 显示唱臂。 */
   showArm: boolean;
   /** 转速（RPM，黑胶标准 33.33）。 */
   rpm: number;
+  /** 唱片转向：cw=顺时针（真实黑胶），ccw=逆时针。 */
+  spinDirection: 'cw' | 'ccw';
   /** 暂停时抬起唱臂。 */
   armLiftOnPause: boolean;
   /** 随音乐低频的轻微起伏。 */
@@ -133,12 +135,13 @@ export const DEFAULT_VINYL_SETTINGS: VinylStyleSettings = {
   bgFollowLyrics: true,
 
   lyricY: 0.685,
+  lyricX: 0.5,
   lyricWidth: 0.86,
   neighborLines: 1,
-  showInfo: true,
 
   showArm: true,
   rpm: 33.33,
+  spinDirection: 'cw',
   armLiftOnPause: true,
   energy: 1,
   dpr: 1.75,
@@ -273,12 +276,13 @@ export function normalizeVinylSettings(raw: unknown): VinylStyleSettings {
     bgFollowLyrics: bool(src.bgFollowLyrics, d.bgFollowLyrics),
 
     lyricY: num(src.lyricY, d.lyricY, 0.52, 0.86),
+    lyricX: num(src.lyricX, d.lyricX, 0.2, 0.8),
     lyricWidth: num(src.lyricWidth, d.lyricWidth, 0.5, 1),
     neighborLines: pick(src.neighborLines, [0, 1, 2], d.neighborLines),
-    showInfo: bool(src.showInfo, d.showInfo),
 
     showArm: bool(src.showArm, d.showArm),
-    rpm: num(src.rpm, d.rpm, 20, 45),
+    rpm: num(src.rpm, d.rpm, 1, 78),
+    spinDirection: src.spinDirection === 'ccw' ? 'ccw' : 'cw',
     armLiftOnPause: bool(src.armLiftOnPause, d.armLiftOnPause),
     energy: num(src.energy, d.energy, 0, 2),
     dpr: num(src.dpr, d.dpr, 1, 2),

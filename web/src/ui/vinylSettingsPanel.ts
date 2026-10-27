@@ -108,6 +108,7 @@ const TEXT_COLORS: ColorSpec[] = [
 
 const LAYOUT_RANGES: RangeSpec[] = [
   { key: 'lyricY', label: '歌词纵向位置', hint: '当前句在画面里的高度位置（占画面高）', min: 0.52, max: 0.86, step: 0.005, digits: 1, scale: 100, unit: '%' },
+  { key: 'lyricX', label: '歌词横向位置', hint: '当前句在画面里的水平位置（占画面宽），默认居中', min: 0.2, max: 0.8, step: 0.005, digits: 1, scale: 100, unit: '%' },
   { key: 'lyricWidth', label: '歌词最大宽度', hint: '一句歌词最多占画面宽的多少；太窄会多折行', min: 0.5, max: 1, step: 0.005, digits: 1, scale: 100, unit: '%' },
 ];
 
@@ -143,7 +144,7 @@ const DUST_RANGES: RangeSpec[] = [
 ];
 
 const ARM_RANGES: RangeSpec[] = [
-  { key: 'rpm', label: '转速', hint: '黑胶标准转速 33⅓ RPM；暂停时唱片会按这个速度慢慢停下', min: 20, max: 45, step: 0.01, digits: 2, unit: ' RPM' },
+  { key: 'rpm', label: '转速', hint: '黑胶标准 33⅓ RPM，也可以调得很慢（如 16 转、8 转）；暂停时唱片会按这个速度慢慢停下', min: 1, max: 78, step: 0.01, digits: 2, unit: ' RPM' },
   { key: 'energy', label: '音乐呼吸', hint: '随音乐低频起伏的幅度（唱片半径与暖光轻微颤动），0 = 不跟着动', min: 0, max: 2, step: 0.05, digits: 2, unit: 'x' },
   { key: 'dpr', label: '渲染像素比', hint: '画面精细度，越高越清楚也越吃显卡（1~2）', min: 1, max: 2, step: 0.05, digits: 2, unit: 'x' },
 ];
@@ -170,12 +171,6 @@ const LABEL_TEXT: ToggleSpec = {
   key: 'labelText',
   label: '贴纸印歌名',
   hint: '没有封面图时，在唱片中心贴纸上印歌名与歌手；有专辑封面的曲目直接印封面',
-};
-
-const INFO_TOGGLE: ToggleSpec = {
-  key: 'showInfo',
-  label: '底部歌名与进度',
-  hint: '画面底部显示歌名、歌手与一条细进度线',
 };
 
 const BG_FOLLOW: ToggleSpec = {
@@ -538,6 +533,20 @@ export function openVinylSettingsSheet(): void {
       },
     );
 
+  const spinRow = (): HTMLElement =>
+    segmentedRow(
+      '旋转方向',
+      '唱片转动的方向；顺时针（真实黑胶）或逆时针',
+      [
+        { id: 'cw', label: '顺时针' },
+        { id: 'ccw', label: '逆时针' },
+      ],
+      draft.spinDirection,
+      (id) => {
+        draft.spinDirection = id === 'ccw' ? 'ccw' : 'cw';
+      },
+    );
+
   const group = (title: string, ...rows: HTMLElement[]): HTMLElement =>
     h('div', { class: 'ts-group' }, h('div', { class: 'ts-group-title', text: title }), ...rows);
 
@@ -546,18 +555,23 @@ export function openVinylSettingsSheet(): void {
     text: '歌词颜色与封面 / 主题同源：纯色档用「歌词颜色」的三态，封面色与自动渐变按封面取色板上色。这里调字体、字重、字号、字距、辉光与三态亮度。',
   });
 
+  const styleNote = h('div', {
+    class: 'ts-hint',
+    text: '歌词播放动画（经典 / 上浮 / 波浪 / 摇曳 / 打字机 / 旋入）沿用快捷设置里「歌词样式」的选择，切换后唱片画面里的歌词动画同步生效。',
+  });
+
   const renderRows = (): void => {
     rowsHost.textContent = '';
     // 整表重建前先清掉旧控件的引用，避免高亮/同步指向已经被移除的节点。
     rangeControls.clear();
     rowsHost.append(
       group('预设', presetRow()),
-      group('歌词', tintNote, fontRow(), weightRow(), toggleRow(KEYWORD_COLORS), toggleRow(TRANSLATION_TOGGLE), toggleRow(INTRO_TITLE), ...TEXT_RANGES.map(rangeRow), ...TEXT_COLORS.map(colorRow)),
-      group('布局', ...LAYOUT_RANGES.map(rangeRow), neighborRow(), toggleRow(INFO_TOGGLE)),
+      group('歌词', tintNote, styleNote, fontRow(), weightRow(), toggleRow(KEYWORD_COLORS), toggleRow(TRANSLATION_TOGGLE), toggleRow(INTRO_TITLE), ...TEXT_RANGES.map(rangeRow), ...TEXT_COLORS.map(colorRow)),
+      group('布局', ...LAYOUT_RANGES.map(rangeRow), neighborRow()),
       group('唱片', ...DISC_RANGES.map(rangeRow), toggleRow(LABEL_TEXT), ...DISC_COLORS.map(colorRow)),
       group('背景', toggleRow(BG_FOLLOW), ...BG_COLORS.map(colorRow), ...BG_RANGES.map(rangeRow)),
       group('尘埃', ...DUST_RANGES.map(rangeRow)),
-      group('唱臂与动效', toggleRow(SHOW_ARM), toggleRow(ARM_PAUSE), ...ARM_RANGES.map(rangeRow)),
+      group('唱臂与动效', toggleRow(SHOW_ARM), toggleRow(ARM_PAUSE), spinRow(), ...ARM_RANGES.map(rangeRow)),
     );
   };
 

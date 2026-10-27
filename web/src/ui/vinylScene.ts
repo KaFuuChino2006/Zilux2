@@ -160,11 +160,6 @@ function scatterRandom(hash: number, salt: number): number {
 
 const truncate = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 
-function formatTime(ms: number): string {
-  const total = Math.max(0, Math.floor((Number.isFinite(ms) ? ms : 0) / 1000));
-  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
-}
-
 /* ── 制作名单词库（QRC/YRC 会把名单塞进歌词流，需要过滤） ───────────── */
 
 const CREDIT_LABELS = new Set([
@@ -208,13 +203,6 @@ const STYLE_CSS = `
 .zvs-title-card.is-visible{opacity:1}
 .zvs-title{font-family:var(--vs-font,${FONT_STACK});font-weight:var(--vs-weight,900);font-size:clamp(20px,3.4vh,40px);letter-spacing:.06em;text-shadow:0 4px 30px rgba(0,0,0,.6)}
 .zvs-artist{margin-top:.62em;font-size:clamp(11px,1.5vh,15px);letter-spacing:.24em;opacity:.62}
-.zvs-info{position:absolute;left:4.2vw;right:4.2vw;bottom:3.4vh;display:flex;align-items:baseline;justify-content:space-between;gap:18px;color:var(--vs-color,#f2e7d8);opacity:0;transition:opacity .6s ease;z-index:2;pointer-events:none;font-family:var(--vs-font,${FONT_STACK})}
-.zvs-info.is-visible{opacity:.72}
-.zvs-info-main{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;letter-spacing:.12em}
-.zvs-info-time{font-size:11.5px;letter-spacing:.08em;opacity:.66;font-variant-numeric:tabular-nums}
-.zvs-info-bar{position:absolute;left:4.2vw;right:4.2vw;bottom:2.15vh;height:2px;background:rgba(255,255,255,.14);border-radius:2px;overflow:hidden;opacity:0;transition:opacity .6s ease;z-index:2;pointer-events:none}
-.zvs-info-bar.is-visible{opacity:1}
-.zvs-info-fill{height:100%;width:100%;transform-origin:0 50%;transform:scaleX(0);background:linear-gradient(90deg,var(--vs-accent,#c9a068),var(--vs-glow-color,#ffcf8a));box-shadow:0 0 12px var(--vs-accent,#c9a068)}
 /* 歌词播放动画：和「播放效果 = 关闭」共用同一套样式语义（经典 / 上浮 / 波浪 / 摇曳 / 打字机 / 旋入）。
    这里只搬「动」，颜色仍走 --vs-* 词色令牌；逐字时机由场景按真实演唱时间写入 is-sung / is-hot。 */
 @keyframes zvs-wave{0%,100%{translate:0 0}50%{translate:0 -.22em}}
@@ -306,21 +294,7 @@ export function createVinylScene(options: VinylSceneOptions = {}): VinylScene {
   artistEl.className = 'zvs-artist';
   titleCard.append(titleEl, artistEl);
 
-  const info = document.createElement('div');
-  info.className = 'zvs-info';
-  const infoMain = document.createElement('div');
-  infoMain.className = 'zvs-info-main';
-  const infoTime = document.createElement('div');
-  infoTime.className = 'zvs-info-time';
-  info.append(infoMain, infoTime);
-
-  const infoBar = document.createElement('div');
-  infoBar.className = 'zvs-info-bar';
-  const infoFill = document.createElement('div');
-  infoFill.className = 'zvs-info-fill';
-  infoBar.appendChild(infoFill);
-
-  root.append(canvas, titleCard, wordsLayer, info, infoBar);
+  root.append(canvas, titleCard, wordsLayer);
 
   /* ── 尺寸 / 缓存 ──────────────────────────────────────────────── */
 
@@ -363,6 +337,7 @@ export function createVinylScene(options: VinylSceneOptions = {}): VinylScene {
   let energyNow = 0;
   /** 唱臂横向进度 0~1（平滑跟随播放进度）。 */
   let armProgress = 0;
+  let armLift = 0;
 
   let motes: Mote[] = [];
 
@@ -583,8 +558,8 @@ export function createVinylScene(options: VinylSceneOptions = {}): VinylScene {
     const base = baseFontPx();
     const gap = base * 1.88;
     const centerY = height * cfg.lyricY;
-    const left = Math.round((width * (1 - cfg.lyricWidth)) / 2);
     const boxWidth = Math.round(width * cfg.lyricWidth);
+    const left = Math.round(width * cfg.lyricX - boxWidth / 2);
     for (let i = 0; i < views.length; i += 1) {
       const view = views[i]!;
       const k = i - focus;
@@ -725,14 +700,6 @@ export function createVinylScene(options: VinylSceneOptions = {}): VinylScene {
     titleEl.textContent = song?.title?.trim() || '唱片';
     artistEl.textContent = song?.artist?.trim() || '';
     titleCard.classList.toggle('is-visible', hasSong && (lines.length === 0 || cfg.introTitle));
-    if (hasSong) {
-      infoMain.textContent = [song!.title, song!.artist].filter((part) => !!part && part.trim()).join(' · ');
-    } else {
-      infoMain.textContent = '';
-    }
-    info.classList.toggle('is-visible', hasSong && cfg.showInfo);
-    infoBar.classList.toggle('is-visible', hasSong && cfg.showInfo);
-    if (song) lastInfoKey = '';
   };
 
   /* ── 时间轴 ───────────────────────────────────────────────────── */
@@ -759,19 +726,6 @@ export function createVinylScene(options: VinylSceneOptions = {}): VinylScene {
       }
     }
     return found;
-  };
-
-  let lastInfoKey = '';
-
-  const syncInfo = (positionMs: number, effectivePositionMs: number): void => {
-    const duration = song?.durationMs ?? 0;
-    const progress = duration > 0 ? clamp(effectivePositionMs / duration, 0, 1) : 0;
-    infoFill.style.transform = `scaleX(${progress.toFixed(4)})`;
-    const key = `${formatTime(positionMs)}|${formatTime(duration)}`;
-    if (key !== lastInfoKey) {
-      lastInfoKey = key;
-      infoTime.textContent = song ? `${formatTime(positionMs)} / ${formatTime(duration)}` : '';
-    }
   };
 
   const syncTitleCard = (effectivePositionMs: number): void => {
@@ -1188,9 +1142,10 @@ export function createVinylScene(options: VinylSceneOptions = {}): VinylScene {
     const stylusAngle = pivotAngle - Math.acos(cosValue);
     const contactX = cx + Math.cos(stylusAngle) * reach;
     const contactY = cy + Math.sin(stylusAngle) * reach;
-    // 暂停时整支臂绕转轴微微抬起（俯视看是往回摆一点）。
-    const lift = !lastPlaying && cfg.armLiftOnPause ? 0.052 : 0;
-    const armAngle = Math.atan2(contactY - pivotY, contactX - pivotX) - lift;
+    // 暂停抬臂：整支臂（臂管 + 唱头壳 + 配重）绕转轴刚性抬起一点。
+    // 注意不能只把臂管的角度拧一下——那样起点转了、唱头还钉在原处，管子会被掰弯。
+    const armAngle = Math.atan2(contactY - pivotY, contactX - pivotX);
+    const liftAngle = armLift * 0.14;
     const ux = Math.cos(armAngle);
     const uy = Math.sin(armAngle);
     const px = -uy;
@@ -1277,6 +1232,36 @@ export function createVinylScene(options: VinylSceneOptions = {}): VinylScene {
       ctx.fill();
     }
 
+    // 臂管在盘面上的投影：抬臂越高，影子离唱臂越远、边缘越散（高度差）。
+    const bend = radius * 0.016;
+    const startX = pivotX + ux * baseRadius * 0.28;
+    const startY = pivotY + uy * baseRadius * 0.28;
+    const midX = (startX + headX) / 2 + px * bend;
+    const midY = (startY + headY) / 2 + py * bend;
+    const shadowOffset = radius * (0.022 + 0.03 * armLift);
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius * 0.995, 0, TAU);
+    ctx.clip();
+    ctx.strokeStyle = rgba(rgbBlack, 0.3 - 0.1 * armLift);
+    ctx.lineWidth = tubeWidth * (2.3 + 1.1 * armLift);
+    ctx.beginPath();
+    ctx.moveTo(startX + radius * 0.01, startY + shadowOffset);
+    ctx.quadraticCurveTo(
+      midX + radius * 0.01,
+      midY + shadowOffset,
+      headX + radius * 0.008,
+      headY + shadowOffset + radius * 0.005,
+    );
+    ctx.stroke();
+    ctx.restore();
+
+    // 抬臂姿态：配重、臂管、唱头壳作为同一刚体绕转轴旋转，不再各转各的。
+    ctx.save();
+    ctx.translate(pivotX, pivotY);
+    ctx.rotate(liftAngle);
+    ctx.translate(-pivotX, -pivotY);
+
     // 配重：从转轴向后伸出的短杆 + 深色圆柱（两端黄铜圈）。
     ctx.strokeStyle = rgbStr(metalDark);
     ctx.lineWidth = tubeWidth * 1.25;
@@ -1317,29 +1302,6 @@ export function createVinylScene(options: VinylSceneOptions = {}): VinylScene {
     ctx.beginPath();
     ctx.ellipse(-weightHalf * 0.96, 0, weightR * 0.16, weightR * 0.86, 0, 0, TAU);
     ctx.fill();
-    ctx.restore();
-
-    // 臂管在盘面上的影子（只落在唱片上）。
-    const bend = radius * 0.016;
-    const startX = pivotX + ux * baseRadius * 0.28;
-    const startY = pivotY + uy * baseRadius * 0.28;
-    const midX = (startX + headX) / 2 + px * bend;
-    const midY = (startY + headY) / 2 + py * bend;
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(cx, cy, radius * 0.995, 0, TAU);
-    ctx.clip();
-    ctx.strokeStyle = rgba(rgbBlack, 0.3);
-    ctx.lineWidth = tubeWidth * 2.3;
-    ctx.beginPath();
-    ctx.moveTo(startX + radius * 0.01, startY + radius * 0.022);
-    ctx.quadraticCurveTo(
-      midX + radius * 0.01,
-      midY + radius * 0.022,
-      headX + radius * 0.008,
-      headY + radius * 0.028,
-    );
-    ctx.stroke();
     ctx.restore();
 
     // 臂管：细长金属管，横向渐变模拟圆柱反光。
@@ -1427,13 +1389,13 @@ export function createVinylScene(options: VinylSceneOptions = {}): VinylScene {
     ctx.lineTo(radius * 0.003, 0);
     ctx.stroke();
     const tipGlow = ctx.createRadialGradient(0, 0, 0, 0, 0, radius * 0.013);
-    tipGlow.addColorStop(0, rgba(rgbWarm, 0.24));
+    tipGlow.addColorStop(0, rgba(rgbWarm, 0.24 * (1 - armLift * 0.85)));
     tipGlow.addColorStop(1, rgba(rgbWarm, 0));
     ctx.fillStyle = tipGlow;
     ctx.beginPath();
     ctx.arc(0, 0, radius * 0.013, 0, TAU);
     ctx.fill();
-    ctx.fillStyle = rgba(rgbWarm, 0.58);
+    ctx.fillStyle = rgba(rgbWarm, 0.58 * (1 - armLift * 0.8));
     ctx.beginPath();
     ctx.arc(0, 0, Math.max(0.8, radius * 0.0036), 0, TAU);
     ctx.fill();
@@ -1444,6 +1406,7 @@ export function createVinylScene(options: VinylSceneOptions = {}): VinylScene {
       ctx.arc(screwX, radius * 0.024, Math.max(0.7, radius * 0.0032), 0, TAU);
       ctx.fill();
     }
+    ctx.restore();
     ctx.restore();
   };
 
@@ -1569,14 +1532,17 @@ export function createVinylScene(options: VinylSceneOptions = {}): VinylScene {
     ensureCover();
     energyNow = damp(energyNow, clamp(Number.isFinite(energy) ? energy : 0, 0, 1), 5, dt);
 
-    // 33⅓ 转：播放时匀速转，暂停/切歌时慢慢停下；唱臂同步抬起。
-    const targetOmega = playing ? (cfg.rpm * TAU) / 60 : 0;
+    // 转速与转向：播放时匀速转，暂停/切歌时慢慢停下；唱臂同步抬起。
+    const spinSign = cfg.spinDirection === 'ccw' ? -1 : 1;
+    const targetOmega = playing ? (spinSign * cfg.rpm * TAU) / 60 : 0;
     omega = damp(omega, targetOmega, playing ? 3.1 : 1.5, dt);
     rotation = (rotation + omega * dt) % TAU;
 
     if (song && song.durationMs > 0) {
       armProgress = damp(armProgress, clamp(safePosition / song.durationMs, 0, 1), 2.6, dt);
     }
+    // 抬臂姿态平滑过渡：暂停时抬起、继续播放时落下（不再瞬间跳变）。
+    armLift = damp(armLift, cfg.armLiftOnPause && !playing ? 1 : 0, 8, dt);
 
     const effectivePosition = safePosition - safeOffset();
     const nextIndex = indexAt(effectivePosition);
@@ -1593,7 +1559,6 @@ export function createVinylScene(options: VinylSceneOptions = {}): VinylScene {
       applyLineStates(activeIndex, effectivePosition);
     }
     syncTitleCard(effectivePosition);
-    syncInfo(safePosition, effectivePosition);
     draw(effectivePosition, dt);
 
     if (!painted) {
