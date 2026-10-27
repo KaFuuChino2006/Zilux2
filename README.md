@@ -211,13 +211,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\release.ps1 -Version 1
 
 ## 许可与致谢
 
-本仓库为公开项目，但**暂未附加开源许可证**，保留所有权利（All rights reserved）。如需商用或二次分发，请联系作者。
+本项目开源，代码可自由使用、修改、分发（含商用），保留原作者版权声明即可。
 
-界面与代码均为原创实现。架构与工程方法参考了以下开源项目，未复制其界面资源或源代码：
+**例外**：「纯字」歌词渲染效果（`web/src/ui/lumiere-folia/` 目录及 `web/src/ui/lumiere.ts` 适配层）的歌词代码复制/改编自 Folia（[chthollyphile/folia-major](https://github.com/chthollyphile/folia-major)，AGPL-3.0），版权归原作者所有；该部分及其衍生作品遵循 AGPL-3.0，不适用上述自由分发条款。
+
+界面与其余代码为本项目原创实现。架构与工程方法参考了以下开源项目：
 
 - Rhine Music Windows（MIT）
-- Folia（AGPL-3.0，仅学习规格与思路，clean-room 实现）
-- Mineradio（GPL-3.0，仅学习设计思路）
+- Folia（AGPL-3.0，歌词渲染代码复制/改编自该项目，见上方许可说明）
+- Mineradio（GPL-3.0，参考设计思路）
 
 开发工具：
 
