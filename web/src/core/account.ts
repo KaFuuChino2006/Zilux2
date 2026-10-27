@@ -32,6 +32,18 @@ export interface AccountInfo {
   /** true = 有会员权益；false = 无；null = 平台未提供/未知 */
   vip?: boolean | null;
   userId?: string;
+  /** 宿主登录检测（第四十六轮）判定 cookie 已失效时为 true；正常账号不写该字段 */
+  expired?: boolean;
+  /** 失效原因（平台返回码 / 说明），仅 expired 时有值 */
+  reason?: string;
+}
+
+/** 一次登录检测发现的问题（宿主后台验证或手动「检查登录状态」）。 */
+export interface AccountIssue {
+  source: AccountSource;
+  reason: string;
+  /** 发现时间（毫秒时间戳） */
+  at: number;
 }
 
 export interface AccountState {
@@ -60,11 +72,16 @@ export interface LoginStatus {
 }
 
 type AccountListener = (changed: AccountSource | null, accounts: AccountInfo[]) => void;
+type AccountIssueListener = (issue: AccountIssue) => void;
 
 const cache = new Map<AccountSource, AccountInfo>();
 const listeners = new Set<AccountListener>();
+const issues = new Map<AccountSource, AccountIssue>();
+const issueListeners = new Set<AccountIssueListener>();
 let initialized = false;
 let refreshing: Promise<void> | null = null;
+let verifying: Promise<AccountIssue[]> | null = null;
+let verifyTimer = 0;
 
 /* ------------------------------------------------------------------ */
 /* 对外状态                                                            */
@@ -86,6 +103,85 @@ export function onAccountChange(cb: AccountListener): () => void {
   return () => listeners.delete(cb);
 }
 
+/** 最近一次登录检测发现的失效平台（按平台去重，重新登录/验证有效后自动清除）。 */
+export function recentAccountIssues(): AccountIssue[] {
+  return [...issues.values()];
+}
+
+/** 订阅「检测到登录失效」事件（宿主后台检测或手动检查都会触发）。 */
+export function onAccountIssue(cb: AccountIssueListener): () => void {
+  issueListeners.add(cb);
+  return () => issueListeners.delete(cb);
+}
+
+/**
+ * 登录状态检测（第四十六轮）：让宿主用已保存的 cookie 问平台是否还有效。
+ * 失效的平台会记一条 issue 并回调订阅者，账号缓存同步为未登录。
+ */
+export async function verifyAccounts(): Promise<AccountIssue[]> {
+  if (isMockOnline() || !onlineReady()) return [];
+  if (verifying) return verifying;
+  const task = (async (): Promise<AccountIssue[]> => {
+    const found: AccountIssue[] = [];
+    try {
+      const resp = await request<{
+        sources?: Array<Partial<AccountInfo> & { status?: string; reason?: string }>;
+      }>('/api/account/verify', {}, 'GET', 25_000);
+      let changed = false;
+      for (const item of resp.sources ?? []) {
+        const info = normalize(item);
+        if (!info) continue;
+        if (item.status === 'expired') {
+          const issue = recordIssue(info.source, info.reason ?? '登录已失效，请重新登录');
+          found.push(issue);
+          cache.set(info.source, { ...info, loggedIn: false });
+          changed = true;
+        } else if (item.status === 'valid') {
+          clearIssue(info.source);
+          cache.set(info.source, info);
+          changed = true;
+        }
+      }
+      if (changed) notify(null);
+    } catch (err) {
+      host.log('warn', `[account] verify failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return found;
+  })();
+  verifying = task;
+  try {
+    return await task;
+  } finally {
+    verifying = null;
+  }
+}
+
+function recordIssue(source: AccountSource, reason: string): AccountIssue {
+  const issue: AccountIssue = { source, reason, at: Date.now() };
+  issues.set(source, issue);
+  issueListeners.forEach((cb) => {
+    try {
+      cb(issue);
+    } catch (err) {
+      console.warn('[account] issue listener failed', err);
+    }
+  });
+  return issue;
+}
+
+function clearIssue(source: AccountSource): void {
+  issues.delete(source);
+}
+
+/** 启动后延迟做一次登录检测（宿主后台也会每 5 分钟查一次）。 */
+function scheduleVerify(): void {
+  if (verifyTimer) return;
+  verifyTimer = window.setTimeout(() => {
+    verifyTimer = 0;
+    void verifyAccounts();
+  }, 4_000);
+}
+
 /* ------------------------------------------------------------------ */
 /* 初始化与刷新                                                        */
 /* ------------------------------------------------------------------ */
@@ -103,9 +199,13 @@ export function initAccount(): void {
   if (isMockOnline()) return;
 
   onOnlineChange(() => {
-    if (onlineReady()) void refreshAccounts();
+    if (onlineReady()) {
+      void refreshAccounts().then(() => scheduleVerify());
+    }
   });
-  if (onlineReady()) void refreshAccounts();
+  if (onlineReady()) {
+    void refreshAccounts().then(() => scheduleVerify());
+  }
 }
 
 /** 用 /api/account 形态的数据整体覆盖本地缓存（缺失的源置为未登录）。 */
@@ -153,7 +253,13 @@ function applyPush(payload: unknown): void {
     const next = new Map<AccountSource, AccountInfo>();
     for (const item of record.sources) {
       const info = normalize(item as Partial<AccountInfo>);
-      if (info) next.set(info.source, info);
+      if (!info) continue;
+      next.set(info.source, info);
+      if (info.expired) {
+        recordIssue(info.source, info.reason ?? '登录已失效，请重新登录');
+      } else if (info.loggedIn) {
+        clearIssue(info.source);
+      }
     }
     for (const source of accountSources()) {
       if (!next.has(source)) next.set(source, { source, loggedIn: false });
@@ -166,6 +272,11 @@ function applyPush(payload: unknown): void {
   const single = normalize(payload as Partial<AccountInfo>);
   if (!single) return;
   cache.set(single.source, single);
+  if (single.expired) {
+    recordIssue(single.source, single.reason ?? '登录已失效，请重新登录');
+  } else if (single.loggedIn) {
+    clearIssue(single.source);
+  }
   notify(single.source);
 }
 
@@ -312,6 +423,8 @@ function normalize(input: Partial<AccountInfo> | undefined): AccountInfo | null 
   }
   info.vip = input.vip === true ? true : input.vip === false ? false : null;
   if (typeof input.userId === 'string' && input.userId) info.userId = input.userId;
+  if (input.expired === true) info.expired = true;
+  if (typeof input.reason === 'string' && input.reason.trim()) info.reason = input.reason;
   return info;
 }
 

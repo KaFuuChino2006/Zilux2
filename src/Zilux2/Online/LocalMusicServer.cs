@@ -30,6 +30,8 @@ internal sealed class LocalMusicServer : IDisposable
     private static readonly TimeSpan StreamConnectTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan CoverTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan AccountQrTimeout = TimeSpan.FromSeconds(15);
+    // 登录状态检测（第四十六轮）：一次 verify 最多问两个平台各一个接口，留足上游抖动余量。
+    private static readonly TimeSpan AccountVerifyTimeout = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan CoverCacheLifetime = TimeSpan.FromHours(1);
     private const int CoverCacheLimit = 200;
     private const int StreamBufferSize = 32 * 1024;
@@ -245,6 +247,8 @@ internal sealed class LocalMusicServer : IDisposable
                 "/api/account/login/status" => isGet ? await HandleAccountLoginStatusAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/account/logout" => isPost ? HandleAccountLogout(context) : MethodNotAllowed(context),
                 "/api/account/import" => isPost ? await HandleAccountImportAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
+                // 登录状态检测（第四十六轮）：页面启动/打开账号面板时主动验证一次。
+                "/api/account/verify" => isGet ? await HandleAccountVerifyAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/library/overview" => isGet ? await HandleLibraryOverviewAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/library/playlist" => isGet ? await HandleLibraryPlaylistAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/library/feed" => isGet ? await HandleLibraryFeedAsync(context, CancellationToken.None).ConfigureAwait(false) : MethodNotAllowed(context),
@@ -432,6 +436,42 @@ internal sealed class LocalMusicServer : IDisposable
         var response = new LogoutResponse();
         WriteJson(context, 200, JsonSerializer.Serialize(response, AccountJsonContext.Default.LogoutResponse));
         return 200;
+    }
+
+    // GET /api/account/verify（第四十六轮）：主动问平台「已保存的 cookie 还有效吗」。
+    // 失效的账号会被 AccountService 移除并立刻汇报，页面据响应里的 expired 项弹提醒；
+    // 网络异常只返回 unknown，不清账号。宿主另有定时检测走同一方法。
+    private async Task<int> HandleAccountVerifyAsync(HttpListenerContext context)
+    {
+        if (!ValidateToken(context.Request))
+        {
+            return WriteUnauthorized(context);
+        }
+
+        var accounts = _accounts;
+        if (accounts is null)
+        {
+            return WriteError(context, 503, "account-unavailable", "账号服务不可用");
+        }
+
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token);
+            timeout.CancelAfter(AccountVerifyTimeout);
+            var results = await accounts.VerifySessionsAsync(timeout.Token).ConfigureAwait(false);
+            var response = new AccountVerifyResponse
+            {
+                Sources = results.ToList(),
+                CheckedAt = DateTimeOffset.UtcNow.ToString("O"),
+            };
+            WriteJson(context, 200, JsonSerializer.Serialize(response, AccountJsonContext.Default.AccountVerifyResponse));
+            return 200;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException || !_shutdown.IsCancellationRequested)
+        {
+            OnlineHttp.Error("api account verify failed", exception);
+            return WriteError(context, 502, "upstream-failed", "登录检测失败，请稍后重试");
+        }
     }
 
     // POST /api/account/import: cookie paste fallback. Validation happens upstream before anything is

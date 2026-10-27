@@ -995,6 +995,11 @@ to{opacity:0;transform:translateY(8px) scale(.985)}
 .account-row-name{font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .account-row-sub{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .account-row .btn{padding:5px 11px;font-size:11px;border-radius:999px;flex:none}
+/* 登录状态检测（第四十六轮）：失效行的提示色与头像降饱和，和普通未登录行区分开。 */
+.account-row.is-expired .account-row-name{color:#d9534f}
+.account-row.is-expired .account-row-sub{color:#d9534f;opacity:.82}
+.account-row.is-expired .account-row-avatar{filter:grayscale(1);opacity:.55}
+.account-row.is-expired .btn{color:#d9534f;border-color:rgb(217 83 79 / .4)}
 .playerbar .volume-icon{display:inline-flex;align-items:center;justify-content:center;color:var(--muted);transition:color .2s var(--ease)}
 .playerbar .volume-icon.is-muted{color:var(--danger)}
 .playerbar .volume-wrap{cursor:ns-resize}
