@@ -112,7 +112,7 @@ const LAYOUT_RANGES: RangeSpec[] = [
 ];
 
 const DISC_RANGES: RangeSpec[] = [
-  { key: 'discSize', label: '唱片大小', hint: '唱片半径占画面短边的比例，越大越有压迫感', min: 0.12, max: 0.46, step: 0.005, digits: 1, scale: 100, unit: '%' },
+  { key: 'discSize', label: '唱片大小', hint: '唱片半径占画面短边的比例，调大能把唱片铺满整个窗口', min: 0.12, max: 1.8, step: 0.005, digits: 1, scale: 100, unit: '%' },
   { key: 'discX', label: '水平位置', hint: '唱片圆心的横向位置（占画面宽）', min: 0.3, max: 0.7, step: 0.005, digits: 1, scale: 100, unit: '%' },
   { key: 'discY', label: '垂直位置', hint: '唱片圆心的纵向位置（占画面高），往下压歌词空间更大', min: 0.22, max: 0.55, step: 0.005, digits: 1, scale: 100, unit: '%' },
   { key: 'labelSize', label: '贴纸大小', hint: '中心圆贴纸的半径 / 唱片半径', min: 0.24, max: 0.48, step: 0.005, digits: 0, scale: 100, unit: '%' },

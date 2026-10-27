@@ -253,7 +253,7 @@ export function normalizeVinylSettings(raw: unknown): VinylStyleSettings {
     sungOpacity: num(src.sungOpacity, d.sungOpacity, 0, 1),
     activeOpacity: num(src.activeOpacity, d.activeOpacity, 0, 1),
 
-    discSize: num(src.discSize, d.discSize, 0.12, 0.46),
+    discSize: num(src.discSize, d.discSize, 0.12, 1.8),
     discX: num(src.discX, d.discX, 0.3, 0.7),
     discY: num(src.discY, d.discY, 0.22, 0.55),
     discColor: hex(src.discColor, d.discColor),

@@ -12,6 +12,12 @@
  */
 
 import { extractLyricKeywords, keywordForWord, type LyricKeyword } from './keywords';
+import {
+  lyricStyle,
+  lyricStyleNeedsCharTiming,
+  onLyricStyle,
+  type LyricStyle,
+} from './lyricStyle';
 import type { RoomLyricTint } from './roomScene';
 import { DEFAULT_VINYL_SETTINGS, normalizeVinylSettings, type VinylStyleSettings } from './vinylSettings';
 
@@ -133,6 +139,25 @@ function mulberry32(seed: number): () => number {
   };
 }
 
+/** 稳定的字级 hash：同一句、同一位置每次重建都拿到同一组「飘入」偏移（旋入样式用）。 */
+function scatterHash(lineText: string, index: number): number {
+  let hash = 2166136261;
+  const key = `${index}:${lineText}`;
+  for (let i = 0; i < key.length; i += 1) {
+    hash ^= key.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+/** 由 hash 派生的 0~1 伪随机数（salt 区分不同维度）。 */
+function scatterRandom(hash: number, salt: number): number {
+  let value = (hash ^ Math.imul(salt + 1, 0x9e3779b1)) >>> 0;
+  value = Math.imul(value ^ (value >>> 15), 0x85ebca6b) >>> 0;
+  value = Math.imul(value ^ (value >>> 13), 0xc2b2ae35) >>> 0;
+  return ((value ^ (value >>> 16)) >>> 0) / 4294967296;
+}
+
 const truncate = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 
 function formatTime(ms: number): string {
@@ -174,6 +199,7 @@ const STYLE_CSS = `
 .zvs-line.is-sung{opacity:var(--vs-sung-op,.86)}
 .zvs-line.is-focus{opacity:var(--vs-active-op,1)}
 .zvs-word{display:inline;color:var(--vs-color,#f2e7d8);transition:color .32s ease,text-shadow .32s ease}
+.zvs-char{position:relative;display:inline-block;transition:color .3s ease,translate .32s ease,rotate .32s ease,opacity .3s ease}
 .zvs-line.is-focus .zvs-word[data-state="2"]{color:var(--vs-active,#ffe9c2);text-shadow:0 0 calc(16px * var(--vs-glow,.9)) var(--vs-glow-color,#ffcf8a)}
 .zvs-line.is-focus .zvs-word[data-state="1"]{color:var(--vs-sung,#fff8ec)}
 .zvs-tr{margin-top:.34em;font-size:.42em;font-weight:400;letter-spacing:.03em;opacity:0;max-height:0;overflow:hidden;color:var(--vs-color,#f2e7d8);transition:opacity .4s ease,max-height .45s ease}
@@ -189,6 +215,34 @@ const STYLE_CSS = `
 .zvs-info-bar{position:absolute;left:4.2vw;right:4.2vw;bottom:2.15vh;height:2px;background:rgba(255,255,255,.14);border-radius:2px;overflow:hidden;opacity:0;transition:opacity .6s ease;z-index:2;pointer-events:none}
 .zvs-info-bar.is-visible{opacity:1}
 .zvs-info-fill{height:100%;width:100%;transform-origin:0 50%;transform:scaleX(0);background:linear-gradient(90deg,var(--vs-accent,#c9a068),var(--vs-glow-color,#ffcf8a));box-shadow:0 0 12px var(--vs-accent,#c9a068)}
+/* 歌词播放动画：和「播放效果 = 关闭」共用同一套样式语义（经典 / 上浮 / 波浪 / 摇曳 / 打字机 / 旋入）。
+   这里只搬「动」，颜色仍走 --vs-* 词色令牌；逐字时机由场景按真实演唱时间写入 is-sung / is-hot。 */
+@keyframes zvs-wave{0%,100%{translate:0 0}50%{translate:0 -.22em}}
+@keyframes zvs-swing{0%{rotate:0deg;scale:1}18%{rotate:-6.5deg;scale:1.035}44%{rotate:5.5deg;scale:1.02}68%{rotate:-2.8deg}86%{rotate:1.1deg}100%{rotate:0deg;scale:1}}
+@media (prefers-reduced-motion: no-preference){
+  /* 上浮：唱到的字从下方浮起、归位到行里；下方还没轮到的行压到最低可见度。 */
+  .zl-vinyl-scene.zvs-style-rise .zvs-line.is-focus .zvs-char{translate:0 .5em;opacity:.16;transition:translate .42s cubic-bezier(.22,1,.36,1),opacity .32s linear,rotate .3s ease,color .2s linear}
+  .zl-vinyl-scene.zvs-style-rise .zvs-line.is-focus .zvs-char.is-hot{translate:0 0;opacity:1;transition:translate .34s cubic-bezier(.34,1.3,.64,1),opacity .2s linear,rotate .3s ease,color .12s linear}
+  .zl-vinyl-scene.zvs-style-rise .zvs-line.is-focus .zvs-char.is-sung{translate:0 0;opacity:1}
+  .zl-vinyl-scene.zvs-style-rise .zvs-line.is-focus ~ .zvs-line{opacity:.2!important}
+  /* 波浪：当前行的字按 --ci 错开相位依次起伏，随演唱一直流动。 */
+  .zl-vinyl-scene.zvs-style-wave .zvs-line.is-focus .zvs-char{animation:zvs-wave 1.7s ease-in-out infinite;animation-delay:calc(var(--ci,0) * -.12s)}
+  /* 摇曳：每个字唱完的瞬间像被轻轻拨了一下，左右摆两下再停稳。 */
+  .zl-vinyl-scene.zvs-style-swing .zvs-line.is-focus .zvs-char.is-sung{animation:zvs-swing .52s cubic-bezier(.36,.07,.19,.97)}
+  .zl-vinyl-scene.zvs-style-swing .zvs-line.is-focus .zvs-char.is-hot{animation:none}
+  /* 打字机：还没唱到的字、以及下面的整行都不显形（位置留着，不挤动整行）。 */
+  .zl-vinyl-scene.zvs-style-typewriter .zvs-line.is-focus .zvs-char{opacity:0;transition:color .16s linear}
+  .zl-vinyl-scene.zvs-style-typewriter .zvs-line.is-focus .zvs-char.is-hot,
+  .zl-vinyl-scene.zvs-style-typewriter .zvs-line.is-focus .zvs-char.is-sung{opacity:1}
+  .zl-vinyl-scene.zvs-style-typewriter .zvs-line.is-focus ~ .zvs-line{opacity:0!important}
+  .zl-vinyl-scene.zvs-style-typewriter .zvs-line.is-focus ~ .zvs-line .zvs-char{opacity:0;transition:none}
+  /* 旋入：还没唱到的字散在句子周围（--drift-* 按字写入），唱到哪个字就从随机方向飘回来。 */
+  .zl-vinyl-scene.zvs-style-spin .zvs-line.is-focus .zvs-char{translate:calc(var(--drift-x,.42em) * var(--scatter,1)) calc(var(--drift-y,.4em) * var(--scatter,1));rotate:calc(var(--drift-rot,-16deg) * var(--scatter,1));opacity:.12;transition:translate var(--drift-dur,.6s) cubic-bezier(.22,1,.36,1),rotate var(--drift-dur,.6s) cubic-bezier(.22,1.1,.36,1),opacity .32s linear,color .2s linear}
+  .zl-vinyl-scene.zvs-style-spin .zvs-line.is-focus .zvs-char.is-hot,
+  .zl-vinyl-scene.zvs-style-spin .zvs-line.is-focus .zvs-char.is-sung{translate:0 0;rotate:0deg;opacity:1}
+  .zl-vinyl-scene.zvs-style-spin .zvs-line.is-focus ~ .zvs-line{opacity:.2!important}
+  .zl-vinyl-scene.zvs-style-spin .zvs-line:not(.is-focus) .zvs-char{translate:calc(var(--drift-x,.42em) * var(--scatter,0)) calc(var(--drift-y,.4em) * var(--scatter,0));rotate:calc(var(--drift-rot,-16deg) * var(--scatter,0));transition:translate .9s cubic-bezier(.22,1,.36,1),rotate .9s cubic-bezier(.22,1.1,.36,1)}
+}
 `;
 
 function ensureStyle(): void {
@@ -214,8 +268,14 @@ interface Mote {
 interface LineView {
   el: HTMLDivElement;
   words: HTMLSpanElement[];
+  /** 逐字 span（按字拆开，供上浮 / 波浪 / 摇曳 / 打字机 / 旋入等播放动画使用）。 */
+  chars: HTMLSpanElement[];
+  /** 每个词在 chars 里的起始下标；最后一个词的结尾用 chars.length 收尾。 */
+  charStarts: number[];
   /** 每个词的着色状态缓存：-1 未刷、0 未唱、1 唱过、2 正在唱。 */
   states: number[];
+  /** 逐字状态缓存：-1 未刷、0 未唱、1 唱过、2 正在唱。 */
+  charStates: number[];
   /** 重点词颜色（null = 不染色）。 */
   kw: Array<string | null>;
 }
@@ -229,7 +289,7 @@ export function createVinylScene(options: VinylSceneOptions = {}): VinylScene {
   /* ── DOM ──────────────────────────────────────────────────────── */
 
   const root = document.createElement('div');
-  root.className = 'zl-vinyl-scene';
+  root.className = `zl-vinyl-scene zvs-style-${lyricStyle()}`;
 
   const canvas = document.createElement('canvas');
   canvas.className = 'zvs-canvas';
@@ -468,12 +528,32 @@ export function createVinylScene(options: VinylSceneOptions = {}): VinylScene {
       const el = document.createElement('div');
       el.className = 'zvs-line';
       const spans: HTMLSpanElement[] = [];
+      const chars: HTMLSpanElement[] = [];
+      const charStarts: number[] = [];
+      let ci = 0;
       for (let wi = 0; wi < line.words.length; wi += 1) {
         const word = line.words[wi]!;
         const span = document.createElement('span');
         span.className = 'zvs-word';
-        span.textContent = `${wi > 0 && word.spaceBefore ? ' ' : ''}${word.text}`;
         span.dataset.state = '0';
+        charStarts.push(chars.length);
+        if (wi > 0 && word.spaceBefore) span.append(document.createTextNode(' '));
+        // 逐字拆开：CSS 动画挂到 .zvs-char 上；--ci 错开相位，--drift-* 是旋入用的稳定随机偏移。
+        for (const ch of word.text) {
+          const cs = document.createElement('span');
+          cs.className = 'zvs-char';
+          cs.textContent = ch;
+          cs.style.setProperty('--ci', String(ci));
+          const hash = scatterHash(line.text, ci);
+          cs.style.setProperty('--drift-x', `${(scatterRandom(hash, 0) * 3.2 - 1.6).toFixed(2)}em`);
+          cs.style.setProperty('--drift-y', `${(scatterRandom(hash, 1) * 2.2 - 1.1).toFixed(2)}em`);
+          cs.style.setProperty('--drift-rot', `${(scatterRandom(hash, 2) * 60 - 30).toFixed(1)}deg`);
+          cs.style.setProperty('--drift-dur', `${(0.5 + scatterRandom(hash, 3) * 0.35).toFixed(2)}s`);
+          span.append(cs);
+          chars.push(cs);
+          ci += 1;
+        }
+        if (word.text.length === 0) span.append(document.createTextNode(' '));
         spans.push(span);
         el.appendChild(span);
       }
@@ -487,7 +567,10 @@ export function createVinylScene(options: VinylSceneOptions = {}): VinylScene {
       views.push({
         el,
         words: spans,
+        chars,
+        charStarts,
         states: spans.map(() => -1),
+        charStates: chars.map(() => -1),
         kw: spans.map((_, wi) => kwColorFor(li, wi)),
       });
     }
@@ -512,6 +595,10 @@ export function createVinylScene(options: VinylSceneOptions = {}): VinylScene {
       view.el.style.left = `${left}px`;
       view.el.style.width = `${boxWidth}px`;
       view.el.style.fontSize = `${fontPx.toFixed(2)}px`;
+      // 旋入样式：整列按距当前行的远近共用一份散开系数（已唱行收拢为 0）。
+      const scatter =
+        activeIndex < 0 || k <= 0 ? 0 : k === 0 ? 0.6 : Math.min(1, 0.6 + k * 0.15);
+      view.el.style.setProperty('--scatter', scatter.toFixed(2));
       view.el.classList.toggle('is-visible', visible && (activeIndex < 0 ? i === 0 : i > focus));
       view.el.classList.toggle('is-focus', activeIndex >= 0 && visible && i === focus);
       view.el.classList.toggle('is-sung', activeIndex >= 0 && visible && i < focus);
@@ -524,12 +611,26 @@ export function createVinylScene(options: VinylSceneOptions = {}): VinylScene {
     return clamp(raw, 19, portrait ? 46 : 68) * cfg.sizeScale;
   };
 
-  /** 把某一行的逐词状态刷到 DOM（只在状态变化时写 style）。 */
+  /** 逐字状态：只在状态变化时写 class，避免每帧刷 DOM。 */
+  const setCharState = (view: LineView, index: number, state: number): void => {
+    if (view.charStates[index] === state) return;
+    view.charStates[index] = state;
+    const el = view.chars[index]!;
+    el.classList.toggle('is-sung', state >= 1);
+    el.classList.toggle('is-hot', state === 2);
+  };
+
+  const clearCharStates = (view: LineView): void => {
+    for (let i = 0; i < view.chars.length; i += 1) setCharState(view, i, -1);
+  };
+
+  /** 把某一行的逐词 / 逐字状态刷到 DOM（只在状态变化时写 style / class）。 */
   const applyLineStates = (li: number, effectivePositionMs: number): void => {
     const view = views[li];
     const line = lines[li];
     if (!view || !line) return;
     const passed = effectivePositionMs === Number.POSITIVE_INFINITY;
+    const future = effectivePositionMs === Number.NEGATIVE_INFINITY;
     const karaoke = line.words.some((word) => word.endMs - word.startMs > 20);
     for (let wi = 0; wi < line.words.length; wi += 1) {
       const word = line.words[wi]!;
@@ -545,20 +646,73 @@ export function createVinylScene(options: VinylSceneOptions = {}): VinylScene {
       } else {
         state = 0;
       }
-      if (view.states[wi] === state) continue;
-      view.states[wi] = state;
-      const span = view.words[wi]!;
-      span.dataset.state = String(state);
-      const kwColor = cfg.keywordColors ? view.kw[wi] : null;
-      span.style.color =
-        state === 2 ? (kwColor ?? cfg.activeColor) : state === 1 ? (kwColor ?? cfg.sungColor) : (kwColor ?? cfg.color);
+      if (view.states[wi] !== state) {
+        view.states[wi] = state;
+        const span = view.words[wi]!;
+        span.dataset.state = String(state);
+        const kwColor = cfg.keywordColors ? view.kw[wi] : null;
+        span.style.color =
+          state === 2 ? (kwColor ?? cfg.activeColor) : state === 1 ? (kwColor ?? cfg.sungColor) : (kwColor ?? cfg.color);
+      }
     }
+
+    // 逐字动画：有逐字数据（QRC/YRC）时始终按演唱进度走；普通 LRC 行只在
+    // 「上浮 / 摇曳 / 打字机 / 旋入」这类需要逐字时机的样式下按句内进度均匀合成。
+    const needsCharTiming = karaoke || lyricStyleNeedsCharTiming();
+    if (!needsCharTiming) {
+      if (view.charStates.some((state) => state !== -1)) clearCharStates(view);
+      return;
+    }
+    const total = view.chars.length;
+    if (total === 0) return;
+    const spanMs = Math.max(400, line.durationMs || 2600);
+    const lineRatio = clamp((effectivePositionMs - line.timeMs) / spanMs, 0, 1);
+    const sung = lineRatio * total;
+    for (let wi = 0; wi < line.words.length; wi += 1) {
+      const start = view.charStarts[wi]!;
+      const end = wi + 1 < line.words.length ? view.charStarts[wi + 1]! : total;
+      const count = end - start;
+      if (count <= 0) continue;
+      const word = line.words[wi]!;
+      if (passed) {
+        for (let j = start; j < end; j += 1) setCharState(view, j, 1);
+      } else if (future) {
+        for (let j = start; j < end; j += 1) setCharState(view, j, 0);
+      } else if (karaoke) {
+        const wordStart = word.startMs;
+        const wordEnd = Math.max(word.endMs, wordStart + 1);
+        for (let j = start; j < end; j += 1) {
+          const local = (j - start) / count;
+          const charStart = wordStart + (wordEnd - wordStart) * local;
+          const charEnd = wordStart + (wordEnd - wordStart) * ((j - start + 1) / count);
+          const state = effectivePositionMs >= charEnd ? 1 : effectivePositionMs >= charStart ? 2 : 0;
+          setCharState(view, j, state);
+        }
+      } else {
+        for (let j = start; j < end; j += 1) {
+          const state = sung >= j + 1 ? 1 : sung > j ? 2 : 0;
+          setCharState(view, j, state);
+        }
+      }
+    }
+  };
+
+  /** 重新按当前播放位置刷一遍逐字状态（切样式 / 换色板后用）。 */
+  const refreshCharStates = (): void => {
+    if (views.length === 0) return;
+    const position = lastPositionMs - safeOffset();
+    for (let i = 0; i < views.length; i += 1) {
+      if (i !== activeIndex) applyLineStates(i, i < activeIndex ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY);
+    }
+    if (activeIndex >= 0) applyLineStates(activeIndex, position);
   };
 
   const resetWordStates = (): void => {
     for (let li = 0; li < views.length; li += 1) {
       const view = views[li]!;
       for (let wi = 0; wi < view.words.length; wi += 1) view.states[wi] = -1;
+      view.charStates.fill(-1);
+      for (const ch of view.chars) ch.classList.remove('is-sung', 'is-hot');
     }
     refreshKeywords();
     for (let li = 0; li < views.length; li += 1) {
@@ -1012,92 +1166,285 @@ export function createVinylScene(options: VinylSceneOptions = {}): VinylScene {
     ctx.restore();
   };
 
+  /* ── 唱臂：真实唱机的俯视结构 ─────────────────────────────────────
+     深色金属底座 + 细长臂管 + 黑色唱头壳；转轴在唱片右上方外侧，
+     唱针随播放进度从外圈滑向内圈，暂停时整支臂轻轻抬起。所有尺寸按
+     唱片半径取比例，唱片调多大都不会把唱臂拉长。 */
   const drawArm = (cx: number, cy: number, radius: number): void => {
     if (!ctx) return;
-    // 小窗/竖屏时把转轴收进画面内，避免整条唱臂跑到画布外。
-    const pivotX = Math.min(width - radius * 0.12, cx + radius * 1.42);
-    const pivotY = Math.max(height * 0.055, cy - radius * 1.02);
-    const targetRadius = radius * (0.962 - armProgress * 0.62);
-    const lift = !lastPlaying && cfg.armLiftOnPause ? radius * 0.075 : 0;
-    const angle = -0.92 + armProgress * 0.14;
-    const targetX = cx + Math.cos(angle) * (targetRadius + lift);
-    const targetY = cy + Math.sin(angle) * (targetRadius + lift);
-    const armAngle = Math.atan2(targetY - pivotY, targetX - pivotX);
-    const armLength = Math.hypot(targetX - pivotX, targetY - pivotY);
-    const armWidth = Math.max(1.4, radius * 0.03);
+    const pivotAngle = -0.34;
+    const pivotDist = radius * 1.34;
+    const armLength = radius * 1.48;
+    const outerRadius = radius * 0.9;
+    const innerRadius = radius * 0.44;
+    const pivotX = cx + Math.cos(pivotAngle) * pivotDist;
+    const pivotY = cy + Math.sin(pivotAngle) * pivotDist;
+    const reach = outerRadius + (innerRadius - outerRadius) * clamp(armProgress, 0, 1);
+    const cosValue = clamp(
+      (reach * reach + pivotDist * pivotDist - armLength * armLength) / (2 * reach * pivotDist),
+      -1,
+      1,
+    );
+    const stylusAngle = pivotAngle - Math.acos(cosValue);
+    const contactX = cx + Math.cos(stylusAngle) * reach;
+    const contactY = cy + Math.sin(stylusAngle) * reach;
+    // 暂停时整支臂绕转轴微微抬起（俯视看是往回摆一点）。
+    const lift = !lastPlaying && cfg.armLiftOnPause ? 0.052 : 0;
+    const armAngle = Math.atan2(contactY - pivotY, contactX - pivotX) - lift;
+    const ux = Math.cos(armAngle);
+    const uy = Math.sin(armAngle);
+    const px = -uy;
+    const py = ux;
+    const tubeWidth = Math.max(1.1, radius * 0.0115);
+    const brass = mixRgb(rgbAccent, rgbWhite, 0.32);
+    const metalMid = mixRgb(rgbAccent, rgbBlack, 0.16);
+    const metalDark = mixRgb(rgbAccent, rgbBlack, 0.58);
+    const ink = mixRgb(rgbBlack, mixRgb(rgbAccent, rgbBlack, 0.12), 0.55);
+    // 唱头壳中心（臂管末端）：沿唱头轴向朝转轴方向偏 0.1R，唱针正好落在落点。
+    const tangent = stylusAngle + Math.PI / 2;
+    const headAngle = tangent + 0.38;
+    const headX = contactX + Math.cos(headAngle) * radius * 0.1;
+    const headY = contactY + Math.sin(headAngle) * radius * 0.1;
+    const baseRadius = radius * 0.086;
 
-    // 唱臂投影
-    ctx.strokeStyle = 'rgba(0,0,0,0.4)';
-    ctx.lineWidth = armWidth;
+    // 底座在画面上的投影。
+    const baseShadow = ctx.createRadialGradient(
+      pivotX + radius * 0.012,
+      pivotY + radius * 0.024,
+      baseRadius * 0.2,
+      pivotX + radius * 0.012,
+      pivotY + radius * 0.024,
+      baseRadius * 1.35,
+    );
+    baseShadow.addColorStop(0, rgba(rgbBlack, 0.5));
+    baseShadow.addColorStop(1, rgba(rgbBlack, 0));
+    ctx.fillStyle = baseShadow;
+    ctx.beginPath();
+    ctx.arc(pivotX + radius * 0.012, pivotY + radius * 0.024, baseRadius * 1.35, 0, TAU);
+    ctx.fill();
+
+    // 底座：深色金属圆盘 + 黄铜细圈 + 轴承。
+    const plateGradient = ctx.createRadialGradient(
+      pivotX - baseRadius * 0.3,
+      pivotY - baseRadius * 0.34,
+      baseRadius * 0.1,
+      pivotX,
+      pivotY,
+      baseRadius,
+    );
+    plateGradient.addColorStop(0, rgbStr(mixRgb(rgbAccent, rgbBlack, 0.34)));
+    plateGradient.addColorStop(0.72, rgbStr(mixRgb(rgbAccent, rgbBlack, 0.56)));
+    plateGradient.addColorStop(1, rgbStr(ink));
+    ctx.fillStyle = plateGradient;
+    ctx.beginPath();
+    ctx.arc(pivotX, pivotY, baseRadius, 0, TAU);
+    ctx.fill();
+    ctx.strokeStyle = rgba(rgbWarm, 0.12);
+    ctx.lineWidth = Math.max(1, radius * 0.0035);
+    ctx.stroke();
+    ctx.strokeStyle = rgba(brass, 0.4);
+    ctx.lineWidth = Math.max(0.8, radius * 0.0045);
+    ctx.beginPath();
+    ctx.arc(pivotX, pivotY, baseRadius * 0.66, 0, TAU);
+    ctx.stroke();
+    const bearingGradient = ctx.createRadialGradient(pivotX, pivotY, 0, pivotX, pivotY, baseRadius * 0.36);
+    bearingGradient.addColorStop(0, rgbStr(ink));
+    bearingGradient.addColorStop(1, rgbStr(metalDark));
+    ctx.fillStyle = bearingGradient;
+    ctx.beginPath();
+    ctx.arc(pivotX, pivotY, baseRadius * 0.36, 0, TAU);
+    ctx.fill();
+    // 轴承顶盖：深色小圆盘 + 细黄铜圈，不用亮色圆心（避免像一颗白螺丝）。
+    ctx.fillStyle = rgbStr(mixRgb(rgbBlack, metalDark, 0.18));
+    ctx.beginPath();
+    ctx.arc(pivotX, pivotY, baseRadius * 0.14, 0, TAU);
+    ctx.fill();
+    ctx.strokeStyle = rgba(brass, 0.42);
+    ctx.lineWidth = Math.max(0.7, radius * 0.0028);
+    ctx.beginPath();
+    ctx.arc(pivotX, pivotY, baseRadius * 0.14, 0, TAU);
+    ctx.stroke();
+    ctx.fillStyle = rgba(rgbBlack, 0.55);
+    for (const screwAngle of [0.8, 2.5]) {
+      ctx.beginPath();
+      ctx.arc(
+        pivotX + Math.cos(screwAngle) * baseRadius * 0.85,
+        pivotY + Math.sin(screwAngle) * baseRadius * 0.85,
+        Math.max(0.8, radius * 0.006),
+        0,
+        TAU,
+      );
+      ctx.fill();
+    }
+
+    // 配重：从转轴向后伸出的短杆 + 深色圆柱（两端黄铜圈）。
+    ctx.strokeStyle = rgbStr(metalDark);
+    ctx.lineWidth = tubeWidth * 1.25;
     ctx.lineCap = 'round';
     ctx.beginPath();
-    ctx.moveTo(pivotX + radius * 0.02, pivotY + radius * 0.06);
-    ctx.lineTo(targetX + radius * 0.02, targetY + radius * 0.06);
+    ctx.moveTo(pivotX - ux * baseRadius * 0.5, pivotY - uy * baseRadius * 0.5);
+    ctx.lineTo(pivotX - ux * radius * 0.2, pivotY - uy * radius * 0.2);
     ctx.stroke();
-
-    // 臂身
-    const armGradient = ctx.createLinearGradient(pivotX, pivotY, targetX, targetY);
-    armGradient.addColorStop(0, rgbStr(mixRgb(rgbAccent, rgbBlack, 0.42)));
-    armGradient.addColorStop(0.55, rgbStr(mixRgb(rgbAccent, rgbWhite, 0.42)));
-    armGradient.addColorStop(1, rgbStr(mixRgb(rgbAccent, rgbBlack, 0.12)));
-    ctx.strokeStyle = armGradient;
-    ctx.lineWidth = armWidth;
-    ctx.beginPath();
-    ctx.moveTo(pivotX, pivotY);
-    ctx.lineTo(targetX, targetY);
-    ctx.stroke();
-
-    // 配重（转轴另一头）
-    const unitX = (targetX - pivotX) / (armLength || 1);
-    const unitY = (targetY - pivotY) / (armLength || 1);
-    const weightX = pivotX - unitX * radius * 0.17;
-    const weightY = pivotY - unitY * radius * 0.17;
-    ctx.fillStyle = rgbStr(mixRgb(rgbAccent, rgbBlack, 0.5));
-    ctx.beginPath();
-    ctx.arc(weightX, weightY, Math.max(1.5, radius * 0.055), 0, TAU);
-    ctx.fill();
-
-    // 唱头壳
+    const weightCenterX = pivotX - ux * radius * 0.24;
+    const weightCenterY = pivotY - uy * radius * 0.24;
     ctx.save();
-    ctx.translate(targetX, targetY);
+    ctx.translate(weightCenterX, weightCenterY);
     ctx.rotate(armAngle);
+    const weightHalf = radius * 0.082;
+    const weightR = radius * 0.054;
+    const weightGradient = ctx.createLinearGradient(0, -weightR, 0, weightR);
+    weightGradient.addColorStop(0, rgbStr(mixRgb(rgbAccent, rgbBlack, 0.58)));
+    weightGradient.addColorStop(0.34, rgbStr(mixRgb(rgbAccent, rgbBlack, 0.42)));
+    weightGradient.addColorStop(0.72, rgbStr(metalDark));
+    weightGradient.addColorStop(1, rgbStr(ink));
+    ctx.fillStyle = weightGradient;
     ctx.beginPath();
-    ctx.moveTo(-radius * 0.02, -radius * 0.032);
-    ctx.lineTo(radius * 0.135, -radius * 0.05);
-    ctx.lineTo(radius * 0.165, 0);
-    ctx.lineTo(radius * 0.135, radius * 0.05);
-    ctx.lineTo(-radius * 0.02, radius * 0.032);
-    ctx.closePath();
-    ctx.fillStyle = rgbStr(mixRgb(rgbAccent, rgbWhite, 0.16));
+    ctx.roundRect(-weightHalf, -weightR, weightHalf * 2, weightR * 2, weightR * 0.42);
     ctx.fill();
-    ctx.strokeStyle = rgba(mixRgb(rgbAccent, rgbBlack, 0.5), 0.8);
-    ctx.lineWidth = Math.max(1, radius * 0.005);
+    ctx.strokeStyle = rgba(rgbBlack, 0.55);
+    ctx.lineWidth = Math.max(0.7, radius * 0.003);
     ctx.stroke();
-    // 唱针
-    ctx.fillStyle = rgba(rgbGlow, 0.9);
+    ctx.strokeStyle = rgba(brass, 0.42);
+    ctx.lineWidth = Math.max(0.8, radius * 0.0042);
+    for (const offset of [-0.62, 0.62]) {
+      ctx.beginPath();
+      ctx.moveTo(weightHalf * offset, -weightR * 0.74);
+      ctx.lineTo(weightHalf * offset, weightR * 0.74);
+      ctx.stroke();
+    }
+    // 端面：暗色圆盖，边缘一圈微亮。
+    ctx.fillStyle = rgbStr(mixRgb(rgbAccent, rgbBlack, 0.62));
     ctx.beginPath();
-    ctx.arc(radius * 0.175, 0, Math.max(1, radius * 0.012), 0, TAU);
+    ctx.ellipse(-weightHalf * 0.96, 0, weightR * 0.16, weightR * 0.86, 0, 0, TAU);
     ctx.fill();
     ctx.restore();
 
-    // 转轴底座
-    const baseGradient = ctx.createRadialGradient(
-      pivotX - radius * 0.02,
-      pivotY - radius * 0.02,
-      radius * 0.01,
-      pivotX,
-      pivotY,
-      radius * 0.1,
-    );
-    baseGradient.addColorStop(0, rgbStr(mixRgb(rgbAccent, rgbWhite, 0.4)));
-    baseGradient.addColorStop(1, rgbStr(mixRgb(rgbAccent, rgbBlack, 0.55)));
-    ctx.fillStyle = baseGradient;
+    // 臂管在盘面上的影子（只落在唱片上）。
+    const bend = radius * 0.016;
+    const startX = pivotX + ux * baseRadius * 0.28;
+    const startY = pivotY + uy * baseRadius * 0.28;
+    const midX = (startX + headX) / 2 + px * bend;
+    const midY = (startY + headY) / 2 + py * bend;
+    ctx.save();
     ctx.beginPath();
-    ctx.arc(pivotX, pivotY, Math.max(2, radius * 0.092), 0, TAU);
-    ctx.fill();
-    ctx.strokeStyle = rgba(rgbAccent, 0.55);
-    ctx.lineWidth = 1;
+    ctx.arc(cx, cy, radius * 0.995, 0, TAU);
+    ctx.clip();
+    ctx.strokeStyle = rgba(rgbBlack, 0.3);
+    ctx.lineWidth = tubeWidth * 2.3;
+    ctx.beginPath();
+    ctx.moveTo(startX + radius * 0.01, startY + radius * 0.022);
+    ctx.quadraticCurveTo(
+      midX + radius * 0.01,
+      midY + radius * 0.022,
+      headX + radius * 0.008,
+      headY + radius * 0.028,
+    );
     ctx.stroke();
+    ctx.restore();
+
+    // 臂管：细长金属管，横向渐变模拟圆柱反光。
+    const tubeGradient = ctx.createLinearGradient(
+      midX - px * tubeWidth * 1.6,
+      midY - py * tubeWidth * 1.6,
+      midX + px * tubeWidth * 1.6,
+      midY + py * tubeWidth * 1.6,
+    );
+    tubeGradient.addColorStop(0, rgbStr(mixRgb(rgbAccent, rgbBlack, 0.5)));
+    tubeGradient.addColorStop(0.3, rgbStr(mixRgb(brass, rgbWhite, 0.18)));
+    tubeGradient.addColorStop(0.58, rgbStr(metalMid));
+    tubeGradient.addColorStop(1, rgbStr(ink));
+    ctx.strokeStyle = rgba(rgbBlack, 0.55);
+    ctx.lineWidth = tubeWidth * 1.7;
+    ctx.beginPath();
+    ctx.moveTo(startX, startY);
+    ctx.quadraticCurveTo(midX, midY, headX, headY);
+    ctx.stroke();
+    ctx.strokeStyle = tubeGradient;
+    ctx.lineWidth = tubeWidth;
+    ctx.beginPath();
+    ctx.moveTo(startX, startY);
+    ctx.quadraticCurveTo(midX, midY, headX, headY);
+    ctx.stroke();
+    ctx.strokeStyle = rgba(rgbWhite, 0.3);
+    ctx.lineWidth = Math.max(0.6, tubeWidth * 0.26);
+    ctx.beginPath();
+    ctx.moveTo(startX - px * tubeWidth * 0.26, startY - py * tubeWidth * 0.26);
+    ctx.quadraticCurveTo(
+      midX - px * tubeWidth * 0.26,
+      midY - py * tubeWidth * 0.26,
+      headX - px * tubeWidth * 0.26,
+      headY - py * tubeWidth * 0.26,
+    );
+    ctx.stroke();
+
+    // 唱头壳：以唱针落点为原点，x 轴沿唱头轴向（朝转轴一侧），唱针在原点。
+    ctx.save();
+    ctx.translate(contactX, contactY);
+    ctx.rotate(headAngle);
+    // 壳体：前窄后宽的梯形板，深色金属面，前缘一道黄铜细线。
+    const shellFrontX = radius * 0.012;
+    const shellRearX = radius * 0.126;
+    const shellGradient = ctx.createLinearGradient(0, -radius * 0.036, 0, radius * 0.036);
+    shellGradient.addColorStop(0, rgbStr(mixRgb(rgbAccent, rgbBlack, 0.64)));
+    shellGradient.addColorStop(0.5, rgbStr(mixRgb(metalDark, rgbBlack, 0.46)));
+    shellGradient.addColorStop(1, rgbStr(ink));
+    ctx.fillStyle = shellGradient;
+    ctx.beginPath();
+    ctx.moveTo(shellFrontX, -radius * 0.024);
+    ctx.lineTo(shellRearX, -radius * 0.035);
+    ctx.lineTo(shellRearX, radius * 0.035);
+    ctx.lineTo(shellFrontX, radius * 0.024);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = rgba(rgbBlack, 0.6);
+    ctx.lineWidth = Math.max(0.7, radius * 0.003);
+    ctx.stroke();
+    // 前缘黄铜细线 + 后缘金属缝
+    ctx.strokeStyle = rgba(brass, 0.38);
+    ctx.lineWidth = Math.max(0.7, radius * 0.0026);
+    ctx.beginPath();
+    ctx.moveTo(shellFrontX + radius * 0.002, -radius * 0.023);
+    ctx.lineTo(shellFrontX + radius * 0.002, radius * 0.023);
+    ctx.stroke();
+    ctx.strokeStyle = rgba(rgbWarm, 0.16);
+    ctx.beginPath();
+    ctx.moveTo(shellRearX - radius * 0.002, -radius * 0.034);
+    ctx.lineTo(shellRearX - radius * 0.002, radius * 0.034);
+    ctx.stroke();
+    // 唱头本体：压在壳体前段的黑色方盒
+    ctx.fillStyle = rgbStr(mixRgb(rgbBlack, ink, 0.4));
+    ctx.beginPath();
+    ctx.roundRect(radius * 0.022, -radius * 0.017, radius * 0.07, radius * 0.034, radius * 0.006);
+    ctx.fill();
+    ctx.strokeStyle = rgba(rgbWarm, 0.12);
+    ctx.lineWidth = Math.max(0.6, radius * 0.0022);
+    ctx.stroke();
+    // 唱针杆：从唱头前缘伸到落点
+    ctx.strokeStyle = rgbStr(brass);
+    ctx.lineWidth = Math.max(0.8, radius * 0.003);
+    ctx.beginPath();
+    ctx.moveTo(radius * 0.03, 0);
+    ctx.lineTo(radius * 0.003, 0);
+    ctx.stroke();
+    const tipGlow = ctx.createRadialGradient(0, 0, 0, 0, 0, radius * 0.013);
+    tipGlow.addColorStop(0, rgba(rgbWarm, 0.24));
+    tipGlow.addColorStop(1, rgba(rgbWarm, 0));
+    ctx.fillStyle = tipGlow;
+    ctx.beginPath();
+    ctx.arc(0, 0, radius * 0.013, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = rgba(rgbWarm, 0.58);
+    ctx.beginPath();
+    ctx.arc(0, 0, Math.max(0.8, radius * 0.0036), 0, TAU);
+    ctx.fill();
+    // 两颗固定螺丝（打在壳体后半段，沿轴排布）
+    ctx.fillStyle = rgba(brass, 0.34);
+    for (const screwX of [radius * 0.05, radius * 0.105]) {
+      ctx.beginPath();
+      ctx.arc(screwX, radius * 0.024, Math.max(0.7, radius * 0.0032), 0, TAU);
+      ctx.fill();
+    }
+    ctx.restore();
   };
 
   const drawMotes = (dt: number): void => {
@@ -1262,6 +1609,17 @@ export function createVinylScene(options: VinylSceneOptions = {}): VinylScene {
   });
   resizeObserver.observe(root);
 
+  /** 快捷设置里换了歌词播放样式：换个根 class，并按当前播放位置重刷逐字状态。 */
+  let currentLyricStyle: LyricStyle = lyricStyle();
+  const offLyricStyle = onLyricStyle(() => {
+    if (disposed) return;
+    const next = lyricStyle();
+    if (next === currentLyricStyle) return;
+    currentLyricStyle = next;
+    root.className = `zl-vinyl-scene zvs-style-${currentLyricStyle}`;
+    refreshCharStates();
+  });
+
   refreshPalette();
   applyCssVars();
   ensureMotes();
@@ -1334,6 +1692,7 @@ export function createVinylScene(options: VinylSceneOptions = {}): VinylScene {
     dispose(): void {
       if (disposed) return;
       disposed = true;
+      offLyricStyle();
       resizeObserver.disconnect();
       wordsLayer.textContent = '';
       views = [];

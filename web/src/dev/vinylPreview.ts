@@ -9,6 +9,7 @@
  *   ?play=0/1      默认 1；0 = 定位后暂停（截图用，画面静止但至少渲染一帧）
  *   ?debug=1       左上角极简角标：当前时间 / 行号 / 词数
  *   ?style=id 或 ?style=<URL 编码 JSON>  套用预设 / 覆盖设置
+ *   ?lyric=id     歌词动画样式（沿用「关闭」歌词样式的 classic/rise/wave/swing/typewriter/spin）
  *   ?cover=0       不显示中心贴纸的示例封面（看纯色贴纸兜底效果）
  *
  * 供 headless CDP 截图脚本使用：
@@ -18,6 +19,7 @@
 
 import { createVinylScene } from '../ui/vinylScene';
 import type { VinylScene, VinylSceneLine, VinylSceneSong, VinylSceneWord } from '../ui/vinylScene';
+import { LYRIC_STYLES, setLyricStyle, type LyricStyle } from '../ui/lyricStyle';
 import {
   DEFAULT_VINYL_SETTINGS,
   VINYL_STYLE_PRESETS,
@@ -250,6 +252,11 @@ function main(): void {
   let playing = readFlagParam(params, 'play', true);
   // ?cover=0：隐藏中心封面，用来看纯色贴纸的兜底效果。
   if (!readFlagParam(params, 'cover', true)) vinylPreviewSong.coverUrl = '';
+  // ?lyric=rise/wave/swing/typewriter/spin/classic：套用「播放效果 = 关闭」的歌词播放动画。
+  const lyricParam = params.get('lyric');
+  if (lyricParam && LYRIC_STYLES.some((item) => item.id === lyricParam)) {
+    setLyricStyle(lyricParam as LyricStyle);
+  }
 
   let seekRaf = 0;
   let seekFrames = 0;
