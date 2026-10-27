@@ -61,7 +61,7 @@ public partial class MainWindow : Window
     // （页面此时是满窗卡片，所以圆角直接就是卡片轮廓）；退出时恢复直角。
     private const double MiniCornerRadiusDip = 16;
     // 进出迷你播放器的窗口补间：与页面过渡态（.is-mini-entering/.is-mini-exiting）同时段，
-    // 让窗口本身平滑收缩/长回去，而不是一帧跳变（用户反馈动画生硬）。
+    // 让窗口本身平滑收缩/长回去，而不是一帧跳变（反馈动画生硬）。
     private const int MiniEnterAnimationMs = 320;
     private const int MiniExitAnimationMs = 380;
     private bool _miniMode;
@@ -816,7 +816,7 @@ public partial class MainWindow : Window
         _host?.PostCommand(action);
     }
 
-    /// <summary>托盘菜单「退出」：真正退出进程（唯一用户可见的退出入口）。</summary>
+    /// <summary>托盘菜单「退出」：真正退出进程（唯一可见的退出入口）。</summary>
     internal void CloseForReal() => ExitApplication("tray");
 
     /// <summary>
@@ -1449,7 +1449,7 @@ public partial class MainWindow : Window
 
     private static double EaseOutCubic(double t) => 1 - Math.Pow(1 - t, 3);
 
-    // 慢-快-慢：进出迷你播放器时窗口速度更柔和（用户反馈一帧跳变/生硬）。
+    // 慢-快-慢：进出迷你播放器时窗口速度更柔和（反馈一帧跳变/生硬）。
     private static double EaseInOutCubic(double t) =>
         t < 0.5 ? 4 * t * t * t : 1 - Math.Pow(-2 * t + 2, 3) / 2;
 
