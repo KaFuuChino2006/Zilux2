@@ -39,13 +39,14 @@ import { lyricTextSettings, textSettingsToTuning, type LyricTextSettings } from 
 for (const profile of LUMIERE_PROFILES) profile.typography = 'horizontal';
 
 
-/** 播放效果：关闭 / 纯字（folia 绘光的文字特效）/ 房间（薄荷绿纵深 + 长条地毯，逐词飘浮 + 镜头跟随，可细调）。 */
-export type LumiereMode = 'off' | 'text' | 'room';
+/** 播放效果：关闭 / 纯字（folia 绘光的文字特效）/ 房间（薄荷绿纵深 + 长条地毯，逐词飘浮 + 镜头跟随，可细调）/ 唱片（暖褐聆听室 + 33⅓ 转黑胶 + 黄铜唱臂，可细调）。 */
+export type LumiereMode = 'off' | 'text' | 'room' | 'vinyl';
 
 export const LUMIERE_MODES: Array<{ id: LumiereMode; label: string; hint: string }> = [
   { id: 'off', label: '关闭', hint: '歌词页不显示播放效果' },
   { id: 'text', label: '纯字', hint: 'folia 绘光的文字特效：发光大字、关键字染色、逐字点亮，可在「文字设置」里加背景光柱与雾' },
   { id: 'room', label: '房间', hint: '薄荷绿纵深 + 长条地毯：每句歌词拆成词散落在前方空间里，镜头跟着正在唱的那句推进；到「快捷设置 → 房间设置」可细调歌词风格、颜色与离散度' },
+  { id: 'vinyl', label: '唱片', hint: '暖褐聆听室 + 33⅓ 转黑胶 + 黄铜唱臂：歌词压在唱片下方逐词点亮，暂停时唱片渐停、唱臂抬起；到「快捷设置 → 唱片设置」可细调盘面、唱臂与歌词样式' },
 ];
 
 const STORE_KEY = 'zilux2.lumiere';
@@ -54,8 +55,9 @@ const STORE_KEY = 'zilux2.lumiere';
 export function lumiereMode(): LumiereMode {
   try {
     const raw = localStorage.getItem(STORE_KEY);
-    // 「房间」是新加的 3D 场景；「光场」已删除不再复活；「绘光」被「纯字」取代，存档直接落到纯字。
+    // 「房间」「唱片」是后加的整页场景；「光场」已删除不再复活；「绘光」被「纯字」取代，存档直接落到纯字。
     if (raw === 'room') return 'room';
+    if (raw === 'vinyl') return 'vinyl';
     if (raw === 'off' || raw === 'lightfield') return 'off';
     if (raw) return 'text';
   } catch {
@@ -82,6 +84,8 @@ export interface LumiereSongInput {
   title: string;
   artist: string;
   album: string;
+  /** 专辑封面地址（唱片档把它印在中心贴纸上；纯字/房间档可忽略）。 */
+  coverUrl?: string;
   durationMs: number;
   lyricOffsetMs: number;
   lines: ReadonlyArray<{

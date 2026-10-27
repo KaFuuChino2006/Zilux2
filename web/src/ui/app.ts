@@ -158,6 +158,7 @@ import type { HomeCollection, HomeData } from './home';
 import { openLyricPicker } from './lyricPicker';
 import { openTextSettingsSheet } from './textSettingsPanel';
 import { openRoomSettingsSheet } from './roomSettingsPanel';
+import { openVinylSettingsSheet } from './vinylSettingsPanel';
 import { readPosterLayout, writePosterLayout, type PosterLayout } from './posterLayout';
 import { ACCENT_PRESETS, applyAccentColor, readAccentColor, writeAccentColor } from './theme';
 import { APP_BG_BLUR, APP_BG_POSITIONS, applyAppBgStyle, pickBackgroundImageFile, readAppBgBlur, readAppBgImage, readAppBgMode, readAppBgPosition, writeAppBgBlur, writeAppBgImage, writeAppBgMode, writeAppBgPosition, type AppBgMode } from './appBackground';
@@ -5296,7 +5297,7 @@ export class App {
       };
       syncGrowCell();
 
-      // 效果设置：文字/房间共用同一行、同一套按钮，点开的是当前效果对应的调节面板。
+      // 效果设置：文字/房间/唱片共用同一行、同一套按钮，点开的是当前效果对应的调节面板。
       //   「关闭」档没有可调项，整行收起（用高度动画平滑过渡，见 syncEffectSettingsCell）。
       const EFFECT_SETTINGS_META: Record<string, { action: string; hint: string }> = {
         text: {
@@ -5306,6 +5307,10 @@ export class App {
         room: {
           action: '房间设置…',
           hint: '房间：歌词字体/颜色/离散度、背景渐变、地毯、镜头与动效',
+        },
+        vinyl: {
+          action: '唱片设置…',
+          hint: '唱片：歌词字体/颜色/排布、盘面配色、转速、唱臂与尘埃',
         },
       };
       const effectSettingsBtn = h('button', {
@@ -5321,7 +5326,12 @@ export class App {
         const mode = lyricsLumiereMode();
         if (mode === 'off') return;
         this.closeQuick();
-        const open = mode === 'text' ? openTextSettingsSheet : openRoomSettingsSheet;
+        const open =
+          mode === 'text'
+            ? openTextSettingsSheet
+            : mode === 'room'
+              ? openRoomSettingsSheet
+              : openVinylSettingsSheet;
         window.setTimeout(() => open(), 140);
       });
       const effectSettingsHint = h('span', { class: 'quick-cell-hint', text: '' });

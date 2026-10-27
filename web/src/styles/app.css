@@ -4024,6 +4024,72 @@ body,
   color: #ffffff;
 }
 
+/* ── 播放效果 · 唱片（暖褐聆听室 + 33⅓ 转黑胶 + 黄铜唱臂） ──
+   场景本体在 ui/vinylScene.ts 里自己画（canvas 画唱片/唱臂/尘埃，DOM 歌词压在唱片下方），
+   舞台沿用 .lyrics-stage 的绝对定位与淡入规则，这里补落底色和暗场下的周边控件配色。 */
+.lyrics-stage.is-vinyl {
+  background: #16110d;
+}
+.lyrics-stage.is-vinyl .zl-vinyl-scene {
+  position: absolute;
+  inset: 0;
+}
+.lyrics-stage.is-vinyl canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.lyrics-view.is-vinyl .lyrics-scrim {
+  background: transparent;
+}
+.lyrics-view.is-vinyl .lyrics-bg {
+  opacity: 0;
+  visibility: hidden;
+}
+/* 暗场里歌词页自己的控件换成暖色半透明，压在唱片底色上仍然看得清 */
+.lyrics-view.is-vinyl .lyrics-close {
+  color: #f3e9d6;
+  background: rgb(32 24 17 / 0.44);
+  border-color: rgb(243 233 214 / 0.32);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.4);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+.lyrics-view.is-vinyl .lyrics-close:hover {
+  background: rgb(52 40 28 / 0.6);
+}
+.lyrics-view.is-vinyl .lyrics-title {
+  color: #f6ecda;
+}
+.lyrics-view.is-vinyl .lyrics-artist,
+.lyrics-view.is-vinyl .lyrics-source,
+.lyrics-view.is-vinyl .lyrics-progress-time {
+  color: rgb(232 220 200 / 0.62) !important;
+}
+.lyrics-view.is-vinyl .lyrics-progress-track {
+  background: rgb(236 226 207 / 0.14);
+}
+.lyrics-view.is-vinyl .lyrics-bg-control {
+  background: rgb(24 18 13 / 0.4);
+  border-color: rgb(243 233 214 / 0.28);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+.lyrics-view.is-vinyl .lyrics-bg-btn {
+  color: rgb(243 233 214 / 0.66);
+}
+.lyrics-view.is-vinyl .lyrics-bg-btn.is-on {
+  color: #ffffff;
+}
+
+/* 进页提示的同优先级覆盖要写在通用规则之后，否则会被「纯字 · 准备中」压掉 */
+.lyrics-view.is-room.is-lumiere-fresh::after {
+  content: '房间 · 准备中';
+}
+.lyrics-view.is-vinyl.is-lumiere-fresh::after {
+  content: '唱片 · 准备中';
+}
+
 /* ====================================================================== */
 /* 发现页（Discover）                                                      */
 /* ====================================================================== */
