@@ -22,6 +22,7 @@ import { matchMinScore, matchTranslation, matchWordLyrics, setMatchMinScore, typ
 import { coverColorsOf, fallbackColors } from './coverColors';
 import { createLumiereStage, lumiereMode, lumiereThemeForCover, setLumiereMode, type LumiereMode, type LumiereSongInput, type LumiereStage } from './lumiere';
 import { createRoomStage, setRoomLyricTintProvider, type RoomStage } from './room';
+import { createVinylStage, setVinylLyricTintProvider, type VinylStage } from './vinyl';
 import type { Theme } from './lumiere-folia/types';
 import type { LyricTextSettings } from './lumiereSettings';
 import { LYRIC_STYLES, lyricStyle, lyricStyleNeedsCharTiming, onLyricStyle } from './lyricStyle';
@@ -93,6 +94,14 @@ setRoomLyricTintProvider(() => {
   // 封面色/自动渐变才走封面取色板。
   if (lyricsBgMode === 'solid') {
     return { mode: 'solid', palette: ['#fff9f2', '#fffdfa', '#ffffff'] };
+  }
+  return { mode: lyricsBgMode, palette: lumierePaletteNow ? [...lumierePaletteNow] : [] };
+});
+
+// 唱片档：贴纸、唱臂与重点词也跟着「歌词颜色」走（纯色档用暖金三色）。
+setVinylLyricTintProvider(() => {
+  if (lyricsBgMode === 'solid') {
+    return { mode: 'solid', palette: ['#c9a068', '#e8d4ae', '#ffcf8a'] };
   }
   return { mode: lyricsBgMode, palette: lumierePaletteNow ? [...lumierePaletteNow] : [] };
 });
@@ -937,6 +946,8 @@ export class LyricsView {
   private lumiereText: LumiereStage | null = null;
   /** 播放效果（房间）舞台：纯色布景墙 + 长条地毯的 3D 空间，歌词浮在地毯上方。 */
   private roomStage: RoomStage | null = null;
+  /** 播放效果（唱片）舞台：暖褐聆听室 + 33⅓ 转黑胶 + 黄铜唱臂，歌词压在唱片下方。 */
+  private vinylStage: VinylStage | null = null;
   /** 进页时等画布第一次出像的监听（见 watchStagePaint）。 */
   private stageObserver: MutationObserver | null = null;
   /** 默认歌词页的播放样式（见 lyricStyle.ts）：只切 root 上的 lyric-style-<id> class，动画全在 CSS 里。 */
@@ -964,6 +975,7 @@ export class LyricsView {
     const scrim = h('div', { class: 'lyrics-scrim' });
     this.lumiereText = createLumiereStage({ textOnly: true });
     this.roomStage = createRoomStage();
+    this.vinylStage = createVinylStage();
 
     this.root = h(
       'div',
@@ -972,6 +984,7 @@ export class LyricsView {
       scrim,
       this.lumiereText.root,
       this.roomStage.root,
+      this.vinylStage.root,
       closeBtn,
       h(
         'div',
@@ -1065,13 +1078,15 @@ export class LyricsView {
     const mode = lumiereMode();
     const textOn = mode === 'text';
     const roomOn = mode === 'room';
-    const anyOn = textOn || roomOn;
-    // 纯字 / 房间都由 canvas 画歌词，DOM 歌词与封面栏让位；什么时候藏由 CSS 的 is-painted 门槛决定，
+    const vinylOn = mode === 'vinyl';
+    const anyOn = textOn || roomOn || vinylOn;
+    // 纯字 / 房间 / 唱片都由 canvas 画歌词，DOM 歌词与封面栏让位；什么时候藏由 CSS 的 is-painted 门槛决定，
     // 画布还没出像时默认歌词页仍然可见，不会闪灰。
     this.root.classList.toggle('is-lumiere', anyOn);
     this.root.classList.toggle('is-lumiere-text', anyOn);
     this.root.classList.toggle('is-lumiere-pure', textOn);
     this.root.classList.toggle('is-room', roomOn);
+    this.root.classList.toggle('is-vinyl', vinylOn);
     const stage = this.lumiereText;
     if (stage) {
       stage.setMode(textOn ? 'text' : 'off');
@@ -1084,8 +1099,14 @@ export class LyricsView {
       if (roomOn) room.activate();
       else room.deactivate();
     }
+    const vinyl = this.vinylStage;
+    if (vinyl) {
+      vinyl.setMode(vinylOn ? 'vinyl' : 'off');
+      if (vinylOn) vinyl.activate();
+      else vinyl.deactivate();
+    }
     // 刚进歌词页时先别露默认封面：等画布第一次出像再撤 is-lumiere-fresh（进页那一瞬是暗场 + 加载提示）。
-    const stageRoot = roomOn ? room?.root : stage?.root;
+    const stageRoot = roomOn ? room?.root : vinylOn ? vinyl?.root : stage?.root;
     const painted = stageRoot ? stageRoot.classList.contains('is-painted') : false;
     const failed = stageRoot ? stageRoot.classList.contains('is-failed') : false;
     if (anyOn && stageRoot && !painted && !failed) {
@@ -1146,6 +1167,7 @@ export class LyricsView {
       title: track?.title ?? '',
       artist: track?.artist ?? '',
       album: track?.album ?? '',
+      coverUrl: track ? onlineArtwork(track) : '',
       durationMs: this.state?.durationMs || track?.durationMs || 0,
       lyricOffsetMs: lyricOffsetOf(trackKey),
       lines: this.doc.lines.map((line) => ({
@@ -1170,6 +1192,7 @@ export class LyricsView {
     const input = this.buildLumiereSong();
     this.lumiereText?.setSong(input);
     this.roomStage?.setSong(input);
+    this.vinylStage?.setSong(input);
   }
 
 
@@ -1566,7 +1589,7 @@ export class LyricsView {
   private lumiereCoversLyrics(): boolean {
     const mode = lumiereMode();
     if (mode === 'off') return false;
-    const stage = mode === 'room' ? this.roomStage : this.lumiereText;
+    const stage = mode === 'room' ? this.roomStage : mode === 'vinyl' ? this.vinylStage : this.lumiereText;
     if (!stage) return false;
     const classes = stage.root.classList;
     return classes.contains('is-on') && classes.contains('is-painted');
@@ -1739,6 +1762,8 @@ export class LyricsView {
     this.lumiereText = null;
     this.roomStage?.dispose();
     this.roomStage = null;
+    this.vinylStage?.dispose();
+    this.vinylStage = null;
     this.stageObserver?.disconnect();
     this.stageObserver = null;
     this.styleUnsub?.();
