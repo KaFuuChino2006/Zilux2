@@ -131,14 +131,30 @@ export async function verifyAccounts(): Promise<AccountIssue[]> {
       for (const item of resp.sources ?? []) {
         const info = normalize(item);
         if (!info) continue;
+        // 校验接口只带 {source, loggedIn, status}，不含昵称/头像/会员：用合并更新，
+        // 否则每次启动或打开账号面板做检测时都会把 /api/account 取回的资料覆盖成空，
+        // 头像与昵称就会「无缘无故消失」。
+        const previous = cache.get(info.source);
         if (item.status === 'expired') {
           const issue = recordIssue(info.source, info.reason ?? '登录已失效，请重新登录');
           found.push(issue);
-          cache.set(info.source, { ...info, loggedIn: false });
+          cache.set(info.source, {
+            ...(previous ?? info),
+            source: info.source,
+            loggedIn: false,
+            expired: true,
+            reason: issue.reason,
+          });
           changed = true;
         } else if (item.status === 'valid') {
           clearIssue(info.source);
-          cache.set(info.source, info);
+          cache.set(info.source, {
+            ...(previous ?? info),
+            source: info.source,
+            loggedIn: true,
+            expired: undefined,
+            reason: undefined,
+          });
           changed = true;
         }
       }
