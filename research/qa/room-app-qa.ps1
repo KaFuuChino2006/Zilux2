@@ -118,7 +118,7 @@ $nodeExit = 1
 $appStarted = $false
 
 try {
-  # 0) never race a running build (the Lead may be editing/building web/src right now)
+  # 0) never race a running build (开发侧 may be editing/building web/src right now)
   $buildProcs = Get-NodeBuildProcesses
   if ($buildProcs.Count -gt 0) {
     $pids = ($buildProcs | ForEach-Object { $_.ProcessId }) -join ','

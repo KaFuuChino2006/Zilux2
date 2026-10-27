@@ -1,11 +1,11 @@
-# AirPlay / RAOP 投送 UI（task-6 / task-15 / task-16）
+# AirPlay / RAOP 投送 UI（任务 / 任务 / 任务）
 
 Zilux2 Web 前端（`web/`）的 AirPlay/RAOP 投送界面：设置面板「投送」区块 + 左侧栏投送入口弹层，覆盖
 扫描 → 设备列表 → 连接 → 密码 / Mac 配对码 → 音量 → 断开 的完整流程，并按宿主契约 `docs/zilux2-host-contract.md` §12 与 C# 宿主通信。
 
-- task-15（多设备同时投送）：同一面板可同时向多台 AirPlay 设备投送，支持逐台「停止」与「全部停止」；
+- 任务（多设备同时投送）：同一面板可同时向多台 AirPlay 设备投送，支持逐台「停止」与「全部停止」；
   状态机新增 `actives`（全部正在投送的设备），并兼容只回传单个 `active` 的旧宿主。
-- task-16（macOS 接收器 HAP PIN 配对）：连接 Mac「隔空播放接收器」时宿主推
+- 任务（macOS 接收器 HAP PIN 配对）：连接 Mac「隔空播放接收器」时宿主推
   `state:'connecting' + code:'pinRequired'`，面板显示内联 4 位配对码输入框，回发 `action:'pin'`；
   首次配对成功后宿主凭据落盘，再连不再要 PIN。
 
@@ -69,7 +69,7 @@ interface AirplaySnapshot {
   error: string | null;                // 人类可读，截断 ≤200 字
   targetDeviceId: string | null;       // 最近一次 connect 的 deviceId（密码重试/PIN 定位用）
   passwordDeviceId: string | null;     // code==='passwordRequired' 时为 targetDeviceId
-  /** task-16：Mac HAP 配对码（宿主 state:'connecting' + code:'pinRequired'） */
+  /** 任务：Mac HAP 配对码（宿主 state:'connecting' + code:'pinRequired'） */
   pinRequired: boolean;                // 正在等用户输入 4 位配对码
   pinDeviceId: string | null;          // 要输入配对码的设备（取 targetDeviceId）
   pinMessage: string | null;           // 宿主给的提示（通常「请在 Mac 屏幕上查看配对码并输入」）
@@ -99,12 +99,12 @@ const airplay = {
 
 多设备语义：
 
-- `actives` 按宿主推送顺序保存；`active` 恒等于 `actives[0]`（因此 task-6 的 UI 代码无需改判空逻辑）。
+- `actives` 按宿主推送顺序保存；`active` 恒等于 `actives[0]`（因此 任务 的 UI 代码无需改判空逻辑）。
 - `connect(id)` 对「已在 `actives` 中」的设备幂等：直接返回 `true`，不重复发消息；`connecting` 中对同一 `id` 重复点击也会被吸收。
 - 音量是**全局**的（契约 §12.1 volume 无 deviceId）：`setVolume(p)` 一次性作用于全部 `actives`，宿主回推后以宿主为准。
 - `disconnectDevice(id)` 发 `{ action:'disconnect', deviceId }`；不带参数 = 关闭全部投送。前端不做乐观删除，等宿主回推 `actives`。
 - 兼容旧宿主：payload 只有 `active` 没有 `actives` 时，用 `active` 构造单元素数组；两者都没有时——`idle` 清空，其它状态沿用上一次列表（避免多设备投送途中第二台出错/连接时把正在播的设备列表清空）。
-- **Mac HAP 配对（task-16）**：宿主推 `state:'connecting' + code:'pinRequired'` 时，快照 `pinRequired=true`、`pinDeviceId=targetDeviceId`、`pinMessage=payload.error`（缺省用「请在 Mac 屏幕上查看配对码并输入」）；`submitPin(id, '1234')` 发 `action:'pin'` 并乐观置 `pinSubmitted=true`（UI 显示「正在配对，请在 Mac 上确认…」并禁用输入）。宿主任意后续推送都会复位 `pinSubmitted=false`，配对结果由后续事件表达：成功 → `state:'streaming'`；失败/超时 → `state:'error'`（`code:'pinRequired'`）。首次配对成功后凭据由宿主落盘，再连同一台 Mac 不再出现 `pinRequired`。前端不缓存配对码、不计数重试次数，120 s 等待超时由宿主控制（§12.3）；契约没有「取消配对」动作，面板「取消」用 `disconnectDevice(id)` 表达（只中止这台，不影响其它已投送设备）。
+- **Mac HAP 配对（任务）**：宿主推 `state:'connecting' + code:'pinRequired'` 时，快照 `pinRequired=true`、`pinDeviceId=targetDeviceId`、`pinMessage=payload.error`（缺省用「请在 Mac 屏幕上查看配对码并输入」）；`submitPin(id, '1234')` 发 `action:'pin'` 并乐观置 `pinSubmitted=true`（UI 显示「正在配对，请在 Mac 上确认…」并禁用输入）。宿主任意后续推送都会复位 `pinSubmitted=false`，配对结果由后续事件表达：成功 → `state:'streaming'`；失败/超时 → `state:'error'`（`code:'pinRequired'`）。首次配对成功后凭据由宿主落盘，再连同一台 Mac 不再出现 `pinRequired`。前端不缓存配对码、不计数重试次数，120 s 等待超时由宿主控制（§12.3）；契约没有「取消配对」动作，面板「取消」用 `disconnectDevice(id)` 表达（只中止这台，不影响其它已投送设备）。
 
 无宿主（浏览器直开）行为：`airplay.hostAvailable() === false`；`scan/connect/disconnect/setVolume` 全部返回 `false`、不发消息、不改状态，UI 显示
 「投送需要 Zilux2 桌面应用（WebView2 宿主）。当前是浏览器预览，投送功能已自动关闭。」且刷新按钮隐藏，页面其余功能不受影响。
@@ -160,7 +160,7 @@ function createAirplayPanel(options?: AirplayPanelOptions): AirplayPanelHandle;
 - **连接（多设备）**：设备行按钮为「投送」→ `connect(id)`；可连续点不同设备逐台追加投送，已投送设备行显示 `.is-active` + 「正在投送」+「停止」；`state==='connecting'` 时目标设备显示「连接中…」并禁用，其它设备仍可操作。
 - **已连接清单**：`actives.length === 0` 时显示 `.airplay-now` 卡片；1 台显示「正在投送到 <名称>」，>1 台显示「已连接 <N> 台设备」+ `.airplay-now-list`（每台一个 `.airplay-now-chip`，带独立「停止」）；卡片底部为 0–100 音量滑杆与「全部停止」按钮。
 - **密码**：仅当 `state==='error' && code==='passwordRequired'` 且 `passwordDeviceId` 对应设备仍在列表时显示内联密码表单；回车/「连接」提交 `connect(id, pw)`，「取消」隐藏表单；密码不回显、不持久化。多设备投送途中第二台要密码时，错误态与已投送清单**并存**（now 卡片继续显示正在投送的设备）。
-- **Mac 配对码（task-16）**：仅当 `snapshot.pinRequired` 时显示内联 4 位配对码表单（青色调，与琥珀色密码框区分）：标题「「客厅 MacBook」需要配对码。…（4 位数字，2 分钟内有效）」，输入框只保留数字、最多 4 位、凑满 4 位才可提交；提交 `submitPin(deviceId, '1234')`，随后输入框禁用、按钮变「配对中…」、状态文案变「正在配对，请在 Mac 上确认…」。配对成功宿主推 `streaming` 后表单自动隐藏；失败推 `error`（`pinRequired`）时错误条显示兜底文案，可重新点「投送」重试。「取消」= `disconnectDevice(deviceId)` 中止这台设备的配对（已投送的其它设备不受影响）。
+- **Mac 配对码（任务）**：仅当 `snapshot.pinRequired` 时显示内联 4 位配对码表单（青色调，与琥珀色密码框区分）：标题「「客厅 MacBook」需要配对码。…（4 位数字，2 分钟内有效）」，输入框只保留数字、最多 4 位、凑满 4 位才可提交；提交 `submitPin(deviceId, '1234')`，随后输入框禁用、按钮变「配对中…」、状态文案变「正在配对，请在 Mac 上确认…」。配对成功宿主推 `streaming` 后表单自动隐藏；失败推 `error`（`pinRequired`）时错误条显示兜底文案，可重新点「投送」重试。「取消」= `disconnectDevice(deviceId)` 中止这台设备的配对（已投送的其它设备不受影响）。
 - **音量**：有投送设备时显示 0–100 滑杆，全局作用于全部设备；`input` 立即更新数值标签，150 ms 防抖后 `setVolume`，`change` 立即 flush（拖动结束必发）。
 - **逐台断开 / 全部断开**：设备行或清单 chip 的「停止」→ `disconnectDevice(id)`（只断该台）；「全部停止」→ `disconnect()`；面板不做乐观删除，等宿主回推 `actives`。
 - **状态文案**：1 台「正在投送到 X」；多台「已连接 N 台设备」；错误态仍显示 `AIRPLAY_ERROR_LABEL[code]`，密码错误时覆盖为「这台设备需要密码」。
@@ -212,7 +212,7 @@ node node_modules/typescript/bin/tsc --noEmit     # TS 严格模式（strict + n
 node node_modules/vite/bin/vite.js build          # 生产构建 → 成功
 ```
 
-构建产物（task-16 本次）：`dist/assets/main-*.css` 132.68 kB（gzip 23.82 kB）、`dist/assets/main-*.js` 481.99 kB（gzip 160.06 kB）。
+构建产物（任务 本次）：`dist/assets/main-*.css` 132.68 kB（gzip 23.82 kB）、`dist/assets/main-*.js` 481.99 kB（gzip 160.06 kB）。
 
 验证项：
 
@@ -231,7 +231,7 @@ node node_modules/vite/bin/vite.js build          # 生产构建 → 成功
    - r8 **输入 1234 后开始投送**：`railStreaming:true, status:"正在投送到 客厅 MacBook", nowVisible:true, pinVisible:false, stopTargets:["mock-mac"]`
    - r9 **凭据已落盘，再次连接不再要 PIN**：停止后重连同一台 Mac → `railStreaming:true, status:"正在投送到 客厅 MacBook", pinVisible:false, notice:null`
 6. **无宿主降级**（仅 `?snap=1`，不装 mock）：两处视图均显示「投送需要 Zilux2 桌面应用（WebView2 宿主）…」，`[data-airplay-refresh]` 与 `[data-airplay-pin]` 均带 `hidden`，rail 四按钮齐全，页面无「启动失败」→ 浏览器直开正常。
-7. **旧宿主兼容**：payload 只有 `active` 时归一为单元素 `actives`，UI 与 task-6 单设备表现一致。mock 用 `?airplayLegacy=1`（`web/src/dev/airplayMock.ts` 里的 `LEGACY_MODE`）只回 `active`、connect 成功替换单台、disconnect 忽略 `deviceId` 全断，无头 Edge 实测（`&airplayLegacy=1`，budget 20000）：r1「正在投送到 书房 Sonos One」/ r4 点第二台后**替换**为「正在投送到 卧室电视」（`nowListVisible:false`、`nowChips:[]`，未出现「已连接 2 台设备」）/ r6 全部停止正常，无 notice、无报错。
+7. **旧宿主兼容**：payload 只有 `active` 时归一为单元素 `actives`，UI 与 任务 单设备表现一致。mock 用 `?airplayLegacy=1`（`web/src/dev/airplayMock.ts` 里的 `LEGACY_MODE`）只回 `active`、connect 成功替换单台、disconnect 忽略 `deviceId` 全断，无头 Edge 实测（`&airplayLegacy=1`，budget 20000）：r1「正在投送到 书房 Sonos One」/ r4 点第二台后**替换**为「正在投送到 卧室电视」（`nowListVisible:false`、`nowChips:[]`，未出现「已连接 2 台设备」）/ r6 全部停止正常，无 notice、无报错。
 8. **PIN 空/非法输入防护**：输入框 `input` 时剥离非数字、截断 4 位，不足 4 位时「配对」按钮 `disabled`；`submitPin` 内部也校验 `/^\d{4}$/`，非 4 位不发消息。宿主若对错误 PIN 推 `error + code:'pinRequired'`，UI 显示「需要在 Mac 屏幕上输入配对码」并允许重新点「投送」。
 9. 未接真实 C# 宿主（并行开发中）；宿主联调时无需改前端，只需宿主按 §12 发 `event:"airplay"`（含 `actives`，Mac 连接按 §12.1 推 `connecting + pinRequired`）。
 
@@ -245,7 +245,7 @@ node node_modules/vite/bin/vite.js build          # 生产构建 → 成功
 6. **多设备切换不保留历史**：设备列表以宿主推送为准，断开后不缓存上次设备。
 7. **页面隐藏/关闭时停止投送**依赖宿主（§12.3 规定宿主侧 TEARDOWN）；前端在 `spaceShell.destroy()` 时只 `stopScan`，未主动 `disconnect`，避免误断用户投送。
 8. 自动冒烟驱动（`?airplaySmoke=1`）只在 dev 生效，生产被 `import.meta.env.DEV` 摇掉，不构成生产路径。
-9. **多设备 `actives` 依赖宿主**：`docs/zilux2-host-contract.md` §12 尚未正式写入 `actives` / `disconnect.deviceId`（Lead 正在补）。当前按 task-15 描述实现，宿主只回单个 `active` 时自动降级为单设备，UI 不会报错。
+9. **多设备 `actives` 依赖宿主**：`docs/zilux2-host-contract.md` §12 尚未正式写入 `actives` / `disconnect.deviceId`（前端侧正在补）。当前按 任务 描述实现，宿主只回单个 `active` 时自动降级为单设备，UI 不会报错。
 10. **第二台需要密码时状态是 `error`**：已投送设备继续播放，但状态机只有单一 `state`，UI 用「now 卡片 + 密码表单并存」表达；宿主若希望保持 `streaming`，需自行在 payload 里保留 `actives` 并置 `state:'streaming'`。
 11. **逐台断开不做乐观删除**：点「停止」后等宿主回推 `actives`；若宿主忽略 `deviceId`（旧宿主），表现为全部断开。
 12. **全局音量**：多设备共用一个 0–100 滑杆（契约 volume 无 deviceId），不能单台调音量。
@@ -253,7 +253,7 @@ node node_modules/vite/bin/vite.js build          # 生产构建 → 成功
 14. **契约没有「取消配对」动作**：面板「取消」用 `disconnectDevice(deviceId)` 表达；若宿主不响应 `disconnect`，这台设备会在宿主的 120 s 超时后自行失败（前端只把 PIN 表单收起，不影响其它设备）。
 15. **配对码不缓存在前端**：`pinSubmitted` 只是本地乐观标记；宿主任意后续推送都会复位它，配对成功与否以宿主 `streaming`/`error` 为准。前端不保存、不回显配对码，也不做重试次数限制。
 16. **PIN 错误没有独立 code**：契约只定义了 `pinRequired`（索要配对码）与超时 `network`，未定义「码错误」的 code。宿主若对错误配对码回 `error + pinRequired`，UI 显示兜底文案「需要在 Mac 屏幕上输入配对码」；回 `network`/`internal` 则显示对应兜底 + 宿主 error 文本。重试需用户重新点「投送」。
-17. **多设备「第二台失败但仍 streaming」的 error 字段未展示**（task-15 契约补充）：§12.2 写明多设备投送时第二台失败走 `error` 字段但 `state` 保持 `streaming`，而当前解析只在 `state==='error'` 时读取 `code`/`error`（沿用 task-6/15 语义），因此这类错误会被静默忽略、只在设备行状态上体现。若要提示，需在不改状态机的前提下派生「最近一次 streaming 错误」notice（后续可选，未擅自扩字段）。
+17. **多设备「第二台失败但仍 streaming」的 error 字段未展示**（任务 契约补充）：§12.2 写明多设备投送时第二台失败走 `error` 字段但 `state` 保持 `streaming`，而当前解析只在 `state==='error'` 时读取 `code`/`error`（沿用 任务/15 语义），因此这类错误会被静默忽略、只在设备行状态上体现。若要提示，需在不改状态机的前提下派生「最近一次 streaming 错误」notice（后续可选，未擅自扩字段）。
 
 ## 8. 契约歧义与缺口记录（按最小合理实现，未擅自扩字段）
 
@@ -267,14 +267,14 @@ node node_modules/vite/bin/vite.js build          # 生产构建 → 成功
 | 6 | 契约未定义宿主对重复 `scan`、`connect` 进行中再次 `connect` 的行为 | 前端做最小防护：connecting/streaming 时设备按钮禁用；`scan` 可重复（契约允许刷新），UI 侧多面板用引用计数避免重复 stopScan |
 | 7 | 派单文案称「深色玻璃/霓虹风格」，但仓库设计基线是**黑金暗色主题（默认）+ 白磨砂（可切）**（`base.css` 注明设计基线 v2 白色磨砂，`space.css` 默认 `.theme-gold` 黑金） | 以仓库真实设计系统为准，同时适配两套主题；未引入新视觉语言。此为文档措辞歧义，已上报 lead |
 | 8 | 任务要求「设置面板 `web/src/ui/settingsPanel.ts` 加投送区块」，但该文件在真实应用中**未被任何入口 import**（死代码） | 投送区块改接在真实设置面板 `spaceShell.ts` 的 `.settings-sheet` 中；未改动死代码文件，避免维护两套设置 UI |
-| 9 | 契约 §12.2 只定义了单数 `active`，**未定义多设备字段 `actives`**，也未定义 `disconnect` 可带 `deviceId` | 按 task-15 描述做最小扩展：`actives` 为可选新增字段，缺失时用 `active` 降级单设备；`disconnect` 带 `deviceId` = 停单台、不带 = 全部。前端对两种宿主都能工作，未新增其它字段 |
+| 9 | 契约 §12.2 只定义了单数 `active`，**未定义多设备字段 `actives`**，也未定义 `disconnect` 可带 `deviceId` | 按 任务 描述做最小扩展：`actives` 为可选新增字段，缺失时用 `active` 降级单设备；`disconnect` 带 `deviceId` = 停单台、不带 = 全部。前端对两种宿主都能工作，未新增其它字段 |
 | 10 | 多设备时音量仍是全局（§12.1 `volume` 无 `deviceId`） | UI 只提供一个音量滑杆并作用于全部投送设备；将来契约若加 `deviceId`，可扩展为 `setVolume(percent, deviceId?)` 且不破坏现有调用 |
 | 11 | 多设备下 `state:'error'` 与「其它设备仍在投送」并存的语义未定义 | 前端视为「错误提示 + 继续投送」：`actives` 非空就显示 now 卡片，同时显示错误/密码表单；宿主若想区分可后续加字段，前端解析层已集中在 `onHostMessage` 一处 |
 | 12 | §12.2 正文写「`code` 只在 `state:"error"` 时出现」，但 §12.1 的 Mac PIN 配对要求 `state:"connecting"` 阶段就推 `code:"pinRequired"`，两处自相矛盾 | 以 §12.1 为准：`connecting` 与 `error` 两种状态都识别 `code`；仅 `connecting + pinRequired` 视为「等待输入配对码」，`error + pinRequired` 视为配对失败/超时（错误条展示）。未新增字段 |
 | 13 | PIN 错误事件同样**不回传 deviceId**（与 `passwordRequired` 相同问题），页面靠最近一次 `connect` 的 `targetDeviceId` 定位 | 与密码框一致：仅在 `state:'connecting'` 且 `targetDeviceId` 存在时显示配对码表单；若期间用户改了目标设备，表单会跟随最新目标 |
 | 14 | 契约未定义 pin 动作的值格式/长度校验与「取消配对」动作 | 前端只接受 `/^\d{4}$/`（4 位数字，输入框自动剥离非数字并截断），非 4 位不发消息；取消用 `disconnect(deviceId)`，未新增 `cancelPin` 等字段 |
 | 15 | 宿主「首次配对后凭据落盘、再连不再要 PIN」属于宿主侧行为，契约未说明重启/VPN 变化后是否重新要求配对 | 前端不做任何缓存假设：每次连接都等宿主事件；若宿主再次推 `pinRequired`，表单会重新出现（`lastPinDeviceId` 变化时自动清空输入并复位取消状态） |
-| 16 | §12.2 新增「多设备投送时第二台失败也走 `error` 字段但 `state` 保持 `streaming`」，与「`code` 只在 `state:"error"` 时出现」仍冲突 | 当前解析只在 `error` 态读取 `code`/`error`，多设备 streaming 下的 error 文本被忽略（按设备行 `actives` 变化体现）；已在 §7 限制 17 记录。若 Lead 需要提示，最小改法是解析层派生 `streamingError` 字段（不改 state），需契约先明确该场景的 `code` 取值 |
+| 16 | §12.2 新增「多设备投送时第二台失败也走 `error` 字段但 `state` 保持 `streaming`」，与「`code` 只在 `state:"error"` 时出现」仍冲突 | 当前解析只在 `error` 态读取 `code`/`error`，多设备 streaming 下的 error 文本被忽略（按设备行 `actives` 变化体现）；已在 §7 限制 17 记录。若 前端侧需要提示，最小改法是解析层派生 `streamingError` 字段（不改 state），需契约先明确该场景的 `code` 取值 |
 | 17 | §12.2 的 `actives` 已正式写入契约（`streaming` 时非空、最多 32 台、`active` 为第一个元素），但 `disconnect` 带 `deviceId` 仍只在 §12.1 文字里描述 | 前端按 §12.1 实现（带 `deviceId` 停单台、不带 = 全部），与契约文字一致；旧宿主忽略 `deviceId` 时降级为全断（已在 §6/§7 记录） |
 
 ## 9. 自测方法（dev mock，无需 C# 宿主）
@@ -291,7 +291,7 @@ npm run dev -- --port 5299
   - 连「客厅 MacBook」→ 状态「「客厅 MacBook」等待 Mac 配对码」+ 青色配对码表单 → 输入 `1234` → 「正在配对…」→ 开始投送；「停止」后再连同一台 → 不再要配对码（模拟凭据已落盘）。输入框故意输错（如 `0000`）→ 宿主推 `error + code:'pinRequired'`，错误条提示后重新点「投送」重试。
   - 「取消」配对码表单 = 中止这台设备的配对（已投送的其它设备继续）。
 - `http://127.0.0.1:5299/?airplayMock=1&airplaySmoke=1`：自动跑 9 阶段（连接+音量 → 密码 → 密码成功 → 同时投送两台 → 单台停止 → 全部停止 → Mac 要配对码 → 输入配对码成功 → 再连不再要 PIN），把每阶段状态写入 `<pre id="airplay-smoke-report-1…9">`，便于无头回归。
-- `http://127.0.0.1:5299/?airplayMock=1&airplayLegacy=1`：模拟旧宿主（payload 只有 `active`，不支持多设备），验证前端兼容降级（单设备行为与 task-6 一致，不报错）。
+- `http://127.0.0.1:5299/?airplayMock=1&airplayLegacy=1`：模拟旧宿主（payload 只有 `active`，不支持多设备），验证前端兼容降级（单设备行为与 任务 一致，不报错）。
 - 无参数直接打开：验证无宿主降级（不应出现任何报错）。
 
 无头回归命令（Edge，9 阶段虚拟时间 24s）：

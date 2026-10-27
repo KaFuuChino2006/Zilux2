@@ -6,23 +6,23 @@
 
 ```
 E:\Zilux2开发\
-  web\                     前端（Vite + TypeScript + three.js）—— Lead 负责
+  web\                     前端（Vite + TypeScript + three.js）—— 前端侧负责
     index.html
     src\...
     package.json
-  src\Zilux2\              WPF 宿主（.NET 10）—— host-dev 负责
+  src\Zilux2\              WPF 宿主（.NET 10）—— 宿主侧负责
     Zilux2.csproj
     App.xaml / App.xaml.cs
     MainWindow.xaml / MainWindow.xaml.cs
     app.manifest
-  tools\                   构建/运行脚本 —— host-dev 负责
+  tools\                   构建/运行脚本 —— 宿主侧负责
     build.ps1
     run.ps1
   docs\                    报告与契约（本文件）
   research\                三项目调研资料
 ```
 
-**写入边界**：host-dev 只写 `src/Zilux2/**` 与 `tools/**`；Lead 只写 `web/**` 与 `docs/**`。双方都不改对方目录。
+**写入边界**：宿主侧 只写 `src/Zilux2/**` 与 `tools/**`；前端侧只写 `web/**` 与 `docs/**`。双方都不改对方目录。
 
 ## 2. 本机构建环境（已实测）
 
@@ -108,7 +108,7 @@ $env:NUGET_PACKAGES='E:\aurora-toolchain\nuget'
 `tools/build.ps1` 参数：`-Configuration Debug|Release`、`-WebDir <路径>`（可选，把前端 dist 拷到输出目录）、`-SkipRestore`。
 `tools/run.ps1`：构建后启动并注入 `ZILUX2_DEV_URL`（若参数给了 `-DevUrl`）。
 
-## 5. 验收（host-dev 自测）
+## 5. 验收（宿主侧 自测）
 
 1. `dotnet build` 成功（0 error；warning 可有）。
 2. 进程能启动并存活 ≥5 秒；日志出现 `navigation starting/completed`。

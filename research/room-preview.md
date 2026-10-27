@@ -44,7 +44,7 @@ node research/qa/room-preview-shot.mjs \
   --help
 ```
 
-示例（Lead 验收换行过渡帧）：
+示例（ 验收换行过渡帧）：
 
 ```bash
 node research/qa/room-preview-shot.mjs \
@@ -124,7 +124,7 @@ window.__roomPreview.scene.resize();  // 手动 resize
 - `web/src/dev/roomPreview.ts` 内置，40 行、中英混合、逐词 `startMs/endMs`，总时长 240s；
 - 第一行 `timeMs = 8000`；为方便截到不同歌词状态，前 9 行压缩在 27s 内（首行 8s，随后行间隔 2.2~2.6s），
   之后行间隔 6.9~7.0s，最后一行 235.2s 起、4.8s 收尾；
-- 每行 `durationMs` 按 Lead 要求 clamp 到 4000~6000ms（与行间隔解耦，行尾轻微重叠属预期）；
+- 每行 `durationMs` 按 前端侧要求 clamp 到 4000~6000ms（与行间隔解耦，行尾轻微重叠属预期）；
 - 部分行带 `translation`，方便检查翻译行排版；
 - 数据是 QRC 风格（`RoomSceneSong`），改完 `roomScene.ts` 直接刷新预览页即可，不必开 app / 载入真歌。
 

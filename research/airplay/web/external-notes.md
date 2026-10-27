@@ -24,7 +24,7 @@
 | `.ref/airplay2-receiver` | https://github.com/openairplay/airplay2-receiver | `6c343d3` (2023-10-03) | 仓库内**未见 LICENSE 文件**（引用其思路/README，不抄代码） |
 | `.ref/UxPlay` | https://github.com/FDH2/UxPlay | `d9e293d` (2026-10-19) | GPL-3.0 |
 
-**关键结论先行**（供 Lead 快速决策，详情见后文）：
+**关键结论先行**（供 前端侧快速决策，详情见后文）：
 
 1. **先做经典 AirPlay 1（RAOP）是正确选择**：AirPort Express(第 2 代)、Apple TV(2/3 代)、macOS 接收器、以及大量第三方音箱走 TCP 7000 + RTSP + RTP/ALAC，**常规情况下不需要 HAP 配对**；而 HomePod / HomePod mini 实际上必须走 AirPlay 2（HAP 瞬态配对 + `shk` 加密）。【源码确证 + 推断，见 §1】
 2. AP1 的音频格式**可以用 L16 裸 PCM 代替 ALAC**（pyatv 已这么做且通过了 AirPort Express / HomePod mini 的实测清单），MVP 可以省掉 ALAC 编码器，代价是带宽 1.41 Mbit/s。【源码确证，见 §6】
@@ -464,7 +464,7 @@ Content-Length: 33
 
 ---
 
-## 8. 与 TuneBlade 反编译结果的交叉验证清单（交给 Lead）
+## 8. 与 TuneBlade 反编译结果的交叉验证清单（交付前端侧）
 
 以下点建议与 `research/airplay/tuneblade-decomp/` 逐条对照，冲突时记录谁对谁错（外部资料可能过期，TuneBlade 可能有 bug/私货）：
 

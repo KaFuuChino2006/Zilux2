@@ -286,7 +286,7 @@ const buildTimedWords = (text, startTime, endTime) => {
 #### 2.3.6 各逐字格式的具体坑
 
 - **YRC（网易云）**：行头 `[startMs,durationMs]`，词标签 `(startMs,durationMs,?)` 是**绝对毫秒**。`isWordByWord: true`。
-- **QRC（QQ）**：行头同 YRC，词标签 `(startMs,durMs[,?])`。难点在「词文本在哪」——标签之间的文本可能是前一个词的后缀也可能是后一个词的前缀，代码用 `prefersLeadingText/prefersTrailingText` 启发式判定（`:571-701` 段）。翻译轨递归调用 `parseQrcTrackEntries` 解析。
+- **QRC（QQ）**：行头同 YRC，词标签 `(startMs,durMs[,?])`。难点在「词文本在哪」——标签之间的文本可能是前一个词的后缀也可能是后一个词的前缀，代码用 `prefers前端侧ingText/prefersTrailingText` 启发式判定（`:571-701` 段）。翻译轨递归调用 `parseQrcTrackEntries` 解析。
 - **KRC（酷狗）**：`[language:base64]` 里是 JSON 数组，`type 0` = 罗马音、`type 1` = 翻译（`:954-1079`）；词时间相对行首：`wordStartMs = lineStartTimeMs + wordStartOffsetMs`（`:1027-1028`）；没有词标签时回退 `buildTimedWords`。
 - **AWLRC（LX Music 容器）**：`[awlrc:...]` 内联容器带 `tlrc/rlrc` 三轨；音节标签 `<offsetMs,durationMs>` 相对行首；**零长度/倒退修补**：`offsetMs = max(offset, cursorMs)`、`durationMs = max(dur, 1)`，用 cursor 保证单调；解析后按 `startTime` 排序（因为小数部分按字符串比较时 `.79` 会排在 `.181` 前面）；`isWordByWord: true`。
 - **VTT**：支持三种时间戳；`stripVttCueText` 去标签/实体并归一空白；按空行分块；跳过 `WEBVTT/NOTE/STYLE/REGION`；`endTime` 缺失时取「下一 cue 起点」或 `start+5`；`<c>` 等内联标签在整个 cue 上被剥掉，因此 VTT 实际按行渲染（卡拉 OK 标签信息丢失）。
@@ -350,7 +350,7 @@ interface LyricData {
 L3 输出还不是「能显示」的歌词——纯音乐判定、用户过滤、制作名单策略、合唱段、分词都在这一层，按固定顺序执行（`createLyricsSetter.ts:67-110`）：
 
 1. **纯音乐判定**：`isPureMusicLyricLines`（`pureMusic.ts:86`）与网易云 `pureMusic` 标志（`hasNeteasePureMusicFlag:24`）；
-2. **用户过滤**：`applyLyricDisplayFilter(nextLyrics, lyricFilterPattern)`（`filtering.ts:86`）——先剥间奏（若关闭），再按用户正则（`compileLyricFilterPattern:26`）滤掉匹配行；
+2. **用户过滤**：`applyLyricDisplayFilter(nextLyrics, lyricFilterPattern)`（`filtering.ts:86`）——先剥间奏（若关闭），再按过滤正则（`compileLyricFilterPattern:26`）滤掉匹配行；
 3. **制作名单策略**：`applyLyricStaffPolicy(...)`（`staffCreditsPolicy.ts`）。默认 `smart`（`:28`）、最小停留 `1.5s`（`:29`）、吸收模式 `off`（`:30`）、窗口 0.6–4s；`staffCreditsDecision.ts:38` 的核心公式：`requiredSeconds = displayLines.length * minDwell + TAIL_MARGIN_SECONDS(=1)`（`:9`）；窗口够 → `keep` 或 `retime`，不够 → `hide`（`:57-65`）；`absorbMode` 可把制作名单并入相邻行；
 4. **合唱段**：行上已有 `isChorus` 则缓存；否则从网易云匹配结果借 `chorusRanges`；再否则用文本频率检测（`applyDetectedChorusEffects`，`chorusEffects.ts:7`）并把重建的 LRC 文本缓存起来，供下次免检测；效果枚举 `['bars','circles','beams']`（`chorusEffects.ts:5`）；
 5. **用户分词**：`applyLyricWordSegmentation`（以 `lyricSeg_<songKey>` 为键的缓存记录，`lyricSegmentation.ts:16`、`:19`）；
@@ -730,7 +730,7 @@ if (index !== lastIndex) setCurrentLineIndex(index);
 ---
 ## 7. 可复用到 Zilux2 的清单
 
-> 现实约束（来自 Lead，2026-10-18）：Zilux v1 是 C#/.NET 10/WPF 应用，已有自研 LRC/QRC/KRC/YRC 解析、本地缓存、QQ/网易云/酷狗三源；进度走 **Windows GSMTC**；任务栏歌词条带/扇形浮层是 WPF 原生；桌面歌词壁纸是 **WebView2 + 自研 HTML/JS（JIZURA）**，通过 JS↔C# bridge 交换歌词/进度/样式；频谱走 WASAPI loopback。Zilux2 大概率延续「C#/WPF 宿主 + WebView2 前端页面」形态。因此迁移的关键不是「把 Folia 的 TS 搬过来」，而是**把 Folia 的分层和契约翻译成宿主/前端两个进程的职责划分**。
+> 现实约束（来自 前端侧，2026-10-18）：Zilux v1 是 C#/.NET 10/WPF 应用，已有自研 LRC/QRC/KRC/YRC 解析、本地缓存、QQ/网易云/酷狗三源；进度走 **Windows GSMTC**；任务栏歌词条带/扇形浮层是 WPF 原生；桌面歌词壁纸是 **WebView2 + 自研 HTML/JS（JIZURA）**，通过 JS↔C# bridge 交换歌词/进度/样式；频谱走 WASAPI loopback。Zilux2 大概率延续「C#/WPF 宿主 + WebView2 前端页面」形态。因此迁移的关键不是「把 Folia 的 TS 搬过来」，而是**把 Folia 的分层和契约翻译成宿主/前端两个进程的职责划分**。
 
 ### 7.1 职责边界：谁拥有什么（核心决策）
 

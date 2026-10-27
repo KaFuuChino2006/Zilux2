@@ -1,6 +1,6 @@
 # Zilux2 在线音乐接入契约（网易云 + QQ 音乐）
 
-> 里程碑 2 ・ 状态：草案 v1（2026-10-18）・ 负责人：host-dev（宿主/服务端）＋ Lead（前端）
+> 里程碑 2 ・ 状态：草案 v1（2026-10-18）・ 负责人：宿主侧（宿主/服务端）＋ 前端侧（前端）
 >
 > 本文件是**唯一的接口契约**。任何一方改动接口都必须先改本文件。
 
@@ -30,7 +30,7 @@
 | 超时 | 搜索 10s；vkey/播放地址 8s；歌词 10s；流代理不设整体超时（按块转发），连接建立 15s |
 | 日志 | 每条上游请求写宿主日志一行：`[online] GET netease/search q=晴天 ok 20 tracks 312ms` |
 
-## 2. 宿主模块布局（host-dev 负责）
+## 2. 宿主模块布局（宿主侧负责）
 
 ```
 src/Zilux2/Online/
@@ -165,7 +165,7 @@ Base：`http://127.0.0.1:<port>/api/...`，除 `/api/health` 外都必须带 `&t
 - 业务错误统一 JSON：`{"error":"code","message":"用户可读文本"}`。
 - 搜索 `q` 长度 ≤ 100、`limit` ≤ 50，否则 400。
 
-## 6. 页面接入（Lead 负责）
+## 6. 页面接入（前端侧负责）
 
 宿主在页面 `ready` 后发送一条消息（沿用 `{v:1,type:'host',event,payload}`）：
 
@@ -181,9 +181,9 @@ Base：`http://127.0.0.1:<port>/api/...`，除 `/api/health` 外都必须带 `&t
 - 封面 → 直接用返回的 `cover`（代理 URL）；
 - 宿主未就绪时（本地预览/无宿主）显示"在线源未连接"，搜索按钮禁用。
 
-## 7. 验收标准（host-dev 自测 + Lead 联调）
+## 7. 验收标准（宿主侧 自测 + 前端侧联调）
 
-host-dev 交付前必须用 `curl` 实测并记录：
+宿主侧 交付前必须用 `curl` 实测并记录：
 
 1. `GET /api/health` → 200。
 2. `GET /api/search?source=netease&q=晴天&limit=5` → 200，JSON 含 5 条曲目，`cover` 为 `127.0.0.1` 代理 URL。
@@ -203,7 +203,7 @@ host-dev 交付前必须用 `curl` 实测并记录：
 - QQ 试听（30s）未接入。
 - 逐字歌词（QRC/KRC）留到 3D 歌词里程碑。
 
-## 9. 实测补充（host-dev，2026-10-18）
+## 9. 实测补充（宿主侧，2026-10-18）
 
 - 网易云 `api/search/get/web` 结果的 `album` 只有 `picId`，没有 `picUrl`；封面必须再调一次 `api/song/detail?ids=[...]` 取 `album.picUrl`。实现里搜索后批量补一次 detail，失败只丢封面不报错。
 - QQ `fcg_query_lyric_new.fcg?...format=json&nobase64=1` 实测返回裸 JSON（无 JSONP 包裹），`lyric` 内是 HTML 实体编码的 LRC；实现仍保留 JSONP 剥离兜底。
@@ -212,7 +212,7 @@ host-dev 交付前必须用 `curl` 实测并记录：
 - **系统代理坑**：本机 Windows 系统代理（`ProxyEnable=1`、`127.0.0.1:7896`）会被 .NET `SocketsHttpHandler` 默认采用；走该代理时 QQ `client_search_cp` 返回**空 body 的 HTTP 500**（同一 URL curl 直连 200）。宿主对上游默认 `UseProxy=false` 直连，避免音乐服务行为随系统代理漂移；需要代理的用户可设 `ZILUX2_ONLINE_PROXY=http://host:port`（`direct` 强制直连）。
 - `HttpListener` 在**非管理员**账户下绑定 `http://127.0.0.1:<port>/` 实测可行（无需 netsh urlacl）；端口先由 `TcpListener(IPAddress.Loopback, 0)` 取空闲端口再绑定，失败重试 5 次。
 - 自测钩子：环境变量 `ZILUX2_ONLINE_TOKEN` 为 32 位 hex 时复用它（仅自测；生产不设则每次启动随机生成）。`tools/online-selftest.ps1` 用它跑 §7 的 9 条验收，共 53 项断言全绿。
-- **QQ 搜索备用端点**（Lead 批准，2026-10-18 20:13 追加）：主端点 `https://c.y.qq.com/soso/fcgi-bin/client_search_cp` 即使已直连，对匿名客户端仍会**间歇返回空 body 的 HTTP 500**（2026-10-18 19:5x 与 20:09 复现 500，同刻 vkey/歌词接口 200；20:12 复测主端点恢复 200）。回退条件：主端点两次尝试（间隔 300ms）后仍是 5xx / 空 body / 解析不到 `data.song.list` 时，改用 `https://c.y.qq.com/soso/fcgi-bin/search_for_qq_cp?p=1&n=<limit>&w=<query>&format=json` 重试一次；正常路径不会多发请求。
+- **QQ 搜索备用端点**（已确认，2026-10-18 20:13 追加）：主端点 `https://c.y.qq.com/soso/fcgi-bin/client_search_cp` 即使已直连，对匿名客户端仍会**间歇返回空 body 的 HTTP 500**（2026-10-18 19:5x 与 20:09 复现 500，同刻 vkey/歌词接口 200；20:12 复测主端点恢复 200）。回退条件：主端点两次尝试（间隔 300ms）后仍是 5xx / 空 body / 解析不到 `data.song.list` 时，改用 `https://c.y.qq.com/soso/fcgi-bin/search_for_qq_cp?p=1&n=<limit>&w=<query>&format=json` 重试一次；正常路径不会多发请求。
 - 备选端点字段差异：`mid`→`songmid`、`name`→`songname`、`album.mid`→`albummid`、`album.name`→`albumname`、`pay.pay_play`→`pay.playplay`；`interval`（秒）与 `singer[].name` 相同。字段适配在 QqProvider 内部完成，统一曲目模型与前端协议不变，§5 接口无变化。
 - 回退日志：`[online] qq search fallback=search_for_qq_cp ok n=<n> <ms>ms primary=<status>`；主备都失败时记 `qq search failed: primary=... fallback=...`（含两路状态）并返回 `/api/search` 502（`upstream-failed`）。
 - 2026-10-18 20:12 复测：`tools/online-selftest.ps1` 57 项断言全绿，本轮 QQ 搜索走主端点（5 条，1066ms）；备选端点用 curl 实测 200，字段形状如上（含 `pay.playplay`）。

@@ -113,7 +113,7 @@ _ref/
 
 ---
 
-## 5. 给 Lead / raop-re 的集成说明
+## 5. 给前端侧/ 投送开发 的集成说明
 
 ### 5.1 AirPlay 2：瞬态配对（HomePod mini 实测路径，推荐先接这条）
 
@@ -347,7 +347,7 @@ PKCS#1 v1.5      : 失败 (Unknown error (0xc100000d))
    且 `/pair-setup-pin` 在 HomePod 上返回 `Error=3`（被拒）。如后续需要可基于 `_ref/pyatv-auth-legacy.py` + TuneBlade `DeviceVerificationHandler.cs` 补。
 4. **经典 RAOP 未实机验证**：设备 403 说明它们不接受明文 RAOP；`RaopCrypto` 仅作为旧设备后备与能力储备（向量/AE 证据齐全）。
 5. HAP `Events`/`DataStream` 通道密钥派生已提供（`HapKeyDerivation.DeriveEventKeys/DeriveDataStreamKeys`），
-   但事件通道（RTSP `GET /event`）的建链属于 RTSP 层（raop-re 的 `Ap2/`），不在本模块内。
+   但事件通道（RTSP `GET /event`）的建链属于 RTSP 层（投送开发 的 `Ap2/`），不在本模块内。
 
 ## 12. 参考
 

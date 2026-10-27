@@ -1,6 +1,6 @@
-# RAOP 发送栈无硬件自测报告（task-7）
+# RAOP 发送栈无硬件自测报告（任务）
 
-- 作者：raop-re（team "Zilux2"，任务板 task-7）
+- 作者：投送开发（team "Zilux2"，任务板 任务）
 - 日期：2026-10-20
 - 目标：在没有 Apple 硬件、没有 ALAC 编码器的机器上，端到端验证 `src/Zilux2/AirPlay/Protocol/` 里的 RAOP 发送栈：
   RTSP 握手 → RTP 音频 → Sync/Timing 时钟 → 重传 → 音量 → FLUSH → TEARDOWN。
@@ -16,9 +16,9 @@
 | RTSP 客户端 | `src/Zilux2/AirPlay/Protocol/RtspTransport.cs` | ✅ OPTIONS/ANNOUNCE/SETUP/RECORD/SET_PARAMETER/FLUSH/TEARDOWN 收发 |
 | RAOP/RTP 封包 | `src/Zilux2/AirPlay/Protocol/RaopPackets.cs` | ✅ 音频包、Sync、Timing、重传请求/响应字节布局 |
 | 连接编排 | `src/Zilux2/AirPlay/Protocol/RaopConnection.cs` | ✅ 握手、发送节奏、音量、FLUSH、TEARDOWN、接收循环 |
-| ALAC 编码 | `src/Zilux2/AirPlay/Alac/`（task-2） | ❌ 不测（本测试用随机 500B 假负载，只验证封装/时序） |
-| HAP 配对/AirPlay2 | `src/Zilux2/AirPlay/Crypto/`（task-5） | ❌ 不测（仅经典 RAOP 明文路径） |
-| mDNS 发现 | `src/Zilux2/AirPlay/Discovery/`（task-4） | ❌ 不测（直接给 `127.0.0.1:<mock RTSP 端口>`） |
+| ALAC 编码 | `src/Zilux2/AirPlay/Alac/`（任务） | ❌ 不测（本测试用随机 500B 假负载，只验证封装/时序） |
+| HAP 配对/AirPlay2 | `src/Zilux2/AirPlay/Crypto/`（任务） | ❌ 不测（仅经典 RAOP 明文路径） |
+| mDNS 发现 | `src/Zilux2/AirPlay/Discovery/`（任务） | ❌ 不测（直接给 `127.0.0.1:<mock RTSP 端口>`） |
 
 协议规格依据：`research/airplay/protocol/raop-flow.md`（本 team 的反编译规格，尤其 §3–§6）。
 
@@ -107,9 +107,9 @@ dotnet run -- "E:\Zilux2开发\src\Zilux2\bin\Debug\net10.0-windows10.0.19041.0\
 `AirPlayLoopbackTest` 是 `internal`，harness 用 `Assembly.LoadFrom` + `GetMethod("Run", NonPublic|Static)` 反射调用，
 **不需要 `InternalsVisibleTo`、不改产品 csproj**；参数可省（默认同上路径）。
 
-### C. 应用内钩子（Lead 负责加，可选）
+### C. 应用内钩子（前端侧负责加，可选）
 
-WPF 是 `WinExe`，没有控制台，`Console.WriteLine` 输出默认看不到。若要在应用里跑，建议 Lead 在
+WPF 是 `WinExe`，没有控制台，`Console.WriteLine` 输出默认看不到。若要在应用里跑，建议 前端侧在
 `App.xaml.cs` 的 `OnStartup` 里加：
 
 ```csharp
@@ -223,13 +223,13 @@ dotnet run -c Release -- "E:\Zilux2开发\src\Zilux2\bin\Debug\net10.0-windows10
 
 - `dotnet build src/Zilux2/Zilux2.csproj -v q --nologo` → `已成功生成。 0 个警告 0 个错误`。
 - 反射 harness 加载真实 `Zilux2.dll` 执行 `AirPlayLoopbackTest.Run()` → **32/32 PASS，exit=0**（输出见 §5.1）。
-- task-7 验收条件（主工程编译 0 error + 真实产物上握手/音频/时钟/重传/音量/FLUSH/TEARDOWN 全绿）**已满足**。
+- 任务 验收条件（主工程编译 0 error + 真实产物上握手/音频/时钟/重传/音量/FLUSH/TEARDOWN 全绿）**已满足**。
 
 ### 6.1 期间发现并修复的问题
 
 - `AirPlayMockDevice.cs` 缺 `using System.IO;`（`MemoryStream`），导致主工程编译报 CS0246。已修复；
   隔离 harness 用与主工程相同的 5 个全局 using 复核通过（这也是保留 §4-A 隔离 harness 的价值：它绕开别人 WIP 文件，单独验证本任务文件的可编译性）。
-- 期间主工程曾因 task-2 的 `src/Zilux2/AirPlay/Alac/AlacDecoder.cs` 缺 `AlacBitReader` 而红构建；Lead 已把
+- 期间主工程曾因 任务 的 `src/Zilux2/AirPlay/Alac/AlacDecoder.cs` 缺 `AlacBitReader` 而红构建；已把
   `research/airplay/alac/AlacDecoder.cs`（单文件自包含）同步覆盖到 src，随后 build 转绿。与本任务文件无关。
 
 ## 6.2 复跑快速检查清单
@@ -242,7 +242,7 @@ dotnet run -c Release -- "E:\Zilux2开发\src\Zilux2\bin\Debug\net10.0-windows10
 
 ## 7. 局限（别把 PASS 当“真出声”）
 
-1. **不校验 ALAC 负载**：只断言包数/seq/ts/长度，随机载荷解码不出声音；ALAC 正确性由 task-2 的 roundtrip 负责。
+1. **不校验 ALAC 负载**：只断言包数/seq/ts/长度，随机载荷解码不出声音；ALAC 正确性由 任务 的 roundtrip 负责。
 2. **回环网络**：无丢包、乱序、jitter、NAT。重传/时钟路径是用 mock 探针主动触发的，不等于真实设备的丢包行为。
 3. **只测经典 RAOP 明文**（无密码、无 `rsaaeskey`）；AirPlay2/HAP 配对（HomePod）不在本测试范围。
 4. **单会话**：没测多设备并发、断线重连、长时（>分钟）漂移。

@@ -93,21 +93,21 @@ research/shots/suite-YYYYMMDD/
 | --- | --- | --- |
 | `smoke.mjs` | 应用基座 + 主要页面 | URL `https://zilux2.local`、侧栏 `.rail-btn` 齐全、首页 `.ui-page.home`、搜索 `.search-dock` → `.wall-title` `搜索「…」`（**竞态回归**：input 后 <50ms 派发 Enter，12s 内出结果墙；见 §4.2）、发现页 `.wall .disc`、我的歌单（弹层或登录引导）、设置页分区、歌词页 `.lyrics-view` 开/关、全程 console 零错误 |
 | `room-effects.mjs` | 房间设置：粒子/流星预设 chips | `.room-preset-row button.room-preset-chip[data-preset-kind][data-preset-id]`；8 个预设点击后 `.ts-value` 数值变化、`aria-pressed`/`is-active` 高亮、点 `.ts-btn.is-primary` 保存后 `localStorage.zilux2.roomStyle` 字段等于验收数值表（见 `lib/fixtures.mjs` 的 `ROOM_PRESET_FIXTURES`）；「取消」不落盘；结束还原原始 `roomStyle`/`lumiere` |
-| `tray-and-downloads.mjs` | 托盘 / 全局热键 / 宿主命令通道（task-12） | `host.log`：`host.start version=<ZILUX2_EXPECT_HOST_VERSION>`（默认 1.1.6）、`hotkey.register id=1..4 ok`（动作 `togglePlay/prev/next/toggleWindow`；id=2/3 允许 `Ctrl+Alt+Left/Right` 被占用后回落 `Ctrl+Alt+Shift+Left/Right`）、`tray.start icon=process` 且无 `tray.error`；`chrome.webview` 有 `addEventListener/postMessage/dispatchEvent`；页面派发 `{v:1,type:'command',action}`（togglePlay/prev/next）→ 宿主日志新增 `web:info command <action>`；未知 action / 非 command 类型 / `null` 数据被忽略；播放状态可观测时断言 `playing` 切换，不可观测记 SKIP；托盘交互/关窗后台/WM_HOTKEY 模拟记 SKIP + 手测清单（§4.4） |
+| `tray-and-downloads.mjs` | 托盘 / 全局热键 / 宿主命令通道（任务） | `host.log`：`host.start version=<ZILUX2_EXPECT_HOST_VERSION>`（默认 1.1.6）、`hotkey.register id=1..4 ok`（动作 `togglePlay/prev/next/toggleWindow`；id=2/3 允许 `Ctrl+Alt+Left/Right` 被占用后回落 `Ctrl+Alt+Shift+Left/Right`）、`tray.start icon=process` 且无 `tray.error`；`chrome.webview` 有 `addEventListener/postMessage/dispatchEvent`；页面派发 `{v:1,type:'command',action}`（togglePlay/prev/next）→ 宿主日志新增 `web:info command <action>`；未知 action / 非 command 类型 / `null` 数据被忽略；播放状态可观测时断言 `playing` 切换，不可观测记 SKIP；托盘交互/关窗后台/WM_HOTKEY 模拟记 SKIP + 手测清单（§4.4） |
 | `downloads.mjs` | 下载队列入口迁移 + 音质浮层 + 真实下载 | 入口 `[data-qa="download-entry"]`、**rail 不再有下载入口**（`.rail .rail-btn[aria-label="下载队列"]` 不存在）、播放条入口 toggle/点外/Esc、`.dlq-panel.is-open`、`.dlq-row[data-state]`、`.dlq-bar>.dlq-fill`（宽度随进度变化）、`.dlq-pct/.dlq-status`、done/error 行按钮显隐、`.dlq-summary .dlq-sum-item[data-kind]` 计数、筛选 tab、刷新、关闭重开状态保持、落盘文件存在且非空；**分段控件** `.dlq-tabs.seg` + `.seg-btn.dlq-tab`、激活双类 `is-active`/`is-on`、`.seg-thumb` 白色滑块定位；**切换动画** `.is-switch`（30ms 内）/ `dlq-switch-in`（空态与真实行）/ 24ms stagger / 700ms 移除 / 滑块位移；**音质浮层** `.dlqp-overlay`/`.dlqp-panel[data-qa="download-picker"]`（默认项=设置音质、取消/Esc/点外关闭、不产生任务）；**快捷设置第 5 页** `[data-qa="quick-downloads-page"]`（4 筛选可切、状态/目录/行数与真值一致、切走再切回不重复渲染）；选「高品质」→ `job.quality=high` 且 `.dlq-meta` 显示高品质、不回写全局设置；无损下载 done 时断言 `.flac` 落盘（源站不提供则 SKIP）；真值同时读 `window.__zilux2DownloadQueue.state()` |
 | `local-watch.mjs` | 本地目录监控 | bridge `restore` 注入测试目录 → 本地页「本地 · N 首」；放 mp3 后 ≤8s 自动 +1、删 mp3 后 ≤8s 回到基线（不刷新/不重进页面）；`host.log` 出现 `[local] watch incremental` / `watch rescan applied` 作为根因证据；结束还原 `zilux2.localFolder` 并删测试目录 |
 | `update-channel.mjs` | 更新通道 | 设置页「更新」分区：`.updates-version`、`.updates-status`（文案与 `web/src/ui/updates.ts` 的 `UPDATE_STATE_TEXT` 对齐）、`.updates-input`、`.updates-actions` 按钮；点「检查更新」→ 状态流转到已知终态 + `host.log` `[update] check repo=…`；进程内 mock 更新服务（`/__ping`、`/repos/*/releases/latest`、`/download/*`）可达且协议形状正确。**不下载、不安装** |
-| `shortcuts.mjs` | 全局快捷键：设置面板 / 录制 / 宿主重注册（task-15） | 设置页「快捷键」分区 `[data-qa="shortcuts-section"]`、4 行 `[data-qa="shortcut-row"][data-action=playPause\|prev\|next\|toggleWindow]`、默认组合、行内状态（已生效 / 已回落到 … / 未启用 / 未设置）、总开关 `[data-qa="shortcuts-enabled"]`、恢复默认 `[data-qa="shortcut-reset"]`；CDP `Input.dispatchKeyEvent` 录制 `Ctrl+Alt+U` → pill / `settings.json shortcuts.prev` / `host.log hotkey.configured`+`hotkey.register id=2 ok`+`hotkey.apply count=4`；Esc 取消不落盘、Backspace 清除（`skipped reason=empty`、`count=3`）、总开关关闭/开启（`enabled=false count=0` / `enabled=true count=3`）、恢复默认（`count=4`）；`WM_HOTKEY id=2`（`ZILUX2_QA_WM_HOTKEY=0` 可跳过）→ `hotkey.fire action=prev` + `web:info command prev`；收尾恢复默认并关面板、console 0 error |
-| `crossfade.mjs` | 无缝衔接（B 版 Phase 1，task-20/23）：设置区块 + 播放交叉淡化 + 可听结尾调度 + 收藏歌单路径 + 关闭后硬切 | 设置→播放：`[data-qa="crossfade-section"]`、`[data-qa="crossfade-toggle"]`（aria-pressed/文本 已开启\|已关闭）、`[data-qa="crossfade-length"][data-length=4\|6\|8\|auto]`，与 `localStorage.zilux2.crossfade` 双向一致；本地曲库首曲播放 → `window.__ziluxCrossfade.snapshot()` 进入 `prepared`（含 fadeStartPosMs/fadeMs/currentAudibleEndMs/tailSilenceMs/nextTitle）；**task-23 可听结尾调度**：`fadeStartPosMs + fadeMs ≈ currentAudibleEndMs`（±200ms）、`currentAudibleEndMs <= durationMs`、`tailSilenceMs > 0` 且 `fadeStartPosMs + fadeMs < durationMs - 500`、`prepared` 事件 detail 含「可听结尾」「尾部静音」；CDP 鼠标 seek 到淡化点（落点偏差 ≤6%）→ 事件 `fade-start`/`fade-done`、相位 `prepared→fading→done`、自动切到下一首并继续播放（`__ziluxPlayer().track.title`、`playing`）；**task-23 收藏歌单路径**：rail「我喜欢的音乐」首曲 → prepared（≤20s）→ seek → fade 事件 → 继续播放（在线源不可用记 SKIP）；关闭开关后同位置 seek = 普通硬切（无淡化事件、phase 不进入 fading/prepared）；收尾恢复基线 crossfade 设置 + 播放状态、回首页、console 0 error（见 §4.6） |
+| `shortcuts.mjs` | 全局快捷键：设置面板 / 录制 / 宿主重注册（任务） | 设置页「快捷键」分区 `[data-qa="shortcuts-section"]`、4 行 `[data-qa="shortcut-row"][data-action=playPause\|prev\|next\|toggleWindow]`、默认组合、行内状态（已生效 / 已回落到 … / 未启用 / 未设置）、总开关 `[data-qa="shortcuts-enabled"]`、恢复默认 `[data-qa="shortcut-reset"]`；CDP `Input.dispatchKeyEvent` 录制 `Ctrl+Alt+U` → pill / `settings.json shortcuts.prev` / `host.log hotkey.configured`+`hotkey.register id=2 ok`+`hotkey.apply count=4`；Esc 取消不落盘、Backspace 清除（`skipped reason=empty`、`count=3`）、总开关关闭/开启（`enabled=false count=0` / `enabled=true count=3`）、恢复默认（`count=4`）；`WM_HOTKEY id=2`（`ZILUX2_QA_WM_HOTKEY=0` 可跳过）→ `hotkey.fire action=prev` + `web:info command prev`；收尾恢复默认并关面板、console 0 error |
+| `crossfade.mjs` | 无缝衔接（B 版 Phase 1，任务/23）：设置区块 + 播放交叉淡化 + 可听结尾调度 + 收藏歌单路径 + 关闭后硬切 | 设置→播放：`[data-qa="crossfade-section"]`、`[data-qa="crossfade-toggle"]`（aria-pressed/文本 已开启\|已关闭）、`[data-qa="crossfade-length"][data-length=4\|6\|8\|auto]`，与 `localStorage.zilux2.crossfade` 双向一致；本地曲库首曲播放 → `window.__ziluxCrossfade.snapshot()` 进入 `prepared`（含 fadeStartPosMs/fadeMs/currentAudibleEndMs/tailSilenceMs/nextTitle）；**任务 可听结尾调度**：`fadeStartPosMs + fadeMs ≈ currentAudibleEndMs`（±200ms）、`currentAudibleEndMs <= durationMs`、`tailSilenceMs > 0` 且 `fadeStartPosMs + fadeMs < durationMs - 500`、`prepared` 事件 detail 含「可听结尾」「尾部静音」；CDP 鼠标 seek 到淡化点（落点偏差 ≤6%）→ 事件 `fade-start`/`fade-done`、相位 `prepared→fading→done`、自动切到下一首并继续播放（`__ziluxPlayer().track.title`、`playing`）；**任务 收藏歌单路径**：rail「我喜欢的音乐」首曲 → prepared（≤20s）→ seek → fade 事件 → 继续播放（在线源不可用记 SKIP）；关闭开关后同位置 seek = 普通硬切（无淡化事件、phase 不进入 fading/prepared）；收尾恢复基线 crossfade 设置 + 播放状态、回首页、console 0 error（见 §4.6） |
 
 ### 4.1 下载队列 UI 微调断言（seg 滑块 / 切换动画 / rail 入口迁移）
 
-对应 task-7 的 3 条 UI 需求；其中 **① rail 常驻入口在 task-12 已被移除**（入口统一改为快捷设置第 5 页 + 播放条按钮），
+对应 任务 的 3 条 UI 需求；其中 **① rail 常驻入口在 任务 已被移除**（入口统一改为快捷设置第 5 页 + 播放条按钮），
 ① 类断言已改写为「入口迁移」，②③ 的 seg 滑块与切换动画断言仍然有效。
 
 | 需求 | 断言要点 | 关键选择器 / 类名 |
 | --- | --- | --- |
-| ① 入口迁移（task-12 修订） | rail 里**不再**有下载入口（`.rail .rail-btn[aria-label="下载队列"]` 不存在、rail 标题列表不含「下载」）；播放条入口存在且 `aria-haspopup=dialog`/`hidden=false`；点一次开（`aria-hidden=false`、`aria-expanded=true`）、再点收（toggle）；点面板外 / `Esc` 关闭 | `[data-qa="download-entry"]`、`.rail .rail-btn[aria-label="下载队列"]`、`.dlq-panel.is-open` |
+| ① 入口迁移（任务 修订） | rail 里**不再**有下载入口（`.rail .rail-btn[aria-label="下载队列"]` 不存在、rail 标题列表不含「下载」）；播放条入口存在且 `aria-haspopup=dialog`/`hidden=false`；点一次开（`aria-hidden=false`、`aria-expanded=true`）、再点收（toggle）；点面板外 / `Esc` 关闭 | `[data-qa="download-entry"]`、`.rail .rail-btn[aria-label="下载队列"]`、`.dlq-panel.is-open` |
 | ② 分段控件统一 `.seg` | `.dlq-tabs` 同时有 `seg` + `dlq-tabs`；4 个 tab 同时有 `seg-btn` + `dlq-tab`；激活唯一且 `is-active` 与 `is-on` 同一 tab、`aria-selected=true`；`.seg-thumb` 为 `.dlq-tabs` 直接子元素、`width>0`、`opacity=1`、与激活 tab 的 `offsetLeft/offsetWidth` 对齐（±2px）；非激活 tab 不带 `is-on` | `.dlq-panel .dlq-tabs.seg`、`.dlq-panel .dlq-tabs > .seg-thumb`、`.dlq-tab.is-active.is-on` |
 | ③ 切换动画 | 点 tab 后页面内 20ms 取样：`.dlq-list` 与 `.dlq-empty` 临时带 `is-switch`；空态 `animationName` 含 `dlq-switch-in`；带真实行时行动画含 `dlq-switch-in`、第 2 行 `animationDelay` 含 `0.024s`（stagger）；700ms 后 `is-switch` 移除；`.seg-thumb` 的 `left` 相对切换前发生位移 | `.dlq-list.is-switch`、`.dlq-empty.is-switch`、`animation-name: dlq-switch-in` |
 
@@ -124,14 +124,14 @@ research/shots/suite-YYYYMMDD/
 - 断言 12s 内墙面完成：`.wall-title` = `搜索「kw」`、`.wall-sub` 含「首」且**不含**「加载中」/「搜索中」、
   `.wall .track-row` 行数 > 0；返回 `{ title, sub, rows, elapsedMs }`。
 
-背景（2026-10 真机复现、已报 Lead 并修复）：`web/src/ui/app.ts` 的 preview 防抖在 `commitSearch`
+背景（2026-10 真机复现、已报告前端侧 并修复）：`web/src/ui/app.ts` 的 preview 防抖在 `commitSearch`
 （`++searchSeq`）之后才执行 `runSearchPreview`（又 `++searchSeq`），会把手动提交的流式 onUpdate /
 最终墙面赋值全部判为过期丢弃，墙面永久停在「已找到 N 首 · 加载中…」。修复是 `commitSearch` 开头
 `window.clearTimeout(this.searchTimer); this.searchTimer = 0;`。若本用例超时/仍含「加载中」→ 竞态回归，
 按产品 bug 处理（附截图 + `host.log`，不要靠多点一次 Enter 掩盖）。`smoke.mjs` 与 `downloads.mjs`
 的搜索步骤都走这个 `openSearch`。
 
-### 4.3 task-12 新断言：快捷设置下载页 / 音质浮层 / 托盘与热键
+### 4.3 任务 新断言：快捷设置下载页 / 音质浮层 / 托盘与热键
 
 对应用户第 2 轮下载队列 UI 需求（下载入口迁到快捷设置、下载前选音质）与宿主托盘/热键需求。
 
@@ -160,9 +160,9 @@ research/shots/suite-YYYYMMDD/
 > 备注：`tray-and-downloads.mjs` 会读取 `%LOCALAPPDATA%\Zilux2\logs\host.log` 里**最后一次 `host.start` 之后**的
 > 日志行做断言，换构建后记得同步 `ZILUX2_EXPECT_HOST_VERSION`。托盘交互（第 1-5 项）与真实按键（第 6-9 项）仍需手测；
 > `WM_HOTKEY` 投递在 `shortcuts.mjs` 里已通过 `research/tmp/wh3.ps1` 自动验证（id=2 → `hotkey.fire action=prev`），
-> `tray-and-downloads.mjs` 中仍记 SKIP（避免与 task-15 的录制用例重复，也避免多一次切歌副作用）。
+> `tray-and-downloads.mjs` 中仍记 SKIP（避免与 任务 的录制用例重复，也避免多一次切歌副作用）。
 
-### 4.5 task-15 新断言：全局快捷键（设置面板 / 录制 / 宿主重注册）
+### 4.5 任务 新断言：全局快捷键（设置面板 / 录制 / 宿主重注册）
 
 设置页左侧导航「快捷键」→ 4 行组合 + 总开关 + 恢复默认；断言细节见 §4 的 `shortcuts.mjs` 行。要点：
 
@@ -180,28 +180,28 @@ research/shots/suite-YYYYMMDD/
 > 带成播放），套件用页面内静音守护并在收尾恢复播放前的暂停状态；③`Page.reload` 未自动化（偶发卡死），reload 后一致性请在
 > 页面内手工刷新确认 4 行显示与 `settings.json` 一致；④真实按键（桌面焦点在应用时按 `Ctrl+Alt+Space` 等）也需按 §4.4 手测。
 
-### 4.6 task-20/23 新断言：无缝衔接 crossfade（设置 + 播放淡化 + 可听结尾调度 + 关闭后硬切）
+### 4.6 任务/23 新断言：无缝衔接 crossfade（设置 + 播放淡化 + 可听结尾调度 + 关闭后硬切）
 
 前端实现 `web/src/ui/crossfadeDeck.ts`（B 版 Phase 1，实验特性）+ 设置页「播放」分区；存储键 `zilux2.crossfade`
 （`{enabled:true|false, length:'4'|'6'|'8'|'auto'}`）。真值来自 `window.__ziluxCrossfade.snapshot()`。
-task-23 起宿主分析结果带 **p0-4 可听结尾** `audibleEndMs`/`tailSilenceMs`，web 按 `currentAudibleEndMs` 调度淡化（尾部静音不计入淡化窗口）。
+任务 起宿主分析结果带 **p0-4 可听结尾** `audibleEndMs`/`tailSilenceMs`，web 按 `currentAudibleEndMs` 调度淡化（尾部静音不计入淡化窗口）。
 
 | 需求 | 断言 | 关键选择器 / 调试钩子 |
 | --- | --- | --- |
 | 设置区块 | 设置→播放底部 `无缝衔接（实验）` 区块；开关 `已开启/已关闭`（aria-pressed、`is-on`、`data-enabled`）、4 个时长按钮、与 localStorage 双向一致 | `[data-qa="crossfade-section"]`、`[data-qa="crossfade-toggle"]`、`[data-qa="crossfade-length"][data-length]`、`localStorage.zilux2.crossfade` |
 | 时长切换 | 4 / 6 / 8 / 自动 依次点击：localStorage 落盘 + UI aria-pressed + `__ziluxCrossfade.settings()` 同步，最后恢复基线 | 同上；`__ziluxCrossfade.settings()` |
 | 播放准备 | 本地曲库首曲播放（≥2 首）→ 快照 `phase=prepared`，`currentTitle/nextTitle/fadeStartPosMs/fadeMs` 合理 | `window.__ziluxPlayer()`、`window.__ziluxCrossfade.snapshot()` |
-| **可听结尾调度（task-23）** | `fadeStartPosMs + fadeMs ≈ currentAudibleEndMs`（±200ms）、`currentAudibleEndMs <= durationMs`；快照含 `currentAudibleEndMs`/`tailSilenceMs`；`prepared` 事件 detail 含「可听结尾」「尾部静音」 | `__ziluxCrossfade.snapshot()`（字段 `currentAudibleEndMs`/`tailSilenceMs`）、`events[].detail` |
-| **尾部静音（task-23）** | 选一首 `tailSilenceMs > 0` 的本地曲目（首曲没有则顺延前 4 行）；`tailSilenceMs > 0` 且 `fadeStartPosMs + fadeMs < durationMs - 500`（淡化在尾部静音前结束） | 同上；`__ziluxPlayer().durationMs` |
+| **可听结尾调度（任务）** | `fadeStartPosMs + fadeMs ≈ currentAudibleEndMs`（±200ms）、`currentAudibleEndMs <= durationMs`；快照含 `currentAudibleEndMs`/`tailSilenceMs`；`prepared` 事件 detail 含「可听结尾」「尾部静音」 | `__ziluxCrossfade.snapshot()`（字段 `currentAudibleEndMs`/`tailSilenceMs`）、`events[].detail` |
+| **尾部静音（任务）** | 选一首 `tailSilenceMs > 0` 的本地曲目（首曲没有则顺延前 4 行）；`tailSilenceMs > 0` 且 `fadeStartPosMs + fadeMs < durationMs - 500`（淡化在尾部静音前结束） | 同上；`__ziluxPlayer().durationMs` |
 | 触发淡化 | 播放条展开后鼠标 seek 到淡化点（`position ≈ fadeStartPosMs`，落点偏差 ≤6%）→ 事件 `prepared`/`fade-start`/`fade-done`，相位 `prepared→fading→done`，自动切到下一首且 `playing=true`，淡化链事件时长在 1.2s~12s | `Input.dispatchMouseEvent` 在 `.playerbar .track` 上 seek；`.playerbar .track` 需先 mouseMoved 到 (800,928) 展开并等宽度稳定 |
 | 关闭后硬切 | 关开关（localStorage.enabled=false）后同位置 seek → 无淡化事件、phase 不进入 fading/prepared，曲目正常推进到下一首 | `__ziluxCrossfade.snapshot().events` |
-| **收藏歌单路径（task-23）** | rail「我喜欢的音乐」→ 首曲播放 → `phase=prepared`（可 20s）→ seek → `fade-start`/`fade-done` → 自动切到下一首且 `playing=true`；同一套可听结尾/尾部静音断言。在线源/网络不可用时记 **SKIP**（不计产品 bug） | `.rail-btn[title="我喜欢的音乐"]`、`.wall .track-row`、`__ziluxCrossfade`、`__ziluxPlayer` |
+| **收藏歌单路径（任务）** | rail「我喜欢的音乐」→ 首曲播放 → `phase=prepared`（可 20s）→ seek → `fade-start`/`fade-done` → 自动切到下一首且 `playing=true`；同一套可听结尾/尾部静音断言。在线源/网络不可用时记 **SKIP**（不计产品 bug） | `.rail-btn[title="我喜欢的音乐"]`、`.wall .track-row`、`__ziluxCrossfade`、`__ziluxPlayer` |
 | 收尾 | 恢复基线 crossfade 设置与播放状态（原本暂停则恢复暂停）；回首页、关面板、console 0 error | — |
 
 > 注意：①seek 取消无缝准备后会重新分析当前/下一首（实测偶发 ~10s 才开始淡化），所以步骤 elapsed 上限放宽到 20s，
 > 但核心断言是「淡化链 fade-start→fade-done 1.2s~12s」；`ZILUX2_CROSSFADE_TRIGGER_TIMEOUT_MS` 可调等待上限。
 > ②套件会真实播放并切歌（本地曲库需 ≥2 首；收藏歌单路径还会播在线曲目），结束前恢复播放状态；③调试事件数组有
-> 40 条上限并跨运行累积，task-23 起用「事件键（at|event）集合差集」抓本次事件（比时间戳截取稳）；④页面 reload 后
+> 40 条上限并跨运行累积，任务 起用「事件键（at|event）集合差集」抓本次事件（比时间戳截取稳）；④页面 reload 后
 > crossfade 状态一致性未自动化（`Page.reload` 偶发卡死），发布前手工确认；⑤收藏歌单路径依赖已登录的网易云/QQ
 > 账号 + 在线源可用（本机代理关闭时可能失败），失败记为 SKIP 并在报告里注明。
 
@@ -217,7 +217,7 @@ task-23 起宿主分析结果带 **p0-4 可听结尾** `audibleEndMs`/`tailSilen
 ## 6. 清理与副作用（重要）
 
 - `downloads.mjs` 会**真实下载**到宿主下载目录（默认 `%USERPROFILE%\Music`，即 `C:\Users\13329\Music`）。
-  task-12 起每次全量运行通常新增 **1 个高品质（320k .mp3）文件**；「无损下载」步骤若源站提供无损，还会再新增
+  任务 起每次全量运行通常新增 **1 个高品质（320k .mp3）文件**；「无损下载」步骤若源站提供无损，还会再新增
   **1 个 .flac**（源站不提供则该步 SKIP、不产生文件）。QA 不删用户目录里已有文件；测试产生的任务在结果 JSON /
   终端 note / 本轮报告里会列出文件名、大小与完整路径，确认是测试新增后再手动删。想直接打开目录可临时设
   `ZILUX2_QA_CLICK_REVEAL=1` 点一次 reveal。
@@ -226,7 +226,7 @@ task-23 起宿主分析结果带 **p0-4 可听结尾** `audibleEndMs`/`tailSilen
   `%LOCALAPPDATA%\Zilux2\settings.json` 的 `shortcuts` 段最终应与默认值一致。`WM_HOTKEY id=2` 的自动验证会真实
   切上一首（可能把暂停带成播放）：套件页面内静音 `<audio>` 并在收尾恢复播放前的暂停状态；若中断，手动恢复播放即可。
 - `crossfade.mjs` 会**真实播放并切换歌曲**（需要本地曲库 ≥2 首；用 bridge restore 注入 `%USERPROFILE%\Music`）：
-  期间音乐可能从原曲切到下一首；task-23 起还会走一遍「我喜欢的音乐」在线歌单（需已登录、在线源可用；不可用记 SKIP），
+  期间音乐可能从原曲切到下一首；任务 起还会走一遍「我喜欢的音乐」在线歌单（需已登录、在线源可用；不可用记 SKIP），
   可能播放一首在线曲目。收尾恢复 `localStorage.zilux2.crossfade` 与播放状态（原本暂停则恢复暂停），
   若中断（Ctrl+C）请手动暂停播放并把 crossfade 开关/时长改回默认。不写用户目录文件。
 - `local-watch.mjs` 在 `research/qa/suite/tmp-local-watch/` 建临时目录，结束自动删除并还原
@@ -259,10 +259,10 @@ task-23 起宿主分析结果带 **p0-4 可听结尾** `audibleEndMs`/`tailSilen
 | `连不上应用（http://127.0.0.1:9223）` | 应用不是带 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` 启动的；关掉应用按 §1 重启 |
 | CDP 调用超时 / 页面无响应 | 大概率卡在原生 confirm/prompt 或 `Page.reload`。`taskkill /IM Zilux2.exe /F` 后重启（套件不会自动重启） |
 | 本地页弹了原生文件夹选择器 | local-watch 通过 bridge 注入目录，正常不会弹；如出现说明 restore 没生效（看 `[local] mapped` 日志） |
-| downloads 出现 `403 (Forbidden)` | 在线搜索源（mvmp3）对部分曲目/账号风控，产品侧问题。套件已自动换行重试，仍失败时把行 source/trackId + host.log 一起报给 Lead |
-| 搜索结果墙卡在「融合搜索 · 已找到 N 首 · 加载中…」 | **产品竞态 bug 的回归信号**（2026-10 真机复现，Lead 已修 `commitSearch` 开头 `clearTimeout(searchTimer)`）：`lib/ui.mjs` 的 `openSearch()` 现已按真实竞态路径执行（input 后 <50ms 派发 Enter），断言 12s 内完成且不含「加载中」/「搜索中」；失败即修复回归，把截图 + `host.log` 报给 Lead，不要靠点第二次 Enter 掩盖 |
+| downloads 出现 `403 (Forbidden)` | 在线搜索源（mvmp3）对部分曲目/账号风控，产品侧问题。套件已自动换行重试，仍失败时把行 source/trackId + host.log 一起报给前端侧 |
+| 搜索结果墙卡在「融合搜索 · 已找到 N 首 · 加载中…」 | **产品竞态 bug 的回归信号**（2026-10 真机复现，前端侧已修 `commitSearch` 开头 `clearTimeout(searchTimer)`）：`lib/ui.mjs` 的 `openSearch()` 现已按真实竞态路径执行（input 后 <50ms 派发 Enter），断言 12s 内完成且不含「加载中」/「搜索中」；失败即修复回归，把截图 + `host.log` 报给前端侧，不要靠点第二次 Enter 掩盖 |
 | 终端提示 `research/research` 残留 | 旧截图路径 bug 的产物，`rm -rf research/research`（`.gitignore` 未忽略它，会污染提交） |
-| `host.log` 里找不到 `host.start` / `hotkey.register` | 应用是旧构建（task-12 之前）或日志被截断：换装本轮的安装版再跑；`tray-and-downloads.mjs` 只会从最后一次 `host.start` 之后读行 |
+| `host.log` 里找不到 `host.start` / `hotkey.register` | 应用是旧构建（任务 之前）或日志被截断：换装本轮的安装版再跑；`tray-and-downloads.mjs` 只会从最后一次 `host.start` 之后读行 |
 | shortcuts 套件：4 行显示「未启用」但总开关开着 / 状态长期停在「已生效」不刷新 | 宿主没回 `shortcuts` 事件（旧构建缺 `PublishShortcutState`）或 `web/src/core/bridge.ts` 的 `onShortcutsState` 未注册；先确认 `host.log` 有 `hotkey.apply enabled=true reason=startup`，再看页面 console 有无 `[bridge] shortcuts handler failed` |
 | shortcuts 套件：`hotkey.register id=2 skipped action=prev reason=empty` 而预期是 ok | 上一步录制/清除把值写成空串了（`settings.json shortcuts.prev=""`），点「恢复默认」或手改 `settings.json` 后重跑 |
 | shortcuts 套件：WM_HOTKEY 步骤失败/SKIP | 需要 `research/tmp/wh3.ps1` 且宿主 pwsh 可用；该步不可自动化的环境记 SKIP。`ZILUX2_QA_WM_HOTKEY=0` 可显式跳过；id=2 不校验注册组合，只验证宿主 → 页面命令链路 |
@@ -273,7 +273,7 @@ task-23 起宿主分析结果带 **p0-4 可听结尾** `audibleEndMs`/`tailSilen
 | crossfade 套件：找不到 `__ziluxCrossfade` / `[data-qa="crossfade-section"]` | 前端是旧构建（未包含 `crossfadeDeck.ts`），或设置页没停在「播放」分区；让安装版 web 产物更新后重跑 |
 | crossfade 套件：「播放准备」失败 / 本地曲库 <2 首 | 无缝衔接需要可分析的下一首：本地曲库 ≥2 首；看 console 有无 analyze 失败，或 `__ziluxCrossfade.snapshot().reason` |
 | crossfade 套件：seek 后约 10s 才进入 fading | 正常现象：seek 会取消准备并重新分析当前/下一首（实测偶发 ~10s）。只要 `fade-start→fade-done` 在 1.2s~12s 即通过 |
-| crossfade 套件：seek 没生效 / 鼠标事件像点到弹层 | 必须先 `closeAllLayers` 关设置遮罩再 seek；`.playerbar .track` 需先 mouseMoved 到 (800,928) 展开并**等宽度稳定**后再取 rect（task-23 已内置两帧稳定判断 + seek 落点 ≤6% 断言，防止点到展开动画中间位置/误触下一首） |
+| crossfade 套件：seek 没生效 / 鼠标事件像点到弹层 | 必须先 `closeAllLayers` 关设置遮罩再 seek；`.playerbar .track` 需先 mouseMoved 到 (800,928) 展开并**等宽度稳定**后再取 rect（任务 已内置两帧稳定判断 + seek 落点 ≤6% 断言，防止点到展开动画中间位置/误触下一首） |
 | crossfade 套件：「调度公式偏差 > ±200ms」/ `currentAudibleEndMs` 缺失 | 宿主是 p0-4 之前的旧构建（分析结果没有 `audibleEndMs`/`tailSilenceMs`）或 web 未按可听结尾调度；换装本轮安装版（宿主 p0-4 + web）再跑，`host.log` 里搜 `audibleEndMs=` 确认 |
 | crossfade 套件：`tailSilenceMs=0` / 「本地曲库前 4 行都没有尾部静音」 | 该曲分析结果没有尾部静音（或旧分析版本）：套件会顺延前 4 行找有静音的曲目；仍失败说明本地曲库都被修剪过（无静音尾巴），换一首带静音的歌或忽略该步（属测试数据限制） |
 | crossfade 套件：收藏歌单路径 SKIP | 在线源/账号不可用（未登录、代理关闭、源站风控）。SKIP 附带原因，不计产品 bug；恢复直连/登录后重跑即可 |

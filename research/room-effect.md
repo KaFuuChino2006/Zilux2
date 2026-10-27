@@ -98,7 +98,7 @@ node research/qa/room-preview-shot.mjs --times 8.6,40.4,41,75 --out research/sho
 
 ## 2026-10-21 追加：换句时的镜头滚转（roll）
 
-需求（按用户澄清后的意思）：镜头本身不做横移/偏航/俯仰那些机位变化，**只在切换到下一句歌词时**，
+需求（按澄清后的意思）：镜头本身不做横移/偏航/俯仰那些机位变化，**只在切换到下一句歌词时**，
 画面 roll 转到一个新的角度；方向随机、角度大小也随机。
 
 做法（web/src/ui/roomScene.ts）：
@@ -127,7 +127,7 @@ node research/qa/room-preview-shot.mjs --times 8.6,40.4,41,75 --out research/sho
 
 ## 2026-10-22 追加：移除底部歌名玻璃长条
 
-用户要求删掉 `.zlr-title`（NOW PLAYING 磨砂胶囊）。已从 `web/src/ui/roomScene.ts` 删除：
+需求删掉 `.zlr-title`（NOW PLAYING 磨砂胶囊）。已从 `web/src/ui/roomScene.ts` 删除：
 
 - 样式段（`.zlr-title/.zlr-eq/.zlr-now/.zlr-song/.zlr-artist/.zlr-spacer/.zlr-time/.zlr-track` 及 eq 动画）；
 - DOM 创建与挂载、`updateTitle()` 每帧更新及其调用、`formatTime()` 辅助函数；
@@ -137,7 +137,7 @@ node research/qa/room-preview-shot.mjs --times 8.6,40.4,41,75 --out research/sho
 
 ## 2026-10-22 追加：房间设置面板（完整可调 + 实时预览）
 
-用户要求：房间档要像「纯字」一样有设置界面，可调歌词风格、背景颜色、文字离散度、颜色等，做到尽量大的自定义。
+需求：房间档要像「纯字」一样有设置界面，可调歌词风格、背景颜色、文字离散度、颜色等，做到尽量大的自定义。
 
 **入口**：快捷设置（播放条右下的齿轮）→「歌词」tab →「播放效果」选「房间」→「房间设置 → 打开调节…」。
 
@@ -203,9 +203,9 @@ node research/qa/room-preview-shot.mjs --times 8.6,40.4,41,75 --out research/sho
 
 ## 2026-10-22 追加：行间间奏不再「整屏无字」 + 逐帧异常保护
 
-**现象**：用户反馈「房间的文字不见了」。CDP 取样：80 个 `.zlr-word` 全部 `opacity:0`，但 canvas/地毯正常、播放位置在走，`window.__roomFrameError` 无。
+**现象**：反馈「房间的文字不见了」。CDP 取样：80 个 `.zlr-word` 全部 `opacity:0`，但 canvas/地毯正常、播放位置在走，`window.__roomFrameError` 无。
 
-**根因**：歌词行之间常有几秒间奏。旧逻辑里镜头直接对准「当前行」（`indexAt` 返回的那句），而当前行的词要等该行**第一个词的 startMs** 才逐个入场（用户要求的「从无到有」）；这段时间里：
+**根因**：歌词行之间常有几秒间奏。旧逻辑里镜头直接对准「当前行」（`indexAt` 返回的那句），而当前行的词要等该行**第一个词的 startMs** 才逐个入场（需求的「从无到有」）；这段时间里：
 - 当前行所有词 `entrance=0` → opacity 0；
 - 上一句在镜头背后（depth 为负）被 `wordDepth <= 1.2` 剔除；
 - 下一句还没到 `entrance` 窗口。
@@ -234,7 +234,7 @@ node research/qa/room-preview-shot.mjs --times 8.6,40.4,41,75 --out research/sho
 
 ## 2026-10-22 追加：窗口控制动画（快照过渡版，替代几何动画）
 
-用户反馈「全屏/缩小/关闭都没有动画」，随后又指出「缩小的动画和关闭的动画有 bug」。最终方案：
+反馈「全屏/缩小/关闭都没有动画」，随后又指出「缩小的动画和关闭的动画有 bug」。最终方案：
 
 - **最大化 / 还原**：保留几何动画（`BeginWindowMotion` 逐帧 `SetWindowPos`，200ms；还原时先记 `_restoreRect`，动画结束再切 `WindowState`）。这类「窗口真的变大」有实际意义。
 - **最小化 / 关闭**：改成**整窗快照过渡**（`PlaySnapshotTransition`）——
@@ -292,7 +292,7 @@ node research/qa/room-preview-shot.mjs --times 8.6,40.4,41,75 --out research/sho
 
 ## 2026-10-22 追加：前奏显示歌名卡
 
-背景：房间档「逐词从无到有」意味着没人声的前奏是空画布，用户要求前奏改成显示歌曲名称。
+背景：房间档「逐词从无到有」意味着没人声的前奏是空画布，需求前奏改成显示歌曲名称。
 
 实现：
 - `web/src/ui/roomScene.ts`：根节点新增 `.zlr-titlecard`（`NOW PLAYING` 小标 + `.zlr-titlecard-name` 歌名 +
@@ -334,7 +334,7 @@ node research/qa/room-preview-shot.mjs --times 8.6,40.4,41,75 --out research/sho
 
 ## 2.6.23 · 粒子 3D 观感补强（focal 单位修正 + 尺寸/亮度加大）
 
-- 用户反馈「改一半的时候跟随 3D 了，现在又恢复原样」：中间版本因 focal 单位错误（FOV_Y 已是弧度，却又乘 π/360），所有粒子半径被 clamp 到 4.2，看起来「大而明显」；修成正确透视后粒子变得小而淡，观感像退回旧版。
+- 反馈「改一半的时候跟随 3D 了，现在又恢复原样」：中间版本因 focal 单位错误（FOV_Y 已是弧度，却又乘 π/360），所有粒子半径被 clamp 到 4.2，看起来「大而明显」；修成正确透视后粒子变得小而淡，观感像退回旧版。
 - 最终参数：36 颗粒子；世界尺寸 0.014–0.064（米）；半径 `clamp(size*focal/depth, 0.4, 7)`；alpha 0.10–0.30；速度 0.5–2.0 m/s；横向 ±2.4、高度 ±0.95；深度 0–30 循环。
 - 验证：`window.__roomParticles()` 返回 36 颗，半径分布 1.02–7、深度 1.32–29.33，屏坐标逐帧移动（透视/视差成立）；截图 `research/shots/app-particles3d-room.png`。
 - 安装包：`dist/Zilux2-Setup-2.6.23.exe`（13,034,689 B，SHA256 `984a12e2f97ea18d0c27ed68f124327acd28a8a6240b0868772926e807e25327`），已静默安装到 `%LOCALAPPDATA%\Programs\Zilux2` 并重开。
