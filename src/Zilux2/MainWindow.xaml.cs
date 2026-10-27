@@ -1614,8 +1614,45 @@ public partial class MainWindow : Window
             OnHotkey(wParam.ToInt32());
             handled = true;
         }
+        else if (msg == NativeMethods.WmAppCommand)
+        {
+            handled = HandleAppCommand(lParam);
+        }
 
         return IntPtr.Zero;
+    }
+
+    /// <summary>
+    /// 部分键盘驱动 / OEM 热键服务按下「系统切换音乐」键时不发 VK_MEDIA_* 按键，而是往
+    /// 前台窗口投一条 WM_APPCOMMAND 消息；底层键盘钩子看不到这条路径，只能在这里兜接。
+    /// 只在本机是当前媒体会话且快捷键总开关打开时接住，其余情况返回 false 交给系统默认处理，
+    /// 保留「媒体键跟着当前播放器走」的原生行为。
+    /// </summary>
+    private bool HandleAppCommand(IntPtr lParam)
+    {
+        var command = (int)((lParam.ToInt64() >> 16) & 0x0FFF);
+        var action = command switch
+        {
+            NativeMethods.AppCommandMediaNextTrack => "next",
+            NativeMethods.AppCommandMediaPrevTrack => "prev",
+            NativeMethods.AppCommandMediaPlayPause => "togglePlay",
+            _ => null,
+        };
+        if (action is null)
+        {
+            return false;
+        }
+
+        var owns = _media?.IsCurrentSession == true;
+        HostLog.Info($"[appcommand] command={command} action={action} ours={(owns ? "true" : "false")}");
+        if (!_shortcutsEnabled || !owns)
+        {
+            return false;
+        }
+
+        HostLog.Info($"[appcommand] fire action={action}");
+        SendCommand(action);
+        return true;
     }
 
     private void ApplyWindowLimits(IntPtr hwnd, IntPtr lParam)
