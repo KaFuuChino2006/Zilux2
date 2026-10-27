@@ -17,6 +17,10 @@
  *   0 起播、不等节拍分析）与「单曲循环曲尾重启」（淡出→同曲淡入，B 从头播）。这两类过渡共用
  *   cancel/commit 状态机与 seek 取消逻辑；玩家倍速（0.5–2.0）作为 deck 基础速率参与，过渡结束后
  *   B 恢复用户倍速，WSOLA tempoRate 只在检测器允许时叠加在自动衔接上。
+ * - 歌词衔接（handoff，仅 auto 档）：A 的最后一句歌词唱完时，B 的第一句歌词正好开始——
+ *   B 的起播点 = 首句位置、淡化窗口 = A 末句到可听结尾（尾奏不够 MIN_FADE_MS 时自动回退普通淡化）。
+ *   B 的进入曲线不再从 0 起（人声一开始就听得见），伴奏靠图内 tilt 从 -9 dB 慢慢回正，
+ *   形成「人声先出、伴奏渐入」。首句/末句都由 lyricRange.ts 过滤掉制作人员行。
  */
 
 import {
@@ -41,6 +45,11 @@ export interface CrossfadeSettings {
   enabled: boolean;
   /** auto = 按两首歌的拍点/小节与前后奏空间自适应（不固定 5–10 秒）；3–30 的整数 = 固定秒数 */
   length: CrossfadeLength;
+  /**
+   * 歌词衔接（仅过渡时长为 auto 时生效）：上一首最后一句歌词唱完的瞬间接下一首第一句，
+   * 人声先出、伴奏渐入；上一首尾奏不够长（< MIN_FADE_MS）时自动回退普通淡化。
+   */
+  handoff: boolean;
 }
 
 export const CROSSFADE_STORAGE_KEY = 'zilux2.crossfade';
@@ -50,7 +59,7 @@ export const CROSSFADE_LENGTH_CHOICES: number[] = [3, 5, 8, 10, 15, 20, 30];
 const LENGTH_MIN_SEC = 3;
 const LENGTH_MAX_SEC = 30;
 
-const DEFAULT_SETTINGS: CrossfadeSettings = { enabled: true, length: 'auto' };
+const DEFAULT_SETTINGS: CrossfadeSettings = { enabled: true, length: 'auto', handoff: true };
 const LENGTH_VALUES: CrossfadeLength[] = [...CROSSFADE_LENGTH_CHOICES, 'auto'];
 
 /**
@@ -117,6 +126,7 @@ export function readCrossfadeSettings(): CrossfadeSettings {
     return {
       enabled: typeof record.enabled === 'boolean' ? record.enabled : DEFAULT_SETTINGS.enabled,
       length: normalizeLength(record.length),
+      handoff: typeof record.handoff === 'boolean' ? record.handoff : DEFAULT_SETTINGS.handoff,
     };
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -132,6 +142,7 @@ export function writeCrossfadeSettings(patch: Partial<CrossfadeSettings>): Cross
   const next: CrossfadeSettings = {
     enabled: typeof patch.enabled === 'boolean' ? patch.enabled : current.enabled,
     length: patch.length === undefined ? current.length : normalizeLength(patch.length),
+    handoff: typeof patch.handoff === 'boolean' ? patch.handoff : current.handoff,
   };
   try {
     localStorage.setItem(CROSSFADE_STORAGE_KEY, JSON.stringify(next));
@@ -140,6 +151,7 @@ export function writeCrossfadeSettings(patch: Partial<CrossfadeSettings>): Cross
   }
   debug.enabled = next.enabled;
   debug.length = next.length;
+  debug.handoff = next.handoff;
   window.dispatchEvent(new CustomEvent<CrossfadeSettings>('zilux:crossfade', { detail: next }));
   return next;
 }
@@ -160,6 +172,8 @@ export interface CrossfadeDebugEvent {
 export interface CrossfadeDebugState {
   enabled: boolean;
   length: CrossfadeLength;
+  /** 设置：歌词衔接（A 末句唱完接 B 首句）是否开启 */
+  handoff: boolean;
   phase: CrossfadePhase;
   /** 最近一次 cancel 的原因；正常完成时为 fade-done */
   reason: string;
@@ -178,6 +192,10 @@ export interface CrossfadeDebugState {
   nextVocalStartMs: number;
   /** 本次调度是否按「开始唱词」对齐（true = B 起播点按唱词反推） */
   vocalAligned: boolean;
+  /** 本次调度是否走「歌词衔接」：A 最后一句唱完的时刻开始接 B 第一句 */
+  handoffActive: boolean;
+  /** A 的「最后一句歌词唱完」位置（曲内毫秒）；0 = 无数据/未启用 */
+  lastVocalEndPosMs: number;
   /** A 的「可听结尾」（曲内毫秒）：调度以它为终点；旧宿主无 audibleEndMs 时 = 曲内时长 */
   currentAudibleEndMs: number;
   /** A 的尾部静音（毫秒）= 曲内时长 - currentAudibleEndMs；无静音为 0 */
@@ -212,6 +230,7 @@ export interface CrossfadeDebugState {
 const debug: CrossfadeDebugState = {
   enabled: DEFAULT_SETTINGS.enabled,
   length: DEFAULT_SETTINGS.length,
+  handoff: DEFAULT_SETTINGS.handoff,
   phase: 'idle',
   reason: '',
   currentTitle: '',
@@ -223,6 +242,8 @@ const debug: CrossfadeDebugState = {
   tempoMatched: false,
   nextVocalStartMs: 0,
   vocalAligned: false,
+  handoffActive: false,
+  lastVocalEndPosMs: 0,
   currentAudibleEndMs: 0,
   tailSilenceMs: 0,
   autoFadeMs: 0,
@@ -253,6 +274,7 @@ exposeDebug();
 const initialSettings = readCrossfadeSettings();
 debug.enabled = initialSettings.enabled;
 debug.length = initialSettings.length;
+debug.handoff = initialSettings.handoff;
 
 /**
  * 当前过渡调度快照（只读副本）。
@@ -320,6 +342,8 @@ export interface CrossfadePrepareOptions extends DeckPlanCommon {
   nextAnalysis: AnalysisResult;
   /** 下一首的「开始唱词」位置（曲内毫秒，player 用 vocalStart.ts 取）；null/0 = 无歌词回退普通淡化 */
   nextVocalStartMs?: number | null;
+  /** 当前曲「最后一句歌词唱完」的位置（曲内毫秒，player 用 vocalStart.ts 取）；null/0 = 无歌词/未启用歌词衔接 */
+  currentLastVocalEndMs?: number | null;
 }
 
 /** 手动切歌 / 单曲循环重启：短过渡，B 从该段开头起播，不等节拍分析、不做 BPM 对齐。 */
@@ -353,6 +377,10 @@ interface FadeSchedule {
   nextVocalStartMs: number;
   /** true = B 起播点按唱词反推（前奏够长跳过 / 前奏较短整段过渡） */
   vocalAligned: boolean;
+  /** true = 本次走「歌词衔接」：A 末句唱完接 B 首句，人声先出、伴奏渐入 */
+  handoff: boolean;
+  /** A 的「最后一句歌词唱完」位置（曲内毫秒）；0 = 未启用 */
+  lastVocalEndPosMs: number;
   /** auto 本次目标时长（毫秒）：= autoBars × autoBarMs；手动档位/回退为 0 */
   autoFadeMs: number;
   /** auto 本次算出的小节数（手动档位/回退为 0） */
@@ -375,6 +403,10 @@ interface ActivePlan {
   graphMode: boolean;
   /** 本次过渡给 B 的播放速率（WSOLA 节拍对齐；1 = 不变速） */
   tempoRate: number;
+  /** 本次是否走「歌词衔接」（A 末句唱完接 B 首句；手动/loop 恒 false） */
+  handoff: boolean;
+  /** A 的「最后一句歌词唱完」位置（曲内毫秒）；0 = 未启用 */
+  lastVocalEndPosMs: number;
   fadeStartFileMs: number;
   fadeStartPosMs: number;
   fadeMs: number;
@@ -458,10 +490,33 @@ function returnDeckTempoToNormal(element: HTMLAudioElement, from: number, to = 1
  *   于是听感上是「B 的人声先出来，伴奏慢慢融进来」，与暂停淡出的人声保留一致。
  * - Phase 2：手动切歌 / 单曲循环这类 1.2–2.0 秒短过渡用纯等功率（不加权、不压伴奏），
  *   短窗口里加权会听出能量凹陷。
+ * - 歌词衔接（plan.handoff）：B 不从 0 渐入，直接以 58% 起音（人声先出），A 尾音按余弦退场，
+ *   B 的伴奏靠 tilt 从 -9 dB 慢慢回正（伴奏渐入）。
  */
 function applyEqualPowerGains(plan: ActivePlan, progress: number): void {
   const p = clamp01(progress);
   const warped = plan.kind === 'auto';
+  if (plan.handoff) {
+    // 歌词衔接：B 首句在淡化起点就要听见（人声先出），所以 B 不从 0 起；
+    // A 尾音照常按余弦退场，B 的伴奏靠图内 tilt 从 -9 dB 慢慢回正（伴奏渐入）。
+    const outGain = Math.cos(Math.pow(p, A_EXIT_WARP) * Math.PI * 0.5);
+    // B 从 58% 起步（人声立刻听得见），前面 90 ms 快速起音避免爆音；之后按正弦升到满。
+    const attack = plan.fadeMs > 0 ? Math.min(1, (p * plan.fadeMs) / 90) : 1;
+    const inGain = (0.58 + 0.42 * Math.sin(p * Math.PI * 0.5)) * attack;
+    if (plan.graphMode) {
+      setAudioTapVolume(plan.baseVolume, true);
+      setDeckGraphGain(plan.options.active, outGain);
+      setDeckGraphGain(plan.options.standby, inGain);
+      const outTilt = -TILT_MAX_DB * smoothStep(p * 0.9);
+      const inTilt = -TILT_MAX_DB * (1 - smoothStep(p * 1.15));
+      setDeckGraphTilt(plan.options.active, outTilt, outTilt);
+      setDeckGraphTilt(plan.options.standby, inTilt, inTilt);
+      return;
+    }
+    setDeckVolume(plan.options.active, plan.baseVolume * outGain);
+    setDeckVolume(plan.options.standby, plan.baseVolume * inGain);
+    return;
+  }
   const outGain = Math.cos(Math.pow(p, warped ? A_EXIT_WARP : 1) * Math.PI * 0.5);
   const inGain = Math.sin(Math.pow(p, warped ? B_ENTRY_WARP : 1) * Math.PI * 0.5);
   if (plan.graphMode) {
@@ -694,10 +749,31 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
   });
   const desiredMs = fadePlan.ms;
 
-  let plannedFadeMs = desiredMs;
-  let bStartFileMs = baseBStartFileMs;
-  let vocalAligned = false;
-  if (vocalFileMs > 0) {
+  // ---- 歌词衔接（handoff）：A 最后一句唱完 = 淡化起点，B 首句 = 淡化终点，人声先出、伴奏渐入 ----
+  // 只对「自动」档开放（手动固定档位保持用户指定的秒数）；A 末句之后没有足够尾奏时自动回退普通淡化。
+  const settings = readCrossfadeSettings();
+  const rawLastVocalEnd = options.currentLastVocalEndMs;
+  const lastVocalEndPosMs =
+    typeof rawLastVocalEnd === 'number' && Number.isFinite(rawLastVocalEnd) && rawLastVocalEnd > 0
+      ? Math.round(Math.min(rawLastVocalEnd, durationMs))
+      : 0;
+  const tailAfterVocalMs = lastVocalEndPosMs > 0 ? audibleEndPosMs - lastVocalEndPosMs : 0;
+  const handoffFadeMs = Math.round(Math.min(MAX_FADE_MS, Math.max(MIN_FADE_MS, tailAfterVocalMs)));
+  const bTailAfterVocalMs = nextDurationMs > 0 ? nextDurationMs - vocalPosMs : Number.POSITIVE_INFINITY;
+  const canHandoff =
+    settings.handoff &&
+    settings.length === 'auto' &&
+    lastVocalEndPosMs > 0 &&
+    vocalFileMs > 0 &&
+    tailAfterVocalMs >= MIN_FADE_MS &&
+    currentStartMs + lastVocalEndPosMs >= currentStartMs + currentPosMs + 80 &&
+    bTailAfterVocalMs >= handoffFadeMs + 400;
+  let handoff = canHandoff;
+
+  let plannedFadeMs = handoff ? handoffFadeMs : desiredMs;
+  let bStartFileMs = handoff ? vocalFileMs : baseBStartFileMs;
+  let vocalAligned = handoff;
+  if (!handoff && vocalFileMs > 0) {
     const candidate = vocalFileMs - desiredMs;
     if (candidate >= nextStartMs + 250) {
       // 前奏够长：从「唱词前 desiredMs」处起播，淡化结束正好进入唱词（更早的前奏直接跳过）；
@@ -715,8 +791,9 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
   }
 
   // ---- A 侧：终点固定为可听结尾，按本次淡化时长反推起点，并尽量贴强拍 ----
+  // 歌词衔接时起点就是「最后一句唱完」，不再贴强拍（要正好接上人声）。
   const targetFileMs = fileAudibleEndMs - plannedFadeMs;
-  const downbeat = pickDownbeatNear(analysis, targetFileMs, currentStartMs);
+  const downbeat = handoff ? null : pickDownbeatNear(analysis, targetFileMs, currentStartMs);
   let fadeStartFile = downbeat === null ? targetFileMs : downbeat;
 
   // 淡化窗口终点固定为可听结尾（不把淡化拖进尾部静音），只对起点夹取时长：
@@ -739,6 +816,7 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
     const availableMs = nextDurationMs - (bStartFileMs - nextStartMs);
     if (availableMs < fadeMs + 400) {
       vocalAligned = false;
+      handoff = false;
       bStartFileMs = baseBStartFileMs;
       if (nextDurationMs - (bStartFileMs - nextStartMs) < fadeMs + 400) return null;
     }
@@ -755,7 +833,8 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
       tempoRate = Math.round(raw * 1000) / 1000;
     }
   }
-  if (tempoRate !== 1 && bStartFileMs > 0) {
+  // 歌词衔接时 B 的起播点就是首句，不再做「贴到同拍」的相位微调（会破坏人声对齐）。
+  if (!handoff && tempoRate !== 1 && bStartFileMs > 0) {
     const beatA = analysis.beatIntervalMs > 0 ? analysis.beatIntervalMs : 60_000 / aBpm;
     const beatB = nextAnalysis.beatIntervalMs > 0 ? nextAnalysis.beatIntervalMs : 60_000 / bBpm;
     const firstA = currentStartMs + Math.max(0, analysis.firstBeatMs);
@@ -780,10 +859,14 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
     tailSilenceMs: Math.round(tailSilenceMs),
     nextVocalStartMs: vocalPosMs,
     vocalAligned,
+    handoff,
+    lastVocalEndPosMs,
     autoFadeMs: fadePlan.auto ? fadePlan.ms : 0,
     autoBars: fadePlan.bars,
     autoBarMs: fadePlan.barMs,
-    autoNote: fadePlan.note,
+    autoNote: handoff
+      ? `歌词衔接：A 末句 ${lastVocalEndPosMs} ms 唱完，接下一首首句 ${vocalPosMs} ms`
+      : fadePlan.note,
   };
 }
 
@@ -793,6 +876,8 @@ function applySchedule(plan: ActivePlan, schedule: FadeSchedule): void {
   plan.fadeMs = schedule.fadeMs;
   plan.bStartFileMs = schedule.bStartFileMs;
   plan.tempoRate = schedule.tempoRate;
+  plan.handoff = schedule.handoff;
+  plan.lastVocalEndPosMs = schedule.lastVocalEndPosMs;
   plan.audibleEndPosMs = schedule.audibleEndPosMs;
   debug.fadeStartPosMs = schedule.fadeStartPosMs;
   debug.fadeMs = schedule.fadeMs;
@@ -803,6 +888,8 @@ function applySchedule(plan: ActivePlan, schedule: FadeSchedule): void {
   debug.tailSilenceMs = schedule.tailSilenceMs;
   debug.nextVocalStartMs = schedule.nextVocalStartMs;
   debug.vocalAligned = schedule.vocalAligned;
+  debug.handoffActive = schedule.handoff;
+  debug.lastVocalEndPosMs = schedule.lastVocalEndPosMs;
   debug.autoFadeMs = schedule.autoFadeMs;
   debug.autoBars = schedule.autoBars;
   debug.autoBarMs = schedule.autoBarMs;
@@ -878,6 +965,8 @@ export function prepareCrossfade(options: CrossfadePrepareOptions): boolean {
     phase: 'prepared',
     graphMode,
     tempoRate: 1,
+    handoff: false,
+    lastVocalEndPosMs: 0,
     fadeStartFileMs: 0,
     fadeStartPosMs: 0,
     fadeMs: 0,
@@ -909,7 +998,9 @@ export function prepareCrossfade(options: CrossfadePrepareOptions): boolean {
   debug.baseVolume = clamp01(options.baseVolume());
   logEvent(
     'prepared',
-    `「${options.current.track.title}」→「${options.next.track.title}」，${plan.fadeMs} ms 后在曲内 ${Math.round(plan.fadeStartPosMs)} ms 处淡化（可听结尾 ${plan.audibleEndPosMs} ms，尾部静音/渐弱 ${debug.tailSilenceMs} ms）`,
+    plan.handoff
+      ? `「${options.current.track.title}」→「${options.next.track.title}」，歌词衔接：A 末句 ${plan.lastVocalEndPosMs} ms 唱完接 B 首句，${plan.fadeMs} ms 人声先出、伴奏渐入`
+      : `「${options.current.track.title}」→「${options.next.track.title}」，${plan.fadeMs} ms 后在曲内 ${Math.round(plan.fadeStartPosMs)} ms 处淡化（可听结尾 ${plan.audibleEndPosMs} ms，尾部静音/渐弱 ${debug.tailSilenceMs} ms）`,
   );
   return true;
 }
@@ -954,6 +1045,8 @@ function createManualPlan(options: ManualCrossfadeOptions, kind: 'manual' | 'loo
     phase: 'prepared',
     graphMode,
     tempoRate: 1,
+    handoff: false,
+    lastVocalEndPosMs: 0,
     fadeStartFileMs: 0,
     fadeStartPosMs: Math.max(0, Math.round(options.currentPositionMs || 0)),
     fadeMs,
@@ -982,6 +1075,8 @@ function createManualPlan(options: ManualCrossfadeOptions, kind: 'manual' | 'loo
   debug.tempoMatched = false;
   debug.nextVocalStartMs = 0;
   debug.vocalAligned = false;
+  debug.handoffActive = false;
+  debug.lastVocalEndPosMs = 0;
   debug.currentAudibleEndMs = 0;
   debug.tailSilenceMs = 0;
   debug.autoFadeMs = 0;
@@ -1444,6 +1539,14 @@ export function buildCrossfadeSection(scope: Disposers | null): HTMLElement {
     lengthRow.append(button);
   }
 
+  const handoffToggle = h('button', {
+    class: 'analysis-toggle',
+    type: 'button',
+    'data-qa': 'crossfade-handoff',
+    'aria-pressed': 'false',
+    title: '上一首最后一句歌词唱完的瞬间接下一首第一句：人声先出、伴奏渐入（需要过渡时长为「自动」）',
+  });
+
   const root = h('div', { class: 'analysis-section', 'data-qa': 'crossfade-section' });
 
   function paint(): void {
@@ -1451,6 +1554,13 @@ export function buildCrossfadeSection(scope: Disposers | null): HTMLElement {
     toggle.textContent = settings.enabled ? '已开启' : '已关闭';
     toggle.classList.toggle('is-on', settings.enabled);
     toggle.setAttribute('aria-pressed', settings.enabled ? 'true' : 'false');
+    handoffToggle.textContent = settings.handoff ? '已开启' : '已关闭';
+    handoffToggle.classList.toggle('is-on', settings.handoff);
+    handoffToggle.setAttribute('aria-pressed', settings.handoff ? 'true' : 'false');
+    handoffToggle.disabled = settings.length !== 'auto';
+    handoffToggle.title = settings.handoff
+      ? '歌词衔接已开启：上一首末句唱完接下一首首句（需要过渡时长 = 自动）'
+      : '歌词衔接已关闭：按拍点/小节普通淡化';
     for (const { value, button } of lengthButtons) {
       const on = value === settings.length;
       button.classList.toggle('is-on', on);
@@ -1471,6 +1581,16 @@ export function buildCrossfadeSection(scope: Disposers | null): HTMLElement {
       paint();
     });
   }
+  handoffToggle.addEventListener('click', () => {
+    const current = readCrossfadeSettings();
+    const next = writeCrossfadeSettings({ handoff: !current.handoff });
+    paint();
+    toast(
+      next.handoff
+        ? '歌词衔接已开启：下一首首句会接上一首末句（人声先出、伴奏渐入）'
+        : '歌词衔接已关闭：恢复按拍点/小节普通淡化',
+    );
+  });
 
   const onSettingsChange = (): void => paint();
   window.addEventListener('zilux:crossfade', onSettingsChange);
@@ -1480,7 +1600,7 @@ export function buildCrossfadeSection(scope: Disposers | null): HTMLElement {
     h('h3', { class: 'section-title', text: '无缝衔接（实验）' }),
     h('p', {
       class: 'analysis-desc',
-      text: '当前歌曲结束前，按鼓点提前开始下一首，并按等功率曲线交叉淡化（B 用更慢的进入曲线，避免一上来就大声；A 多留一点尾音），避免曲间静音；淡化终点对齐歌曲的可听结尾，自动跳过曲尾静音与明显渐弱收尾（需宿主分析支持 audibleEndMs，p0-5 起）。淡化结束时机对齐下一首的「开始唱词」（有歌词时）：前奏较长会跳过前奏、从唱词前若干秒切入；前奏较短则把整段前奏当作过渡，结束时正好进入唱词。过渡时长「自动」不再固定 5–10 秒：以两首歌的小节为基准（默认一个乐句 4 小节，拍速差大时取两首的平均小节），B 前奏到唱词的空间不足时按整小节缩短、A 尾奏与 B 前奏都宽裕时放宽到 6–8 小节、小节很短（快歌/双拍）时取两个乐句，实际时长随歌曲自由变化。两首 BPM 不同时会用 WSOLA 变速不变调（±12% 内）把 B 的节拍拉齐，过渡结束后平滑恢复原速；图内路径下 A 的伴奏先退、B 的伴奏慢慢回正，人声先出现、伴奏后融进来。自然播完（列表循环 / 随机播放）与单曲循环都会自动衔接；手动切歌（下一首 / 上一首 / 点列表）走 1.2–2.0 秒等功率短过渡，不等节拍分析。均衡器/人声保留淡出等 Web Audio 音效开启时自动改走图内增益淡化，否则回退为原来的硬切。',
+      text: '当前歌曲结束前，按鼓点提前开始下一首，并按等功率曲线交叉淡化（B 用更慢的进入曲线，避免一上来就大声；A 多留一点尾音），避免曲间静音；淡化终点对齐歌曲的可听结尾，自动跳过曲尾静音与明显渐弱收尾（需宿主分析支持 audibleEndMs，p0-5 起）。淡化结束时机对齐下一首的「开始唱词」（有歌词时）：前奏较长会跳过前奏、从唱词前若干秒切入；前奏较短则把整段前奏当作过渡，结束时正好进入唱词。过渡时长「自动」不再固定 5–10 秒：以两首歌的小节为基准（默认一个乐句 4 小节，拍速差大时取两首的平均小节），B 前奏到唱词的空间不足时按整小节缩短、A 尾奏与 B 前奏都宽裕时放宽到 6–8 小节、小节很短（快歌/双拍）时取两个乐句，实际时长随歌曲自由变化。两首 BPM 不同时会用 WSOLA 变速不变调（±12% 内）把 B 的节拍拉齐，过渡结束后平滑恢复原速；图内路径下 A 的伴奏先退、B 的伴奏慢慢回正，人声先出现、伴奏后融进来。自然播完（列表循环 / 随机播放）与单曲循环都会自动衔接；手动切歌（下一首 / 上一首 / 点列表）走 1.2–2.0 秒等功率短过渡，不等节拍分析。均衡器/人声保留淡出等 Web Audio 音效开启时自动改走图内增益淡化，否则回退为原来的硬切。「歌词衔接」（默认开启，仅过渡时长=自动时生效）：上一首最后一句歌词唱完的瞬间接下一首第一句——B 的起播点直接对准首句，B 的人声一开始就听得见、伴奏从 -9 dB 慢慢回正（人声先出、伴奏渐入）；如果上一首末句之后没有足够长的尾奏（不足 1.2 秒），自动回退成上面的普通淡化。首句/末句都会过滤歌词里的制作人员名单（作词、作曲、Lyrics by…）和间奏标记，避免过渡点落到没人唱的地方。',
     }),
     h(
       'div',
@@ -1507,10 +1627,24 @@ export function buildCrossfadeSection(scope: Disposers | null): HTMLElement {
         ),
         lengthRow,
       ),
+      h(
+        'div',
+        { class: 'field' },
+        h(
+          'div',
+          {},
+          h('div', { class: 'field-label', text: '歌词衔接' }),
+          h('div', {
+            class: 'field-hint',
+            text: '上一首末句唱完立刻接下一首首句，人声先出、伴奏渐入；尾奏不够长时自动回退普通淡化（需过渡时长 = 自动）',
+          }),
+        ),
+        handoffToggle,
+      ),
     ),
     h('p', {
       class: 'analysis-footnote',
-      text: '切歌后先异步分析当前与下一首（本地约 1–5 秒）并读取下一首歌词首行（本地同名 .lrc / 在线歌词），任一失败则回退为普通淡化或硬切。开启均衡器 / 人声保留淡出 / 歌词页频谱等 Web Audio 音效时，两个 deck 都会接进混音图，用各自增益做等功率淡化（主音量不变），并靠低/高架滤波做「人声先出现、伴奏慢慢融合」；过渡期间用 WSOLA 变速不变调对齐鼓点（preservesPitch），结束后平滑恢复原速。',
+      text: '切歌后先异步分析当前与下一首（本地约 1–5 秒）并读取两首歌词的人声首末句（本地同名 .lrc / 在线歌词，自动过滤制作人员名单），任一失败则回退为普通淡化或硬切。开启均衡器 / 人声保留淡出 / 歌词页频谱等 Web Audio 音效时，两个 deck 都会接进混音图，用各自增益做等功率淡化（主音量不变），并靠低/高架滤波做「人声先出现、伴奏慢慢融合」；过渡期间用 WSOLA 变速不变调对齐鼓点（preservesPitch），结束后平滑恢复原速。',
     }),
   );
 
