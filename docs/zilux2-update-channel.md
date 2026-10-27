@@ -30,7 +30,7 @@
 
 - `Zilux2-Setup-<version>.exe`：自包含更新用的单文件安装器，支持 `--silent --no-shortcuts --launch --dir <dir>`。
 - 可选：`Zilux2-Setup-<version>.exe.sha256`（不强制，GitHub API 的 `assets[].digest` 优先）。
-- Release 正文（body）即更新日志，宿主会原样展示在「设置 → 更新」里；只写本版本真实改动与修复，不写项目介绍（用户 2026-10-27 约定）。
+- Release 正文（body）即更新日志，宿主会原样展示在「设置 → 更新」里；只写本版本真实改动与修复，不写项目介绍、资产表、发版/仓库说明等模板信息（资产在 Release 附件列表里可见，说明见交接文档）。用户 2026-10-27 两次约定。
 
 宿主选资产规则：优先 `Zilux2-Setup-<latestVersion>.exe`，否则第一个匹配 `Zilux2-Setup-*.exe` 的资产。没有可用 exe 资产时进入 `unavailable` 状态（仍可打开 Release 页）。
 
@@ -150,7 +150,7 @@
 2. `windows-latest`：安装 .NET 10、Node 22、pnpm → `pnpm install --frozen-lockfile` → `pnpm run build`（web）。
 3. `tools/publish.ps1 -SkipWebBuild -Version <ver> -UpdateRepo <owner/repo>` 发布宿主到 `dist/Zilux2`。
 4. `tools/make-installer.ps1 -Version <ver>` 产出 `dist/Zilux2-Setup-<ver>.exe`。
-5. 准备 Release 更新日志：优先用仓库内 `docs/release-notes/v<ver>.md`；没有则按上一个 tag 到本次的提交自动生成（过滤 docs/chore/ci/test/style/build 等非用户可见改动）。
+5. 准备 Release 更新日志：优先用仓库内 `docs/release-notes/v<ver>.md`；没有则按上一个 tag 到本次的提交自动生成（过滤 docs/chore/ci/test/style/build 等非用户可见改动）。正文只写用户可见的真实改动与修复，不要放资产表、项目介绍、发版说明。
 6. 创建 GitHub Release（由 tag 触发时）并上传安装包，正文即上一步的更新日志。
 
 本地发版：`powershell -File tools/release.ps1`（构建 + 出安装包 + 打 tag，见脚本帮助）。
