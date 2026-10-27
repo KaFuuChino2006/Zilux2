@@ -116,6 +116,61 @@ internal sealed class AccountService : IDisposable
         return removed;
     }
 
+    // 登录状态检测（第四十六轮）：用已保存的 cookie 直接问平台是否仍然有效。
+    // 失效的账号会被移除并触发 SessionExpired，让上层推提醒；网络异常只标记 unknown，绝不清号。
+    public event Action<string>? SessionExpired;
+
+    public async Task<IReadOnlyList<AccountVerifyItem>> VerifySessionsAsync(CancellationToken cancellationToken = default)
+    {
+        var results = new List<AccountVerifyItem>();
+        foreach (var source in AllSources)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var account = _store.GetAccountInfo(source);
+            if (account is null || !account.LoggedIn)
+            {
+                results.Add(new AccountVerifyItem
+                {
+                    Source = source,
+                    LoggedIn = false,
+                    Status = AccountVerifyStatus.LoggedOut,
+                });
+                continue;
+            }
+
+            var cookies = _store.GetCookies(source);
+            var check = cookies is { Count: > 0 }
+                ? await AccountVerifier.CheckAsync(source, cookies, cancellationToken).ConfigureAwait(false)
+                : AccountSessionCheck.Expired("本地缺少 cookie");
+
+            if (string.Equals(check.Status, AccountVerifyStatus.Expired, StringComparison.Ordinal))
+            {
+                _store.Remove(source);
+                OnlineHttp.Warn($"[account] session expired source={source} reason={check.Reason ?? "unknown"}");
+                SessionExpired?.Invoke(source);
+                results.Add(new AccountVerifyItem
+                {
+                    Source = source,
+                    LoggedIn = false,
+                    Status = AccountVerifyStatus.Expired,
+                    Reason = check.Reason,
+                });
+                continue;
+            }
+
+            results.Add(new AccountVerifyItem
+            {
+                Source = source,
+                LoggedIn = true,
+                Status = check.Status,
+                Reason = check.Reason,
+            });
+        }
+
+        return results;
+    }
+
     private static string NormalizeSource(string source) =>
         string.Equals(source, AccountSources.Qq, StringComparison.OrdinalIgnoreCase)
             ? AccountSources.Qq

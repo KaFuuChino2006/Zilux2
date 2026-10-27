@@ -17,9 +17,12 @@ import {
   importCookie,
   logout,
   onAccountChange,
+  onAccountIssue,
   pollLogin,
+  recentAccountIssues,
   refreshAccounts,
   requestQr,
+  verifyAccounts,
   type AccountSource,
   type LoginSession,
 } from '../core/account';
@@ -297,6 +300,7 @@ export class App {
   private playerDispose: (() => void) | null = null;
   private localDispose: (() => void) | null = null;
   private accountDispose: (() => void) | null = null;
+  private accountIssueDispose: (() => void) | null = null;
   private settingsDispose: (() => void) | null = null;
   /** 设置页「更新」分区的快照订阅（同一时间只保留一份）。 */
   private updatesDispose: (() => void) | null = null;
@@ -442,6 +446,12 @@ export class App {
     );
     onLocalResult((result) => toast(result.message, result.ok ? 'info' : 'error'));
     this.accountDispose = onAccountChange(() => this.syncAccount());
+    // 登录状态检测（第四十六轮）：宿主后台发现掉登录时推 account 事件，这里弹提醒并刷新账号 UI。
+    this.accountIssueDispose = onAccountIssue((issue) => {
+      const label = SOURCE_LABEL[issue.source] ?? issue.source;
+      toast(`${label} 登录已失效，请重新登录`, 'error');
+      this.syncAccount();
+    });
     this.settingsDispose = onSettingsChange(() => this.syncSettingsUi());
     // 睡眠定时：模块触发时统一在这里暂停（不依赖设置弹窗是否还开着）。
     const onSleepFired = () => {
@@ -3154,10 +3164,12 @@ export class App {
       const accountSection = h('div', { class: 'section' }, h('h3', { class: 'section-title', text: '账号' }));
       for (const source of accountSourceIds() as AccountSource[]) {
         const info = accountOf(source);
+        const issue = recentAccountIssues().find((item) => item.source === source);
+        const expired = info.expired === true || (!info.loggedIn && issue !== undefined);
         const cookieLogin = sourceLoginMode(source) === 'cookie';
         const action = h('button', {
           class: 'btn',
-          text: info.loggedIn ? '退出' : cookieLogin ? '导入 Cookie' : '登录',
+          text: info.loggedIn ? '退出' : expired ? '重新登录' : cookieLogin ? '导入 Cookie' : '登录',
         });
         action.addEventListener('click', () => {
           if (info.loggedIn) {
@@ -3188,14 +3200,51 @@ export class App {
           h(
             'div',
             { class: 'field' },
-            h(
-              'div',
-              { class: 'field-label', text: `${SOURCE_LABEL[source]}${info.loggedIn ? ` · ${info.nickname ?? ''}` : ' · 未登录'}` },
-            ),
+            h('div', {
+              class: 'field-label',
+              text: `${SOURCE_LABEL[source]}${
+                info.loggedIn
+                  ? ` · ${info.nickname ?? ''}`
+                  : expired
+                    ? ' · 登录已失效'
+                    : ' · 未登录'
+              }`,
+            }),
             action,
           ),
         );
       }
+      const verifyBtn = h(
+        'button',
+        { class: 'btn', title: '立即检查两个平台的登录状态' },
+        icon('refresh', 16),
+        h('span', { text: '检查登录状态' }),
+      );
+      verifyBtn.addEventListener('click', () => {
+        verifyBtn.disabled = true;
+        void verifyAccounts()
+          .then((found) => {
+            toast(
+              found.length > 0 ? `发现 ${found.length} 个平台登录已失效` : '登录状态正常',
+              found.length > 0 ? 'error' : 'info',
+            );
+          })
+          .finally(() => {
+            verifyBtn.disabled = false;
+          });
+      });
+      accountSection.append(
+        h(
+          'div',
+          { class: 'field' },
+          h('div', { class: 'field-label', text: '登录检测' }),
+          verifyBtn,
+        ),
+        h('div', {
+          class: 'field-hint',
+          text: '启动后与每 5 分钟自动检查一次；掉登录会在界面右下角提醒，窗口在托盘时会弹系统气泡。',
+        }),
+      );
 
       // 刷新与本地库
       const tools = section(
@@ -4117,6 +4166,10 @@ export class App {
     this.renderAccountPanel();
     this.accountPanel.classList.add('is-open');
     this.accountPanelOpen = true;
+    // 打开面板顺带做一次登录检测（in-flight 复用；发现失效会走 onAccountIssue 弹提醒）。
+    void verifyAccounts().then((found) => {
+      if (found.length > 0) this.syncAccount();
+    });
   }
 
   private closeAccountPanel(): void {
@@ -4134,10 +4187,12 @@ export class App {
     }
     for (const source of accountSourceIds() as AccountSource[]) {
       const info = accountOf(source);
+      const issue = recentAccountIssues().find((item) => item.source === source);
+      const expired = info.expired === true || (!info.loggedIn && issue !== undefined);
       const action = h('button', {
-        class: `btn${info.loggedIn ? '' : ' is-primary'}`,
+        class: `btn${info.loggedIn || expired ? '' : ' is-primary'}`,
         type: 'button',
-        text: info.loggedIn ? '退出' : '登录',
+        text: info.loggedIn ? '退出' : expired ? '重新登录' : '登录',
       });
       action.addEventListener('click', (event) => {
         event.stopPropagation();
@@ -4154,17 +4209,28 @@ export class App {
       panel.append(
         h(
           'div',
-          { class: 'account-row' },
+          { class: `account-row${expired ? ' is-expired' : ''}` },
           info.avatarDataUrl
             ? h('img', { class: 'account-row-avatar', src: info.avatarDataUrl, alt: '' })
             : h('span', { class: 'account-row-avatar account-dot', text: sourceMeta(source).short }),
           h(
             'div',
             { class: 'account-row-main' },
-            h('div', { class: 'account-row-name', text: info.loggedIn ? info.nickname ?? '已登录' : `${SOURCE_LABEL[source]} 未登录` }),
+            h('div', {
+              class: 'account-row-name',
+              text: expired
+                ? `${SOURCE_LABEL[source]} 登录已失效`
+                : info.loggedIn
+                  ? info.nickname ?? '已登录'
+                  : `${SOURCE_LABEL[source]} 未登录`,
+            }),
             h('div', {
               class: 'account-row-sub',
-              text: info.loggedIn ? `${SOURCE_LABEL[source]}${info.vip === true ? ' · 会员' : ''}` : '点击登录同步歌单',
+              text: expired
+                ? issue?.reason ?? '登录已失效，请重新登录'
+                : info.loggedIn
+                  ? `${SOURCE_LABEL[source]}${info.vip === true ? ' · 会员' : ''}`
+                  : '点击登录同步歌单',
             }),
           ),
           action,
@@ -6416,6 +6482,7 @@ export class App {
     this.playerDispose?.();
     this.localDispose?.();
     this.accountDispose?.();
+    this.accountIssueDispose?.();
     this.settingsDispose?.();
     this.updatesDispose?.();
     this.updatesDispose = null;

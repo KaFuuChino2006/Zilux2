@@ -32,11 +32,70 @@ internal sealed class AccountInfo
     [JsonPropertyName("vip")] public bool? Vip { get; init; }
 
     [JsonPropertyName("userId")] public string? UserId { get; init; }
+
+    // 登录状态检测（第四十六轮）：宿主验证 cookie 后发现已失效时为 true，并给出原因；
+    // 正常账号/正常推送时保持 null（不写进 JSON），页面据此弹「登录已失效」提醒。
+    [JsonPropertyName("expired")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? Expired { get; init; }
+
+    [JsonPropertyName("reason")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Reason { get; init; }
 }
 
 internal sealed class AccountListResponse
 {
     [JsonPropertyName("sources")] public List<AccountInfo> Sources { get; init; } = [];
+}
+
+// 登录状态检测（第四十六轮）：一次验证的结果。status 取值见 AccountVerifyStatus。
+internal sealed class AccountVerifyItem
+{
+    [JsonPropertyName("source")] public string Source { get; init; } = AccountSources.Netease;
+
+    [JsonPropertyName("loggedIn")] public bool LoggedIn { get; init; }
+
+    [JsonPropertyName("status")] public string Status { get; init; } = AccountVerifyStatus.LoggedOut;
+
+    [JsonPropertyName("reason")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Reason { get; init; }
+}
+
+internal static class AccountVerifyStatus
+{
+    /// <summary>cookie 仍然有效，账号可用。</summary>
+    public const string Valid = "valid";
+
+    /// <summary>平台明确拒绝（cookie 过期 / 登录态失效），宿主同时清掉本地账号。</summary>
+    public const string Expired = "expired";
+
+    /// <summary>网络或上游异常，无法判断；保留账号，下一轮再试。</summary>
+    public const string Unknown = "unknown";
+
+    /// <summary>本地本来就没有登录该平台。</summary>
+    public const string LoggedOut = "logged-out";
+}
+
+internal sealed class AccountVerifyResponse
+{
+    [JsonPropertyName("sources")] public List<AccountVerifyItem> Sources { get; init; } = [];
+
+    [JsonPropertyName("checkedAt")] public string CheckedAt { get; init; } = string.Empty;
+}
+
+// 宿主 → 页面 account 事件（登录状态检测发现失效时主动推送）：payload 与 /api/account 同构，
+// 失效项带 expired=true / reason，页面据此弹提醒并刷新账号 UI。
+internal sealed class HostAccountMessage
+{
+    [JsonPropertyName("v")] public int V { get; init; } = 1;
+
+    [JsonPropertyName("type")] public string Type { get; init; } = "host";
+
+    [JsonPropertyName("event")] public string Event { get; init; } = "account";
+
+    [JsonPropertyName("payload")] public AccountListResponse Payload { get; init; } = new();
 }
 
 internal sealed class LoginQrResponse
@@ -528,6 +587,9 @@ internal static class AvatarEncoding
 [JsonSourceGenerationOptions(WriteIndented = false)]
 [JsonSerializable(typeof(AccountInfo))]
 [JsonSerializable(typeof(AccountListResponse))]
+[JsonSerializable(typeof(AccountVerifyItem))]
+[JsonSerializable(typeof(AccountVerifyResponse))]
+[JsonSerializable(typeof(HostAccountMessage))]
 [JsonSerializable(typeof(LoginQrResponse))]
 [JsonSerializable(typeof(LoginStatusResponse))]
 [JsonSerializable(typeof(LogoutResponse))]

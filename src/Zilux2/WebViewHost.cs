@@ -11,6 +11,7 @@ using Zilux2.Audio;
 using Zilux2.Local;
 using Zilux2.Media;
 using Zilux2.Online;
+using Zilux2.Online.Account;
 using Zilux2.Settings;
 using Zilux2.Updates;
 
@@ -240,6 +241,8 @@ internal sealed class WebViewHost : IDisposable
             online.LocalPathResolver = ResolveLocalTrackPathForAnalysis;
             // 标签写入成功后刷新曲库（回调来自 /api/local/tag 的 HTTP 线程，方法内部再切 UI）。
             online.LocalFileChanged = NotifyLocalFileChanged;
+            // 登录状态检测（第四十六轮）：后台验证发现掉登录 → 推 account 事件并提醒。
+            online.AccountSessionExpired += OnAccountSessionExpired;
         }
         // 自动更新：状态推送从任意线程回来，统一调度到 UI 线程再 PostWebMessage。
         _updates = settings is null
@@ -423,6 +426,7 @@ internal sealed class WebViewHost : IDisposable
         {
             online.LocalPathResolver = null;
             online.LocalFileChanged = null;
+            online.AccountSessionExpired -= OnAccountSessionExpired;
         }
 
         _updates?.Dispose();
@@ -723,6 +727,58 @@ internal sealed class WebViewHost : IDisposable
         {
             HostLog.Warn($"[local] tag refresh dispatch failed: {exception.Message}");
         }
+    }
+
+    // 登录状态检测（第四十六轮）：某个平台的 cookie 被平台判定失效、账号被清掉后，
+    // 把最新账号列表（该平台带 expired=true / reason）推给页面弹提醒；窗口在托盘时再补系统气泡。
+    private void OnAccountSessionExpired(string source)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            var message = new HostAccountMessage { Payload = BuildExpiredAccountList(source) };
+            PostJsonFromAnyThread(JsonSerializer.Serialize(message, AccountJsonContext.Default.HostAccountMessage));
+            if (_window.IsHiddenToTray)
+            {
+                App.Tray?.NotifyAccountExpired(source);
+            }
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[account] expired push failed source={source}: {exception.Message}");
+        }
+    }
+
+    private static AccountListResponse BuildExpiredAccountList(string expiredSource)
+    {
+        if (App.Online is not { } online)
+        {
+            return new AccountListResponse();
+        }
+
+        var list = online.Accounts.BuildAccountList();
+        for (var index = 0; index < list.Sources.Count; index++)
+        {
+            var item = list.Sources[index];
+            if (!string.Equals(item.Source, expiredSource, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            list.Sources[index] = new AccountInfo
+            {
+                Source = item.Source,
+                LoggedIn = item.LoggedIn,
+                Expired = true,
+                Reason = "登录已失效，请重新登录",
+            };
+        }
+
+        return list;
     }
 
     private static void HandlePageLog(JsonElement root)

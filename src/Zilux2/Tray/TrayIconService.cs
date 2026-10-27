@@ -136,6 +136,38 @@ internal sealed class TrayIconService : IDisposable
         }
     }
 
+    /// <summary>
+    /// 登录状态检测（第四十六轮）：窗口在托盘/后台时，某个平台掉登录用系统气泡提醒一下。
+    /// 窗口可见时前端会弹 toast，这里不重复打扰。
+    /// </summary>
+    public void NotifyAccountExpired(string source)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        var label = source switch
+        {
+            "netease" => "网易云音乐",
+            "qq" => "QQ 音乐",
+            _ => source,
+        };
+
+        try
+        {
+            _icon.BalloonTipTitle = $"{label} 登录已失效";
+            _icon.BalloonTipText = "后台检测到登录状态已过期，请打开 Zilux2 重新登录。";
+            _icon.BalloonTipIcon = Forms.ToolTipIcon.Warning;
+            _icon.ShowBalloonTip(5000);
+            HostLog.Info($"tray.balloon account-expired source={source}");
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"tray.balloon account-expired failed: {exception.Message}");
+        }
+    }
+
     public void Dispose()
     {
         if (_disposed)

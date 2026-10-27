@@ -19,6 +19,7 @@ internal sealed class OnlineMusicService : IDisposable
     private LocalMusicServer? _server;
     private DownloadService? _download;
     private TrackAnalysisService? _analysis;
+    private CancellationTokenSource? _accountVerifyCts;
     private bool _disposed;
 
     public OnlineMusicService()
@@ -68,6 +69,9 @@ internal sealed class OnlineMusicService : IDisposable
 
     public bool IsRunning => Endpoint is not null;
 
+    // 登录状态检测（第四十六轮）：定时验证发现掉登录时触发，宿主转发成页面提醒/托盘气泡。
+    public event Action<string>? AccountSessionExpired;
+
     public void Start()
     {
         if (Endpoint is not null || FailureMessage is not null || _disposed)
@@ -97,6 +101,7 @@ internal sealed class OnlineMusicService : IDisposable
             _server = server;
             Endpoint = new OnlineEndpoint(port, token, Sources.ToList());
             OnlineHttp.Info($"started port={port} sources={string.Join(",", Sources)}");
+            StartAccountVerification();
         }
         catch (Exception exception)
         {
@@ -123,6 +128,59 @@ internal sealed class OnlineMusicService : IDisposable
             _analysis = null;
             _server = null;
             Endpoint = null;
+        }
+    }
+
+    // 登录状态检测（第四十六轮）：启动 20s 后首检，之后每 5 分钟一次。
+    // 只问已登录的平台；网络异常保留账号（unknown），平台明确拒绝才清号并提醒。
+    private void StartAccountVerification()
+    {
+        if (_accountVerifyCts is not null)
+        {
+            return;
+        }
+
+        _accountVerifyCts = new CancellationTokenSource();
+        Accounts.SessionExpired += OnAccountSessionExpired;
+        _ = Task.Run(() => VerifyAccountsLoopAsync(_accountVerifyCts.Token));
+    }
+
+    private void OnAccountSessionExpired(string source) => AccountSessionExpired?.Invoke(source);
+
+    private async Task VerifyAccountsLoopAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(20), cancellationToken).ConfigureAwait(false);
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    var results = await Accounts.VerifySessionsAsync(cancellationToken).ConfigureAwait(false);
+                    var expired = results
+                        .Where(item => string.Equals(item.Status, AccountVerifyStatus.Expired, StringComparison.Ordinal))
+                        .Select(item => item.Source)
+                        .ToList();
+                    if (expired.Count > 0)
+                    {
+                        OnlineHttp.Info($"[account] verify expired={string.Join(",", expired)}");
+                    }
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (Exception exception)
+                {
+                    OnlineHttp.Warn($"[account] verify failed: {OnlineHttp.Describe(exception)}");
+                }
+
+                await Task.Delay(TimeSpan.FromMinutes(5), cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // 宿主退出时取消，忽略。
         }
     }
 
@@ -179,6 +237,19 @@ internal sealed class OnlineMusicService : IDisposable
         }
 
         _download = null;
+
+        // 登录检测循环先停：它会在宿主退出后继续访问网络。
+        try
+        {
+            _accountVerifyCts?.Cancel();
+            _accountVerifyCts?.Dispose();
+            _accountVerifyCts = null;
+            Accounts.SessionExpired -= OnAccountSessionExpired;
+        }
+        catch (Exception exception)
+        {
+            OnlineHttp.Warn($"[account] verify loop stop failed: {OnlineHttp.Describe(exception)}");
+        }
 
         // Flushes a pending account.json write; the QR sessions never outlive the host.
         try
