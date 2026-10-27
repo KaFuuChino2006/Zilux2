@@ -292,6 +292,12 @@ internal sealed class WebViewHost : IDisposable
             core.Settings.IsStatusBarEnabled = false;
             core.Settings.AreDevToolsEnabled = devMode;
             core.Settings.AreBrowserAcceleratorKeysEnabled = devMode;
+            // 播放器不是浏览器：触摸板 / 触屏的双指捏合缩放与 Ctrl+滚轮缩放都会把整个界面放大，
+            // 且缩放会被 WebView2 按站点记住，误触后很难恢复，这里统一关掉并把缩放归位。
+            core.Settings.IsPinchZoomEnabled = false;
+            core.Settings.IsZoomControlEnabled = false;
+            _webView.ZoomFactor = 1.0;
+            HostLog.Info($"webview2 zoom disabled pinch={core.Settings.IsPinchZoomEnabled} control={core.Settings.IsZoomControlEnabled} factor={_webView.ZoomFactor:0.00}");
 
             core.WebMessageReceived += OnWebMessageReceived;
             core.ProcessFailed += OnProcessFailed;
