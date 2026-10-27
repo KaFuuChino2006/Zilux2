@@ -44,6 +44,15 @@ internal static class NativeMethods
     public const uint VkMediaStop = 0xB2;
     public const uint VkMediaPlayPause = 0xB3;
 
+    // WM_APPCOMMAND（0x0319）：部分键盘驱动 / OEM 热键服务按下「系统切换音乐」键时不发
+    // VK_MEDIA_* 按键，而是直接往前台窗口投一条 APPCOMMAND 消息。底层键盘钩子看不到这条路径，
+    // 只能在窗口消息里兜接；lParam 高 16 位的低 12 位是命令号。
+    public const int WmAppCommand = 0x0319;
+    public const int AppCommandMediaNextTrack = 11;
+    public const int AppCommandMediaPrevTrack = 12;
+    public const int AppCommandMediaStop = 13;
+    public const int AppCommandMediaPlayPause = 14;
+
     [StructLayout(LayoutKind.Sequential)]
     public struct KbdLlHookStruct
     {
