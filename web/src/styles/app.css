@@ -849,8 +849,10 @@ to{opacity:1;transform:none}
 .quick-quality{width:100%;margin:2px 0 4px}
 .quick-quality .seg-btn{flex:1}
 .quick-hint{font-size:10px;line-height:1.4;color:var(--muted);margin-bottom:6px}
-.app:has(.search-dock[data-open=true]) .topbar{z-index:80}
-.app:has(.search-dock[data-open=true]) .lyrics-view{z-index:35}
+/* 搜索展开时的层级：用 JS 维护的根节点 class，不依赖 :has()，跨 WebView2 版本一致。
+   搜索框平时永远在 topbar 的 z-index:30 上下文里，不会盖住歌词页 / 设置弹层 / 登录层。 */
+.app.is-search-open .topbar{z-index:80}
+.app.is-search-open .lyrics-view{z-index:35}
 .lyrics-source{margin-top:6px;font-size:11px;color:var(--muted);letter-spacing:.02em}
 .quick-value[data-role=lyric-match]{color:var(--accent-strong)}
 .quick-panel{width:min(348px,84vw)}

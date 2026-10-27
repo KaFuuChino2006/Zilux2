@@ -2133,6 +2133,8 @@ export class App {
   private centerNextSheet = false;
 
   private openSheet(title: string, build: (body: HTMLDivElement) => void): void {
+    // 弹层打开时先收起搜索：搜索框只属于顶栏，不该盖在弹层/歌词层上
+    this.closeSearchDock();
     // 换面板时上一个直接移除，避免两层遮罩叠着淡出
     this.sheet?.root.remove();
     this.sheet = null;
@@ -2174,6 +2176,7 @@ export class App {
     if (!this.searchDockOpen) {
       this.searchDockOpen = true;
       this.searchDock.dataset.open = 'true';
+      this.root.classList.add('is-search-open');
       this.searchPop.classList.add('is-open');
       this.renderSearchTabs();
       if (!this.searchInput.value.trim()) {
@@ -2187,6 +2190,7 @@ export class App {
   private closeSearchDock(): void {
     this.searchDockOpen = false;
     this.searchDock.dataset.open = 'false';
+    this.root.classList.remove('is-search-open');
     this.searchPop.classList.remove('is-open');
     this.searchInput.blur();
   }
@@ -6543,6 +6547,8 @@ export class App {
 
   private openLyrics(): void {
     if (this.lyrics) return;
+    // 歌词页是整窗覆盖层：先收起搜索，避免搜索层与歌词页互相抢层级
+    this.closeSearchDock();
     const view = new LyricsView(() => this.closeLyrics());
     this.lyrics = view;
     // 挂到根节点：歌词页要整窗覆盖（含左侧栏区域），背景是整屏模糊封面
