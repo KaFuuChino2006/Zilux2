@@ -2897,7 +2897,7 @@ export class App {
     if (this.searchLiked.has(key)) this.searchLiked.set(key, liked);
     this.likedCache.clear();
     if (this.wall.kind === 'search') this.syncSearchLiked();
-    // 只有「此刻正停在喜欢墙」时才刷新它；否则像首页/歌单里点红心会自动跳页（用户反馈的 bug）。
+    // 只有「此刻正停在喜欢墙」时才刷新它；否则像首页/歌单里点红心会自动跳页（反馈的 bug）。
     const wallVisible = !this.wallHost.classList.contains('is-hidden');
     if (this.wall.kind === 'liked' && wallVisible) {
       // 就地增删这一首即可——重新 showLiked() 会先渲染「同步中」再渲染结果，看起来像刷新两次。

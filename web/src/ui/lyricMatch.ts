@@ -457,7 +457,7 @@ async function runMatch(
       }
       const textScore = similarity(baseText, text);
       // 歌词文本是主要判据，元数据只做辅助；避免把同专辑不同曲匹配上。
-      // 逐字歌词里「带翻译」的优先级更高（用户要求：有翻译的逐字 > 单纯逐字）。
+      // 逐字歌词里「带翻译」的优先级更高（要求：有翻译的逐字 > 单纯逐字）。
       const translationBonus = word?.hasTranslation ? 0.06 : 0;
       const score = Math.min(1, textScore * 0.72 + meta * 0.28 + translationBonus);
       const kind: WordLyricKind | 'lrc' = word?.kind ?? 'lrc';

@@ -9,7 +9,7 @@ import type { DecaySpec, WindowTypography } from './text/lyricWindow';
 // src/components/visualizer/lumiere/types.ts
 // 绘光的光位（镜头风格）profile 与 tuning。一个光位 = 光束组 + 烟雾 + 浮尘 + 前景散景 + 线稿配方 +
 // 文字区 + 运镜，全是数据，由同一套场景构建器解释（设计见 lumisynth 仓库 docs/LUMIERE.md 第二节）。
-// LumiereSceneTuning 是场景直接读的参数；用户可见的 LumiereTuning 在 src/types.ts，由运行时映射过来。
+// LumiereSceneTuning 是场景直接读的参数；可见的 LumiereTuning 在 src/types.ts，由运行时映射过来。
 
 export interface RigContext {
     /** 宽高比。 */
