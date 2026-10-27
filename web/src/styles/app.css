@@ -5895,6 +5895,11 @@ body,
   padding: 0 14px;
   font-size: 13px;
 }
+/* .btn 自带 display 会盖掉 UA 的 [hidden]{display:none}：更新页在「已是最新版本」时
+   必须把「下载更新 / 取消下载 / 立即安装并重启」真正藏起来，而不是留下一排灰按钮。 */
+.updates-actions .btn[hidden] {
+  display: none;
+}
 .updates-input {
   width: 100%;
   height: 42px;

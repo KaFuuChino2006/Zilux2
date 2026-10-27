@@ -5057,13 +5057,21 @@ export class App {
       );
       const bgThumb = h('div', { class: 'quick-seg-thumb' });
       const bgBtns: HTMLButtonElement[] = [];
+      const bgHint = h('div', { class: 'quick-cell-hint', text: '' });
       const paintBg = (): void => {
-        const index = this.appBgMode === 'none' ? 0 : 1;
+        // 三段：关闭 / 随歌曲封面 / 自定义图片（与设置 → 外观的「页面背景」共用同一套偏好）。
+        const index = this.appBgMode === 'image' ? 2 : this.appBgMode === 'cover' ? 1 : 0;
         const button = bgBtns[index];
         if (!button) return;
         bgThumb.style.width = `${button.offsetWidth}px`;
         bgThumb.style.transform = `translateX(${button.offsetLeft}px)`;
         bgBtns.forEach((item, i) => item.classList.toggle('is-on', i === index));
+        bgHint.textContent =
+          this.appBgMode === 'image'
+            ? '已选择自定义图片；再点一次「自定义」可以更换。'
+            : this.appBgImage
+              ? '已保存自定义图片，点「自定义」即可切到它。'
+              : '自定义图片会压缩到 1600px 内保存到本机。';
       };
       const bgBtn = (label: string, on: boolean): HTMLButtonElement => {
         const button = h('button', { class: 'quick-seg-btn', type: 'button', text: label });
@@ -5074,19 +5082,33 @@ export class App {
         bgBtns.push(button);
         return button;
       };
+      const bgCustomBtn = h('button', { class: 'quick-seg-btn', type: 'button', text: '自定义' });
+      bgCustomBtn.addEventListener('click', () => {
+        // 没图或已经在用自定义图：打开文件选择器（选完自动切到自定义图片并重新上色）；
+        // 已有图但当前没在用：直接切过去，不再弹选择器。
+        if (!this.appBgImage || this.appBgMode === 'image') {
+          void this.pickBackgroundImage().then(() => paintBg());
+          return;
+        }
+        this.setBackgroundMode('image');
+        paintBg();
+      });
       const bgSeg = h(
         'div',
-        { class: 'quick-seg-slider' },
+        { class: 'quick-seg-slider quick-bg-seg' },
         bgThumb,
         bgBtn('关闭', false),
         bgBtn('随歌曲封面', true),
+        bgCustomBtn,
       );
+      bgBtns.push(bgCustomBtn);
       body.append(
         h(
           'div',
           { class: 'quick-cell is-wide' },
           h('div', { class: 'quick-cell-title', text: '背景' }),
           bgSeg,
+          bgHint,
         ),
       );
       window.requestAnimationFrame(paintBg);
