@@ -6,6 +6,7 @@ import { loadSettings } from './core/settings';
 import { initOnline, onlineReady, setStreamQuality } from './online/client';
 import { App } from './ui/app';
 import { restoreLastPlayback, setVolume } from './ui/player';
+import { startAutoPlayOnBoot } from './ui/autoPlay';
 import { h, toast } from './ui/dom';
 import { initTheme } from './ui/theme';
 import { installCoverFallback } from './ui/coverFallback';
@@ -117,6 +118,8 @@ async function main(): Promise<void> {
     await app.afterOnlineReady();
     refreshArtworkCovers();
     window.setTimeout(refreshArtworkCovers, 1400);
+    // 「打开软件直接播放」：在线与账号就绪后再触发，避免启动早期拿不到歌单。
+    void startAutoPlayOnBoot();
   } else {
     await app.enter();
     if (hostAvailable()) toast('在线服务未就绪，只能使用本地曲库', 'error');

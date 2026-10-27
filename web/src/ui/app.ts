@@ -67,6 +67,7 @@ import {
 } from '../online/sources';
 import { onlineArtwork } from '../online/artwork';
 import { buildAnalysisSection } from './analysisSection';
+import { autoPlaySettings, listAutoPlayPlaylists, onAutoPlayChange, saveAutoPlaySettings, type AutoPlayPlaylistGroup, type AutoPlaySource } from './autoPlay';
 import { buildCrossfadeSection, readCrossfadeDebug } from './crossfadeDeck';
 import { confirmDialog } from './confirmDialog';
 import { createEqCurve } from './eqCurve';
@@ -2958,7 +2959,7 @@ export class App {
     return { root, setValue };
   }
 
-  private openSettingsSheet(): void {
+  private openSettingsSheet(paneKey = 'general'): void {
     this.setRailActive('settings');
     // 设置改用居中大弹窗（和效果设置一致的观感），其他 sheet 仍是右侧滑出。
     this.centerNextSheet = true;
@@ -3082,6 +3083,59 @@ export class App {
         this.buildPageBackgroundField(),
       );
 
+      // 启动自动播放（第六十四轮）：「打开软件直接播放」+ 来源 + 指定歌单
+      const autoPlayFields = (): HTMLElement[] => {
+        const auto = autoPlaySettings();
+        const enabledField = toggleField(
+          '打开软件直接播放',
+          '启动完成后自动开始播放下面选择的来源；未登录或来源为空时跳过，不影响正常进入软件。',
+          auto.enabled,
+          (value) => {
+            saveAutoPlaySettings({ enabled: value });
+            toast(value ? '已开启：启动后自动播放' : '已关闭：启动后不自动播放');
+          },
+        );
+        const playlistValue = h('div', { class: 'field-hint' });
+        const paintPlaylist = (): void => {
+          const cfg = autoPlaySettings();
+          playlistValue.textContent = cfg.playlistTitle
+            ? `${SOURCE_LABEL[cfg.playlistSource] ?? cfg.playlistSource} · ${cfg.playlistTitle}`
+            : '尚未选择歌单';
+        };
+        paintPlaylist();
+        const pickBtn = h('button', { class: 'btn', title: '选择自动播放的歌单' }, icon('list', 16), h('span', { text: '选择歌单' }));
+        pickBtn.addEventListener('click', () => this.openAutoPlayPlaylistPicker());
+        const playlistField = h(
+          'div',
+          { class: 'field' },
+          h('div', {}, h('div', { class: 'field-label', text: '自动播放歌单' }), playlistValue),
+          pickBtn,
+        );
+        const sourceField = segField<AutoPlaySource>(
+          '自动播放来源',
+          [
+            { value: 'daily', label: '今日推荐' },
+            { value: 'liked', label: '我喜欢的音乐' },
+            { value: 'playlist', label: '指定歌单' },
+          ],
+          auto.source,
+          (value) => {
+            const saved = saveAutoPlaySettings({ source: value });
+            playlistField.hidden = saved.source !== 'playlist';
+            if (saved.source === 'playlist' && !saved.playlistId) toast('请选择要自动播放的歌单');
+          },
+          '今日推荐与我喜欢的音乐都会合并所有已登录平台；指定歌单在下方选择。',
+        );
+        playlistField.hidden = auto.source !== 'playlist';
+        this.sheetScope?.add(
+          onAutoPlayChange((cfg) => {
+            paintPlaylist();
+            playlistField.hidden = cfg.source !== 'playlist';
+          }),
+        );
+        return [enabledField, sourceField, playlistField];
+      };
+
       // 播放
       const playback = section(
         '播放',
@@ -3146,6 +3200,7 @@ export class App {
         sliderField('搜索结果条数', 10, 50, 5, settings.playback.searchLimit, (value) => {
           patchSettings({ playback: { searchLimit: value } });
         }, (value) => `${value} 条`),
+        ...autoPlayFields(),
         (() => {
           const panel = buildSleepTimerPanel();
           this.sheetScope?.add(() => panel.dispose());
@@ -3615,21 +3670,78 @@ export class App {
         const target = navBtns.get(key);
         if (target) moveNavThumb(target, animate);
       };
-      entries.forEach((entry, index) => {
+      const initialKey = entries.some((entry) => entry.key === paneKey) ? paneKey : entries[0]?.key ?? 'general';
+      entries.forEach((entry) => {
         const pane = h('div', { class: 'settings-pane' }, entry.node);
-        pane.hidden = index !== 0;
+        pane.hidden = entry.key !== initialKey;
         panes.set(entry.key, pane);
         content.append(pane);
-        const btn = h('button', { class: `settings-nav-btn${index === 0 ? ' is-on' : ''}`, type: 'button', text: entry.label });
+        const btn = h('button', { class: `settings-nav-btn${entry.key === initialKey ? ' is-on' : ''}`, type: 'button', text: entry.label });
         btn.addEventListener('click', () => activate(entry.key));
         navBtns.set(entry.key, btn);
         nav.append(btn);
       });
       body.append(h('div', { class: 'settings-layout' }, nav, content));
       window.requestAnimationFrame(() => {
-        const first = navBtns.get(entries[0]?.key ?? 'general');
+        const first = navBtns.get(initialKey);
         if (first) moveNavThumb(first, false);
       });
+    });
+  }
+
+  /**
+   * 「打开软件直接播放 → 指定歌单」选择器：列出两平台个人歌单，选中后写回设置并回到「播放」页。
+   */
+  private openAutoPlayPlaylistPicker(): void {
+    this.openSheet('选择自动播放歌单', (body) => {
+      const status = h('div', { class: 'field-hint', text: '正在读取个人歌单…' });
+      const list = h('div', { class: 'autoplay-playlists' });
+      body.append(status, list);
+      void listAutoPlayPlaylists()
+        .then((groups: AutoPlayPlaylistGroup[]) => {
+          status.remove();
+          const usable = groups.filter((group) => group.loggedIn && group.playlists.length > 0);
+          if (usable.length === 0) {
+            list.append(h('div', { class: 'field-hint', text: '没有可选的个人歌单：先登录网易云 / QQ 音乐，让个人库同步后再来。' }));
+            return;
+          }
+          usable.forEach((group) => {
+            list.append(h('div', { class: 'autoplay-group-title', text: `${group.label} · ${group.playlists.length} 个歌单` }));
+            group.playlists.forEach((playlist) => {
+              const cover = playlist.cover
+                ? h('span', { class: 'autoplay-playlist-cover', style: `background-image:url("${playlist.cover}")` })
+                : h('span', { class: 'autoplay-playlist-cover' });
+              const row = h(
+                'button',
+                { class: 'autoplay-playlist', type: 'button', title: playlist.title },
+                cover,
+                h(
+                  'span',
+                  { class: 'autoplay-playlist-main' },
+                  h('span', { class: 'autoplay-playlist-title', text: playlist.title }),
+                  h('span', { class: 'autoplay-playlist-meta', text: `${SOURCE_LABEL[group.source] ?? group.source} · ${playlist.count} 首` }),
+                ),
+                icon('chevron', 15),
+              );
+              row.addEventListener('click', () => {
+                saveAutoPlaySettings({
+                  source: 'playlist',
+                  playlistSource: group.source,
+                  playlistId: playlist.id,
+                  playlistTitle: playlist.title,
+                  playlistCover: playlist.cover ?? '',
+                });
+                toast(`启动自动播放歌单：${playlist.title}`);
+                this.openSettingsSheet('playback');
+              });
+              list.append(row);
+            });
+          });
+        })
+        .catch((err: unknown) => {
+          status.textContent = '歌单读取失败，请稍后再试';
+          console.warn('[app] autoplay playlist picker failed', err);
+        });
     });
   }
 
