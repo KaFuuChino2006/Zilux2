@@ -189,10 +189,10 @@ const STYLE_CSS = `
 .zl-vinyl-scene{position:absolute;inset:0;overflow:hidden;isolation:isolate;background:var(--vs-bg-bottom,#090807);font-family:var(--vs-font,${FONT_STACK});}
 .zvs-canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
 .zvs-words{position:absolute;inset:0;pointer-events:none;z-index:2}
-.zvs-line{position:absolute;top:0;left:0;width:100%;text-align:center;white-space:normal;opacity:0;will-change:transform,opacity;transition:opacity .5s ease}
+.zvs-line{position:absolute;top:0;left:0;width:100%;text-align:center;white-space:normal;opacity:0;scale:.94;will-change:transform,opacity,scale;transform-origin:50% 50%;transition:opacity .5s ease,transform .55s cubic-bezier(.22,1,.36,1),scale .55s cubic-bezier(.22,1,.36,1),font-size .55s cubic-bezier(.22,1,.36,1)}
 .zvs-line.is-visible{opacity:var(--vs-unsung-op,.34)}
 .zvs-line.is-sung{opacity:var(--vs-sung-op,.86)}
-.zvs-line.is-focus{opacity:var(--vs-active-op,1)}
+.zvs-line.is-focus{opacity:var(--vs-active-op,1);scale:1}
 .zvs-word{display:inline;color:var(--vs-color,#f2e7d8);transition:color .32s ease,text-shadow .32s ease}
 .zvs-char{position:relative;display:inline-block;transition:color .3s ease,translate .32s ease,rotate .32s ease,opacity .3s ease}
 .zvs-line.is-focus .zvs-word[data-state="2"]{color:var(--vs-active,#ffe9c2);text-shadow:0 0 calc(16px * var(--vs-glow,.9)) var(--vs-glow-color,#ffcf8a)}
@@ -564,7 +564,8 @@ export function createVinylScene(options: VinylSceneOptions = {}): VinylScene {
       const view = views[i]!;
       const k = i - focus;
       const visible = activeIndex >= 0 ? Math.abs(k) <= cfg.neighborLines : i === 0;
-      const fontPx = k === 0 ? base : base * 0.74;
+      // 字号统一交给 scale 做「聚焦」缩放（与「关闭」样式一致）：切行时不再跳字号。
+      const fontPx = base;
       const y = centerY + k * gap;
       view.el.style.transform = `translateY(${y.toFixed(1)}px) translateY(-50%)`;
       view.el.style.left = `${left}px`;
@@ -572,7 +573,7 @@ export function createVinylScene(options: VinylSceneOptions = {}): VinylScene {
       view.el.style.fontSize = `${fontPx.toFixed(2)}px`;
       // 旋入样式：整列按距当前行的远近共用一份散开系数（已唱行收拢为 0）。
       const scatter =
-        activeIndex < 0 || k <= 0 ? 0 : k === 0 ? 0.6 : Math.min(1, 0.6 + k * 0.15);
+        activeIndex < 0 || k < 0 ? 0 : k === 0 ? 0.6 : Math.min(1, 0.6 + k * 0.15);
       view.el.style.setProperty('--scatter', scatter.toFixed(2));
       view.el.classList.toggle('is-visible', visible && (activeIndex < 0 ? i === 0 : i > focus));
       view.el.classList.toggle('is-focus', activeIndex >= 0 && visible && i === focus);
