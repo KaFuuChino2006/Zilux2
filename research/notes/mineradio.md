@@ -13,7 +13,7 @@
 2. **"帧预算"不是单一实现**，而是四套机制叠加：①像素预算（DPR cap + 5.2M 像素 budget，`01-scene/00-renderer-quality.js:5-7`）；②逐帧成本 EMA→pressure→level 的延迟反馈（同文件 `:62-81`）；③按子系统切分的 **frameGate 限帧**（`00-state/10-frame-scheduler.js:1-74`，主循环 `11-main-loop.js:165-173`）；④深后台整体降档（rAF 换 `setTimeout(1000ms)`、renderer 缩到 4×4、DPR 0.3）。代码中**没有**名为 `frameBudget` 的单一对象。
 3. **自适应 cadence 实际是死代码**：`RENDER_VISIBLE_VSYNC = true`（`01-scene/00-renderer-quality.js:9`）让 `resolveAdaptiveRenderCadence()` 直接返回 `null`（`11-main-loop.js:77-83`）。前台可见运动恒为 VSync 全速，这与 `docs/LOW_SPEC_OPTIMIZATION_DOCTRINE.md:83-92` 的「默认 VSync，45/60/75/90/120 只是用户主动上限」一致——文档说的是真话，但意味着 `selectAdaptiveRenderCadence()`（`:97-125`）目前是预留能力而不是生效策略。
 4. **降档的真实手段是"少算"而不是"少画"**：主循环每帧照常 `renderer.render()`，但频谱分析、3D 歌单架、歌词粒子、舞台歌词、桌面 overlay 各自被 frameGate 按目标帧率跳过；深后台再叠加像素/缓存/内存三层压缩。
-5. **GSMTC 在 v2.2.0 完全不存在**（重点更正 Lead 简报）：全仓 `gsmtc|smtc|systemmediatransport|navigator.mediaSession|MediaSession|SystemMediaTransport` 命中 **0**，`MediaPlayPause|MediaTrackNext|hardwareMediaKey` 也无命中。本仓库**没有** Windows 系统媒体面板/硬件媒体键集成，第 4 节给出证据与"最接近的替代机制"。
+5. **GSMTC 在 v2.2.0 完全不存在**（重点更正 简报）：全仓 `gsmtc|smtc|systemmediatransport|navigator.mediaSession|MediaSession|SystemMediaTransport` 命中 **0**，`MediaPlayPause|MediaTrackNext|hardwareMediaKey` 也无命中。本仓库**没有** Windows 系统媒体面板/硬件媒体键集成，第 4 节给出证据与"最接近的替代机制"。
 6. **WorkerW 桌面模式是双模式**：passive（主窗口 `SetParent` 到 WorkerW 壁纸层）+ interactive（`SetParent` 到 `SHELLDLL_DefView` 下、与桌面图标共存并可交互）。用 PowerShell 内联 C# 完成窗口发现、样式切换、`SetWindowPos`、JSON ack 校验；失败 fail-closed 回退顶层窗口；`Escape` 全局热键退出；提供"恢复托盘"兜底（`desktop/main.js:1346-1372,2109-2165`）。
 7. **桌面图标层**是另一个独立 native helper：`WS_EX_LAYERED + LWA_COLORKEY` 的 layered window 盖在图标下方/上方做色键抠像，避免全屏桌面窗口挡住宿主桌面图标（`desktop/desktop-native-icon-layer-runtime.js`，1305 行）。
 8. **视频壁纸（Wallpaper Engine）走 DWM thumbnail helper 子进程**：C# WinForms 宿主窗 `DwmRegisterThumbnail` 把 WE 进程窗口合成进来，主进程按环境变量下发源/目标 HWND；失败回退 `desktopCapturer` 抓帧（`desktop/wallpaper-engine-runtime.js:9-23,990-1020`；`desktop/main.js:915-1308`）。**不是** Web/Application 项目执行器（`NOTICE.md:14-19` 明确只索引 `project.json`）。
@@ -416,7 +416,7 @@ window.__mineradioMainFrameGates = mainFrameGates;
 
 ### 4.1 结论
 
-v2.2.0 快照中**不存在** Windows GSMTC / System Media Transport Controls 集成，也不存在 Web Media Session API 集成。Lead 简报中的这条假设不成立，需按下述证据修正。
+v2.2.0 快照中**不存在** Windows GSMTC / System Media Transport Controls 集成，也不存在 Web Media Session API 集成。简报中的这条假设不成立，需按下述证据修正。
 
 ### 4.2 证据（可复现）
 
@@ -873,7 +873,7 @@ start = Math.max(0, end - SHELF_MAX_RENDER + 1);
 
 - **Q1**：`RENDER_VISIBLE_VSYNC=true` 是刻意"冻结"自适应 cadence，还是临时开关？如果是前者，`selectAdaptiveRenderCadence`（`00-renderer-quality.js:97-125`）应删除；如果是后者，需要接线到 `resolveAdaptiveRenderCadence`（`11-main-loop.js:77-83`）才生效。
 - **Q2**：`sampleAdaptiveFrameCost` 产生的 `level` 除了影响 `getRenderLoadTier`，是否还有消费方？目前未见"level→降画质"的路径，说明"压力反馈"只是观测。
-- **Q3**：GSMTC 是否在其它分支/后续版本实现过？在本快照 0 命中；README/docs 也未提。若 Lead 需要，只能参考 Zilux v1。
+- **Q3**：GSMTC 是否在其它分支/后续版本实现过？在本快照 0 命中；README/docs 也未提。若 前端侧需要，只能参考 Zilux v1。
 - **Q4**：`desktop/wallpaper-preload.js`、`public/wallpaper.html` 在 `package.json` files 排除项中被引用但仓库不存在；是重构后残留，还是 v2.2.0 删除了壁纸窗口功能？`待确认`。
 - **Q5**：3D 歌单架文档称实现于 `public/index.html`，实际在 `04-shelf/*`；index.html 中 `#shelf-*` 控件 id 是否还承担作用需核对（文档漂移）。
 - **Q6**：`server.js` 绑定 `0.0.0.0` 是否为刻意（局域网投屏/手机控制）还是疏忽？代码中没有局域网访问的提示/鉴权；Zilux2 必须改 127.0.0.1 或加鉴权。`待确认`。
@@ -889,7 +889,7 @@ start = Math.max(0, end - SHELF_MAX_RENDER + 1);
 
 ## 12. 对齐 Zilux v1 / Zilux2 的落地建议
 
-> 背景（Lead 提供）：Zilux v1 = C#/.NET 10/WPF，已实现任务栏逐字歌词、扇形浮层、桌面歌词壁纸（WebView2 挂 WorkerW）、动态视频/GIF 壁纸（LibVLC/WIC）、GSMTC 媒体会话（含网易云进度补偿）、QQ/网易云/酷狗歌词源、播放页频谱（WASAPI loopback）、托盘/热键/自启/主题、单文件安装器。Zilux2 是下一步新开发。**Mineradio 只能提供"思路"，不能提供代码（GPL-3.0）**。
+> 背景（提供）：Zilux v1 = C#/.NET 10/WPF，已实现任务栏逐字歌词、扇形浮层、桌面歌词壁纸（WebView2 挂 WorkerW）、动态视频/GIF 壁纸（LibVLC/WIC）、GSMTC 媒体会话（含网易云进度补偿）、QQ/网易云/酷狗歌词源、播放页频谱（WASAPI loopback）、托盘/热键/自启/主题、单文件安装器。Zilux2 是下一步新开发。**Mineradio 只能提供"思路"，不能提供代码（GPL-3.0）**。
 
 ### 12.1 GSMTC：v1 已有，Zilux2 的升级点（Mineradio 无参考代码）
 
@@ -950,7 +950,7 @@ Mineradio 的缺失反而凸显 v1 的路是对的。可升级：
 - **依赖 Electron 主进程、不能照搬**：深后台 renderer 4×4（WebView2 侧需 C# 控制 `Controller.IsVisible`/暂停 JS 定时器或注入降档脚本）、`performance.memory`、`trimAppMemory` 进程树 trim、托盘/tray 状态权威。
 - **不建议搬**：同步 XHR 模块加载、全局 var 作用域、PowerShell 高频轮询、DWM thumbnail（v1 的 LibVLC/WIC 原生方案更好）、`0.0.0.0` 本地服务。
 
-### 12.5 一句话总结给 Lead
+### 12.5 一句话总结给前端侧
 
 Mineradio 最有价值的不是它的业务功能，而是**"在低配 Windows 上把 3D 音乐播放器跑到可用的性能方法论"**（像素预算/帧闸门/深后台/三态降档）和**"用 PowerShell 内联 C# 把 Electron 窗口塞进桌面层的工程化兜底"**（发现/校验/恢复/熔断/退出恢复 Shell）——这两块可以完全用 C#/WPF 重新实现，且 Zilux v1 已经具备更好的原生基础（GSMTC、WASAPI、LibVLC），Zilux2 应当"以 v1 为底座，吸收 Mineradio 的性能与 WorkerW 工程经验，而不是移植 Electron 架构"。
 

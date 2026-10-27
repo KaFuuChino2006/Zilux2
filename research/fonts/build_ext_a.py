@@ -4,7 +4,7 @@ includes CJK Ext-A (U+3400-U+4DBF) and CJK compatibility ideographs (U+2F00-U+2F
 so that rare characters in internet lyrics still map to a real glyph.
 
 The shipped files stay in web/public/fonts/ (CJK basic block only).  This script
-writes its output into research/fonts/work/ so the Lead can decide whether the
+writes its output into research/fonts/work/ so 开发侧 can decide whether the
 extra ~2.0 MB (TTF) / ~1.2 MB (WOFF1) is acceptable:
 
     research/fonts/work/zilux2-sans-sc-regular-exta.ttf    (finalized, renamed)

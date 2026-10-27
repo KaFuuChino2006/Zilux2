@@ -1,8 +1,8 @@
 # AirPlay 2 / HAP 配对与加密：TuneBlade 实证 + 开源实现字节级规格
 
-> 作者：raop-re（2026-10-20）。配套文档：`raop-flow.md`（经典 RAOP 明文全流程）、`sharp-notes.md`（实现清单）、`self-test.md`（无硬件自测）。
+> 作者：投送开发（2026-10-20）。配套文档：`raop-flow.md`（经典 RAOP 明文全流程）、`sharp-notes.md`（实现清单）、`self-test.md`（无硬件自测）。
 >
-> **本文解决的问题**：实测 macOS 26「隔空播放接收器」与 HomePod mini 对 TuneBlade 风格的 `OPTIONS *` 直接回 **403 Forbidden**（Lead 实测，Server: AirTunes/980.77.x，无 `WWW-Authenticate` 挑战头）。403 说明它们要求 **AirPlay 2（HAP）配对后的加密会话**，经典 RAOP 明文/密码分支无效。本文给出：
+> **本文解决的问题**：实测 macOS 26「隔空播放接收器」与 HomePod mini 对 TuneBlade 风格的 `OPTIONS *` 直接回 **403 Forbidden**（真机实测，Server: AirTunes/980.77.x，无 `WWW-Authenticate` 挑战头）。403 说明它们要求 **AirPlay 2（HAP）配对后的加密会话**，经典 RAOP 明文/密码分支无效。本文给出：
 > 1. TuneBlade 反编译里的配对实现到底做了什么、为什么不能用于 HomePod/mac；
 > 2. 标准 AirPlay 2 / HAP 的字节级配对与加密规格（可据实现）；
 > 3. AP2 会话建立后 RTSP/音频包的具体封装；
@@ -327,7 +327,7 @@ UDP 音频（shk 加密）+ 每 2s POST /feedback
 | macOS 26 接收器 | 隔空播放接收器可能要求**显示器 PIN 确认**，或只接受同 Apple ID/家庭成员 | 先试瞬态；失败则提示用户"请用 iPhone/Mac 的 AirPlay 菜单手动配一次"（pyatv 思路：读 `_airplay._tcp` 的 `pk`/`sf`/`acl`） |
 | bplist 编码器 | 需要自己写（NSData/NSNumber/NSDictionary/UID 等） | 只实现 SETUP 需要的子集（dict/array/string/data/int/real），~200 行 |
 | 时序对齐 | AP2 `stream_specified_latency=77175` 帧 + fudge 11025 帧，若 NTP 基准错会"能连但爆音/延迟" | 复刻 shairport-sync 的 anchor 逻辑；先按 latencyMin/Max 取中间值（44100 帧=1s） |
-| 整体工期 | 本文规格齐备后，纯 C# 实现 + mock 自测约 2–3 人日；真机调试 1–2 天（若设备接受瞬态配对） | 先做 mock loopback，再借 Lead 的 HomePod/mac 实测（每次改 <1 分钟验证） |
+| 整体工期 | 本文规格齐备后，纯 C# 实现 + mock 自测约 2–3 人日；真机调试 1–2 天（若设备接受瞬态配对） | 先做 mock loopback，再借前端侧的 HomePod/mac 实测（每次改 <1 分钟验证） |
 
 ---
 
@@ -404,7 +404,7 @@ dotnet run -c Release -- --ap2 "E:\Zilux2开发\src\Zilux2\bin\Debug\net10.0-win
 3. `shk`（音频 key）= 配对共享密钥**前 32 字节**，不做 HKDF；只有 control/event 通道 key 才 HKDF。
 4. `GET /info` 必须在 session SETUP **之前**；AP2 不需要 `OPTIONS`/`ANNOUNCE`/`pair-verify`（瞬态配对无 pair-verify）。
 5. 设备对连续瞬态配对有限流：失败后等 ≥30–40s；多端并发配对会互相打断（表现为 M3 读超时）。
-6. `timingProtocol=PTP` 时 session body 需带 `timingPeerInfo{Addresses,ID}`、`groupUUID`、`groupContainsGroupLeader=true`，否则设备可能不进入 PTP 流程。
+6. `timingProtocol=PTP` 时 session body 需带 `timingPeerInfo{Addresses,ID}`、`groupUUID`、`groupContainsGroup前端侧er=true`，否则设备可能不进入 PTP 流程。
 
 ### 7.4 出声还缺的两块（**已于 2026-10-20 晚全部补齐并真机出声，见 §9、§10.6**）
 
@@ -461,7 +461,7 @@ dotnet run -c Release -- --ap2 "E:\Zilux2开发\src\Zilux2\bin\Debug\net10.0-win
 
 ---
 
-## 9. 实现状态（task-11 落地版，2026-10-20）
+## 9. 实现状态（任务 落地版，2026-10-20）
 
 本节记录 `src/Zilux2/AirPlay/Ap2/` 中 **已实现并真机验证过握手链路** 的版本，是给维护者的“代码 ↔ 协议”对照表。
 
@@ -486,7 +486,7 @@ dotnet run -c Release -- --ap2 "E:\Zilux2开发\src\Zilux2\bin\Debug\net10.0-win
 3. 会话 SETUP 的 `timingProtocol` 默认 **"PTP"**（HomePod/新固件在 NTP 下会回 200 但流 SETUP 被静默忽略；`Ap2Options.TimingProtocolPtp` 默认 true）。
 4. **RECORD 的响应可能是 500**（HomePod mini 实测），必须容错继续发流 SETUP（参考实现同样不检查 RECORD 状态）。
 5. RECORD 成功后**同头补发 FLUSH**（`Range: npt=0-` + `RTP-Info: seq=…;rtptime=…`），这是 AirFlash 蓝本的行为。
-6. 会话 SETUP 的 `timingPeerInfo` 规范（AirFlash `session.rs`）：`ID` 是**每次会话新生成的随机 UUID**（不是 sessionUUID）、`DeviceType=0`、`ClockID`=PTP master 的 clockIdentity、`Addresses=[本机IP]`、`SupportsClockPortMatchingOverride=false`；`timingPeerList` 为同一 dict 的数组。`groupContainsGroupLeader` **恒为 false**；`groupUUID` 仅在配置了多房间 group 时才写（单设备不写）。
+6. 会话 SETUP 的 `timingPeerInfo` 规范（AirFlash `session.rs`）：`ID` 是**每次会话新生成的随机 UUID**（不是 sessionUUID）、`DeviceType=0`、`ClockID`=PTP master 的 clockIdentity、`Addresses=[本机IP]`、`SupportsClockPortMatchingOverride=false`；`timingPeerList` 为同一 dict 的数组。`groupContainsGroup前端侧er` **恒为 false**；`groupUUID` 仅在配置了多房间 group 时才写（单设备不写）。
 7. SETUP#2 的 `streamConnectionID` 与 RTP 头里的 SSRC 用同一个值（单设备实现里两者都取 session id 即可，AirFlash 用随机 ssrc 并两处共用）。
 
 ### 9.3 PTP 主时钟（我们当 master，HomePod 当 slave）
@@ -568,7 +568,7 @@ cd /c/Users/13329/AppData/Local/Temp/zilux2-ap2-live2
 dotnet run --no-build -c Debug -- 192.168.31.183 20
 ```
 
-## 10. 音频重传（控制通道 0x55 / 0xD6，2026-10-20 task-13）
+## 10. 音频重传（控制通道 0x55 / 0xD6，2026-10-20 任务）
 
 ### 10.1 为什么需要
 
@@ -613,9 +613,9 @@ off 6-7: BE16 = 请求重传的包数 count（设备通常 1..8，个别 32+）
 
 - lead 用 `AirPlayStreamer`（采集线程 + 125 包/秒定速 sender）+ 本层（ALAC 载荷、PTP 主时钟、12B RTP 头、0xE0 首包、100ms PTP sync）在 **.136 黑色 HomePod mini 上真实出声**；接收端 `latencyMin/Max` 提到 300ms 后用户复听「干净了（没杂音）」。
 - 本层与产品接口：`Ap2Connection.Connect / BeginStreaming / SendAudioFrame / SetVolume / Flush / Teardown`，`Ap2Options.LatencyMilliseconds`（产品默认 300）、`UseAlac`（产品为 true 时 audioFormat=1<<18，否则 PCM 2048）。
-- task-13 重传仅鲁棒性增强，不改变已出声链路的默认行为。
+- 任务 重传仅鲁棒性增强，不改变已出声链路的默认行为。
 
-## 11. 多设备投送：进程级共享 PTP 主时钟（task-14，2026-10-20）
+## 11. 多设备投送：进程级共享 PTP 主时钟（任务，2026-10-20）
 
 ### 11.1 问题
 

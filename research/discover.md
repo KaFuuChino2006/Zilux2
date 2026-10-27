@@ -155,7 +155,7 @@ QQ 官方歌手接口全部下线（musicu `music.musichallSinger.*` 返回 1044
 
 ## 2026-10-22 追加：歌曲信息两种形态（整页详情 / 列表内展开）
 
-用户要求「不要侧边抽屉，改成封面放大 + 名字位移 + 歌手/歌曲信息下拉」，并可选择形态。现两种都实现，**设置 → 外观 → 歌曲信息样式** 切换（localStorage `zilux2.songInfoView`，默认「整页详情」）。
+需求「不要侧边抽屉，改成封面放大 + 名字位移 + 歌手/歌曲信息下拉」，并可选择形态。现两种都实现，**设置 → 外观 → 歌曲信息样式** 切换（localStorage `zilux2.songInfoView`，默认「整页详情」）。
 
 - **整页详情**（page）：在内容区铺一层 `.sd-layer`，188px 大封面 + 标题/歌手/专辑+发行日期（封面 scale-in、标题位移入场），下方三个可折叠组：歌手信息（每位歌手可跳转歌手页）、歌曲信息（来源/时长/发行日期/曲目/歌曲 ID/官方链接）、音质（QQ 才有）。左上「返回」回上一页；点歌手/专辑链接会跳到对应页面。
 - **列表内展开**（inline）：点曲目行 ⓘ 在行下插入 `.si-panel`（`grid-template-rows: 0fr → 1fr` 展开动画），130px 封面 + 同一套折叠组 + 右上角收起按钮；再点同一行 ⓘ 收起，点另一行会替换旧面板。
@@ -163,7 +163,7 @@ QQ 官方歌手接口全部下线（musicu `music.musichallSinger.*` 返回 1044
 - 文件：`web/src/ui/songInfo.ts`（两形态渲染 + 导出 `openSongInfo` / `songInfoView` / `setSongInfoView`）、`web/src/ui/discover.ts`、`web/src/ui/app.ts`（设置项 + 墙面入口）、`web/src/styles/app.css`（`.sd-*` / `.si-*`）。
 - 截图：`research/shots/app-songview-1-page.png`（整页详情）、`app-songview-2-inline.png`（列表内展开）、`app-songview-3-discover-page.png`（发现页整页详情）、`app-songview-4-artist-nav.png`（歌手跳转）。
 ### 布局补丁（2026-10-22 晚）
-用户反馈「单页展开右侧好空荡」。改为：
+反馈「单页展开右侧好空荡」。改为：
 - 头部右侧增加速览 chips（来源 / 时长 / 发行日期），整页 hero 与列表内展开头部都显示；
 - 折叠组改为双列网格：左列「歌手信息 + 音质」，右列「歌曲信息」（`grid-template-areas: 'artists meta' 'quality meta'`），窄窗口（≤980px）回退单列；
 - 截图：`research/shots/app-songview-6-inline-wide.png`（列表内展开）、`app-songview-7-page-mode.png`（整页详情）。

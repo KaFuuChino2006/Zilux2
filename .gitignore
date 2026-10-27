@@ -86,3 +86,15 @@ research/promo/out-frames/
 research/promo/stills/
 research/promo/shots/
 research/promo/promo-audio.m4a
+
+# 内部迭代日志与交接文档（不对外展示）
+research/HANDOFF*.md
+research/UPDATES-*.md
+
+# 内部阶段日志 / 一次性补丁脚本 / 临时验证工程（不对外展示）
+docs/Zilux2-里程碑*.md
+docs/Zilux2-三项目深度调研报告.md
+research/airplay/_lead-harness/
+research/airplay/_lead-probe/
+research/patch_*.py
+research/qa/patch_*.py

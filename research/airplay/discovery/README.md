@@ -5,7 +5,7 @@ Zilux2 的"投送音频到 AirPlay 设备"功能的第一层：在局域网内�
 纯 BCL 实现（`System.Net.Sockets` / `System.Net.NetworkInformation`），**不新增任何 NuGet 包**，不访问文件系统，不依赖宿主类型（WPF/WebView2 无关，可单测、可复用）。
 
 - 源码：`src/Zilux2/AirPlay/Discovery/`（SDK 样式主工程自动包含，随 `Zilux2.csproj` 编译）
-- 对外契约：`src/Zilux2/AirPlay/IDeviceDiscovery.cs`（Lead 定义，`AirPlayDiscovery` 直接实现 `IAirPlayDeviceDiscovery`，无需适配器）
+- 对外契约：`src/Zilux2/AirPlay/IDeviceDiscovery.cs`（前端侧定义，`AirPlayDiscovery` 直接实现 `IAirPlayDeviceDiscovery`，无需适配器）
 - 实测日志：`research/airplay/discovery/discovery-log.md` + `discovery-raw.log`
 - 自测/真机 harness：`research/airplay/discovery/harness/`（独立工程，链接同一份源码）
 

@@ -93,7 +93,7 @@ public sealed class AlacEncoder
 | `-1` | **可恢复失败**：`dest` 小于 `MaxFrameBytes`、PCM 长度不是声道数的整数倍、空帧、样本数超过 `frameLength`，或编码结果超过 RAOP 包预算 1428 B | **丢弃该帧**并记警告，不要重试同一帧 |
 | 异常 | 仅 `InvalidOperationException`（未 `Init` 就调用，属编程错误） | 修代码，不要靠丢帧掩盖 |
 
-关键点（按 Lead 的集成要求实现）：
+关键点（按 前端侧的集成要求实现）：
 
 - **不抛 `NotImplementedException`**；可恢复错误一律返回 `-1`。
 - `dest` 不够大时**先检查再返回**，绝不越界写。
@@ -103,7 +103,7 @@ public sealed class AlacEncoder
   编码器会写 `partialFrame` 标志 + 32-bit 实际样本数；`< 288` 采样的帧固定走 escape
   （压缩收益为负，Apple 参考实现同样会回退）。
 
-典型流式用法（Lead 的泵线程里）：
+典型流式用法（前端侧的泵线程里）：
 
 ```csharp
 var enc = new AlacEncoder();
@@ -272,7 +272,7 @@ RESULT: ALL ROUNDTRIPS BIT-EXACT — PASS      （进程退出码 0）
      但阶数会写进帧头，解码完全一致。
 5. **性能取决于宿主**：测试是 Release/无调试器；Debug 构建或调试器附加下会慢数倍。
 6. **`EncodeFrame` 不可重入/非线程安全**（内部有工作缓冲与跨帧状态如 mixRes 历史）；
-   Lead 约定由单一音频泵线程调用，符合该约定即安全。需要多线程时每线程一个实例。
+   约定由单一音频泵线程调用，符合该约定即安全。需要多线程时每线程一个实例。
 7. 编码器不做重采样、不做 RTP/RTSP 封装、不处理声道布局协商——这些在 AirPlay 主机侧
    （`AirPlayStreamer` / `StereoResampler`）完成。
 8. `MaxFrameBytes = 1424` 是"承诺的 dest 容量"；实际 16-bit 立体声最坏帧 1412 B，
@@ -300,4 +300,4 @@ research/airplay/alac/AlacDecoder.cs  ->  src/Zilux2/AirPlay/Alac/AlacDecoder.cs
   `AlacBitReader.cs`（该文件已并入并删除）。若产品只需要编码器，**完全不用复制解码器**。
 - `AlacVerify.csproj` / `Program.cs` / `_ref/` 是研究目录的验证资产，不要复制进产品。
 - 线程安全：`AlacEncoder` 按"单线程、每实例一个"设计；`Init` 之后在音频泵线程里循环
-  `EncodeFrame` 即可（Lead 的 `AlacAudioEncoder` 适配器就是这样用）。
+  `EncodeFrame` 即可（前端侧的 `AlacAudioEncoder` 适配器就是这样用）。

@@ -1,6 +1,6 @@
-# AirPlay 2 SETUP 静态复核（task-9）
+# AirPlay 2 SETUP 静态复核（任务）
 
-> 复核对象：`src/Zilux2/AirPlay/Ap2/`（raop-re 写作用域，只读）。
+> 复核对象：`src/Zilux2/AirPlay/Ap2/`（投送开发 写作用域，只读）。
 > 复核目标：解释真机失败 `AirPlay 2 SETUP rtsp://192.168.31.41/9468287064 read failed: Unable to read data from the transport connection`（HomePod mini .183，瞬态配对成功、加密 OPTIONS 200、SETUP 无响应且连接被对端关闭），并给出可直接落地的修改建议。
 > 复核方式：纯离线，对照 pyatv master 快照（`research/airplay/_ref/pyatv-*.py`）与 shairport-sync 接收端源码（`research/airplay/_ref/shairport-src/`）。**未连接真机**（避免配对限流）。
 
@@ -17,7 +17,7 @@
 
 其余为 P1/P2（顺序、头部细节、body 字段、RECORD/FLUSH 序列），见第 4 节差异清单。
 
-**给 raop-re 的一句话**：把 SETUP 拆成两段（先建会话+事件通道，再挂音频流），每请求补 DACP-ID/Active-Remote/Client-Instance，第二段 body 完全照 `pyatv-protocols-airplayv2.py:127-147` 抄。除此之外我方配对与 HAP 加密通道已由真机证明可用（加密 OPTIONS/GET /info 均 200），**不要动配对/加密层**。
+**给 投送开发 的一句话**：把 SETUP 拆成两段（先建会话+事件通道，再挂音频流），每请求补 DACP-ID/Active-Remote/Client-Instance，第二段 body 完全照 `pyatv-protocols-airplayv2.py:127-147` 抄。除此之外我方配对与 HAP 加密通道已由真机证明可用（加密 OPTIONS/GET /info 均 200），**不要动配对/加密层**。
 
 ---
 
@@ -33,7 +33,7 @@
 | 接收端两段式 SETUP 语义 | `shairport-src/rtsp.c` | `handle_setup_2` :2345 起（无 `streams` → 初始阶段；有 `streams` → 第二阶段，`ct`/`spf`/`sr`/`shk`、`type` 96/103、响应字段） |
 | 接收端不实现 `/auth-setup` | `shairport-src/` | grep 无 `/auth-setup` 处理分支 |
 
-> 注：task-9 任务书提到的「pyatv `stream_client.py` 里 `_setup_audio_stream`/`_setup_control_stream`」在 pyatv master 的 `airplay/` 目录中不存在；对应实现是 `protocols/raop/protocols/airplayv2.py` 的 `_setup_base()` + `setup_audio_stream()`。`airplay/ap2_session.py` 是「遥控会话」的通道建立（`isRemoteControlOnly` + type 130 数据通道），可作通道框架参考，但与音频 SETUP 不是同一条路径。
+> 注：任务 任务书提到的「pyatv `stream_client.py` 里 `_setup_audio_stream`/`_setup_control_stream`」在 pyatv master 的 `airplay/` 目录中不存在；对应实现是 `protocols/raop/protocols/airplayv2.py` 的 `_setup_base()` + `setup_audio_stream()`。`airplay/ap2_session.py` 是「遥控会话」的通道建立（`isRemoteControlOnly` + type 130 数据通道），可作通道框架参考，但与音频 SETUP 不是同一条路径。
 
 ---
 
@@ -66,7 +66,7 @@
   "timingPort": <本机 UDP timing 端口>,       # = 我方 LocalTimingPort
   "timingProtocol": "NTP",
   "isMultiSelectAirPlay": True,
-  "groupContainsGroupLeader": False,
+  "groupContainsGroup前端侧er": False,
   "macAddress": "AA:BB:CC:DD:EE:FF",
   "model": "iPhone14,3",
   "name": "pyatv",                          # 发送端名称（可自定义，如 "Zilux2"）
@@ -240,7 +240,7 @@ setup_channel(EventChannel, verifier, remote_ip, event_port,
 
 ---
 
-## 6. 建议的最小改动顺序（给 raop-re）
+## 6. 建议的最小改动顺序（给 投送开发）
 
 1. **第一刀（最可能直接见效）**：`Ap2Setup` 拆两段 body（§2.1/§2.3）+ `Ap2Connection.Handshake` 拆两段 SETUP（同一 `_sessionUri`）+ 每请求补 `DACP-ID/Active-Remote/Client-Instance`（`CommonHeaders()`）。
 2. **第二刀**：`GET /info` 前置于 SETUP；`SendAuthSetup` 改为按 `features/model` 条件发送（HomePod 默认跳过）。
@@ -264,7 +264,7 @@ async def _setup_base(self, timing_server_port: int) -> None:
         "timingPort": timing_server_port,
         "timingProtocol": "NTP",
         "isMultiSelectAirPlay": True,
-        "groupContainsGroupLeader": False,
+        "groupContainsGroup前端侧er": False,
         "macAddress": "AA:BB:CC:DD:EE:FF",
         "model": "iPhone14,3",
         "name": "pyatv",

@@ -157,7 +157,7 @@ jobs:
           Compress-Archive -Path 'dist/Zilux2/*' -DestinationPath $portable -CompressionLevel Optimal
           Write-Host "便携版：$portable"
 
-      # Release 说明只写真实改动与修复（用户 2026-10-27 约定，不再写项目介绍）：
+      # Release 说明只写真实改动与修复（只写真实改动与修复，不写项目介绍）：
       # 优先用仓库内 docs/release-notes/v<version>.md；没有就按上一个 tag 到本次的提交自动生成。
       - name: 准备更新日志
         shell: pwsh
