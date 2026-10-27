@@ -113,7 +113,7 @@ import { buildEqPresetManager } from './eqPresets';
 import { buildSearchHistoryPanel, recordSearch, type SearchHistoryPanelHandle } from './searchHistory';
 import { buildSettingsIOActions } from './settingsIO';
 import { buildSleepTimerPanel, completeSleepTimer, getSleepTimerState } from './sleepTimer';
-import { currentLyricSource, lyricGrowMode, lyricMatchMinScore, lyricOffsetOf, lyricsBackgroundMode, lyricsLumiereMode, LyricsView, primeLyrics, setLyricGrowMode, setLyricsBackgroundMode, setLyricsLumiereMode, setLyricMatchMinScore, setLyricOffset, updateCurrentLyricLine, lyricMatchText } from './lyrics';
+import { currentLyricSource, lyricGrowMode, lyricMatchMinScore, lyricOffsetOf, LYRIC_UNSUNG_PRESETS, lyricsBackgroundMode, lyricsLumiereMode, lyricUnsungColor, LyricsView, primeLyrics, setLyricGrowMode, setLyricsBackgroundMode, setLyricsLumiereMode, setLyricMatchMinScore, setLyricOffset, setLyricUnsungColor, updateCurrentLyricLine, lyricMatchText } from './lyrics';
 import { LUMIERE_MODES } from './lumiere';
 import { LYRIC_STYLES, lyricStyle, setLyricStyle } from './lyricStyle';
 import {
@@ -5424,6 +5424,44 @@ export class App {
       paintEffectMode();
       syncEffectSettingsCell();
       window.requestAnimationFrame(() => paintEffectMode());
+      // 「关闭」效果下未播放歌词的颜色：跟随主题 / 预设 / 自定义取色器。
+      const unsungSwatches = h('div', { class: 'theme-swatches quick-unsung' });
+      const unsungCustom = h('input', {
+        class: 'theme-color-input',
+        type: 'color',
+        value: lyricUnsungColor() || '#5d6f83',
+        title: '自定义未播放歌词颜色',
+      });
+      const unsungCustomLabel = h(
+        'label',
+        { class: 'theme-swatch is-custom', title: '自定义未播放歌词颜色' },
+        unsungCustom,
+        h('span', { class: 'theme-swatch-plus', text: '+' }),
+      );
+      const paintUnsung = (): void => {
+        const saved = lyricUnsungColor();
+        unsungSwatches.querySelectorAll<HTMLButtonElement>('.theme-swatch').forEach((button) => {
+          button.classList.toggle('is-on', (button.dataset.color ?? '') === saved);
+        });
+        unsungCustom.value = saved || '#5d6f83';
+        unsungCustomLabel.classList.toggle('is-on', saved !== '');
+      };
+      for (const preset of LYRIC_UNSUNG_PRESETS) {
+        const button = h('button', { class: 'theme-swatch', type: 'button', title: preset.label });
+        button.dataset.color = preset.color;
+        button.style.setProperty('--swatch', preset.color || '#24262b');
+        button.addEventListener('click', () => {
+          setLyricUnsungColor(preset.color);
+          paintUnsung();
+        });
+        unsungSwatches.append(button);
+      }
+      unsungCustom.addEventListener('input', () => {
+        setLyricUnsungColor(unsungCustom.value);
+        paintUnsung();
+      });
+      unsungSwatches.append(unsungCustomLabel);
+      paintUnsung();
       body.append(
         h(
           'div',
@@ -5433,6 +5471,7 @@ export class App {
           cell('匹配度阈值', false, thresholdStepper.root),
           cell('时间轴偏移', false, offsetStepper.root, reset),
           cell('歌词颜色', true, bgControl),
+          cell('未播放颜色', true, unsungSwatches),
           styleCell,
           growCell,
           cell('播放效果', true, effectControl),
