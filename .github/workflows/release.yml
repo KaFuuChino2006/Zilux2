@@ -157,32 +157,35 @@ jobs:
           Compress-Archive -Path 'dist/Zilux2/*' -DestinationPath $portable -CompressionLevel Optimal
           Write-Host "便携版：$portable"
 
-      # tag 触发时 body 里额外说明「应用内更新已启用」；generate_release_notes 会把
-      # 自动生成的更新日志追加在 body 后面（前端设置页会原样展示这份说明）。
+      # Release 说明只写真实改动与修复（用户 2026-10-27 约定，不再写项目介绍）：
+      # 优先用仓库内 docs/release-notes/v<version>.md；没有就按上一个 tag 到本次的提交自动生成。
+      - name: 准备更新日志
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = $env:VERSION
+          $curated = "docs/release-notes/v$version.md"
+          if (Test-Path $curated) {
+            $body = Get-Content -Raw -Path $curated -Encoding utf8
+            Write-Host "使用仓库内更新日志：$curated"
+          } else {
+            $prev = git describe --tags --abbrev=0 "v$version^" 2>$null
+            if (-not $prev) { $prev = git rev-list --max-parents=0 HEAD }
+            $entries = @(git log "$prev..HEAD" --no-merges --pretty=format:"- %s" |
+              Where-Object { $_ -notmatch '^- (docs|chore|ci|test|style|build)(\(|:)' })
+            $body = "## Zilux2 v$version`n`n" + ($entries -join "`n")
+            Write-Host "自动生成更新日志：v$version 相对 $prev，共 $($entries.Count) 条。"
+          }
+          $body | Out-File -FilePath 'dist/release-notes.md' -Encoding utf8
+
+      # 前端设置页会原样展示这份 Release 说明，所以内容必须是真实更新日志。
       - name: 创建 GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.version }}
           name: Zilux2 v${{ steps.version.outputs.version }}
-          body: |
-            ## Zilux2 v${{ steps.version.outputs.version }}
-
-            Zilux2 是一款面向 Windows 的沉浸式桌面音乐播放器：在线双源（网易云 / QQ 音乐）、本地曲库、
-            3D 歌词舞台、AirPlay 投送、鼓点对齐的无缝衔接、可配置全局快捷键，以及应用内自动更新。
-
-            > 本项目（宿主 / 前端 / 安装器 / 文档 / 测试 / 发布流水线）全程使用 **DeepSeek Harness** 的 AI Agent 开发。
-
-            本版本已启用**应用内更新**：打开 设置 → 更新 即可检查 / 下载 / 安装新版本。
-            默认在启动约 8 秒后自动检查，之后每 4 小时检查一次；也可以随时手动点「检查更新」。
-
-            | 资产 | 用途 |
-            | --- | --- |
-            | `Zilux2-Setup-${{ steps.version.outputs.version }}.exe` | 安装包，应用内更新按**这个文件名**匹配，请勿改名 |
-            | `Zilux2-Portable-${{ steps.version.outputs.version }}.zip` | 便携版，解压即用（不含自动更新安装器） |
-            | `Zilux2-Setup-${{ steps.version.outputs.version }}.exe.sha256` | 安装包 SHA-256 校验和 |
-
-            完整更新日志见下方。
-          generate_release_notes: true
+          body_path: dist/release-notes.md
+          generate_release_notes: false
           fail_on_unmatched_files: true
           draft: false
           prerelease: ${{ contains(steps.version.outputs.version, '-') }}
