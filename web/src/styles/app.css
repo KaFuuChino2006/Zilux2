@@ -2190,12 +2190,12 @@ body,
 /* 远处行按距离渐隐：--fade 由 lyrics.ts 按「离当前句几行」写入（1 → 0），
    越远越淡，最后自然消失；这里不再用固定透明度一刀切。 */
 .lyrics-right .lyric-line {
-  color: rgb(var(--overlay-rgb) / 0.84) !important;
+  color: var(--lyric-unsung, rgb(var(--overlay-rgb) / 0.84)) !important;
   opacity: var(--fade, 1);
   filter: none !important;
 }
 .lyrics-right .lyric-line.is-near {
-  color: rgb(var(--overlay-rgb) / 0.9) !important;
+  color: var(--lyric-unsung-near, rgb(var(--overlay-rgb) / 0.9)) !important;
   opacity: var(--fade, 1);
   filter: none !important;
 }
@@ -2209,7 +2209,7 @@ body,
   opacity: 1;
 }
 .lyrics-view .lyric-line.is-active .lyric-char:not(.is-sung):not(.is-hot) {
-  color: rgb(var(--overlay-rgb) / 0.9) !important;
+  color: var(--lyric-unsung-char, rgb(var(--overlay-rgb) / 0.9)) !important;
 }
 /* ============================================================
  * AirPlay / RAOP 投送（宿主契约 v1 §12）

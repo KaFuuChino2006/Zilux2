@@ -123,6 +123,57 @@ export function setLyricsBackgroundMode(mode: LyricsBgMode): void {
   activeLyricsView?.syncBackgroundMode();
 }
 
+/** 「关闭」效果下未播放歌词的颜色；空串 = 跟随主题（默认语义色）。 */
+const LYRIC_UNSUNG_KEY = 'zilux2.lyricUnsung';
+const UNSUNG_HEX = /^#[0-9a-f]{6}$/i;
+
+/** 未播放歌词颜色的预设（空串 = 跟随主题）。 */
+export const LYRIC_UNSUNG_PRESETS: ReadonlyArray<{ label: string; color: string }> = [
+  { label: '跟随主题', color: '' },
+  { label: '墨黑', color: '#24262b' },
+  { label: '暖沙', color: '#8a7355' },
+  { label: '雾蓝', color: '#5d6f83' },
+  { label: '青瓷', color: '#4f7d70' },
+  { label: '绛紫', color: '#7a6484' },
+];
+
+function readLyricUnsungColor(): string {
+  try {
+    const value = window.localStorage.getItem(LYRIC_UNSUNG_KEY);
+    if (value && UNSUNG_HEX.test(value)) return value.toLowerCase();
+  } catch {
+    // ignore
+  }
+  return '';
+}
+
+let lyricUnsungColorValue: string = readLyricUnsungColor();
+
+/** 当前自定义的未播放歌词颜色；空串表示跟随主题。 */
+export function lyricUnsungColor(): string {
+  return lyricUnsungColorValue;
+}
+
+/** 修改未播放歌词颜色（传空串恢复跟随主题）；歌词页开着时立即生效。 */
+export function setLyricUnsungColor(color: string): void {
+  lyricUnsungColorValue = UNSUNG_HEX.test(color) ? color.toLowerCase() : '';
+  try {
+    window.localStorage.setItem(LYRIC_UNSUNG_KEY, lyricUnsungColorValue);
+  } catch {
+    // ignore
+  }
+  activeLyricsView?.applyLyricUnsungColor();
+}
+
+/** 把十六进制颜色转成带透明度的 rgb() 语义值（未播放歌词的四个语义令牌共用）。 */
+function unsungTone(hex: string, alpha: number): string {
+  const value = Number.parseInt(hex.slice(1), 16);
+  const r = (value >> 16) & 0xff;
+  const g = (value >> 8) & 0xff;
+  const b = value & 0xff;
+  return `rgb(${r} ${g} ${b} / ${alpha})`;
+}
+
 /** 当前行放大动效：off=不弹（直接变大）、soft=轻弹一下、bounce=弹一下、wild=弹得更狠。 */
 export type LyricGrowMode = 'off' | 'soft' | 'bounce' | 'wild';
 
@@ -1007,6 +1058,7 @@ export class LyricsView {
 
     this.applyLumiereMode();
     this.applyLyricStyle();
+    this.applyLyricUnsungColor();
     this.styleUnsub = onLyricStyle(() => this.applyLyricStyle());
 
     this.matchUnsub = onLyricMatch(() => {
@@ -1070,6 +1122,32 @@ export class LyricsView {
     if (this.disposed) return;
     this.bgMode = lyricsBgMode;
     void this.applyTextTint();
+  }
+
+  /** 应用「未播放歌词颜色」：写到歌词视图上，空串恢复主题语义色（关闭效果下生效）。 */
+  applyLyricUnsungColor(): void {
+    if (this.disposed) return;
+    const root = this.root;
+    const custom = lyricUnsungColor();
+    const keys = [
+      '--lyric-dim',
+      '--lyric-near',
+      '--lyric-char',
+      '--lyric-char-active',
+      '--lyric-unsung',
+      '--lyric-unsung-near',
+      '--lyric-unsung-char',
+    ];
+    if (!custom) {
+      for (const key of keys) root.style.removeProperty(key);
+      return;
+    }
+    const dark = document.documentElement.dataset.theme === 'dark';
+    // 语义令牌（译文 / 未唱字）沿用主题默认透明度；行色单独给一组，保持「远处更淡、邻近更亮」的层次。
+    const tone = dark
+      ? [0.42, 0.64, 0.46, 0.5, 0.84, 0.9, 0.9]
+      : [0.62, 0.8, 0.66, 0.74, 0.84, 0.9, 0.9];
+    keys.forEach((key, index) => root.style.setProperty(key, unsungTone(custom, tone[index])));
   }
 
   /** 应用播放效果（纯字 / 房间）：切换舞台模式、开关渲染循环、同步歌词文档。 */
