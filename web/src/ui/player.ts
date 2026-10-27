@@ -28,7 +28,7 @@ import {
   setPrefetchDebug,
   startManualCrossfade,
 } from './crossfadeDeck';
-import { fetchVocalStartMs } from './vocalStart';
+import { fetchVocalRange } from './vocalStart';
 
 export type PlayMode = 'list' | 'single' | 'shuffle';
 
@@ -1337,9 +1337,12 @@ function prepareSeamlessNext(): void {
       if (token !== seamlessToken) return;
       if (!state.playing || audio !== activeDeck || state.track !== current) return;
       if (!readCrossfadeSettings().enabled) return;
-      // 取下一首「开始唱词」位置：前奏长则从唱词前定长切入，前奏短则用整段前奏过渡。
-      // 取不到（无歌词/超时）返回 null，引擎回退为「B 从第一个强拍起播」的普通淡化。
-      const nextVocalStartMs = await fetchVocalStartMs(nextTrack);
+      // 取两首歌词的人声首末句：B 的首句用于对齐过渡终点（前奏长/短两种安排），
+      // A 的末句用于「歌词衔接」（A 末句唱完接 B 首句）。取不到（无歌词/超时）返回 null，
+      // 引擎回退为普通淡化（B 从第一个强拍起播）。
+      const [nextRange, currentRange] = await Promise.all([fetchVocalRange(nextTrack), fetchVocalRange(current)]);
+      const nextVocalStartMs = nextRange && nextRange.firstMs > 0 ? nextRange.firstMs : null;
+      const currentLastVocalEndMs = currentRange && currentRange.lastEndMs > 0 ? currentRange.lastEndMs : null;
       if (token !== seamlessToken) return;
       if (!state.playing || audio !== activeDeck || state.track !== current) return;
       if (!readCrossfadeSettings().enabled) return;
@@ -1360,6 +1363,7 @@ function prepareSeamlessNext(): void {
         currentAnalysis: currentResult,
         nextAnalysis: nextResult,
         nextVocalStartMs,
+        currentLastVocalEndMs,
         nextUrl,
         baseVolume: () => state.volume,
         baseRate: () => userRate,
