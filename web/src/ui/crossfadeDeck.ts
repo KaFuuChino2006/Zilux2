@@ -19,8 +19,9 @@
  *   B 恢复用户倍速，WSOLA tempoRate 只在检测器允许时叠加在自动衔接上。
  * - 歌词衔接（handoff，仅 auto 档）：A 的最后一句歌词唱完时，B 的第一句歌词正好开始——
  *   B 的起播点 = 首句位置、淡化窗口 = A 末句到可听结尾（尾奏不够 MIN_FADE_MS 时自动回退普通淡化）。
- *   B 的进入曲线不再从 0 起（人声一开始就听得见），伴奏靠图内 tilt 从 -9 dB 慢慢回正，
- *   形成「人声先出、伴奏渐入」。首句/末句都由 lyricRange.ts 过滤掉制作人员行。
+ *   B 的人声不做硬切：起音用 smoothstep 在约 1–2 秒内缓慢浮现；前几秒再用「人声聚焦」EQ
+ *   （低频 -15 dB / 高频 -11 dB / 1.8 kHz +4.5 dB）压住伴奏、突出中频人声，随后慢慢打开；
+ *   A 的尾奏在约 2 秒内让位到 45% 再随淡化收干。首句/末句都由 lyricRange.ts 过滤掉制作人员行。
  */
 
 import {
@@ -30,6 +31,7 @@ import {
   setAudioTapVolume,
   setDeckGraphGain,
   setDeckGraphTilt,
+  setDeckGraphVocalFocus,
 } from '../core/audioTap';
 import type { AnalysisResult, BeatAnalysis } from '../online/analysis';
 import type { OnlineTrack } from '../online/types';
@@ -47,7 +49,8 @@ export interface CrossfadeSettings {
   length: CrossfadeLength;
   /**
    * 歌词衔接（仅过渡时长为 auto 时生效）：上一首最后一句歌词唱完的瞬间接下一首第一句，
-   * 人声先出、伴奏渐入；上一首尾奏不够长（< MIN_FADE_MS）时自动回退普通淡化。
+   * 人声缓慢浮现（约 1–2 秒）、伴奏先被 EQ 压住再慢慢打开；上一首尾奏不够长（< MIN_FADE_MS）
+   * 时自动回退普通淡化。
    */
   handoff: boolean;
 }
@@ -490,31 +493,37 @@ function returnDeckTempoToNormal(element: HTMLAudioElement, from: number, to = 1
  *   于是听感上是「B 的人声先出来，伴奏慢慢融进来」，与暂停淡出的人声保留一致。
  * - Phase 2：手动切歌 / 单曲循环这类 1.2–2.0 秒短过渡用纯等功率（不加权、不压伴奏），
  *   短窗口里加权会听出能量凹陷。
- * - 歌词衔接（plan.handoff）：B 不从 0 渐入，直接以 58% 起音（人声先出），A 尾音按余弦退场，
- *   B 的伴奏靠 tilt 从 -9 dB 慢慢回正（伴奏渐入）。
+ * - 歌词衔接（plan.handoff）：B 的人声用 smoothstep 缓慢浮现（约 1–2 秒，随淡化长度缩放），
+ *   不用 58% 硬起音；B 前几秒走「人声聚焦」EQ（低频 -15 dB / 高频 -11 dB / 1.8 kHz +4.5 dB）
+ *   压住伴奏、突出中频人声，再慢慢打开；A 尾音先让位到 45% 再收干。
  */
 function applyEqualPowerGains(plan: ActivePlan, progress: number): void {
   const p = clamp01(progress);
   const warped = plan.kind === 'auto';
   if (plan.handoff) {
-    // 歌词衔接：B 首句在淡化起点就要听见（人声先出），所以 B 不从 0 起；
-    // A 尾音照常按余弦退场，B 的伴奏靠图内 tilt 从 -9 dB 慢慢回正（伴奏渐入）。
-    const outGain = Math.cos(Math.pow(p, A_EXIT_WARP) * Math.PI * 0.5);
-    // B 从 58% 起步（人声立刻听得见），前面 90 ms 快速起音避免爆音；之后按正弦升到满。
-    const attack = plan.fadeMs > 0 ? Math.min(1, (p * plan.fadeMs) / 90) : 1;
-    const inGain = (0.58 + 0.42 * Math.sin(p * Math.PI * 0.5)) * attack;
+    // 歌词衔接：B 首句从淡化起点开始，但不再「硬切进 58%」——人声用 smoothstep 缓慢浮现，
+    // 前几秒再用「人声聚焦」EQ 压住 B 的低频/高频、抬高 1.8 kHz，让人声先出来；
+    // A 的尾奏在约 2 秒内让位到 45%，把空间让给 B 的人声，再随淡化收干。
+    const fadeMs = Math.max(1, plan.fadeMs);
+    const elapsed = p * fadeMs;
+    const riseMs = Math.min(1800, Math.max(650, fadeMs * 0.16));
+    const duckMs = Math.min(2400, Math.max(900, fadeMs * 0.18));
+    const openMs = Math.min(4200, Math.max(1200, fadeMs * 0.45));
+    const rise = Math.pow(smoothStep(Math.min(1, elapsed / riseMs)), 0.6);
+    const duck = smoothStep(Math.min(1, elapsed / duckMs));
+    const focus = 1 - smoothStep(Math.min(1, elapsed / openMs));
+    const outGain = (1 - 0.55 * duck) * Math.pow(Math.max(0, 1 - p), 1.1);
     if (plan.graphMode) {
       setAudioTapVolume(plan.baseVolume, true);
       setDeckGraphGain(plan.options.active, outGain);
-      setDeckGraphGain(plan.options.standby, inGain);
-      const outTilt = -TILT_MAX_DB * smoothStep(p * 0.9);
-      const inTilt = -TILT_MAX_DB * (1 - smoothStep(p * 1.15));
-      setDeckGraphTilt(plan.options.active, outTilt, outTilt);
-      setDeckGraphTilt(plan.options.standby, inTilt, inTilt);
+      setDeckGraphGain(plan.options.standby, rise);
+      // A 的伴奏先退（低频 9 dB / 高频 6.3 dB），B 的人声聚焦慢慢打开。
+      setDeckGraphTilt(plan.options.active, -TILT_MAX_DB * duck, -TILT_MAX_DB * 0.7 * duck);
+      setDeckGraphVocalFocus(plan.options.standby, focus);
       return;
     }
     setDeckVolume(plan.options.active, plan.baseVolume * outGain);
-    setDeckVolume(plan.options.standby, plan.baseVolume * inGain);
+    setDeckVolume(plan.options.standby, plan.baseVolume * rise);
     return;
   }
   const outGain = Math.cos(Math.pow(p, warped ? A_EXIT_WARP : 1) * Math.PI * 0.5);
@@ -999,7 +1008,7 @@ export function prepareCrossfade(options: CrossfadePrepareOptions): boolean {
   logEvent(
     'prepared',
     plan.handoff
-      ? `「${options.current.track.title}」→「${options.next.track.title}」，歌词衔接：A 末句 ${plan.lastVocalEndPosMs} ms 唱完接 B 首句，${plan.fadeMs} ms 人声先出、伴奏渐入`
+      ? `「${options.current.track.title}」→「${options.next.track.title}」，歌词衔接：A 末句 ${plan.lastVocalEndPosMs} ms 唱完接 B 首句，${plan.fadeMs} ms 人声缓慢浮现、伴奏渐入`
       : `「${options.current.track.title}」→「${options.next.track.title}」，${plan.fadeMs} ms 后在曲内 ${Math.round(plan.fadeStartPosMs)} ms 处淡化（可听结尾 ${plan.audibleEndPosMs} ms，尾部静音/渐弱 ${debug.tailSilenceMs} ms）`,
   );
   return true;
@@ -1138,6 +1147,8 @@ function startManualFade(plan: ActivePlan): void {
     setDeckGraphGain(plan.options.standby, 0);
     setDeckGraphTilt(plan.options.active, 0, 0);
     setDeckGraphTilt(plan.options.standby, 0, 0);
+    setDeckGraphVocalFocus(plan.options.active, 0);
+    setDeckGraphVocalFocus(plan.options.standby, 0);
   } else {
     setDeckVolume(plan.options.active, base);
     setDeckVolume(plan.options.standby, 0);
@@ -1178,6 +1189,8 @@ function failManualFade(plan: ActivePlan, reason: string): void {
     setDeckGraphGain(plan.options.active, 1);
     setDeckGraphGain(plan.options.standby, 0);
     setDeckGraphTilt(plan.options.active, 0, 0);
+    setDeckGraphVocalFocus(plan.options.active, 0);
+    setDeckGraphVocalFocus(plan.options.standby, 0);
     detachDeckFromGraph(plan.options.standby);
   } else {
     setDeckVolume(plan.options.active, base);
@@ -1288,7 +1301,12 @@ function startFade(plan: ActivePlan): void {
     setDeckGraphGain(plan.options.standby, 0);
     // 起始时 B 的伴奏压到最低（只留中频和人声），随后在淡化中慢慢回到 0dB。
     setDeckGraphTilt(plan.options.active, 0, 0);
-    setDeckGraphTilt(plan.options.standby, -TILT_MAX_DB, -TILT_MAX_DB);
+    if (plan.handoff) {
+      setDeckGraphTilt(plan.options.standby, 0, 0);
+      setDeckGraphVocalFocus(plan.options.standby, 1);
+    } else {
+      setDeckGraphTilt(plan.options.standby, -TILT_MAX_DB, -TILT_MAX_DB);
+    }
   } else {
     setDeckVolume(plan.options.active, base);
     setDeckVolume(plan.options.standby, 0);
@@ -1352,6 +1370,8 @@ function finishFade(plan: ActivePlan): void {
     setDeckGraphGain(plan.options.standby, 1);
     setDeckGraphTilt(plan.options.active, 0, 0);
     setDeckGraphTilt(plan.options.standby, 0, 0);
+    setDeckGraphVocalFocus(plan.options.active, 0);
+    setDeckGraphVocalFocus(plan.options.standby, 0);
     detachDeckFromGraph(plan.options.active);
   } else {
     setDeckVolume(plan.options.active, 0);
@@ -1399,6 +1419,8 @@ function hardCutToStandby(plan: ActivePlan): void {
   if (audioTapGraphActive()) {
     // A 可能仍在图里，确保它静音；B 没接图，继续用元素音量。
     setDeckGraphGain(plan.options.active, 0);
+    setDeckGraphVocalFocus(plan.options.active, 0);
+    setDeckGraphVocalFocus(plan.options.standby, 0);
     detachDeckFromGraph(plan.options.standby);
   }
   // 硬切也把过渡期的变速与伴奏倾斜收掉，避免影响后面的整首播放。
@@ -1435,6 +1457,8 @@ export function cancelCrossfade(reason = 'manual'): void {
       setDeckGraphGain(plan.options.active, 1);
       setDeckGraphGain(plan.options.standby, 0);
       setDeckGraphTilt(plan.options.active, 0, 0);
+      setDeckGraphVocalFocus(plan.options.active, 0);
+      setDeckGraphVocalFocus(plan.options.standby, 0);
       detachDeckFromGraph(plan.options.standby);
     } else {
       setDeckVolume(plan.options.active, base);
@@ -1587,7 +1611,7 @@ export function buildCrossfadeSection(scope: Disposers | null): HTMLElement {
     paint();
     toast(
       next.handoff
-        ? '歌词衔接已开启：下一首首句会接上一首末句（人声先出、伴奏渐入）'
+        ? '歌词衔接已开启：下一首首句会接上一首末句（人声缓慢浮现、伴奏渐入）'
         : '歌词衔接已关闭：恢复按拍点/小节普通淡化',
     );
   });
@@ -1600,7 +1624,7 @@ export function buildCrossfadeSection(scope: Disposers | null): HTMLElement {
     h('h3', { class: 'section-title', text: '无缝衔接（实验）' }),
     h('p', {
       class: 'analysis-desc',
-      text: '当前歌曲结束前，按鼓点提前开始下一首，并按等功率曲线交叉淡化（B 用更慢的进入曲线，避免一上来就大声；A 多留一点尾音），避免曲间静音；淡化终点对齐歌曲的可听结尾，自动跳过曲尾静音与明显渐弱收尾（需宿主分析支持 audibleEndMs，p0-5 起）。淡化结束时机对齐下一首的「开始唱词」（有歌词时）：前奏较长会跳过前奏、从唱词前若干秒切入；前奏较短则把整段前奏当作过渡，结束时正好进入唱词。过渡时长「自动」不再固定 5–10 秒：以两首歌的小节为基准（默认一个乐句 4 小节，拍速差大时取两首的平均小节），B 前奏到唱词的空间不足时按整小节缩短、A 尾奏与 B 前奏都宽裕时放宽到 6–8 小节、小节很短（快歌/双拍）时取两个乐句，实际时长随歌曲自由变化。两首 BPM 不同时会用 WSOLA 变速不变调（±12% 内）把 B 的节拍拉齐，过渡结束后平滑恢复原速；图内路径下 A 的伴奏先退、B 的伴奏慢慢回正，人声先出现、伴奏后融进来。自然播完（列表循环 / 随机播放）与单曲循环都会自动衔接；手动切歌（下一首 / 上一首 / 点列表）走 1.2–2.0 秒等功率短过渡，不等节拍分析。均衡器/人声保留淡出等 Web Audio 音效开启时自动改走图内增益淡化，否则回退为原来的硬切。「歌词衔接」（默认开启，仅过渡时长=自动时生效）：上一首最后一句歌词唱完的瞬间接下一首第一句——B 的起播点直接对准首句，B 的人声一开始就听得见、伴奏从 -9 dB 慢慢回正（人声先出、伴奏渐入）；如果上一首末句之后没有足够长的尾奏（不足 1.2 秒），自动回退成上面的普通淡化。首句/末句都会过滤歌词里的制作人员名单（作词、作曲、Lyrics by…）和间奏标记，避免过渡点落到没人唱的地方。',
+      text: '当前歌曲结束前，按鼓点提前开始下一首，并按等功率曲线交叉淡化（B 用更慢的进入曲线，避免一上来就大声；A 多留一点尾音），避免曲间静音；淡化终点对齐歌曲的可听结尾，自动跳过曲尾静音与明显渐弱收尾（需宿主分析支持 audibleEndMs，p0-5 起）。淡化结束时机对齐下一首的「开始唱词」（有歌词时）：前奏较长会跳过前奏、从唱词前若干秒切入；前奏较短则把整段前奏当作过渡，结束时正好进入唱词。过渡时长「自动」不再固定 5–10 秒：以两首歌的小节为基准（默认一个乐句 4 小节，拍速差大时取两首的平均小节），B 前奏到唱词的空间不足时按整小节缩短、A 尾奏与 B 前奏都宽裕时放宽到 6–8 小节、小节很短（快歌/双拍）时取两个乐句，实际时长随歌曲自由变化。两首 BPM 不同时会用 WSOLA 变速不变调（±12% 内）把 B 的节拍拉齐，过渡结束后平滑恢复原速；图内路径下 A 的伴奏先退、B 的伴奏慢慢回正，人声先出现、伴奏后融进来。自然播完（列表循环 / 随机播放）与单曲循环都会自动衔接；手动切歌（下一首 / 上一首 / 点列表）走 1.2–2.0 秒等功率短过渡，不等节拍分析。均衡器/人声保留淡出等 Web Audio 音效开启时自动改走图内增益淡化，否则回退为原来的硬切。「歌词衔接」（默认开启，仅过渡时长=自动时生效）：上一首最后一句歌词唱完的瞬间接下一首第一句——B 的起播点直接对准首句，B 的人声用约 1–2 秒缓慢浮现、不再硬切入，前几秒用「人声聚焦」把 B 的低频/高频压住、抬高 1.8 kHz 临场感，让中频人声先出来，伴奏随后慢慢打开；如果上一首末句之后没有足够长的尾奏（不足 1.2 秒），自动回退成上面的普通淡化。首句/末句都会过滤歌词里的制作人员名单（作词、作曲、Lyrics by…）和间奏标记，避免过渡点落到没人唱的地方。',
     }),
     h(
       'div',

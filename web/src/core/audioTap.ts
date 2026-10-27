@@ -85,9 +85,11 @@ let deckMix: GainNode | null = null;
 /** 已接进图的 deck 源节点缓存（同一元素只能建一次 MediaElementAudioSourceNode）。 */
 interface DeckGraphNodes {
   source: MediaElementAudioSourceNode;
-  /** 人声/伴奏分离用的低架/高架滤波：过渡时压低伴奏，保留中频人声。 */
+  /** 人声/伴奏分离用的低架/高架滤波 + 1.8 kHz 临场感峰：过渡时压低伴奏、抬高人中频。 */
   low: BiquadFilterNode;
   high: BiquadFilterNode;
+  /** 1.8 kHz 临场感（峰形 EQ）：歌词衔接时抬高，让人声更靠前。 */
+  presence: BiquadFilterNode;
   gain: GainNode;
 }
 const deckNodes = new Map<HTMLAudioElement, DeckGraphNodes>();
@@ -143,7 +145,7 @@ export function audioTapGraphActive(): boolean {
 function buildDeckChain(
   ctx: AudioContext,
   source: AudioNode,
-): { chain: { low: BiquadFilterNode; high: BiquadFilterNode; gain: GainNode } } | null {
+): { chain: { low: BiquadFilterNode; high: BiquadFilterNode; presence: BiquadFilterNode; gain: GainNode } } | null {
   try {
     const low = ctx.createBiquadFilter();
     low.type = 'lowshelf';
@@ -153,12 +155,18 @@ function buildDeckChain(
     high.type = 'highshelf';
     high.frequency.value = 4200;
     high.gain.value = 0;
+    const presence = ctx.createBiquadFilter();
+    presence.type = 'peaking';
+    presence.frequency.value = 1800;
+    presence.Q.value = 0.9;
+    presence.gain.value = 0;
     const gain = ctx.createGain();
     gain.gain.value = 1;
     source.connect(low);
     low.connect(high);
-    high.connect(gain);
-    return { chain: { low, high, gain } };
+    high.connect(presence);
+    presence.connect(gain);
+    return { chain: { low, high, presence, gain } };
   } catch (err) {
     console.warn('[audioTap] buildDeckChain failed', err);
     return null;
@@ -177,6 +185,24 @@ export function setDeckGraphTilt(element: HTMLAudioElement, lowDb: number, highD
   try {
     node.low.gain.value = clampDb(lowDb);
     node.high.gain.value = clampDb(highDb);
+  } catch {
+    /* 忽略 */
+  }
+}
+
+/**
+ * 歌词衔接专用「人声聚焦」：amount=1 时低频压 15 dB、高频压 11 dB，并把 1.8 kHz 临场感
+ * 抬高 4.5 dB（≈ 只剩中频人声）；amount=0 恢复直通。比普通 tilt（±12 dB 上限）更狠，
+ * 只用在歌词衔接的 B 声部，并随着淡化慢慢打开。
+ */
+export function setDeckGraphVocalFocus(element: HTMLAudioElement, amount: number): void {
+  const node = deckNodes.get(element);
+  if (!node) return;
+  const a = Number.isFinite(amount) ? Math.max(0, Math.min(1, amount)) : 0;
+  try {
+    node.low.gain.value = -15 * a;
+    node.high.gain.value = -11 * a;
+    node.presence.gain.value = 4.5 * a;
   } catch {
     /* 忽略 */
   }
@@ -240,6 +266,7 @@ export function detachDeckFromGraph(element: HTMLAudioElement): void {
     // 摘下来时把「人声/伴奏分离」的搁架滤波复位，避免下一首歌继承过渡期的倾斜。
     node.low.gain.value = 0;
     node.high.gain.value = 0;
+    node.presence.gain.value = 0;
     node.gain.disconnect();
   } catch {
     /* 忽略 */
