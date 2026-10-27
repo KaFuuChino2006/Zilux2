@@ -1,4 +1,5 @@
 using System.Windows;
+using System.Windows.Threading;
 using Zilux2.AirPlay;
 using Zilux2.AirPlay.Audio;
 using Zilux2.AirPlay.Discovery;
@@ -30,6 +31,18 @@ public partial class App : Application
     private static int _shutdownWatchdogArmed;
     private static int _shutdownFinished;
 
+    // 单实例：第二个进程只负责把已有窗口带到前台，然后立即退出，避免同时出现多个窗口 /
+    // 多个托盘图标 / 多套全局热键互相抢占。
+    private const string SingleInstanceMutexName = @"Local\Zilux2.SingleInstance";
+    private const string ActivateSignalName = @"Local\Zilux2.Activate";
+    private Mutex? _singleInstanceMutex;
+    private EventWaitHandle? _activateSignal;
+    private Thread? _activateWatcher;
+
+    // UI 线程的 Dispatcher：等待线程只能通过它回主线程，直接摸 Window / Application.MainWindow
+    // 会触发「另一个线程拥有该对象」的跨线程异常。
+    private Dispatcher? _uiDispatcher;
+
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
@@ -55,6 +68,14 @@ public partial class App : Application
             Environment.ExitCode = airPlayExitCode;
             HostLog.Shutdown();
             Shutdown(airPlayExitCode);
+            return;
+        }
+
+        // 单实例保护放在 self-test 分支之后：tools/account-selftest.ps1 / airplay-selftest.ps1
+        // 需要在应用已经运行时也能跑（它们是无窗口的确定性测试进程）。
+        if (!TryBecomePrimaryInstance())
+        {
+            Shutdown(0);
             return;
         }
 
@@ -136,6 +157,118 @@ public partial class App : Application
         }
     }
 
+    /// <summary>
+    /// 尝试成为唯一实例。成功时创建「第二个实例唤醒我」的自动重置事件并启动等待线程；
+    /// 已有实例时向它发信号并返回 false（调用方直接退出当前进程）。
+    /// </summary>
+    private bool TryBecomePrimaryInstance()
+    {
+        try
+        {
+            _singleInstanceMutex = new Mutex(initiallyOwned: true, SingleInstanceMutexName, out var createdNew);
+            if (!createdNew)
+            {
+                HostLog.Info($"host.instance.reuse pid={Environment.ProcessId}");
+                _singleInstanceMutex.Dispose();
+                _singleInstanceMutex = null;
+                SignalPrimaryInstance();
+                return false;
+            }
+
+            _uiDispatcher = Dispatcher;
+            _activateSignal = new EventWaitHandle(false, EventResetMode.AutoReset, ActivateSignalName);
+            _activateWatcher = new Thread(WatchActivateSignals)
+            {
+                IsBackground = true,
+                Name = "Zilux2-Activate",
+            };
+            _activateWatcher.Start();
+            HostLog.Info("host.instance.primary");
+            return true;
+        }
+        catch (Exception exception)
+        {
+            // 单实例只是体验保护：拿不到互斥体 / 事件时退回旧行为（允许启动），不能挡住播放。
+            HostLog.Warn($"host.instance check failed: {exception.GetType().Name}: {exception.Message}");
+            return true;
+        }
+    }
+
+    private static void SignalPrimaryInstance()
+    {
+        try
+        {
+            using var signal = EventWaitHandle.OpenExisting(ActivateSignalName);
+            signal.Set();
+        }
+        catch (WaitHandleCannotBeOpenedException)
+        {
+            // 主实例恰好还在启动中、事件尚未创建：忽略，用户再点一次图标即可。
+            HostLog.Warn("host.instance signal missing");
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"host.instance signal failed: {exception.Message}");
+        }
+    }
+
+    private void WatchActivateSignals()
+    {
+        var signal = _activateSignal;
+        if (signal is null)
+        {
+            return;
+        }
+
+        while (true)
+        {
+            try
+            {
+                if (!signal.WaitOne())
+                {
+                    return;
+                }
+            }
+            catch (Exception)
+            {
+                return;
+            }
+
+            try
+            {
+                // 等待线程不能直接访问 WPF 对象（Window / Application.MainWindow 都有线程亲和性），
+                // 只能把「回到主线程唤醒窗口」这个动作排进 UI Dispatcher。
+                var dispatcher = _uiDispatcher;
+                if (dispatcher is null)
+                {
+                    continue;
+                }
+
+                dispatcher.BeginInvoke(new Action(ActivatePrimaryWindowOnUi));
+            }
+            catch (Exception exception)
+            {
+                HostLog.Warn($"host.instance activate failed: {exception.Message}");
+            }
+        }
+    }
+
+    /// <summary>UI 线程侧：把已有窗口带到前台（隐藏到托盘时先恢复显示）。</summary>
+    private void ActivatePrimaryWindowOnUi()
+    {
+        try
+        {
+            if (MainWindow is MainWindow window)
+            {
+                window.ActivateFromSecondInstance();
+            }
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"host.instance activate failed: {exception.GetType().Name}: {exception.Message}");
+        }
+    }
+
     protected override void OnExit(ExitEventArgs e)
     {
         try
@@ -203,6 +336,20 @@ public partial class App : Application
         catch (Exception exception)
         {
             HostLog.Error("online.dispose failed", exception);
+        }
+
+        try
+        {
+            // 单实例句柄在所有服务停掉后再释放，避免退出过程中第二个实例又把事件当作可用。
+            _uiDispatcher = null;
+            _activateSignal?.Dispose();
+            _activateSignal = null;
+            _singleInstanceMutex?.Dispose();
+            _singleInstanceMutex = null;
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"host.instance dispose failed: {exception.Message}");
         }
 
         HostLog.Info("host.exit");

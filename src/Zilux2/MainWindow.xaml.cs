@@ -767,6 +767,40 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// 第二个 Zilux2 进程启动时把已有窗口带到前台（单实例保护）：隐藏到托盘 / 最小化则先恢复，
+    /// 否则直接激活并置前。
+    /// </summary>
+    internal void ActivateFromSecondInstance()
+    {
+        if (_isExiting)
+        {
+            return;
+        }
+
+        if (_isHiddenToTray || WindowState == WindowState.Minimized)
+        {
+            ShowFromTray();
+            HostLog.Info("instance.show");
+            return;
+        }
+
+        try
+        {
+            Activate();
+            if (_hwnd != IntPtr.Zero)
+            {
+                NativeMethods.SetForegroundWindow(_hwnd);
+            }
+
+            HostLog.Info("instance.focus");
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"instance.focus failed: {exception.Message}");
+        }
+    }
+
+    /// <summary>
     /// 托盘菜单 / 全局热键播放控制：转成页面 command 消息（togglePlay/prev/next）。
     /// 页面未就绪时 WebViewHost 只记日志，这里不缓存。
     /// </summary>
