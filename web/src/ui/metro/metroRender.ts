@@ -1679,6 +1679,13 @@ function ensureStyle(): void {
 export interface MetroRendererOptions {
   /** 主题模式，默认 'auto'（跟随页面 data-theme / 系统偏好）。 */
   theme?: MetroThemeMode;
+  /**
+   * 站名排布方式：
+   * - 'auto'（默认）：贪心避让，自动选择上下左右/斜向位置，适合多线全图；
+   * - 'alternate'：按站点在线路中的奇偶固定交替「上/下」，适合单线横向直线页——
+   *   横向线路站距固定，交替两行可保证稳定不重叠，也避免贪心在长站名下抖动。
+   */
+  labelLayout?: 'auto' | 'alternate';
   /** 点击站点。 */
   onSelect?: (stationId: string) => void;
   /** 点击线路 / 图例；null = 取消高亮。 */
@@ -2878,6 +2885,10 @@ class MetroRendererImpl implements MetroRenderer {
   }
 
   private placeStationLabels(map: MetroMap, scale: number, placed: LabelBox[], dots: LabelBox[]): void {
+    if (this.options.labelLayout === 'alternate') {
+      this.placeStationLabelsAlternate(map, scale);
+      return;
+    }
     const ordered = orderedStations(map);
     // 稳定排序：优先级高的先占位（同优先级保持线路顺序，保证确定性）
     ordered.sort((a, b) => stationLabelPriority(a) - stationLabelPriority(b));
@@ -2976,6 +2987,39 @@ class MetroRendererImpl implements MetroRenderer {
       }
       if (chosenBox) placed.push(chosenBox);
       this.applyLabelCandidate(label, chosen, scale, width, height, ascentPx);
+    }
+  }
+
+  /**
+   * 单线横向直线页的站名排布：按站点在所属线路中的序号奇偶，固定交替「上 / 下」。
+   *
+   * 横向线路的站距固定，两行交替时同行站名间隔 = 2 倍站距，宽站名也放得下；
+   * 相比贪心避让，这里结果完全确定、不会因长站名抖动或互相挤占。
+   */
+  private placeStationLabelsAlternate(map: MetroMap, scale: number): void {
+    /** 站名与线路的垂直间距（屏幕 px）。 */
+    const gap = 8;
+    for (const line of map.lines) {
+      line.stationIds.forEach((stationId, index) => {
+        const station = map.stations[stationId];
+        const label = this.stationLabelEls.get(stationId);
+        if (!station || !label) return;
+        if (effectiveOpacity(label, this.root) <= LABEL_VISIBLE_EPS) {
+          label.classList.add('is-label-hidden');
+          return;
+        }
+        const metrics = this.stationLabelMetrics(stationId, label);
+        const height = Math.max(metrics.height * scale, 4);
+        const ascentPx = metrics.ascent * scale;
+        const ringPx = stationRadii(station).ring * this.stationRingScale(stationId) * scale;
+        // 偶数索引在上、奇数索引在下；换乘/端点也服从同一规则，保证整体节奏一致。
+        const above = index % 2 === 0;
+        const cy = above ? -(ringPx + gap + height / 2) : ringPx + gap + height / 2;
+        label.setAttribute('text-anchor', 'middle');
+        label.setAttribute('x', '0');
+        label.setAttribute('y', String(round((cy - height / 2 + ascentPx) / scale)));
+        label.classList.remove('is-label-hidden');
+      });
     }
   }
 

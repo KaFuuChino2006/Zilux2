@@ -37,6 +37,17 @@ export interface MetroStageOptions {
   theme?: MetroThemeMode;
   /** 为 true 时自动用 M1 假数据建图（等价于手动 setData(mockMetroData())）。 */
   mock?: boolean;
+  /**
+   * 自定义布局（默认 `layoutMetro`）。用于「单线直线页」等变体：
+   * 覆盖层在分类首页点进某条线路后传入 `layoutStraightLine`，让该线画成一条水平直线。
+   */
+  layout?: (data: MetroData) => MetroMap;
+  /**
+   * 站名排布方式（透传给渲染层）：
+   * - 'auto'（默认）：贪心避让，适合多线全图；
+   * - 'alternate'：上下交替两行，适合单线横向直线页（结果确定、不抖动）。
+   */
+  labelLayout?: 'auto' | 'alternate';
   /** 列车模拟初始进度（ms），默认 0。 */
   initialProgressMs?: number;
   onSelect?: (song: MetroSong) => void;
@@ -83,6 +94,7 @@ export interface MetroStage {
 export function createMetroStage(host: HTMLElement, options: MetroStageOptions = {}): MetroStage {
   const renderer = createMetroRenderer(host, {
     theme: options.theme ?? 'auto',
+    labelLayout: options.labelLayout ?? 'auto',
     onSelect: (stationId) => {
       const station = map?.stations[stationId];
       if (!station) return;
@@ -147,7 +159,7 @@ export function createMetroStage(host: HTMLElement, options: MetroStageOptions =
   function setData(next: MetroData): void {
     data = next;
     summary = summarizeData(next);
-    map = layoutMetro(next);
+    map = (options.layout ?? layoutMetro)(next);
     renderer.setData(map);
     renderer.setHighlight(null);
     renderer.setCard(null);
