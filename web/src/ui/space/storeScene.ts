@@ -92,6 +92,7 @@ export interface StoreSceneStats {
 
 export interface StoreScene {
   readonly root: HTMLElement;
+  resize(): void;
   setCollections(collections: StoreSceneCollection[]): void;
   setActiveTrack(trackKey: string | null): void;
   resetView(): void;
@@ -474,6 +475,7 @@ class StoreSceneImpl implements StoreScene {
   private fpsTime = 0;
   private fps = 0;
   private hintTimer = 0;
+  private resizeObserver: ResizeObserver | null = null;
   private readonly startAt = performance.now();
 
   constructor(options: StoreSceneOptions = {}) {
@@ -994,6 +996,8 @@ class StoreSceneImpl implements StoreScene {
     canvas.addEventListener('wheel', this.handleWheel, { passive: false });
     window.addEventListener('keydown', this.handleKeyDown);
     window.addEventListener('resize', this.handleResize);
+    this.resizeObserver = new ResizeObserver(() => this.applySize());
+    this.resizeObserver.observe(this.root);
     document.addEventListener('visibilitychange', this.handleVisibility);
     this.hintTimer = window.setTimeout(() => this.hint.classList.add('is-hidden'), 6500);
   }
@@ -1062,6 +1066,10 @@ class StoreSceneImpl implements StoreScene {
       if (slot?.song) this.options.onPlay?.(slot.song);
     }
   };
+
+  resize(): void {
+    this.applySize();
+  }
 
   private handleResize = (): void => {
     this.applySize();
@@ -1226,6 +1234,8 @@ class StoreSceneImpl implements StoreScene {
     window.removeEventListener('pointerup', this.handlePointerUp);
     window.removeEventListener('keydown', this.handleKeyDown);
     window.removeEventListener('resize', this.handleResize);
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
     document.removeEventListener('visibilitychange', this.handleVisibility);
     this.canvas.removeEventListener('pointerdown', this.handlePointerDown);
     this.canvas.removeEventListener('wheel', this.handleWheel);
@@ -1248,6 +1258,7 @@ export function createStoreScene(host: HTMLElement, options: StoreSceneOptions =
   }
   const scene = new StoreSceneImpl(options);
   host.append(scene.root);
+  requestAnimationFrame(() => scene.resize());
   scene.root.classList.add('is-entering');
   requestAnimationFrame(() => scene.root.classList.remove('is-entering'));
   window.setTimeout(() => options.onReady?.(), 60);
