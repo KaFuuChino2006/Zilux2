@@ -16,7 +16,7 @@
 import { SOURCE_LABEL } from '../../online/sources';
 import type { OnlineTrack } from '../../online/types';
 import { h, icon, toast } from '../dom';
-import { onPlayer, playerState, playQueue, replaceQueue } from '../player';
+import { onPlayer, playerState, playQueue } from '../player';
 import { buildGalleryEntries } from './metroGallery';
 import type { MetroGalleryEntry } from './metroGallery';
 import { loadMetroData } from './metroData';
@@ -36,22 +36,22 @@ const OVERLAY_LABEL = '音乐地铁图';
 
 /** 主干线所在的 x（大图标车站中心）。 */
 const HUB_COLUMN_X = 236;
-/** 大图标徽章直径（DOM 按钮）与 SVG 外环半径。 */
-const HUB_BADGE_SIZE = 64;
-const HUB_RING_RADIUS = 40;
+/** 大图标徽章边长（DOM 按钮，方形圆角）与从中心算起的留白半径。 */
+const HUB_BADGE_SIZE = 68;
+const HUB_RADIUS = 46;
 /** 第一条小站点相对主干线的水平距离。 */
 const BRANCH_START_GAP = 128;
 /** 支线右端留白。 */
 const BRANCH_TAIL_PAD = 92;
 /** 首行中心 y 与底部留白（窄窗口时按比例压缩）。 */
 const BOARD_TOP_Y = 216;
-const BOARD_BOTTOM_PAD = 132;
+const BOARD_BOTTOM_PAD = 210;
 /** 支线生长动画时长与站点依次弹出的间隔。 */
 const GROW_MS = 620;
 const STAGGER_MS = 26;
 /** 歌曲卡尺寸（用于贴边翻转与避让）。 */
-const CARD_WIDTH = 336;
-const CARD_HEIGHT = 150;
+const CARD_WIDTH = 236;
+const CARD_HEIGHT = 92;
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -69,6 +69,15 @@ let active: { close: () => void } | null = null;
 /** 播放器曲目唯一键：`${source}:${id}`（与地铁站点 trackKey 同构）。 */
 function playerTrackKey(track: OnlineTrack): string {
   return `${track.source}:${track.id}`;
+}
+
+/**
+ * 站点唯一键：与播放器 `playerTrackKey` 同构（`source:id`）。
+ * 真实数据里 `song.trackKey` 也是这个格式；假数据的 `trackKey` 是 `mock:n`，
+ * 所以统一从 source/id 推导，保证「当前播放」高亮能命中站点。
+ */
+function songKey(song: MetroSong): string {
+  return `${song.source}:${song.id}`;
 }
 
 /** MetroSong → 播放器队列条目。 */
@@ -208,10 +217,15 @@ export function openMetroOverlay(): void {
 
   const hint = h('p', {
     class: 'mh-hint',
-    text: '点大图标展开 / 收回 · 点站点查看歌曲 · Esc 逐级返回',
+    text: '点大图标展开 / 收回 · 点站点查看歌曲 · 拖动空白处移动视角 · 双击复位 · Esc 逐级返回',
   });
 
-  board.append(head, svg, hubLayer, cardLayer, hint);
+  // 画布层：可整体拖动平移（主干线 / 支线 / 大图标 / 歌曲卡都在这层里）。
+  const canvas = document.createElement('div');
+  canvas.className = 'mh-canvas';
+  canvas.append(svg, hubLayer, cardLayer);
+
+  board.append(head, canvas, hint);
 
   const closeBtn = document.createElement('button');
   closeBtn.type = 'button';
@@ -226,6 +240,8 @@ export function openMetroOverlay(): void {
 
   root.append(board, stateLayer, closeBtn);
   document.body.append(root);
+  // 打开地铁图时让底部播放条浮到覆盖层之上（用户要求播放条保持显示）。
+  document.body.classList.add('is-metro-open');
   root.focus({ preventScroll: true });
 
   // ── 运行时状态 ─────────────────────────────────────────────────────
@@ -234,6 +250,17 @@ export function openMetroOverlay(): void {
   let entries: MetroGalleryEntry[] | null = null;
   let geo: BoardGeometry | null = null;
   let resizeRaf = 0;
+
+  // 画布平移（拖动空白处移动视角）。
+  let panX = 0;
+  let panY = 0;
+  let panPointerId: number | null = null;
+  let panStartX = 0;
+  let panStartY = 0;
+  let panBaseX = 0;
+  let panBaseY = 0;
+  let panActive = false;
+  let panAnimTimer = 0;
 
   /** 已展开的板块（线路 id → 支线 SVG 组）。 */
   const expanded = new Map<string, SVGGElement>();
@@ -245,8 +272,7 @@ export function openMetroOverlay(): void {
 
   const trunkLayer = svgEl('g', { class: 'mh-trunk-layer' });
   const branchLayer = svgEl('g', { class: 'mh-branch-layer' });
-  const ringLayer = svgEl('g', { class: 'mh-ring-layer' });
-  svg.append(trunkLayer, branchLayer, ringLayer);
+  svg.append(trunkLayer, branchLayer);
 
   // ── 状态层：加载 / 空 / 失败 ────────────────────────────────────────
   type LoadState = 'loading' | 'empty' | 'error';
@@ -300,7 +326,7 @@ export function openMetroOverlay(): void {
     button.setAttribute('aria-label', `${entry.title}：${entry.subtitle} · ${entry.count} 首`);
     button.setAttribute('aria-expanded', 'false');
     button.append(
-      h('span', { class: 'mh-hub-badge', 'aria-hidden': 'true' }, icon(entry.iconName, 28)),
+      h('span', { class: 'mh-hub-badge', 'aria-hidden': 'true' }, icon(entry.iconName, 30)),
     );
     button.append(h('span', { class: 'mh-hub-count', 'aria-hidden': 'true', text: String(entry.count) }));
 
@@ -315,36 +341,25 @@ export function openMetroOverlay(): void {
     hubs.set(entry.id, { button, label });
   }
 
-  /** 重画主干线、大图标外环与标题位置（不含支线）。 */
+  /** 重画主干线与大图标标题位置（不含支线）。 */
   function renderStatic(): void {
     if (geo === null || entries === null) return;
     const { width, height } = geo;
     svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
 
     trunkLayer.replaceChildren();
-    ringLayer.replaceChildren();
 
     const first = geo.rows[0] ?? 0;
     const last = geo.rows[geo.rows.length - 1] ?? 0;
     trunkLayer.append(
       svgEl('path', {
         class: 'mh-trunk',
-        d: `M ${geo.hubX} ${first - HUB_RING_RADIUS - 26} L ${geo.hubX} ${last + HUB_RING_RADIUS + 26}`,
+        d: `M ${geo.hubX} ${first - HUB_RADIUS - 26} L ${geo.hubX} ${last + HUB_RADIUS + 26}`,
       }),
     );
 
     entries.forEach((entry, index) => {
       const rowY = geo?.rows[index] ?? 0;
-      const tone = theme.tones[entry.tone];
-      const ring = svgEl('circle', {
-        class: 'mh-hub-ring',
-        cx: geo?.hubX ?? 0,
-        cy: rowY,
-        r: HUB_RING_RADIUS,
-      });
-      ring.style.setProperty('--mh-tone', tone.base);
-      ring.style.setProperty('--mh-tone-soft', tone.soft);
-      ringLayer.append(ring);
 
       const node = hubs.get(entry.id);
       if (node) {
@@ -372,7 +387,7 @@ export function openMetroOverlay(): void {
     group.style.setProperty('--mh-tone', theme.tones[entry.tone].base);
     group.style.setProperty('--mh-tone-soft', theme.tones[entry.tone].soft);
 
-    const startX = (geo?.hubX ?? 0) + HUB_RING_RADIUS - 6;
+    const startX = (geo?.hubX ?? 0) + HUB_BADGE_SIZE / 2 - 2;
     const endX = geo?.branchEnd ?? 0;
     const path = svgEl('path', {
       class: 'mh-line-path',
@@ -390,7 +405,7 @@ export function openMetroOverlay(): void {
         class: 'mh-station',
         'data-entry': entry.id,
         'data-index': String(songIndex),
-        'data-key': song.trackKey,
+        'data-key': songKey(song),
         role: 'button',
         tabindex: '0',
         'aria-label': `${song.title} — ${song.artist}`,
@@ -476,21 +491,6 @@ export function openMetroOverlay(): void {
     toast(`播放《${entry.songs[index]?.title ?? ''}》`);
   }
 
-  function queueEntry(entry: MetroGalleryEntry, index: number): void {
-    const song = entry.songs[index];
-    if (song === undefined) return;
-    const track = toTrack(song);
-    const state = playerState();
-    if (!state.track) {
-      // 播放器空闲时不自动起播：只补齐队列并把它设为待播曲目。
-      const nextQueue = [...state.queue, track];
-      playQueue(nextQueue, nextQueue.length - 1, false);
-    } else {
-      replaceQueue([...state.queue, track]);
-    }
-    toast(`已加入队列：${song.title}`);
-  }
-
   function closeCard(): void {
     if (cardAt === null && cardLayer.childElementCount === 0) return;
     cardAt = null;
@@ -501,7 +501,7 @@ export function openMetroOverlay(): void {
     });
   }
 
-  /** 渲染 / 重新定位歌曲卡（卡片内容由 cardAt 决定）。 */
+  /** 渲染迷你的歌曲箭头卡：指向站点，含封面与歌曲信息；双击站点直接播放。 */
   function renderCard(): void {
     if (cardAt === null || entries === null || geo === null) {
       cardLayer.replaceChildren();
@@ -521,15 +521,17 @@ export function openMetroOverlay(): void {
     const rowIndex = entries.findIndex((item) => item.id === entry.id);
     const rowY = geo.rows[rowIndex] ?? 0;
     const x = stationX(geo, entry.songs.length, cardAt.index);
+    // 站名在偶数站上方、奇数站下方；箭头卡放在另一侧，避免压站名。
+    const labelAbove = cardAt.index % 2 === 0;
 
     const tone = theme.tones[entry.tone];
-    const card = h('div', {
+    const tip = h('div', {
       class: 'mh-card',
-      role: 'dialog',
+      role: 'tooltip',
       'aria-label': `${song.title} — ${song.artist}`,
     });
-    card.style.setProperty('--mh-tone', tone.base);
-    card.style.setProperty('--mh-tone-soft', tone.soft);
+    tip.style.setProperty('--mh-tone', tone.base);
+    tip.style.setProperty('--mh-tone-soft', tone.soft);
 
     const cover = h(
       'span',
@@ -545,55 +547,26 @@ export function openMetroOverlay(): void {
         class: 'mh-card-meta',
         text: `${sourceLabel(song.source)} · ${formatDuration(song.durationMs)} · ${entry.subtitle}`,
       }),
+      h('span', { class: 'mh-card-hint', text: '双击站点播放' }),
     );
-    const playBtn = h('button', {
-      type: 'button',
-      class: 'mh-card-btn is-primary',
-      text: '播放',
-    }) as HTMLButtonElement;
-    playBtn.addEventListener('click', () => {
-      playEntry(entry, cardAt?.index ?? 0);
-    });
-    const queueBtn = h('button', {
-      type: 'button',
-      class: 'mh-card-btn',
-      text: '加入队列',
-    }) as HTMLButtonElement;
-    queueBtn.addEventListener('click', () => {
-      queueEntry(entry, cardAt?.index ?? 0);
-    });
-    const cardClose = h('button', {
-      type: 'button',
-      class: 'mh-card-close',
-      title: '关闭',
-      'aria-label': '关闭歌曲卡',
-      text: '×',
-    }) as HTMLButtonElement;
-    cardClose.addEventListener('click', () => closeCard());
+    tip.append(cover, main);
 
-    card.append(
-      h('span', { class: 'mh-card-top' }, cover, main),
-      h('span', { class: 'mh-card-actions' }, playBtn, queueBtn),
-      cardClose,
-    );
+    // 水平方向以站点居中，贴边时整体平移、箭头单独对准站点。
+    const left = Math.max(16, Math.min(geo.width - CARD_WIDTH - 16, Math.round(x - CARD_WIDTH / 2)));
+    const arrowX = Math.max(18, Math.min(CARD_WIDTH - 18, Math.round(x - left)));
+    const below = labelAbove;
+    let top = below ? rowY + 30 : rowY - 30 - CARD_HEIGHT;
+    if (top < 88) top = rowY + 30;
+    if (top + CARD_HEIGHT > geo.height - 24) top = rowY - 30 - CARD_HEIGHT;
+    tip.classList.add(below ? 'is-below' : 'is-above');
+    tip.style.left = `${left}px`;
+    tip.style.top = `${Math.round(top)}px`;
+    tip.style.setProperty('--mh-arrow-x', `${arrowX}px`);
 
-    // 贴边翻转：默认放在站点右侧，右侧放不下时换到左侧；纵向限制在画布内。
-    const preferRight = x + 22 + CARD_WIDTH <= geo.width - 16;
-    const left = Math.max(16, Math.min(geo.width - CARD_WIDTH - 16, preferRight ? x + 22 : x - 22 - CARD_WIDTH));
-    // 优先放在支线下方（避开站名行），下方放不下时翻到上方。
-    const belowTop = rowY + 48;
-    const preferBelow = belowTop + CARD_HEIGHT <= geo.height - 20;
-    const top = Math.max(
-      86,
-      Math.min(geo.height - CARD_HEIGHT - 20, preferBelow ? belowTop : rowY - 48 - CARD_HEIGHT),
-    );
-    card.style.left = `${Math.round(left)}px`;
-    card.style.top = `${Math.round(top)}px`;
-
-    cardLayer.replaceChildren(card);
+    cardLayer.replaceChildren(tip);
     root.classList.add('is-card-open');
     svg.querySelectorAll<SVGGElement>('.mh-station').forEach((station) => {
-      station.classList.toggle('is-active', station.dataset.key === song.trackKey);
+      station.classList.toggle('is-active', station.dataset.key === songKey(song));
     });
   }
 
@@ -609,6 +582,7 @@ export function openMetroOverlay(): void {
     const height = board.clientHeight;
     if (width < 2 || height < 2) return;
     geo = computeGeometry(width, height, entries.length);
+    if (panX !== 0 || panY !== 0) applyPan(false);
     renderStatic();
     // 尺寸变化后重建已展开支线（不重播生长动画）。
     branchLayer.replaceChildren();
@@ -666,6 +640,100 @@ export function openMetroOverlay(): void {
     if (entryId !== undefined) openCard(entryId, index);
   }
 
+  // ── 平移画布：拖动空白处移动视角 ────────────────────────────────────
+  /** 平移边界：允许拖出约三分之一屏，避免把线路拖丢。 */
+  const PAN_LIMIT_X = 0.42;
+  const PAN_LIMIT_Y = 0.34;
+
+  function applyPan(animated: boolean): void {
+    if (geo !== null) {
+      const maxX = geo.width * PAN_LIMIT_X;
+      const maxY = geo.height * PAN_LIMIT_Y;
+      panX = Math.max(-maxX, Math.min(maxX, panX));
+      panY = Math.max(-maxY, Math.min(maxY, panY));
+    }
+    if (panAnimTimer !== 0) {
+      window.clearTimeout(panAnimTimer);
+      panAnimTimer = 0;
+    }
+    canvas.classList.toggle('is-animating', animated);
+    canvas.style.transform = `translate3d(${Math.round(panX)}px, ${Math.round(panY)}px, 0)`;
+    if (animated) {
+      panAnimTimer = window.setTimeout(() => {
+        panAnimTimer = 0;
+        canvas.classList.remove('is-animating');
+      }, 360);
+    }
+  }
+
+  /** 按钮 / 站点 / 卡片上的拖动不触发平视，留给它们自己。 */
+  function isPanExcluded(target: Element): boolean {
+    return (
+      target.closest('.mh-hub') !== null ||
+      target.closest('.mh-card') !== null ||
+      target.closest('.mh-station') !== null ||
+      target.closest('.metro-overlay-close') !== null
+    );
+  }
+
+  function onBoardPointerDown(event: PointerEvent): void {
+    if (event.button !== 0) return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (target === null || isPanExcluded(target)) return;
+    panPointerId = event.pointerId;
+    panActive = false;
+    panStartX = event.clientX;
+    panStartY = event.clientY;
+    panBaseX = panX;
+    panBaseY = panY;
+  }
+
+  function onBoardPointerMove(event: PointerEvent): void {
+    if (panPointerId !== event.pointerId) return;
+    const dx = event.clientX - panStartX;
+    const dy = event.clientY - panStartY;
+    // 移动超过阈值才进入拖拽，避免普通点击时闪现抓手光标。
+    if (!panActive) {
+      if (Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
+      panActive = true;
+      board.classList.add('is-panning');
+      board.setPointerCapture(event.pointerId);
+    }
+    panX = panBaseX + dx;
+    panY = panBaseY + dy;
+    applyPan(false);
+  }
+
+  function onBoardPointerUp(event: PointerEvent): void {
+    if (panPointerId !== event.pointerId) return;
+    panPointerId = null;
+    panActive = false;
+    board.classList.remove('is-panning');
+    if (board.hasPointerCapture(event.pointerId)) board.releasePointerCapture(event.pointerId);
+  }
+
+  /** 双击站点 = 直接播放这首；双击空白 = 复位视角。 */
+  function onBoardDoubleClick(event: MouseEvent): void {
+    const target = event.target instanceof Element ? event.target : null;
+    if (target === null) return;
+    const station = target.closest<SVGGElement>('.mh-station');
+    if (station !== null) {
+      const entryId = station.dataset.entry;
+      const index = Number(station.dataset.index ?? '0');
+      if (entryId === undefined || entries === null) return;
+      const entry = entries.find((item) => item.id === entryId);
+      if (entry === undefined) return;
+      event.preventDefault();
+      closeCard();
+      playEntry(entry, index);
+      return;
+    }
+    if (isPanExcluded(target)) return;
+    panX = 0;
+    panY = 0;
+    applyPan(true);
+  }
+
   function onEscape(event: KeyboardEvent): void {
     if (event.key !== 'Escape') return;
     if (cardAt !== null) {
@@ -694,7 +762,6 @@ export function openMetroOverlay(): void {
     branchLayer.replaceChildren();
     expanded.clear();
     trunkLayer.replaceChildren();
-    ringLayer.replaceChildren();
     showState('loading');
     try {
       const metro = wantsMockData() ? mockMetroData() : await loadMetroData();
@@ -730,9 +797,16 @@ export function openMetroOverlay(): void {
     }
     board.removeEventListener('click', onBoardClick);
     board.removeEventListener('keydown', onBoardKeyDown);
+    board.removeEventListener('pointerdown', onBoardPointerDown);
+    board.removeEventListener('pointermove', onBoardPointerMove);
+    board.removeEventListener('pointerup', onBoardPointerUp);
+    board.removeEventListener('pointercancel', onBoardPointerUp);
+    board.removeEventListener('dblclick', onBoardDoubleClick);
+    if (panAnimTimer !== 0) window.clearTimeout(panAnimTimer);
     closeBtn.removeEventListener('click', close);
     window.removeEventListener('keydown', onEscape, true);
     root.remove();
+    document.body.classList.remove('is-metro-open');
     active = null;
     if (previousFocus?.isConnected) {
       try {
@@ -745,6 +819,11 @@ export function openMetroOverlay(): void {
 
   board.addEventListener('click', onBoardClick);
   board.addEventListener('keydown', onBoardKeyDown);
+  board.addEventListener('pointerdown', onBoardPointerDown);
+  board.addEventListener('pointermove', onBoardPointerMove);
+  board.addEventListener('pointerup', onBoardPointerUp);
+  board.addEventListener('pointercancel', onBoardPointerUp);
+  board.addEventListener('dblclick', onBoardDoubleClick);
   closeBtn.addEventListener('click', close);
   window.addEventListener('keydown', onEscape, true);
   active = { close };

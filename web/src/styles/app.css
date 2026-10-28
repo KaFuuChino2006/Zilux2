@@ -6809,12 +6809,27 @@ html.is-pb-expanded .playerbar.is-hidden {
   position: absolute;
   inset: 0;
   overflow: hidden;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
   /* 极淡的点阵，让空白画布也像一张地图纸。 */
   background-image: radial-gradient(
     color-mix(in srgb, var(--mt-text) 7%, transparent) 1px,
     transparent 1.2px
   );
   background-size: 26px 26px;
+}
+.metro-overlay-board.is-panning {
+  cursor: grabbing;
+}
+/* 可平移的内容层：主干线、支线、大图标、歌曲卡一起移动。 */
+.mh-canvas {
+  position: absolute;
+  inset: 0;
+  will-change: transform;
+}
+.mh-canvas.is-animating {
+  transition: transform 0.32s cubic-bezier(.22, 1, .36, 1);
 }
 .mh-head {
   position: absolute;
@@ -6867,11 +6882,11 @@ html.is-pb-expanded .playerbar.is-hidden {
 /* 大图标车站（可点击的原生按钮） */
 .mh-hub {
   position: absolute;
-  width: 64px;
-  height: 64px;
+  width: 68px;
+  height: 68px;
   padding: 0;
   border: none;
-  border-radius: 50%;
+  border-radius: 18px;
   background: transparent;
   color: var(--mh-tone);
   transform: translate(-50%, -50%);
@@ -6886,7 +6901,7 @@ html.is-pb-expanded .playerbar.is-hidden {
   width: 100%;
   height: 100%;
   border: 1.5px solid color-mix(in srgb, var(--mh-tone) 60%, transparent);
-  border-radius: 50%;
+  border-radius: 16px;
   background:
     radial-gradient(120% 120% at 32% 22%, color-mix(in srgb, var(--mh-tone-glow) 34%, transparent), transparent 66%),
     color-mix(in srgb, var(--mt-paper) 90%, var(--mh-tone-soft));
@@ -6919,8 +6934,8 @@ html.is-pb-expanded .playerbar.is-hidden {
 }
 .mh-hub-count {
   position: absolute;
-  top: 0;
-  right: -2px;
+  top: -6px;
+  right: -8px;
   min-width: 21px;
   padding: 1px 5px;
   border-radius: 999px;
@@ -7039,32 +7054,50 @@ html.is-pb-expanded .playerbar.is-hidden {
   animation-delay: calc(70ms + var(--mh-i, 0) * var(--mh-stagger, 26ms));
 }
 
-/* 歌曲卡 */
+/* 迷你歌曲箭头卡：指向站点，含封面与歌曲信息（双击站点直接播放） */
 .mh-card {
   position: absolute;
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 10px;
-  width: 336px;
-  padding: 14px 16px;
-  border: 1px solid color-mix(in srgb, var(--mh-tone) 34%, transparent);
-  border-radius: 18px;
+  align-items: center;
+  gap: 9px;
+  width: 236px;
+  height: 92px;
+  padding: 10px 12px 10px 10px;
+  border: 1px solid color-mix(in srgb, var(--mh-tone) 36%, transparent);
+  border-radius: 12px;
   background:
-    radial-gradient(120% 160% at 8% 0%, color-mix(in srgb, var(--mh-tone) 16%, transparent), transparent 52%),
+    radial-gradient(140% 180% at 6% 0%, color-mix(in srgb, var(--mh-tone) 20%, transparent), transparent 58%),
     var(--mt-surface-strong);
-  box-shadow: 0 22px 44px -20px rgba(0, 0, 0, 0.66);
+  box-shadow: 0 16px 34px -18px rgba(0, 0, 0, 0.72);
   pointer-events: auto;
-  animation: mh-card-in 0.22s cubic-bezier(.34, 1.56, .64, 1) both;
+  animation: mh-tip-in 0.18s cubic-bezier(.34, 1.56, .64, 1) both;
+}
+/* 小三角箭头：靠 --mh-arrow-x 对准站点 */
+.mh-card::before {
+  content: '';
+  position: absolute;
+  left: var(--mh-arrow-x, 50%);
+  width: 0;
+  height: 0;
+  margin-left: -7px;
+  border: 7px solid transparent;
+}
+.mh-card.is-below::before {
+  top: -14px;
+  border-bottom-color: color-mix(in srgb, var(--mh-tone) 36%, var(--mt-surface-strong));
+}
+.mh-card.is-above::before {
+  bottom: -14px;
+  border-top-color: color-mix(in srgb, var(--mh-tone) 36%, var(--mt-surface-strong));
 }
 .mh-card-cover {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  width: 52px;
-  height: 52px;
-  border-radius: 12px;
+  width: 38px;
+  height: 38px;
+  border-radius: 9px;
   background: linear-gradient(
     150deg,
     color-mix(in srgb, var(--mh-tone) 82%, #fff 6%),
@@ -7073,28 +7106,21 @@ html.is-pb-expanded .playerbar.is-hidden {
   color: var(--mt-paper);
 }
 .mh-card-cover-char {
-  font-size: 24px;
+  font-size: 17px;
   font-weight: 600;
   line-height: 1;
-}
-.mh-card-top {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
 }
 .mh-card-main {
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: 3px;
+  gap: 1px;
   min-width: 0;
-  padding-right: 20px;
 }
 .mh-card-title {
   overflow: hidden;
   color: var(--mt-text);
-  font-size: 14.5px;
+  font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.01em;
   text-overflow: ellipsis;
@@ -7103,84 +7129,41 @@ html.is-pb-expanded .playerbar.is-hidden {
 .mh-card-artist {
   overflow: hidden;
   color: var(--mt-text-soft);
-  font-size: 12.5px;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .mh-card-meta {
   overflow: hidden;
   color: var(--mt-muted);
-  font-size: 11px;
+  font-size: 10.5px;
   letter-spacing: 0.02em;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.mh-card-actions {
-  display: flex;
-  flex: 0 0 auto;
-  flex-direction: row;
-  gap: 8px;
-}
-.mh-card-actions .mh-card-btn {
-  flex: 1 1 0;
-}
-.mh-card-btn {
-  min-width: 70px;
-  height: 27px;
-  padding: 0 10px;
-  border: 1px solid color-mix(in srgb, var(--mt-text) 16%, transparent);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--mt-text-soft);
-  font-size: 12px;
+.mh-card-hint {
+  margin-top: 2px;
+  color: color-mix(in srgb, var(--mt-muted) 78%, transparent);
+  font-size: 10px;
   letter-spacing: 0.02em;
-  cursor: pointer;
-  transition:
-    background 0.16s ease,
-    border-color 0.16s ease,
-    color 0.16s ease;
+  white-space: nowrap;
 }
-.mh-card-btn:hover {
-  border-color: color-mix(in srgb, var(--mh-tone) 46%, transparent);
-  color: var(--mt-text);
+@keyframes mh-tip-in {
+  from {
+    opacity: 0;
+    transform: translateY(5px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
-.mh-card-btn.is-primary {
-  border-color: color-mix(in srgb, var(--mh-tone) 62%, transparent);
-  background: color-mix(in srgb, var(--mh-tone) 84%, transparent);
-  color: var(--mt-paper);
-}
-.mh-card-btn.is-primary:hover {
-  border-color: var(--mh-tone-glow);
-  background: color-mix(in srgb, var(--mh-tone) 100%, transparent);
-  color: var(--mt-paper);
-}
-.mh-card-close {
-  position: absolute;
-  top: 8px;
-  right: 10px;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: none;
-  border-radius: 50%;
-  background: transparent;
-  color: var(--mt-muted);
-  font-size: 15px;
-  line-height: 1;
-  cursor: pointer;
-  transition:
-    background 0.16s ease,
-    color 0.16s ease;
-}
-.mh-card-close:hover {
-  background: color-mix(in srgb, var(--mt-text) 10%, transparent);
-  color: var(--mt-text);
-}
+
 
 /* 底部操作提示 */
 .mh-hint {
   position: absolute;
-  bottom: 26px;
+  bottom: 104px;
   left: 50%;
   margin: 0;
   padding: 8px 18px;
@@ -7239,7 +7222,7 @@ html.is-pb-expanded .playerbar.is-hidden {
   .mh-head { top: 26px; left: 26px; }
   .mh-title { font-size: 21px; }
   .mh-hint { display: none; }
-  .mh-card { width: 300px; }
+  .mh-card { width: 216px; }
 }
 
 /* 降低动效偏好 */
@@ -7259,4 +7242,9 @@ html.is-pb-expanded .playerbar.is-hidden {
   .mh-card {
     animation: none !important;
   }
+}
+
+/* 打开地铁图时让底部播放条浮到覆盖层之上（用户要求：地铁图界面保持显示） */
+body.is-metro-open .playerbar-wrap {
+  z-index: 320;
 }

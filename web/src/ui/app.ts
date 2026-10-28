@@ -236,6 +236,28 @@ function formatPlays(value: number): string {
 
 const WINDOW_ICON = { minimize: 'minimize', maximize: 'maximize', close: 'close' } as const;
 
+/** 界面模式（启动界面）：经典界面 / 音乐地铁图。 */
+export type InterfaceMode = 'classic' | 'metro';
+const INTERFACE_MODE_KEY = 'zilux2.interfaceMode';
+
+/** 读取启动界面选择（存储不可用时退回经典界面）。 */
+export function readInterfaceMode(): InterfaceMode {
+  try {
+    return localStorage.getItem(INTERFACE_MODE_KEY) === 'metro' ? 'metro' : 'classic';
+  } catch {
+    return 'classic';
+  }
+}
+
+/** 记住启动界面选择。 */
+export function writeInterfaceMode(mode: InterfaceMode): void {
+  try {
+    localStorage.setItem(INTERFACE_MODE_KEY, mode);
+  } catch {
+    /* 存储不可用时只在本次会话生效 */
+  }
+}
+
 export class App {
   readonly root: HTMLDivElement;
 
@@ -3636,23 +3658,7 @@ export class App {
       const shortcutsSection = this.buildShortcutsSection(section);
       const updatesSection = this.buildUpdatesSection(section, toggleField, segField);
 
-      // 界面模式（音乐地铁图 M2）：选择界面形态 + 全屏入口。
-      const INTERFACE_MODE_KEY = 'zilux2.interfaceMode';
-      type InterfaceMode = 'classic' | 'metro';
-      const readInterfaceMode = (): InterfaceMode => {
-        try {
-          return localStorage.getItem(INTERFACE_MODE_KEY) === 'metro' ? 'metro' : 'classic';
-        } catch {
-          return 'classic';
-        }
-      };
-      const writeInterfaceMode = (mode: InterfaceMode): void => {
-        try {
-          localStorage.setItem(INTERFACE_MODE_KEY, mode);
-        } catch {
-          /* 存储不可用时只在本次会话生效 */
-        }
-      };
+      // 界面模式（音乐地铁图）：选择启动界面 + 全屏入口。
       const interfaceSection = section(
         '界面模式',
         segField<InterfaceMode>(
@@ -3664,9 +3670,13 @@ export class App {
           readInterfaceMode(),
           (mode) => {
             writeInterfaceMode(mode);
-            toast(mode === 'metro' ? '已记住「地铁图」：后续版本启动时进入，当前可点下方按钮打开' : '已记住「经典界面」');
+            toast(
+              mode === 'metro'
+                ? '已记住「地铁图」：下次启动直接进入（也可随时点下方按钮打开）'
+                : '已记住「经典界面」：下次启动进入经典界面',
+            );
           },
-          '首版仍从下方按钮手动打开；选择会记住，后续版本随启动进入。',
+          '选择后下次启动直接进入对应界面；下方按钮可随时临时打开地铁图。',
         ),
         h(
           'div',
