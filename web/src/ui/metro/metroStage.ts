@@ -41,6 +41,10 @@ export interface MetroStageOptions {
   initialProgressMs?: number;
   onSelect?: (song: MetroSong) => void;
   onPlay?: (song: MetroSong) => void;
+  /** 点线路条「播放全部」：播放整条线路。未提供时退回 onPlay(首站歌曲)。 */
+  onPlayLine?: (lineId: string) => void;
+  /** 站点卡片「加入队列」：加入播放队列。未提供时退回轻提示。 */
+  onQueue?: (song: MetroSong) => void;
   onZoneChange?: (zone: 'map' | 'line') => void;
   onReady?: () => void;
   onToast?: (message: string) => void;
@@ -390,25 +394,29 @@ export function createMetroStage(host: HTMLElement, options: MetroStageOptions =
     if (!map) return;
     const line = map.lines.find((item) => item.id === lineId);
     if (!line) return;
+    if (options.onPlayLine) {
+      options.onPlayLine(lineId);
+      return;
+    }
     const first = map.stations[line.stationIds[0]];
     if (!first) return;
     options.onPlay?.(first.song);
-    options.onToast?.(`播放线路：${line.name}（M1 原型）`);
+    options.onToast?.(`播放线路：${line.name}`);
   }
 
   function handleCardAction(action: 'play' | 'queue' | 'next' | 'locate', song: MetroSong): void {
     if (action === 'play') {
       options.onPlay?.(song);
-      options.onToast?.(`播放：${song.title} — ${song.artist}（M1 原型）`);
       return;
     }
     if (action === 'next') {
       options.onPlay?.(song);
-      options.onToast?.(`下一首：${song.title}（M1 原型）`);
+      options.onToast?.(`下一首：${song.title}`);
       return;
     }
     if (action === 'queue') {
-      options.onToast?.(`已加入队列：${song.title}（M1 原型）`);
+      if (options.onQueue) options.onQueue(song);
+      else options.onToast?.(`已加入队列：${song.title}`);
       return;
     }
     const station = stationByTrack(song.trackKey);

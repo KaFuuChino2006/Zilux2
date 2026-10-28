@@ -1,17 +1,17 @@
 /**
  * 「唱片店」真实数据接入（R3.5）
  *
- * 把 今日推荐 / 我喜欢的音乐 / 最近播放 / 我的歌单 / 私人雷达 映射到现有在线音乐接口，
- * 供空间场景的菜单墙与大唱片架使用。数据都带真实封面 URL（宿主 cover 代理），
- * 场景侧按 URL 懒加载纹理，失败时回退到程序化封面。
+ * 数据抓取已抽到 ui/shared/musicCollections（与「音乐地铁图」共用），本文件只负责把 5 类
+ * 音乐集合映射成空间场景的 StoreSceneCollection[]：今日推荐 / 我喜欢的音乐 / 最近播放 /
+ * 我的歌单 / 私人雷达。数据都带真实封面 URL（宿主 cover 代理），场景侧按 URL 懒加载纹理，
+ * 失败时回退到程序化封面。
+ *
+ * 对外签名与返回结构、3D 墙面/唱片架行为均与抽取前一致。
  */
 
-import { fetchLibraryOverview, fetchPlaylist, type MusicSource } from '../../core/library';
-import { fetchFeed, fetchRecentMerged } from '../../online/client';
+import { MAX_SONGS, interleaveTracks, loadMusicCollections, uniqueTracks } from '../shared/musicCollections';
 import type { OnlineTrack } from '../../online/types';
 import type { StoreSceneCollection, StoreSceneSong } from './storeScene';
-
-const MAX_SONGS = 30;
 
 function toSong(track: OnlineTrack): StoreSceneSong {
   return {
@@ -24,38 +24,9 @@ function toSong(track: OnlineTrack): StoreSceneSong {
   };
 }
 
-function dedupe(tracks: OnlineTrack[]): OnlineTrack[] {
-  const seen = new Set<string>();
-  const result: OnlineTrack[] = [];
-  for (const track of tracks) {
-    const key = `${track.source}:${track.id}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    result.push(track);
-  }
-  return result;
-}
-
-function interleave(groups: OnlineTrack[][]): OnlineTrack[] {
-  const result: OnlineTrack[] = [];
-  const longest = Math.max(0, ...groups.map((group) => group.length));
-  for (let index = 0; index < longest; index += 1) {
-    for (const group of groups) {
-      const track = group[index];
-      if (track) result.push(track);
-    }
-  }
-  return result;
-}
-
+/** 去重 + 截断 + 映射成场景歌曲（顺序不变）。 */
 function songsOf(tracks: OnlineTrack[]): StoreSceneSong[] {
-  return dedupe(tracks).slice(0, MAX_SONGS).map(toSong);
-}
-
-function playlistPage(source: MusicSource, id: string, special: 'liked' | null): Promise<OnlineTrack[]> {
-  return fetchPlaylist(source, id, 0, special === 'liked' ? MAX_SONGS : 12, special)
-    .then((detail) => detail.tracks)
-    .catch(() => [] as OnlineTrack[]);
+  return uniqueTracks(tracks, MAX_SONGS).map(toSong);
 }
 
 /**
@@ -63,40 +34,11 @@ function playlistPage(source: MusicSource, id: string, special: 'liked' | null):
  * 全部失败时返回空数组，调用方回退到演示数据。
  */
 export async function loadStoreCollections(): Promise<StoreSceneCollection[]> {
-  const overview = await fetchLibraryOverview().catch(() => null);
-  const states = overview?.sources ?? [];
-  const loggedStates = states.filter((state) => state.loggedIn);
-  const likedStates = loggedStates.filter((state) => state.liked);
+  const data = await loadMusicCollections();
 
-  const [dailyGroups, radarGroups, likedGroups, recentTracks, playlistGroups] = await Promise.all([
-    Promise.all(
-      loggedStates.map((state) =>
-        fetchFeed(state.source, 'daily', MAX_SONGS)
-          .then((feed) => feed.tracks)
-          .catch(() => [] as OnlineTrack[]),
-      ),
-    ),
-    Promise.all(
-      loggedStates.map((state) =>
-        fetchFeed(state.source, 'radar', MAX_SONGS)
-          .then((feed) => feed.tracks)
-          .catch(() => [] as OnlineTrack[]),
-      ),
-    ),
-    Promise.all(likedStates.map((state) => playlistPage(state.source, state.liked!.id, 'liked'))),
-    fetchRecentMerged(MAX_SONGS).catch(() => [] as OnlineTrack[]),
-    Promise.all(
-      loggedStates.map((state) =>
-        (state.playlists ?? []).slice(0, 2).reduce<Promise<OnlineTrack[]>>(
-          (previous, playlist) =>
-            previous.then((acc) =>
-              playlistPage(state.source, playlist.id, null).then((tracks) => acc.concat(tracks)),
-            ),
-          Promise.resolve([] as OnlineTrack[]),
-        ),
-      ),
-    ),
-  ]);
+  // 我的歌单：shared 里每个平台一组（前 2 个歌单曲目顺序拼接），这里按平台交错、再走
+  // songsOf，与抽取前的墙面歌曲顺序完全一致。
+  const playlistTracks = interleaveTracks(data.playlists.map((group) => group.tracks));
 
   const collections: StoreSceneCollection[] = [];
   const push = (id: string, title: string, subtitle: string, tracks: OnlineTrack[]): void => {
@@ -104,10 +46,10 @@ export async function loadStoreCollections(): Promise<StoreSceneCollection[]> {
     if (songs.length > 0) collections.push({ id, title, subtitle, songs });
   };
 
-  push('daily', '今日推荐', '多平台每日推荐', interleave(dailyGroups));
-  push('liked', '我喜欢的音乐', '收藏的唱片', interleave(likedGroups));
-  push('recent', '最近播放', '最近在听的', recentTracks);
-  push('playlists', '我的歌单', '全部歌单精选', interleave(playlistGroups));
-  push('radar', '私人雷达', '为你推荐', interleave(radarGroups));
+  push('daily', '今日推荐', '多平台每日推荐', data.daily);
+  push('liked', '我喜欢的音乐', '收藏的唱片', data.liked);
+  push('recent', '最近播放', '最近在听的', data.recent);
+  push('playlists', '我的歌单', '全部歌单精选', playlistTracks);
+  push('radar', '私人雷达', '为你推荐', data.radar);
   return collections;
 }

@@ -6667,3 +6667,129 @@ html.is-pb-expanded .playerbar.is-hidden {
   from { opacity: 0; }
   to { opacity: 1; }
 }
+
+/* ------------------------------------------------------------------ */
+/* 音乐地铁图 M2 · 应用内全屏入口覆盖层（metroOverlay.ts）                */
+/* ------------------------------------------------------------------ */
+.metro-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  overflow: hidden;
+  color: var(--text);
+  background:
+    radial-gradient(120% 90% at 50% -20%, var(--accent-soft), transparent 58%),
+    var(--bg);
+  animation: metro-overlay-in 0.28s ease both;
+}
+/* 覆盖层自带面包屑与返回按钮；渲染层内置 HUD 位于同一坐标会重复，故在覆盖层内隐藏。 */
+.metro-overlay .mt-hud {
+  display: none;
+}
+.metro-overlay-stage {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+.metro-overlay-crumb {
+  position: absolute;
+  top: 22px;
+  left: 24px;
+  z-index: 3;
+  max-width: min(560px, 60vw);
+  padding: 7px 14px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--text) 14%, transparent);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--panel) 74%, transparent);
+  color: var(--text-soft);
+  font-size: 12.5px;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  pointer-events: none;
+  user-select: none;
+}
+.metro-overlay-close {
+  position: absolute;
+  top: 18px;
+  right: 20px;
+  z-index: 3;
+  min-width: 64px;
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid color-mix(in srgb, var(--text) 16%, transparent);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--panel) 76%, transparent);
+  color: var(--text-soft);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  cursor: pointer;
+  transition:
+    background var(--dur-fast, 0.16s) var(--ease, ease),
+    border-color var(--dur-fast, 0.16s) var(--ease, ease),
+    color var(--dur-fast, 0.16s) var(--ease, ease);
+}
+.metro-overlay-close:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  background: color-mix(in srgb, var(--panel-raised) 88%, transparent);
+  color: var(--text);
+}
+.metro-overlay-close:active {
+  transform: scale(0.97);
+}
+.metro-overlay-close:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 2px;
+}
+.metro-overlay-state {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  text-align: center;
+  background: color-mix(in srgb, var(--bg) 84%, transparent);
+}
+.metro-overlay-state[hidden] {
+  display: none;
+}
+.metro-overlay-state-title {
+  margin: 0;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.metro-overlay-state-text {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  letter-spacing: 0.04em;
+}
+.metro-overlay-spinner {
+  width: 26px;
+  height: 26px;
+  border: 2px solid color-mix(in srgb, var(--text) 16%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: metro-overlay-spin 0.9s linear infinite;
+}
+.metro-overlay-retry {
+  margin-top: 4px;
+}
+@keyframes metro-overlay-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes metro-overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
