@@ -3636,12 +3636,38 @@ export class App {
       const shortcutsSection = this.buildShortcutsSection(section);
       const updatesSection = this.buildUpdatesSection(section, toggleField, segField);
 
+      // 空间界面（唱片店 R1 原型）：设置里给一个入口，方便直接试玩 3D 场景。
+      const spaceSection = section(
+        '空间界面',
+        h(
+          'div',
+          { class: 'field' },
+          h(
+            'div',
+            {},
+            h('div', { class: 'field-label', text: '唱片店（预览）' }),
+            h('div', {
+              class: 'field-hint',
+              text: '3D 唱片店界面原型：拖拽环视、滚轮推进、点击唱片聚焦、Esc 返回。当前为占位数据，正式内容在后续版本接入。',
+            }),
+          ),
+          (() => {
+            const open = h('button', { class: 'btn space-open-btn', text: '打开预览' });
+            open.addEventListener('click', () => {
+              void import('./space/storeOverlay').then((mod) => mod.openStoreSpacePreview());
+            });
+            return open;
+          })(),
+        ),
+      );
+
       // 两栏设置：左侧导航 + 右侧内容（与快捷设置的 tab 选中样式一致）
       type SettingsEntry = { key: string; label: string; node: HTMLElement };
       const entries: SettingsEntry[] = [
         { key: 'general', label: '通用', node: general },
         { key: 'appearance', label: '外观', node: appearance },
         { key: 'playback', label: '播放', node: playback },
+        { key: 'space', label: '空间界面', node: spaceSection },
         { key: 'shortcuts', label: '快捷键', node: shortcutsSection },
         { key: 'eq', label: '均衡器', node: eqSection },
         { key: 'downloads', label: '下载', node: downloadsSection },

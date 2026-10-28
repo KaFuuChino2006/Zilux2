@@ -6607,3 +6607,46 @@ html.is-pb-expanded .playerbar.is-hidden {
   outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
   outline-offset: 2px;
 }
+
+/* 「唱片店」空间预览覆盖层（R1 原型：设置 → 空间界面 → 打开预览） */
+.space-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: #0b0806;
+  animation: space-overlay-in 0.28s ease both;
+}
+.space-overlay-stage {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+.space-overlay-close {
+  position: absolute;
+  top: 18px;
+  right: 20px;
+  z-index: 2;
+  min-width: 64px;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 226, 180, 0.22);
+  background: rgba(24, 18, 12, 0.6);
+  color: #ffe9c8;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  backdrop-filter: blur(6px);
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+.space-open-btn {
+  white-space: nowrap;
+}
+.space-overlay-close:hover {
+  background: rgba(48, 36, 24, 0.72);
+  border-color: rgba(255, 226, 180, 0.4);
+}
+@keyframes space-overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
