@@ -3636,6 +3636,60 @@ export class App {
       const shortcutsSection = this.buildShortcutsSection(section);
       const updatesSection = this.buildUpdatesSection(section, toggleField, segField);
 
+      // 界面模式（音乐地铁图 M2）：选择界面形态 + 全屏入口。
+      const INTERFACE_MODE_KEY = 'zilux2.interfaceMode';
+      type InterfaceMode = 'classic' | 'metro';
+      const readInterfaceMode = (): InterfaceMode => {
+        try {
+          return localStorage.getItem(INTERFACE_MODE_KEY) === 'metro' ? 'metro' : 'classic';
+        } catch {
+          return 'classic';
+        }
+      };
+      const writeInterfaceMode = (mode: InterfaceMode): void => {
+        try {
+          localStorage.setItem(INTERFACE_MODE_KEY, mode);
+        } catch {
+          /* 存储不可用时只在本次会话生效 */
+        }
+      };
+      const interfaceSection = section(
+        '界面模式',
+        segField<InterfaceMode>(
+          '启动界面',
+          [
+            { value: 'classic', label: '经典界面' },
+            { value: 'metro', label: '地铁图' },
+          ],
+          readInterfaceMode(),
+          (mode) => {
+            writeInterfaceMode(mode);
+            toast(mode === 'metro' ? '已记住「地铁图」：后续版本启动时进入，当前可点下方按钮打开' : '已记住「经典界面」');
+          },
+          '首版仍从下方按钮手动打开；选择会记住，后续版本随启动进入。',
+        ),
+        h(
+          'div',
+          { class: 'field' },
+          h(
+            'div',
+            {},
+            h('div', { class: 'field-label', text: '音乐地铁图（预览）' }),
+            h('div', {
+              class: 'field-hint',
+              text: '把今日推荐 / 我喜欢 / 最近播放 / 歌单 / 私人雷达画成线路图：点击站点开卡、播放或加入队列，Esc 逐级返回。',
+            }),
+          ),
+          (() => {
+            const open = h('button', { class: 'btn metro-open-btn', text: '打开地铁图' });
+            open.addEventListener('click', () => {
+              void import('./metro/metroOverlay').then((mod) => mod.openMetroOverlay());
+            });
+            return open;
+          })(),
+        ),
+      );
+
       // 空间界面（唱片店 R1 原型）：设置里给一个入口，方便直接试玩 3D 场景。
       const spaceSection = section(
         '空间界面',
@@ -3667,6 +3721,7 @@ export class App {
         { key: 'general', label: '通用', node: general },
         { key: 'appearance', label: '外观', node: appearance },
         { key: 'playback', label: '播放', node: playback },
+        { key: 'interface', label: '界面模式', node: interfaceSection },
         { key: 'space', label: '空间界面', node: spaceSection },
         { key: 'shortcuts', label: '快捷键', node: shortcutsSection },
         { key: 'eq', label: '均衡器', node: eqSection },
