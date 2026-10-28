@@ -53,6 +53,11 @@ const STAGGER_MS = 26;
 /** 歌曲卡尺寸（用于贴边翻转与避让）。 */
 const CARD_WIDTH = 236;
 const CARD_HEIGHT = 92;
+/** 布局编辑偏移上限（CSS 像素）：板块可左右/上下挪动，支线可上下挪动。 */
+const EDIT_LIMIT_X = 150;
+const EDIT_LIMIT_Y = 100;
+/** 布局编辑的本地存储键（拖动后的位置下次打开沿用）。 */
+const BOARD_EDIT_KEY = 'zilux2.metro.board';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -135,6 +140,59 @@ function wantsMockData(): boolean {
 }
 
 /* ------------------------------------------------------------------ */
+/* 布局编辑（用户拖动调整板块与线路位置）                              */
+/* ------------------------------------------------------------------ */
+
+/** 单个板块的位置偏移（相对默认布局）。 */
+interface BoardEdit {
+  /** 大图标车站相对默认位置的偏移。 */
+  hubDx: number;
+  hubDy: number;
+  /** 支线相对大图标车站的竖直偏移；非零时从图标处折出去。 */
+  lineDy: number;
+}
+
+function clampEdit(value: number, limit: number): number {
+  return Math.max(-limit, Math.min(limit, value));
+}
+
+/** 读取本地保存的布局编辑；数据损坏或存储不可用时用默认布局。 */
+function readBoardEdits(): Map<string, BoardEdit> {
+  const edits = new Map<string, BoardEdit>();
+  try {
+    const raw = localStorage.getItem(BOARD_EDIT_KEY);
+    if (raw === null) return edits;
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== 'object') return edits;
+    for (const [entryId, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (value === null || typeof value !== 'object') continue;
+      const record = value as Record<string, unknown>;
+      const hubDx = typeof record.hubDx === 'number' ? record.hubDx : 0;
+      const hubDy = typeof record.hubDy === 'number' ? record.hubDy : 0;
+      const lineDy = typeof record.lineDy === 'number' ? record.lineDy : 0;
+      if (!Number.isFinite(hubDx) || !Number.isFinite(hubDy) || !Number.isFinite(lineDy)) continue;
+      edits.set(entryId, {
+        hubDx: clampEdit(hubDx, EDIT_LIMIT_X),
+        hubDy: clampEdit(hubDy, EDIT_LIMIT_Y),
+        lineDy: clampEdit(lineDy, EDIT_LIMIT_Y),
+      });
+    }
+  } catch {
+    /* 存储不可用或数据损坏时用默认布局。 */
+  }
+  return edits;
+}
+
+/** 保存布局编辑（拖动结束时调用）。 */
+function writeBoardEdits(edits: Map<string, BoardEdit>): void {
+  try {
+    localStorage.setItem(BOARD_EDIT_KEY, JSON.stringify(Object.fromEntries(edits)));
+  } catch {
+    /* 存储不可用时只在本次会话内生效。 */
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* 几何                                                               */
 /* ------------------------------------------------------------------ */
 
@@ -162,10 +220,14 @@ function computeGeometry(width: number, height: number, count: number): BoardGeo
   return { width, height, hubX, rows, branchStart, branchEnd };
 }
 
-/** 某条支线上第 index 座小站的 x。 */
-function stationX(geo: BoardGeometry, count: number, index: number): number {
-  if (count <= 1) return geo.branchStart;
-  return geo.branchStart + ((geo.branchEnd - geo.branchStart) / (count - 1)) * index;
+/**
+ * 某条支线上第 index 座小站的 x。
+ * startOffset 用于板块被横向拖动时同步移动支线起点（终点保持贴住画布右侧）。
+ */
+function stationX(geo: BoardGeometry, count: number, index: number, startOffset = 0): number {
+  const start = geo.branchStart + startOffset;
+  if (count <= 1) return start;
+  return start + ((geo.branchEnd - start) / (count - 1)) * index;
 }
 
 /* ------------------------------------------------------------------ */
@@ -218,15 +280,33 @@ export function openMetroOverlay(): void {
 
   const hint = h('p', {
     class: 'mh-hint',
-    text: '点大图标展开 / 收回 · 点站点查看歌曲 · 拖动空白处移动视角 · 双击复位 · Esc 逐级返回',
+    text: '点大图标展开 / 收回 · 拖动大图标或支线调整位置 · 点站点查看歌曲 · 滚轮缩放 · 拖动空白处移动视角 · 双击复位 · Esc 逐级返回',
   });
 
-  // 画布层：可整体拖动平移（主干线 / 支线 / 大图标 / 歌曲卡都在这层里）。
+  // 画布层：可整体拖动平移 / 缩放（主干线 / 支线 / 大图标 / 歌曲卡都在这层里）。
   const canvas = document.createElement('div');
   canvas.className = 'mh-canvas';
   canvas.append(svg, hubLayer, cardLayer);
 
-  board.append(head, canvas, hint);
+  // 缩放控制条（固定右下角，避开底部播放条）。
+  const zoomValue = h('span', { class: 'mh-zoom-value', 'aria-live': 'polite', text: '100%' });
+  const zoomBar = h(
+    'div',
+    { class: 'mh-zoombar', role: 'group', 'aria-label': '缩放' },
+    h('button', { class: 'mh-zoom-btn', type: 'button', 'data-act': 'out', title: '缩小', 'aria-label': '缩小', text: '−' }),
+    zoomValue,
+    h('button', { class: 'mh-zoom-btn', type: 'button', 'data-act': 'in', title: '放大', 'aria-label': '放大', text: '+' }),
+    h('button', { class: 'mh-zoom-btn mh-zoom-reset', type: 'button', 'data-act': 'reset', title: '复位视角（也可双击空白处）', text: '复位' }),
+    h('button', {
+      class: 'mh-zoom-btn mh-zoom-reset',
+      type: 'button',
+      'data-act': 'reset-layout',
+      title: '布局复位：把拖动过的板块与线路放回默认位置',
+      text: '布局复位',
+    }),
+  );
+
+  board.append(head, canvas, hint, zoomBar);
 
   const closeBtn = document.createElement('button');
   closeBtn.type = 'button';
@@ -264,6 +344,20 @@ export function openMetroOverlay(): void {
   let panBaseY = 0;
   let panActive = false;
   let panAnimTimer = 0;
+  // 画布缩放（滚轮 / 加减按钮 / 复位）。
+  let zoom = 1;
+  // 布局编辑：拖动大图标调整板块位置、拖动支线调整线路高度（结果本地保存）。
+  const edits = readBoardEdits();
+  let editMode: 'hub' | 'line' | null = null;
+  let editPointerId: number | null = null;
+  let editEntryId = '';
+  let editStartX = 0;
+  let editStartY = 0;
+  let editBaseHubDx = 0;
+  let editBaseHubDy = 0;
+  let editBaseLineDy = 0;
+  let editActive = false;
+  let suppressClick = false;
 
   /** 已展开的板块（线路 id → 支线 SVG 组）。 */
   const expanded = new Map<string, SVGGElement>();
@@ -374,24 +468,79 @@ export function openMetroOverlay(): void {
     hubs.set(entry.id, { button, label });
   }
 
-  /** 重画主干线与大图标标题位置（不含支线）。 */
+  /** 取某板块的布局编辑（没有就建一份默认值）。 */
+  function editOf(entryId: string): BoardEdit {
+    let edit = edits.get(entryId);
+    if (edit === undefined) {
+      edit = { hubDx: 0, hubDy: 0, lineDy: 0 };
+      edits.set(entryId, edit);
+    }
+    return edit;
+  }
+
+  /** 大图标当前位置（默认位置 + 用户拖动偏移）。 */
+  function hubPosOf(index: number): { x: number; y: number } {
+    if (geo === null || entries === null) return { x: 0, y: 0 };
+    const entry = entries[index];
+    const edit = entry === undefined ? { hubDx: 0, hubDy: 0 } : editOf(entry.id);
+    return { x: geo.hubX + edit.hubDx, y: (geo.rows[index] ?? 0) + edit.hubDy };
+  }
+
+  /** 某条支线的竖直位置：支线默认与大图标同高，拖动线路后从图标处折出去。 */
+  function linePosOf(index: number): { hubY: number; lineY: number } {
+    if (geo === null || entries === null) return { hubY: 0, lineY: 0 };
+    const entry = entries[index];
+    const edit = entry === undefined ? { hubDy: 0, lineDy: 0 } : editOf(entry.id);
+    const hubY = (geo.rows[index] ?? 0) + edit.hubDy;
+    return { hubY, lineY: hubY + edit.lineDy };
+  }
+
+  /** 重画大图标与标题位置（不含支线）。 */
   function renderStatic(): void {
     if (geo === null || entries === null) return;
     const { width, height } = geo;
     svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
 
     entries.forEach((entry, index) => {
-      const rowY = geo?.rows[index] ?? 0;
-
+      const pos = hubPosOf(index);
       const node = hubs.get(entry.id);
-      if (node) {
-        node.button.style.left = `${geo?.hubX ?? 0}px`;
-        node.button.style.top = `${rowY}px`;
-        // 标题放在徽章左侧右对齐，避免与竖直主干线重叠。
-        node.label.style.left = `${(geo?.hubX ?? 0) - HUB_BADGE_SIZE / 2 - 22}px`;
-        node.label.style.top = `${rowY}px`;
-      }
+      if (!node) return;
+      node.button.style.left = `${pos.x}px`;
+      node.button.style.top = `${pos.y}px`;
+      // 标题放在徽章左侧右对齐，避免与线路重叠。
+      node.label.style.left = `${pos.x - HUB_BADGE_SIZE / 2 - 22}px`;
+      node.label.style.top = `${pos.y}px`;
     });
+  }
+
+  /** 重建某条已展开的支线（拖动时实时跟随，不播放入场动画）。 */
+  function refreshBranch(entryId: string): void {
+    if (entries === null) return;
+    const index = entries.findIndex((entry) => entry.id === entryId);
+    const current = expanded.get(entryId);
+    if (index < 0 || current === undefined) return;
+    const next = createBranch(entries[index], index, false);
+    current.replaceWith(next);
+    expanded.set(entryId, next);
+  }
+
+  /** 拖动过程中刷新所有受影响的位置（图标、标题、支线与歌曲卡）。 */
+  function refreshEditedLayout(): void {
+    if (entries === null) return;
+    renderStatic();
+    expanded.forEach((_group, entryId) => refreshBranch(entryId));
+    if (cardAt !== null) renderCard();
+  }
+
+  /** 所有位置偏移归零并保存（缩放条上的「布局复位」）。 */
+  function resetBoardEdits(): void {
+    edits.forEach((edit) => {
+      edit.hubDx = 0;
+      edit.hubDy = 0;
+      edit.lineDy = 0;
+    });
+    writeBoardEdits(edits);
+    refreshEditedLayout();
   }
 
   // ── 支线（生长 / 收回）─────────────────────────────────────────────
@@ -400,7 +549,9 @@ export function openMetroOverlay(): void {
    * animate=true 时播放「线条生长 + 站点依次弹出」；false 用于窗口尺寸变化后重排。
    */
   function createBranch(entry: MetroGalleryEntry, index: number, animate: boolean): SVGGElement {
-    const rowY = geo?.rows[index] ?? 0;
+    const pos = hubPosOf(index);
+    const { hubY, lineY } = linePosOf(index);
+    const edit = editOf(entry.id);
     const count = entry.songs.length;
     const group = svgEl('g', {
       class: animate ? 'mh-line is-entering' : 'mh-line is-static',
@@ -409,19 +560,24 @@ export function openMetroOverlay(): void {
     group.style.setProperty('--mh-tone', theme.tones[entry.tone].base);
     group.style.setProperty('--mh-tone-soft', theme.tones[entry.tone].soft);
 
-    const startX = (geo?.hubX ?? 0) + HUB_BADGE_SIZE / 2 - 2;
+    const startX = pos.x + HUB_BADGE_SIZE / 2 - 2;
     const endX = geo?.branchEnd ?? 0;
+    // 支线被拖动后与图标不同高：从图标处竖折一下再横出去（保持正交）。
+    const d =
+      Math.abs(lineY - hubY) < 0.5
+        ? `M ${startX} ${lineY} L ${endX} ${lineY}`
+        : `M ${startX} ${hubY} L ${startX} ${lineY} L ${endX} ${lineY}`;
     const path = svgEl('path', {
       class: 'mh-line-path',
-      d: `M ${startX} ${rowY} L ${endX} ${rowY}`,
+      d,
     });
-    const length = Math.max(0, endX - startX);
+    const length = Math.max(0, endX - startX) + Math.abs(lineY - hubY);
     path.style.strokeDasharray = String(length);
     path.style.strokeDashoffset = animate ? String(length) : '0';
     group.append(path);
 
     entry.songs.forEach((song, songIndex) => {
-      const x = stationX(geo as BoardGeometry, count, songIndex);
+      const x = stationX(geo as BoardGeometry, count, songIndex, edit.hubDx);
       const above = songIndex % 2 === 0;
       const station = svgEl('g', {
         class: 'mh-station',
@@ -431,7 +587,7 @@ export function openMetroOverlay(): void {
         role: 'button',
         tabindex: '0',
         'aria-label': `${song.title} — ${song.artist}`,
-        transform: `translate(${x} ${rowY})`,
+        transform: `translate(${x} ${lineY})`,
       });
       station.style.setProperty('--mh-i', String(songIndex));
       station.append(
@@ -541,8 +697,9 @@ export function openMetroOverlay(): void {
       return;
     }
     const rowIndex = entries.findIndex((item) => item.id === entry.id);
-    const rowY = geo.rows[rowIndex] ?? 0;
-    const x = stationX(geo, entry.songs.length, cardAt.index);
+    const edit = editOf(entry.id);
+    const { lineY } = linePosOf(rowIndex);
+    const x = stationX(geo, entry.songs.length, cardAt.index, edit.hubDx);
     // 站名在偶数站上方、奇数站下方；箭头卡放在另一侧，避免压站名。
     const labelAbove = cardAt.index % 2 === 0;
 
@@ -577,9 +734,9 @@ export function openMetroOverlay(): void {
     const left = Math.max(16, Math.min(geo.width - CARD_WIDTH - 16, Math.round(x - CARD_WIDTH / 2)));
     const arrowX = Math.max(18, Math.min(CARD_WIDTH - 18, Math.round(x - left)));
     const below = labelAbove;
-    let top = below ? rowY + 30 : rowY - 30 - CARD_HEIGHT;
-    if (top < 88) top = rowY + 30;
-    if (top + CARD_HEIGHT > geo.height - 24) top = rowY - 30 - CARD_HEIGHT;
+    let top = below ? lineY + 30 : lineY - 30 - CARD_HEIGHT;
+    if (top < 88) top = lineY + 30;
+    if (top + CARD_HEIGHT > geo.height - 24) top = lineY - 30 - CARD_HEIGHT;
     tip.classList.add(below ? 'is-below' : 'is-above');
     tip.style.left = `${left}px`;
     tip.style.top = `${Math.round(top)}px`;
@@ -604,7 +761,7 @@ export function openMetroOverlay(): void {
     const height = board.clientHeight;
     if (width < 2 || height < 2) return;
     geo = computeGeometry(width, height, entries.length);
-    if (panX !== 0 || panY !== 0) applyPan(false);
+    if (panX !== 0 || panY !== 0 || zoom !== 1) applyView(false);
     renderStatic();
     // 尺寸变化后重建已展开支线（不重播生长动画）。
     branchLayer.replaceChildren();
@@ -630,6 +787,11 @@ export function openMetroOverlay(): void {
 
   // ── 事件 ──────────────────────────────────────────────────────────
   function onBoardClick(event: MouseEvent): void {
+    // 拖动过大图标 / 支线后紧跟的 click 不算点击，避免误展开或误开卡。
+    if (suppressClick) {
+      suppressClick = false;
+      return;
+    }
     const target = event.target instanceof Element ? event.target : null;
     if (target === null) return;
     if (target.closest('.mh-card') !== null) return;
@@ -662,24 +824,36 @@ export function openMetroOverlay(): void {
     if (entryId !== undefined) openCard(entryId, index);
   }
 
-  // ── 平移画布：拖动空白处移动视角 ────────────────────────────────────
-  /** 平移边界：允许拖出约三分之一屏，避免把线路拖丢。 */
+  // ── 平移 / 缩放画布：拖动空白处移动视角、滚轮或按钮放大缩小 ────────
+  /** 平移边界：允许拖出约三分之一屏，避免把线路拖丢（随缩放放大）。 */
   const PAN_LIMIT_X = 0.42;
   const PAN_LIMIT_Y = 0.34;
+  /** 缩放范围与按钮步进、滚轮灵敏度（e 为底，指尖手感接近地图应用）。 */
+  const ZOOM_MIN = 0.55;
+  const ZOOM_MAX = 2.2;
+  const ZOOM_STEP = 1.22;
+  const WHEEL_ZOOM_RATE = 0.0016;
 
-  function applyPan(animated: boolean): void {
-    if (geo !== null) {
-      const maxX = geo.width * PAN_LIMIT_X;
-      const maxY = geo.height * PAN_LIMIT_Y;
-      panX = Math.max(-maxX, Math.min(maxX, panX));
-      panY = Math.max(-maxY, Math.min(maxY, panY));
-    }
+  /** 夹取平移范围（缩放越大允许拖得越远）。 */
+  function clampPan(): void {
+    if (geo === null) return;
+    const maxX = geo.width * PAN_LIMIT_X * zoom;
+    const maxY = geo.height * PAN_LIMIT_Y * zoom;
+    panX = Math.max(-maxX, Math.min(maxX, panX));
+    panY = Math.max(-maxY, Math.min(maxY, panY));
+  }
+
+  /** 应用画布变换（平移 + 缩放），并同步右下角的百分比。 */
+  function applyView(animated: boolean): void {
+    zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoom));
+    clampPan();
     if (panAnimTimer !== 0) {
       window.clearTimeout(panAnimTimer);
       panAnimTimer = 0;
     }
     canvas.classList.toggle('is-animating', animated);
-    canvas.style.transform = `translate3d(${Math.round(panX)}px, ${Math.round(panY)}px, 0)`;
+    canvas.style.transform = `translate3d(${Math.round(panX)}px, ${Math.round(panY)}px, 0) scale(${zoom.toFixed(4)})`;
+    zoomValue.textContent = `${Math.round(zoom * 100)}%`;
     if (animated) {
       panAnimTimer = window.setTimeout(() => {
         panAnimTimer = 0;
@@ -688,12 +862,62 @@ export function openMetroOverlay(): void {
     }
   }
 
+  /** 以某个屏幕点为锚点缩放：保证锚点下的画布内容不动。 */
+  function zoomAt(nextZoom: number, anchorX: number, anchorY: number, animated: boolean): void {
+    const next = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, nextZoom));
+    if (Math.abs(next - zoom) < 1e-4) return;
+    const ratio = next / zoom;
+    panX = anchorX - (anchorX - panX) * ratio;
+    panY = anchorY - (anchorY - panY) * ratio;
+    zoom = next;
+    applyView(animated);
+  }
+
+  /** 复位视角（缩放回 100%，平移归零）。 */
+  function resetView(animated = true): void {
+    zoom = 1;
+    panX = 0;
+    panY = 0;
+    applyView(animated);
+  }
+
+  /** 滚轮缩放：以光标位置为锚点；底部缩放条上滚轮不拦截。 */
+  function onBoardWheel(event: WheelEvent): void {
+    const target = event.target instanceof Element ? event.target : null;
+    if (target === null) return;
+    if (target.closest('.metro-overlay-close') !== null || target.closest('.mh-zoombar') !== null) return;
+    event.preventDefault();
+    const rect = board.getBoundingClientRect();
+    const next = zoom * Math.exp(-event.deltaY * WHEEL_ZOOM_RATE);
+    zoomAt(next, event.clientX - rect.left, event.clientY - rect.top, false);
+  }
+
+  /** 缩放条按钮：以画布中心为锚点。 */
+  function onZoomBarClick(event: MouseEvent): void {
+    const target = event.target instanceof Element ? event.target : null;
+    const btn = target?.closest<HTMLButtonElement>('.mh-zoom-btn');
+    if (btn === null || btn === undefined) return;
+    const act = btn.dataset.act;
+    // 以线路网络的中心为锚点缩放，避免按钮缩放时内容整体跑出画面。
+    const cx = geo === null ? board.clientWidth / 2 : (geo.hubX + geo.branchEnd) / 2;
+    const cy =
+      geo === null || geo.rows.length === 0
+        ? board.clientHeight / 2
+        : ((geo.rows[0] ?? 0) + (geo.rows[geo.rows.length - 1] ?? 0)) / 2;
+    if (act === 'in') zoomAt(zoom * ZOOM_STEP, cx, cy, true);
+    else if (act === 'out') zoomAt(zoom / ZOOM_STEP, cx, cy, true);
+    else if (act === 'reset') resetView(true);
+    else if (act === 'reset-layout') resetBoardEdits();
+  }
+
   /** 按钮 / 站点 / 卡片上的拖动不触发平视，留给它们自己。 */
   function isPanExcluded(target: Element): boolean {
     return (
       target.closest('.mh-hub') !== null ||
       target.closest('.mh-card') !== null ||
       target.closest('.mh-station') !== null ||
+      target.closest('.mh-line') !== null ||
+      target.closest('.mh-zoombar') !== null ||
       target.closest('.metro-overlay-close') !== null
     );
   }
@@ -723,7 +947,7 @@ export function openMetroOverlay(): void {
     }
     panX = panBaseX + dx;
     panY = panBaseY + dy;
-    applyPan(false);
+    applyView(false);
   }
 
   function onBoardPointerUp(event: PointerEvent): void {
@@ -734,8 +958,82 @@ export function openMetroOverlay(): void {
     if (board.hasPointerCapture(event.pointerId)) board.releasePointerCapture(event.pointerId);
   }
 
+  // ── 布局编辑：拖动大图标移动板块、拖动支线上下移动线路 ──────────────
+  function onEditPointerDown(event: PointerEvent): void {
+    if (event.button !== 0 || entries === null) return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (target === null) return;
+    const hub = target.closest<HTMLButtonElement>('.mh-hub');
+    if (hub !== null) {
+      const entryId = hub.dataset.entry;
+      if (entryId === undefined) return;
+      const edit = editOf(entryId);
+      editMode = 'hub';
+      editEntryId = entryId;
+      editBaseHubDx = edit.hubDx;
+      editBaseHubDy = edit.hubDy;
+    } else {
+      const station = target.closest<SVGGElement>('.mh-station');
+      const line = target.closest<SVGElement>('.mh-line');
+      const entryId = station?.dataset.entry ?? line?.getAttribute('data-entry') ?? undefined;
+      if (entryId === undefined) return;
+      const edit = editOf(entryId);
+      editMode = 'line';
+      editEntryId = entryId;
+      editBaseLineDy = edit.lineDy;
+    }
+    editPointerId = event.pointerId;
+    editStartX = event.clientX;
+    editStartY = event.clientY;
+    editActive = false;
+  }
+
+  function onEditPointerMove(event: PointerEvent): void {
+    if (editPointerId !== event.pointerId || editMode === null) return;
+    const dx = event.clientX - editStartX;
+    const dy = event.clientY - editStartY;
+    if (!editActive) {
+      // 移动超过阈值才算拖动，普通点击仍然展开 / 开卡。
+      if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+      editActive = true;
+      suppressClick = true;
+      board.classList.add('is-editing');
+      board.setPointerCapture(event.pointerId);
+    }
+    const edit = editOf(editEntryId);
+    if (editMode === 'hub') {
+      edit.hubDx = clampEdit(editBaseHubDx + dx, EDIT_LIMIT_X);
+      edit.hubDy = clampEdit(editBaseHubDy + dy, EDIT_LIMIT_Y);
+      renderStatic();
+    } else {
+      edit.lineDy = clampEdit(editBaseLineDy + dy, EDIT_LIMIT_Y);
+    }
+    refreshBranch(editEntryId);
+    if (cardAt !== null) renderCard();
+  }
+
+  function onEditPointerUp(event: PointerEvent): void {
+    if (editPointerId !== event.pointerId) return;
+    const wasActive = editActive;
+    editMode = null;
+    editPointerId = null;
+    editActive = false;
+    board.classList.remove('is-editing');
+    if (board.hasPointerCapture(event.pointerId)) board.releasePointerCapture(event.pointerId);
+    if (wasActive) {
+      writeBoardEdits(edits);
+      renderStatic();
+      refreshBranch(editEntryId);
+      if (cardAt !== null) renderCard();
+    }
+  }
+
   /** 双击站点 = 直接播放这首；双击空白 = 复位视角。 */
   function onBoardDoubleClick(event: MouseEvent): void {
+    if (suppressClick) {
+      suppressClick = false;
+      return;
+    }
     const target = event.target instanceof Element ? event.target : null;
     if (target === null) return;
     const station = target.closest<SVGGElement>('.mh-station');
@@ -751,9 +1049,7 @@ export function openMetroOverlay(): void {
       return;
     }
     if (isPanExcluded(target)) return;
-    panX = 0;
-    panY = 0;
-    applyPan(true);
+    resetView(true);
   }
 
   function onEscape(event: KeyboardEvent): void {
@@ -819,10 +1115,16 @@ export function openMetroOverlay(): void {
     board.removeEventListener('click', onBoardClick);
     board.removeEventListener('keydown', onBoardKeyDown);
     board.removeEventListener('pointerdown', onBoardPointerDown);
+    board.removeEventListener('pointerdown', onEditPointerDown);
     board.removeEventListener('pointermove', onBoardPointerMove);
+    board.removeEventListener('pointermove', onEditPointerMove);
     board.removeEventListener('pointerup', onBoardPointerUp);
+    board.removeEventListener('pointerup', onEditPointerUp);
     board.removeEventListener('pointercancel', onBoardPointerUp);
+    board.removeEventListener('pointercancel', onEditPointerUp);
     board.removeEventListener('dblclick', onBoardDoubleClick);
+    board.removeEventListener('wheel', onBoardWheel);
+    zoomBar.removeEventListener('click', onZoomBarClick);
     if (panAnimTimer !== 0) window.clearTimeout(panAnimTimer);
     closeBtn.removeEventListener('click', close);
     window.removeEventListener('keydown', onEscape, true);
@@ -843,10 +1145,16 @@ export function openMetroOverlay(): void {
   board.addEventListener('click', onBoardClick);
   board.addEventListener('keydown', onBoardKeyDown);
   board.addEventListener('pointerdown', onBoardPointerDown);
+  board.addEventListener('pointerdown', onEditPointerDown);
   board.addEventListener('pointermove', onBoardPointerMove);
+  board.addEventListener('pointermove', onEditPointerMove);
   board.addEventListener('pointerup', onBoardPointerUp);
+  board.addEventListener('pointerup', onEditPointerUp);
   board.addEventListener('pointercancel', onBoardPointerUp);
+  board.addEventListener('pointercancel', onEditPointerUp);
   board.addEventListener('dblclick', onBoardDoubleClick);
+  board.addEventListener('wheel', onBoardWheel, { passive: false });
+  zoomBar.addEventListener('click', onZoomBarClick);
   closeBtn.addEventListener('click', close);
   window.addEventListener('keydown', onEscape, true);
   active = { close };
