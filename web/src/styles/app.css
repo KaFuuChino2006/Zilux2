@@ -6871,14 +6871,6 @@ html.is-pb-expanded .playerbar.is-hidden {
   pointer-events: none;
 }
 
-/* 主干线 */
-.mh-trunk {
-  fill: none;
-  stroke: color-mix(in srgb, var(--mt-muted) 52%, transparent);
-  stroke-width: 5;
-  stroke-linecap: round;
-}
-
 /* 大图标车站（可点击的原生按钮） */
 .mh-hub {
   position: absolute;
@@ -6894,39 +6886,74 @@ html.is-pb-expanded .playerbar.is-hidden {
   pointer-events: auto;
   transition: transform 0.22s cubic-bezier(.34, 1.56, .64, 1);
 }
+/* 封面叠层：前三首歌的封面像一叠唱片封套 */
 .mh-hub-badge {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.mh-hub-cover {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border: 1.5px solid color-mix(in srgb, var(--mh-tone) 46%, transparent);
+  border-radius: 12px;
+  background:
+    radial-gradient(120% 120% at 32% 22%, color-mix(in srgb, var(--mh-tone-glow) 42%, transparent), transparent 66%),
+    color-mix(in srgb, var(--mt-paper) 90%, var(--mh-tone-soft));
+  box-shadow: 0 10px 26px -12px rgba(0, 0, 0, 0.55);
+  transition:
+    transform 0.24s cubic-bezier(.22, 1, .36, 1),
+    box-shadow 0.24s ease,
+    border-color 0.24s ease;
+}
+.mh-hub-cover[data-i='1'] {
+  transform: rotate(6deg) translate(5px, 2px) scale(0.94);
+}
+.mh-hub-cover[data-i='2'] {
+  transform: rotate(-7deg) translate(-5px, 3px) scale(0.88);
+}
+.mh-hub-cover-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.mh-hub-cover-char {
   display: flex;
   align-items: center;
   justify-content: center;
   width: 100%;
   height: 100%;
-  border: 1.5px solid color-mix(in srgb, var(--mh-tone) 60%, transparent);
-  border-radius: 16px;
-  background:
-    radial-gradient(120% 120% at 32% 22%, color-mix(in srgb, var(--mh-tone-glow) 34%, transparent), transparent 66%),
-    color-mix(in srgb, var(--mt-paper) 90%, var(--mh-tone-soft));
-  box-shadow:
-    0 0 0 6px color-mix(in srgb, var(--mh-tone) 9%, transparent),
-    0 10px 26px -12px rgba(0, 0, 0, 0.55);
-  transition:
-    box-shadow 0.24s ease,
-    border-color 0.24s ease;
+  color: color-mix(in srgb, var(--mh-tone) 78%, #fff);
+  font-size: 26px;
+  font-weight: 700;
 }
 .mh-hub:hover {
   transform: translate(-50%, -50%) scale(1.06);
 }
-.mh-hub:hover .mh-hub-badge {
+.mh-hub:hover .mh-hub-cover {
+  box-shadow: 0 14px 32px -14px rgba(0, 0, 0, 0.6);
+}
+.mh-hub:hover .mh-hub-cover[data-i='0'] {
   border-color: var(--mh-tone-glow);
+}
+.mh-hub:hover .mh-hub-cover[data-i='1'] {
+  transform: rotate(9deg) translate(7px, 3px) scale(0.94);
+}
+.mh-hub:hover .mh-hub-cover[data-i='2'] {
+  transform: rotate(-10deg) translate(-7px, 4px) scale(0.88);
 }
 .mh-hub:focus-visible {
   outline: none;
 }
-.mh-hub:focus-visible .mh-hub-badge {
+.mh-hub:focus-visible .mh-hub-cover[data-i='0'] {
   box-shadow:
     0 0 0 3px color-mix(in srgb, var(--mh-tone) 58%, transparent),
     0 10px 26px -12px rgba(0, 0, 0, 0.55);
 }
-.mh-hub.is-open .mh-hub-badge {
+.mh-hub.is-open .mh-hub-cover[data-i='0'] {
   border-color: var(--mh-tone);
   box-shadow:
     0 0 0 8px color-mix(in srgb, var(--mh-tone) 14%, transparent),
@@ -7104,6 +7131,13 @@ html.is-pb-expanded .playerbar.is-hidden {
     color-mix(in srgb, var(--mh-tone) 44%, transparent)
   );
   color: var(--mt-paper);
+}
+.mh-card-cover-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 9px;
+  object-fit: cover;
 }
 .mh-card-cover-char {
   font-size: 17px;

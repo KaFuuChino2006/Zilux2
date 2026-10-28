@@ -236,27 +236,9 @@ function formatPlays(value: number): string {
 
 const WINDOW_ICON = { minimize: 'minimize', maximize: 'maximize', close: 'close' } as const;
 
-/** 界面模式（启动界面）：经典界面 / 音乐地铁图。 */
-export type InterfaceMode = 'classic' | 'metro';
-const INTERFACE_MODE_KEY = 'zilux2.interfaceMode';
-
-/** 读取启动界面选择（存储不可用时退回经典界面）。 */
-export function readInterfaceMode(): InterfaceMode {
-  try {
-    return localStorage.getItem(INTERFACE_MODE_KEY) === 'metro' ? 'metro' : 'classic';
-  } catch {
-    return 'classic';
-  }
-}
-
-/** 记住启动界面选择。 */
-export function writeInterfaceMode(mode: InterfaceMode): void {
-  try {
-    localStorage.setItem(INTERFACE_MODE_KEY, mode);
-  } catch {
-    /* 存储不可用时只在本次会话生效 */
-  }
-}
+// 界面模式（经典界面 / 音乐地铁图）：实现见 `./interfaceMode`，这里转出以保持既有导入路径。
+import { readInterfaceMode, writeInterfaceMode, type InterfaceMode } from './interfaceMode';
+export { readInterfaceMode, writeInterfaceMode, type InterfaceMode };
 
 export class App {
   readonly root: HTMLDivElement;
@@ -3658,11 +3640,11 @@ export class App {
       const shortcutsSection = this.buildShortcutsSection(section);
       const updatesSection = this.buildUpdatesSection(section, toggleField, segField);
 
-      // 界面模式（音乐地铁图）：选择启动界面 + 全屏入口。
+      // 界面模式（音乐地铁图）：热切换 + 记住启动界面。
       const interfaceSection = section(
         '界面模式',
         segField<InterfaceMode>(
-          '启动界面',
+          '界面模式',
           [
             { value: 'classic', label: '经典界面' },
             { value: 'metro', label: '地铁图' },
@@ -3670,13 +3652,19 @@ export class App {
           readInterfaceMode(),
           (mode) => {
             writeInterfaceMode(mode);
-            toast(
-              mode === 'metro'
-                ? '已记住「地铁图」：下次启动直接进入（也可随时点下方按钮打开）'
-                : '已记住「经典界面」：下次启动进入经典界面',
-            );
+            // 热切换：立刻打开 / 关闭地铁图覆盖层，不需要重启应用。
+            void import('./metro/metroOverlay').then((mod) => {
+              if (mode === 'metro') {
+                this.sheet?.close();
+                mod.openMetroOverlay();
+                toast('已切换到「地铁图」');
+              } else {
+                mod.closeMetroOverlay();
+                toast('已切换到「经典界面」');
+              }
+            });
           },
-          '选择后下次启动直接进入对应界面；下方按钮可随时临时打开地铁图。',
+          '切换立即生效，并会记住；下次启动按此界面进入。',
         ),
         h(
           'div',
@@ -3693,6 +3681,8 @@ export class App {
           (() => {
             const open = h('button', { class: 'btn metro-open-btn', text: '打开地铁图' });
             open.addEventListener('click', () => {
+              // 打开即切到地铁图界面，并记住（下次启动直接进入）。
+              writeInterfaceMode('metro');
               void import('./metro/metroOverlay').then((mod) => mod.openMetroOverlay());
             });
             return open;
