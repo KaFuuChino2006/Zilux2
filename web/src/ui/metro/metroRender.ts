@@ -142,8 +142,97 @@ function iconMarkup(name: keyof typeof ICON_BODY, size = 18): string {
 /* 几何小工具                                                          */
 /* ------------------------------------------------------------------ */
 
-/** 线路 path：站点按顺序连线；环线末尾补 Z（与布局层契约一致）。 */
+/* 折线倒角：唯一实现，算法与常量对齐 CGo OpenMap `core/path-geometry.js` ——
+ * 90° 拐角半径 18px、斜角（45° 偏转 / 135° 内角）半径 8px，半径再受相邻边长 0.9 倍限制。
+ * 所有线路弯曲都走这一条规则，避免手绘碎线或各自不同的圆角。 */
+const ROUND_RADIUS_90 = 18;
+const ROUND_RADIUS_45 = 8;
+const ROUND_LIMIT_FACTOR = 0.9;
+
+interface RoundedCorner {
+  start: { x: number; y: number };
+  control: { x: number; y: number };
+  end: { x: number; y: number };
+}
+
+/** 单个拐角的倒角三点；共线或退化时返回 null（保持直线）。 */
+function roundedCorner(
+  prev: { x: number; y: number },
+  curr: { x: number; y: number },
+  next: { x: number; y: number },
+): RoundedCorner | null {
+  const v1x = curr.x - prev.x;
+  const v1y = curr.y - prev.y;
+  const v2x = next.x - curr.x;
+  const v2y = next.y - curr.y;
+  const len1 = Math.hypot(v1x, v1y);
+  const len2 = Math.hypot(v2x, v2y);
+  if (len1 < 0.01 || len2 < 0.01) return null;
+  const u1x = v1x / len1;
+  const u1y = v1y / len1;
+  const u2x = v2x / len2;
+  const u2y = v2y / len2;
+  const dot = Math.abs(u1x * u2x + u1y * u2y);
+  const targetRadius = dot < 0.1 ? ROUND_RADIUS_90 : ROUND_RADIUS_45;
+  const radius = Math.min(targetRadius, len1 * ROUND_LIMIT_FACTOR, len2 * ROUND_LIMIT_FACTOR);
+  return {
+    start: { x: curr.x - u1x * radius, y: curr.y - u1y * radius },
+    control: { x: curr.x, y: curr.y },
+    end: { x: curr.x + u2x * radius, y: curr.y + u2y * radius },
+  };
+}
+
+/** 二次贝塞尔段：从 start 已经 L 过去了，这里只写 Q。 */
+function cornerCurveD(corner: RoundedCorner): string {
+  return `Q${round(corner.control.x)} ${round(corner.control.y)} ${round(corner.end.x)} ${round(corner.end.y)}`;
+}
+
+/** 开放折线 → 标准倒角 path。 */
+function roundedOpenPathD(points: readonly { x: number; y: number }[]): string {
+  if (points.length === 0) return '';
+  const parts: string[] = [`M${round(points[0].x)} ${round(points[0].y)}`];
+  for (let index = 1; index < points.length - 1; index += 1) {
+    const corner = roundedCorner(points[index - 1], points[index], points[index + 1]);
+    if (corner === null) continue;
+    parts.push(`L${round(corner.start.x)} ${round(corner.start.y)}`, cornerCurveD(corner));
+  }
+  const last = points[points.length - 1];
+  parts.push(`L${round(last.x)} ${round(last.y)}`);
+  return parts.join(' ');
+}
+
+/** 闭合折线 → 标准倒角 path（每个拐角含起点都倒角）。 */
+function roundedClosedPathD(points: readonly { x: number; y: number }[]): string {
+  const count = points.length;
+  if (count === 0) return '';
+  if (count < 3) return roundedOpenPathD(points);
+  const corners: Array<RoundedCorner | null> = [];
+  for (let index = 0; index < count; index += 1) {
+    corners.push(
+      roundedCorner(points[(index - 1 + count) % count], points[index], points[(index + 1) % count]),
+    );
+  }
+  if (corners.some((corner) => corner === null)) {
+    return `${points.map((point, index) => `${index === 0 ? 'M' : 'L'}${round(point.x)} ${round(point.y)}`).join(' ')}Z`;
+  }
+  const valid = corners as RoundedCorner[];
+  const parts: string[] = [`M${round(valid[0].end.x)} ${round(valid[0].end.y)}`];
+  for (let index = 1; index < count; index += 1) {
+    const corner = valid[index];
+    parts.push(`L${round(corner.start.x)} ${round(corner.start.y)}`, cornerCurveD(corner));
+  }
+  parts.push(`L${round(valid[0].start.x)} ${round(valid[0].start.y)}`, cornerCurveD(valid[0]), 'Z');
+  return parts.join(' ');
+}
+
+/**
+ * 线路 path：优先 `pathPoints`（布局层给出的走向折点，例如环线八边形 → 标准倒角）；
+ * 否则按站点顺序直连，环线末尾补 Z（与布局层契约一致）。
+ */
 function buildLinePathD(map: MetroMap, line: MetroLine): string {
+  if (line.pathPoints !== undefined && line.pathPoints.length >= 2) {
+    return line.loop ? roundedClosedPathD(line.pathPoints) : roundedOpenPathD(line.pathPoints);
+  }
   const parts: string[] = [];
   line.stationIds.forEach((id, index) => {
     const station = map.stations[id];
@@ -154,8 +243,67 @@ function buildLinePathD(map: MetroMap, line: MetroLine): string {
   return parts.join(' ');
 }
 
-/** 线路端点名的摆放：沿线路方向向外 27px，按方向决定 text-anchor。 */
-function lineLabelPlacement(
+/**
+ * 把站点投影到折线上，返回每站相对第一站的弧长（环线末项 = 折线周长）。
+ * 站点不在折角上（CGo 模型：站点坐标与线路走向独立），所以不能按折角累加，只能投影求弧长。
+ */
+function stationArcsOnGuidePath(
+  guide: readonly { x: number; y: number }[],
+  stations: readonly { x: number; y: number }[],
+  loop: boolean,
+): number[] {
+  const count = guide.length;
+  if (count < 2 || stations.length === 0) return stations.map(() => 0);
+  const segments: Array<{ x: number; y: number; dx: number; dy: number; len: number; start: number }> = [];
+  let walked = 0;
+  for (let index = 0; index < count; index += 1) {
+    if (!loop && index === count - 1) break;
+    const a = guide[index];
+    const b = guide[(index + 1) % count];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-6) continue;
+    segments.push({ x: a.x, y: a.y, dx, dy, len, start: walked });
+    walked += len;
+  }
+  const perimeter = walked;
+  const arcs = stations.map((station) => {
+    let bestDistance = Number.POSITIVE_INFINITY;
+    let bestArc = 0;
+    for (const segment of segments) {
+      const t = Math.min(
+        1,
+        Math.max(0, ((station.x - segment.x) * segment.dx + (station.y - segment.y) * segment.dy) / (segment.len * segment.len)),
+      );
+      const px = segment.x + segment.dx * t;
+      const py = segment.y + segment.dy * t;
+      const distance = Math.hypot(station.x - px, station.y - py);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestArc = segment.start + segment.len * t;
+      }
+    }
+    return bestArc;
+  });
+  if (perimeter <= 0) return stations.map(() => 0);
+  const base = arcs[0];
+  const offsets: number[] = [];
+  let previous = 0;
+  arcs.forEach((arc, index) => {
+    let value = (((arc - base) % perimeter) + perimeter) % perimeter;
+    if (index > 0) {
+      // 环线跨过起点时补一圈，保证弧长沿站点顺序单调递增
+      while (value < previous - 1e-6) value += perimeter;
+      previous = value;
+    }
+    offsets.push(value);
+  });
+  if (loop) offsets.push(perimeter);
+  return offsets;
+}
+
+/** 线路端点名的摆放：沿线路方向向外 27px，按方向决定 text-anchor。 */function lineLabelPlacement(
   points: Array<{ x: number; y: number }>,
   atStart: boolean,
 ): { x: number; y: number; anchor: 'start' | 'middle' | 'end' } {
@@ -2106,27 +2254,42 @@ class MetroRendererImpl implements MetroRenderer {
 
       if (points.length >= 2) {
         if (line.loop) {
-          // 环线线名放在「最高一段的中点、环内侧 +27px」：不压环上站名，也不和线路名抢位置
-          let topMidX = points[0].x;
+          // 环线线名放在「最高一段的中点、朝环内侧 27px」：不压环上站名，也不和线路名抢位置
+          const guide = line.pathPoints ?? points;
+          let topMidX = guide[0].x;
           let topMidY = Number.POSITIVE_INFINITY;
-          for (let index = 0; index < points.length; index += 1) {
-            const a = points[index];
-            const b = points[(index + 1) % points.length];
+          for (let index = 0; index < guide.length; index += 1) {
+            const a = guide[index];
+            const b = guide[(index + 1) % guide.length];
             const midY = (a.y + b.y) / 2;
             if (midY < topMidY) {
               topMidY = midY;
               topMidX = (a.x + b.x) / 2;
             }
           }
+          const centerX = guide.reduce((sum, point) => sum + point.x, 0) / guide.length;
+          const centerY = guide.reduce((sum, point) => sum + point.y, 0) / guide.length;
+          let inwardX = centerX - topMidX;
+          let inwardY = centerY - topMidY;
+          const inwardLength = Math.hypot(inwardX, inwardY);
+          if (inwardLength > 0.001) {
+            inwardX /= inwardLength;
+            inwardY /= inwardLength;
+          } else {
+            inwardX = 0;
+            inwardY = 1;
+          }
+          const labelX = topMidX + inwardX * 27;
+          const labelY = topMidY + inwardY * 27;
           const label = svgEl('text', {
             class: 'mt-line-label mt-line-label--start',
-            x: round(topMidX),
-            y: round((Number.isFinite(topMidY) ? topMidY : points[0].y) + 27),
+            x: round(labelX),
+            y: round(labelY),
           });
           label.setAttribute('text-anchor', 'middle');
           label.textContent = line.name;
           lineEl.append(label);
-          annotateLineLabel(label, round(topMidX), round((Number.isFinite(topMidY) ? topMidY : points[0].y) + 27), 0, 1);
+          annotateLineLabel(label, round(labelX), round(labelY), inwardX, inwardY);
         } else {
           const start = lineLabelPlacement(points, true);
           const startLabel = svgEl('text', {
@@ -2158,21 +2321,28 @@ class MetroRendererImpl implements MetroRenderer {
 
       // lineMetric：普通线 offsets.length = 站数（末项 = total）；
       // 环线 offsets.length = 站数 + 1（末项 = total，供列车沿整圈跑）
+      // pathPoints 线路（环线八边形）：站点不在折角上 → 把站点投影到折线求弧长，
+      // 再按 `实际 path 长度 / 折线周长` 缩放；否则沿用站点直线距离累加。
       const total = pathData ? path.getTotalLength() : 0;
-      const cumulative: number[] = [];
-      let walked = 0;
-      for (let index = 0; index < points.length; index += 1) {
-        if (index > 0) {
-          walked += Math.hypot(
-            points[index].x - points[index - 1].x,
-            points[index].y - points[index - 1].y,
-          );
+      let cumulative: number[];
+      if (line.pathPoints !== undefined && line.pathPoints.length >= 2) {
+        cumulative = stationArcsOnGuidePath(line.pathPoints, points, line.loop);
+      } else {
+        cumulative = [];
+        let walked = 0;
+        for (let index = 0; index < points.length; index += 1) {
+          if (index > 0) {
+            walked += Math.hypot(
+              points[index].x - points[index - 1].x,
+              points[index].y - points[index - 1].y,
+            );
+          }
+          cumulative.push(walked);
         }
-        cumulative.push(walked);
-      }
-      if (line.loop && points.length > 1) {
-        walked += Math.hypot(points[0].x - points[points.length - 1].x, points[0].y - points[points.length - 1].y);
-        cumulative.push(walked);
+        if (line.loop && points.length > 1) {
+          walked += Math.hypot(points[0].x - points[points.length - 1].x, points[0].y - points[points.length - 1].y);
+          cumulative.push(walked);
+        }
       }
       const denom = cumulative.length > 0 ? cumulative[cumulative.length - 1] : 0;
       const ratio = denom > 0 && Number.isFinite(total) ? total / denom : 0;

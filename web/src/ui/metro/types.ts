@@ -52,6 +52,12 @@ export interface MetroStationSeed {
   liked?: boolean;
 }
 
+/** 世界坐标二维点。 */
+export interface MetroPoint {
+  x: number;
+  y: number;
+}
+
 /** 布局后的站点：数据层字段 + 世界坐标。 */
 export interface MetroStation extends MetroStationSeed {
   x: number;
@@ -73,6 +79,15 @@ export interface MetroLine {
   /** 有顺序的站 id；环线首尾不重复。 */
   stationIds: string[];
   source: MetroLineSource;
+  /**
+   * 线路走向折点（可选，来自布局层的「示意几何」）。
+   *
+   * 与 CGo OpenMap 的数据模型一致：站点坐标与线路走向互相独立，线路按折点画线，
+   * 站点只作为图元落在几何附近。环线用它画出「轴对齐等角八边形」——折角不在站点上，
+   * 因此站点可以沿周长等距分布，而折角做到全部 0/45/90° 且内角统一 135°。
+   * 没有该字段的线路，渲染层回退到「按 stationIds 顺序连站点」。
+   */
+  pathPoints?: MetroPoint[];
 }
 
 /** 世界坐标包围盒（含 padding，由布局层算好）。 */

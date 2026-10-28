@@ -66,16 +66,35 @@ const DEFAULT_ROTATION_DEG = 0;
 /** radar 线沿 x / y 轴的每站步长（px，spec §1.4 v3.1）：k = 3 为换乘点 (520,-150)。 */
 const RADAR_STEP = 57;
 
-/** 环线八边形尺寸（spec §1.5 v3.1）：半宽 W、半高 H、斜切角 C = W + H - 560。 */
-const RING_HALF_WIDTH = 488;
-const RING_HALF_HEIGHT = 250;
-const RING_CORNER = RING_HALF_WIDTH + RING_HALF_HEIGHT - 560; // 178
-/** 顶边 / 底边的半长（W - C = 310）。 */
-const RING_FLAT_HALF_WIDTH = RING_HALF_WIDTH - RING_CORNER;
-/** 环线换乘点 (-410,-150) 的横坐标绝对值（spec §2：st-5 = daily[5] × liked[12]）。 */
-const RING_TRANSFER_HALF_X = 410;
-/** 环线标准站数（spec §1.5 的 16 站；相位按该站数反解以对齐换乘点）。 */
-const RING_STATION_COUNT = 16;
+/**
+ * 环线：**轴对齐等角八边形**（spec §1.5 v4）——8 条边全部是水平/竖直/45°，
+ * 8 个内角统一 135°，站点沿周长等距（1 圈 16 段相等）。
+ *
+ * 与 v3.2「正八边形 + 站点折线」的区别：站点不再兼任折角，折角由渲染层按
+ * `pathPoints` 画线并做标准倒角（见 CGo OpenMap `core/path-geometry.js`：
+ * 90° 拐角半径 18px、斜角半径 8px）。这样两个换乘站可以精确落在左右竖边上
+ * (410,150) / (-410,-150)，同时折角与全图 0/45/90 网格完全对齐。
+ *
+ * 几何量（世界 px，中心在原点，顺时针方向 A→B→C→D→E→F→G→H）：
+ *   A(-280,-375)  B(280,-375)  C(410,-245)  D(410,245)
+ *   E(280,375)    F(-280,375)  G(-410,245)  H(-410,-245)
+ *   水平边 T = 560、竖直边 S = 490、45° 斜边 D = 130·√2 ≈ 183.8478、周长 P ≈ 2835.391
+ *   换乘站 liked[4] = (410,150) 在周长上的弧长 = T + D + 395 ≈ 1138.8478；
+ *   liked[12] = (-410,-150) 与它关于中心对称（弧长 + P/2）。
+ */
+const RING_WIDTH = 820;
+const RING_HEIGHT = 750;
+/** 四条 45° 斜边的水平/竖直投影长度（斜边 = CHAMFER·√2）。 */
+const RING_CHAMFER = 130;
+const RING_HALF_WIDTH = RING_WIDTH / 2;
+const RING_HALF_HEIGHT = RING_HEIGHT / 2;
+const RING_HORIZONTAL_EDGE = RING_WIDTH - 2 * RING_CHAMFER;
+const RING_DIAGONAL_EDGE = RING_CHAMFER * Math.SQRT2;
+/** 两个换乘站中 (410,150) 的周长弧长（从左上角 A 起沿顺时针量）。 */
+const RING_TRANSFER_ARC =
+  RING_HORIZONTAL_EDGE + RING_DIAGONAL_EDGE + (150 + RING_HALF_HEIGHT - RING_CHAMFER);
+/** 换乘站在环线站点序列里的下标：liked[4] = (410,150)；liked[12] = 对称点。 */
+const RING_TRANSFER_INDEX = 4;
 
 /** 碰撞消解：最多 3 轮，每站每轮最大位移 8px。 */
 const COLLISION_ROUNDS = 3;
@@ -112,61 +131,6 @@ interface TemplateLine {
   start: Point;
   end: Point;
 }
-
-/** 八边形一条边的起止点与累计弧长信息。 */
-interface OctagonSegment {
-  start: Point;
-  end: Point;
-  /** 本条边起点在周长上的累计弧长。 */
-  from: number;
-  /** 本条边长度。 */
-  length: number;
-}
-
-/** 环线八边形顶点（顺时针，从顶边左端 A 开始；y 向下）。 */
-const OCTAGON_VERTICES: readonly Point[] = [
-  { x: -RING_FLAT_HALF_WIDTH, y: -RING_HALF_HEIGHT }, // A 顶边左端 (-310,-250)
-  { x: RING_FLAT_HALF_WIDTH, y: -RING_HALF_HEIGHT }, // B 顶边右端 (310,-250)
-  { x: RING_HALF_WIDTH, y: -RING_HALF_HEIGHT + RING_CORNER }, // C 右边上端 (488,-72)
-  { x: RING_HALF_WIDTH, y: RING_HALF_HEIGHT - RING_CORNER }, // D 右边下端 (488,72)
-  { x: RING_FLAT_HALF_WIDTH, y: RING_HALF_HEIGHT }, // E 底边右端 (310,250)
-  { x: -RING_FLAT_HALF_WIDTH, y: RING_HALF_HEIGHT }, // F 底边左端 (-310,250)
-  { x: -RING_HALF_WIDTH, y: RING_HALF_HEIGHT - RING_CORNER }, // G 左边下端 (-488,72)
-  { x: -RING_HALF_WIDTH, y: -RING_HALF_HEIGHT + RING_CORNER }, // H 左边上端 (-488,-72)
-];
-
-/** 预计算八边形各边的累计弧长（周长 P ≈ 2534.920，spec 文字圆整为 2534.915）。 */
-function buildOctagon(): { segments: OctagonSegment[]; perimeter: number } {
-  const segments: OctagonSegment[] = [];
-  let from = 0;
-  for (let index = 0; index < OCTAGON_VERTICES.length; index += 1) {
-    const start = OCTAGON_VERTICES[index];
-    const end = OCTAGON_VERTICES[(index + 1) % OCTAGON_VERTICES.length];
-    const length = Math.hypot(end.x - start.x, end.y - start.y);
-    segments.push({ start, end, from, length });
-    from += length;
-  }
-  return { segments, perimeter: from };
-}
-
-const OCTAGON = buildOctagon();
-
-/**
- * 环线布点相位（spec §1.5 v3.1）：由「ring[12] 精确落在 (-410,-150)」反解——
- * phase = s_transfer - 12 * (P / 16)，其中 s_transfer 为 (-410,-150) 在 H→A 边上的累计弧长。
- * 几何反解得 ≈492.30（spec 文字圆整为 492.3；直接写死 492.3 会使换乘点偏差约 7e-3 px，故用精确值）。
- */
-function computeRingPhase(): number {
-  const closingSegment = OCTAGON.segments[OCTAGON.segments.length - 1]; // H → A 边
-  // 该边参数方程 x = -W + t * C，令 x = -410 反解 t = (W - 410) / C = 78 / 178。
-  const t = (RING_HALF_WIDTH - RING_TRANSFER_HALF_X) / RING_CORNER;
-  const arcToTransfer = closingSegment.from + t * closingSegment.length;
-  const spacing = OCTAGON.perimeter / RING_STATION_COUNT;
-  const raw = arcToTransfer - 12 * spacing;
-  return ((raw % OCTAGON.perimeter) + OCTAGON.perimeter) % OCTAGON.perimeter;
-}
-
-const RING_PHASE = computeRingPhase();
 
 /** 确定性字符串哈希（FNV-1a 32bit）→ [0, 1)。 */
 function hash01(value: string): number {
@@ -212,25 +176,79 @@ function linePointsFor(template: TemplateLine, count: number): Point[] {
   return points;
 }
 
-/** 八边形环线：沿周长等弧长取 count 个点，起点相位 RING_PHASE（不重复首点）。 */
+/** 环线八边形顶点（顺时针 A→B→C→D→E→F→G→H，y 轴向下）。 */
+function ringVertices(): Point[] {
+  const tx = RING_HALF_WIDTH - RING_CHAMFER;
+  const ty = RING_HALF_HEIGHT - RING_CHAMFER;
+  return [
+    { x: -tx, y: -RING_HALF_HEIGHT }, // A 左上
+    { x: tx, y: -RING_HALF_HEIGHT }, // B 右上
+    { x: RING_HALF_WIDTH, y: -ty }, // C 右上斜边末端
+    { x: RING_HALF_WIDTH, y: ty }, // D 右下斜边起点
+    { x: tx, y: RING_HALF_HEIGHT }, // E 右下
+    { x: -tx, y: RING_HALF_HEIGHT }, // F 左下
+    { x: -RING_HALF_WIDTH, y: ty }, // G 左下斜边末端
+    { x: -RING_HALF_WIDTH, y: -ty }, // H 左上斜边起点
+  ];
+}
+
+/** 八边形的一条直边 + 它起点的周长弧长。 */
+interface RingEdge {
+  start: Point;
+  end: Point;
+  length: number;
+  startArc: number;
+}
+
+/** 八边形按弧长展开的边表（顺时针；结果确定，仅 8 条边，按需计算）。 */
+function ringEdges(): RingEdge[] {
+  const vertices = ringVertices();
+  const edges: RingEdge[] = [];
+  let walked = 0;
+  for (let i = 0; i < vertices.length; i += 1) {
+    const start = vertices[i];
+    const end = vertices[(i + 1) % vertices.length];
+    const length = Math.hypot(end.x - start.x, end.y - start.y);
+    edges.push({ start, end, length, startArc: walked });
+    walked += length;
+  }
+  return edges;
+}
+
+/** 取环线周长上弧长 arc 处的点（自动归一化到 [0, P)）。 */
+function ringPointAt(arc: number, edges: readonly RingEdge[]): Point {
+  const perimeter = edges.reduce((sum, edge) => sum + edge.length, 0);
+  const target = ((arc % perimeter) + perimeter) % perimeter;
+  for (let i = 0; i < edges.length; i += 1) {
+    const edge = edges[i];
+    const isLast = i === edges.length - 1;
+    if (target < edge.startArc + edge.length || isLast) {
+      const t = Math.min(1, Math.max(0, (target - edge.startArc) / edge.length));
+      return {
+        x: edge.start.x + (edge.end.x - edge.start.x) * t,
+        y: edge.start.y + (edge.end.y - edge.start.y) * t,
+      };
+    }
+  }
+  return { x: 0, y: 0 };
+}
+
+/**
+ * 环线站点：沿八边形周长等距分布（不重复首点）。
+ *
+ * - 换乘站 liked[4] 精确落在 (410,150)、liked[12] 落在对称点 (-410,-150)；
+ * - count = 16 时相邻站距恒为 P/16 ≈ 177.21px，且站点不兼任折角——
+ *   折角由渲染层按 `pathPoints` 画线 + 标准倒角（45° 偏转 → 8px 圆角）。
+ * 其他 count 作确定性降级：仍沿周长等距，只是换乘站不再必然对齐。
+ */
 function ringPointsFor(count: number): Point[] {
   if (!(count > 0)) return [];
+  const edges = ringEdges();
+  const perimeter = edges.reduce((sum, edge) => sum + edge.length, 0);
+  const spacing = perimeter / count;
   const points: Point[] = [];
-  const lastSegment = OCTAGON.segments[OCTAGON.segments.length - 1];
   for (let j = 0; j < count; j += 1) {
-    const distance = (RING_PHASE + (j * OCTAGON.perimeter) / count) % OCTAGON.perimeter;
-    let segment = lastSegment;
-    for (const candidate of OCTAGON.segments) {
-      if (distance < candidate.from + candidate.length) {
-        segment = candidate;
-        break;
-      }
-    }
-    const t = (distance - segment.from) / segment.length;
-    points.push({
-      x: segment.start.x + (segment.end.x - segment.start.x) * t,
-      y: segment.start.y + (segment.end.y - segment.start.y) * t,
-    });
+    points.push(ringPointAt(RING_TRANSFER_ARC + (j - RING_TRANSFER_INDEX) * spacing, edges));
   }
   return points;
 }
@@ -400,18 +418,25 @@ function resolveCollisions(
   }
 }
 
-/** 站点包围盒四边各外扩 padding；无站点时返回退化到原点的空 bounds。 */
-function computeBounds(stations: readonly MetroStation[], padding: number): MetroBounds {
+/** 站点/折点包围盒四边各外扩 padding；无坐标时返回退化到原点的空 bounds。 */
+function computeBounds(
+  stations: readonly MetroStation[],
+  padding: number,
+  extraPoints: readonly Point[] = [],
+): MetroBounds {
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
   let maxY = -Infinity;
-  for (const station of stations) {
-    if (station.x < minX) minX = station.x;
-    if (station.y < minY) minY = station.y;
-    if (station.x > maxX) maxX = station.x;
-    if (station.y > maxY) maxY = station.y;
-  }
+  const include = (point: Point): void => {
+    if (point.x < minX) minX = point.x;
+    if (point.y < minY) minY = point.y;
+    if (point.x > maxX) maxX = point.x;
+    if (point.y > maxY) maxY = point.y;
+  };
+  for (const station of stations) include(station);
+  // 环线折角不是站点（站点只在边上），bounds 必须把线路折点一起算进来，否则相机会把角裁掉。
+  for (const point of extraPoints) include(point);
   if (!Number.isFinite(minX) || !Number.isFinite(minY)) {
     return { minX: 0, minY: 0, maxX: 0, maxY: 0 };
   }
@@ -483,10 +508,20 @@ export function layoutMetro(data: MetroData, options?: MetroLayoutOptions): Metr
     stations[stationId] = { ...seed, x: point.x, y: point.y };
   }
 
+  // 链 G：环线补线路走向折点（站点不再兼任折角，折角交给渲染层做标准倒角）。
+  const lines: MetroLine[] = data.lines.map((line) =>
+    line.source === 'liked' ? { ...line, pathPoints: ringVertices() } : line,
+  );
+  const guidePoints: Point[] = [];
+  for (const line of lines) {
+    if (line.pathPoints === undefined) continue;
+    for (const point of line.pathPoints) guidePoints.push(point);
+  }
+
   return {
-    lines: data.lines.slice(),
+    lines,
     stations,
-    bounds: computeBounds(Object.values(stations), config.padding),
+    bounds: computeBounds(Object.values(stations), config.padding, guidePoints),
   };
 }
 
@@ -507,9 +542,13 @@ function formatCoord(value: number): string {
   return Object.is(rounded, -0) ? '0' : String(rounded);
 }
 
-/** 线路 SVG path 数据：普通线 `M x y L x y …`；环线末尾补 `Z`。 */
+/**
+ * 线路 SVG path 数据（布局层直出，不做倒角）：优先用 `pathPoints` 折线（环线八边形），
+ * 否则按 `stationIds` 顺序连站点；普通线 `M x y L x y …`，环线末尾补 `Z`。
+ * 渲染层有自己的倒角实现（见 metroRender 的 roundedPathD），这里是纯几何回退。
+ */
 export function linePathD(map: MetroMap, line: MetroLine): string {
-  const points = linePoints(map, line);
+  const points = line.pathPoints ?? linePoints(map, line);
   if (points.length === 0) return '';
   let path = `M ${formatCoord(points[0].x)} ${formatCoord(points[0].y)}`;
   for (let i = 1; i < points.length; i += 1) {
