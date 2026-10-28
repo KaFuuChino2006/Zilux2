@@ -774,3 +774,146 @@ export function makeVinylDiscTexture(): THREE.CanvasTexture {
     { wrap: false },
   );
 }
+
+/**
+ * R3：后墙「分类牌」贴图（今日推荐 / 我喜欢的音乐 / …）。
+ * 深色纸面 + 铜色描边 + 黑胶图标，风格与店内一致。
+ */
+export function makeMenuBoardTexture(options: {
+  title: string;
+  subtitle?: string;
+  count: number;
+  index: number;
+  decorative?: boolean;
+}): THREE.CanvasTexture {
+  const { title, subtitle = '', count, index, decorative = false } = options;
+  const accents = ['#8fb3a6', '#c9a068', '#9a7fb0', '#7f9bb5', '#b58b7a', '#a8a06a'];
+  const accent = accents[index % accents.length];
+  return canvasTexture(
+    512,
+    384,
+    (ctx) => {
+      ctx.fillStyle = '#15100c';
+      ctx.fillRect(0, 0, 512, 384);
+      const bg = ctx.createLinearGradient(0, 0, 512, 384);
+      bg.addColorStop(0, shade(accent, -0.6));
+      bg.addColorStop(1, '#0d0a08');
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, 512, 384);
+
+      const rand01 = hashSeed(`${title}-${index}`);
+      for (let i = 0; i < 260; i += 1) {
+        ctx.fillStyle = `rgba(255, 238, 210, ${0.012 + rand01() * 0.02})`;
+        ctx.fillRect(rand01() * 512, rand01() * 384, 1 + rand01() * 2, 1 + rand01() * 2);
+      }
+
+      ctx.strokeStyle = 'rgba(199, 162, 104, 0.5)';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(18, 18, 476, 348);
+      ctx.strokeStyle = 'rgba(255, 236, 200, 0.12)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(26, 26, 460, 332);
+
+      if (decorative) {
+        // 装饰牌：中间一张大黑胶 + 店名，不参与点击
+        const dcx = 256;
+        const dcy = 168;
+        ctx.beginPath();
+        ctx.arc(dcx, dcy, 96, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(8, 6, 5, 0.9)';
+        ctx.fill();
+        ctx.strokeStyle = accent;
+        ctx.lineWidth = 2;
+        for (let i = 0; i < 4; i += 1) {
+          ctx.beginPath();
+          ctx.arc(dcx, dcy, 34 + i * 15, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.beginPath();
+        ctx.arc(dcx, dcy, 13, 0, Math.PI * 2);
+        ctx.fillStyle = accent;
+        ctx.fill();
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#f3e6cf';
+        ctx.font = '600 44px "Zilux2 Sans SC", "Microsoft YaHei", sans-serif';
+        ctx.fillText(title, 256, 306);
+        if (subtitle) {
+          ctx.fillStyle = 'rgba(232, 214, 184, 0.56)';
+          ctx.font = '20px "Zilux2 Sans SC", "Microsoft YaHei", sans-serif';
+          ctx.fillText(subtitle, 256, 344);
+        }
+        return;
+      }
+
+      // 黑胶图标
+      const cx = 92;
+      const cy = 96;
+      ctx.beginPath();
+      ctx.arc(cx, cy, 34, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(10, 8, 6, 0.85)';
+      ctx.fill();
+      ctx.strokeStyle = accent;
+      ctx.lineWidth = 2.5;
+      for (let i = 0; i < 3; i += 1) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, 12 + i * 7, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.beginPath();
+      ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+      ctx.fillStyle = accent;
+      ctx.fill();
+
+      ctx.fillStyle = '#f3e6cf';
+      ctx.font = '600 46px "Zilux2 Sans SC", "Microsoft YaHei", sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillText(title, 158, 112);
+      if (subtitle) {
+        ctx.fillStyle = 'rgba(232, 214, 184, 0.6)';
+        ctx.font = '22px "Zilux2 Sans SC", "Microsoft YaHei", sans-serif';
+        ctx.fillText(subtitle, 160, 150);
+      }
+
+      ctx.fillStyle = 'rgba(240, 224, 196, 0.86)';
+      ctx.font = '600 26px "Zilux2 Sans SC", "Microsoft YaHei", sans-serif';
+      ctx.fillText(`${count} 张`, 40, 322);
+      ctx.fillStyle = 'rgba(232, 214, 184, 0.4)';
+      ctx.font = '20px "Zilux2 Sans SC", "Microsoft YaHei", sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillText('点击进入 →', 472, 322);
+    },
+    { wrap: false },
+  );
+}
+
+/** R3：右墙大唱片架的标题牌（歌单名 + 数量 + 页码）。 */
+export function makeShelfHeaderTexture(title: string, count: number, page: number, pages: number): THREE.CanvasTexture {
+  return canvasTexture(
+    1024,
+    144,
+    (ctx) => {
+      ctx.fillStyle = '#160f0b';
+      ctx.fillRect(0, 0, 1024, 144);
+      const g = ctx.createLinearGradient(0, 0, 1024, 0);
+      g.addColorStop(0, 'rgba(201, 160, 104, 0.16)');
+      g.addColorStop(0.55, 'rgba(201, 160, 104, 0.03)');
+      g.addColorStop(1, 'rgba(201, 160, 104, 0.12)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, 1024, 144);
+      ctx.strokeStyle = 'rgba(199, 162, 104, 0.42)';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(10, 10, 1004, 124);
+      ctx.fillStyle = '#f2e3c8';
+      ctx.font = '600 52px "Zilux2 Sans SC", "Microsoft YaHei", sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(title, 40, 74);
+      ctx.fillStyle = 'rgba(236, 216, 184, 0.66)';
+      ctx.font = '24px "Zilux2 Sans SC", "Microsoft YaHei", sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillText(`${count} 张 · 第 ${page + 1}/${pages} 页`, 984, 74);
+    },
+    { wrap: false },
+  );
+}

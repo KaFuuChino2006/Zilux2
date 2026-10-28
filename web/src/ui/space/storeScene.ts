@@ -1,13 +1,11 @@
 /**
- * Zilux2 · 「唱片店」空间模式 —— R1 原型场景
+ * Zilux2 · 「唱片店」空间模式 —— R3 两区结构
  *
- * 设计目标（R1）：
- * - 独立预览页可运行的 3D 唱片店底层：暗木地板 + 墙面 + 轨道灯 + 两排唱片货架；
- * - 相机：拖拽环视 / 滚轮推进 / 点击唱片聚焦（阻尼过渡），Esc 逐级返回；
- * - 点击聚焦后弹出白色磨砂信息卡（后续 R3 接真实数据与播放器）；
- * - 自带降级：无 WebGL2 时渲染成扁平货架列表，功能不中断。
- *
- * 本文件暂时保持「自包含」，等 R2/R3 再拆成 storeCamera / shelf / storeData 等模块。
+ * R3 交互：
+ * - 后墙「菜单货架」：6 个分类牌（今日推荐 / 我喜欢的音乐 / 最近播放 / 我的歌单 / 私人雷达 …），点击进入；
+ * - 右墙「大唱片架」：6 列 × 4 行 = 24 张/页，滚轮翻页，点击唱片聚焦；
+ * - 相机在两个机位之间飞行，Esc 逐级返回（卡片 → 大架 → 菜单 → 退出）；
+ * - 降级：无 WebGL2 时渲染成扁平货架列表，功能不中断。
  */
 
 import * as THREE from 'three';
@@ -19,6 +17,8 @@ import {
   makePosterArtTexture,
   makeRugTexture,
   makeLeafTexture,
+  makeMenuBoardTexture,
+  makeShelfHeaderTexture,
   makeShaftTexture,
   makeVinylDiscTexture,
   makeWallPlasterTexture,
@@ -34,13 +34,70 @@ const ROWS = 2;
 const COVER_SIZE = 0.5;
 const COVER_GAP_X = 0.12;
 const ROW_Y = [1.04, 1.72];
-const PLANK_THICKNESS = 0.045;
 /** 相机基准目标点（货架中部）。 */
 const BASE_TARGET = new THREE.Vector3(0.1, 1.32, 0);
 const BASE_YAW = 0.34;
 const BASE_PITCH = 0.11;
 const BASE_DISTANCE = 6.9;
 const FOCUS_DISTANCE = 1.22;
+
+/** R3：后墙菜单货架（3 列 × 2 行分类牌）。 */
+const MENU_COLUMNS = 3;
+const MENU_ROWS = 2;
+const MENU_BOARD_W = 1.12;
+const MENU_BOARD_H = 0.74;
+const MENU_BOARD_GAP = 0.18;
+const MENU_BOARD_Y = [1.98, 1.18];
+
+/** R3：右墙大唱片架（6 列 × 4 行 = 24 张/页）。 */
+const LIB_COLS = 6;
+const LIB_ROWS = 4;
+const LIB_COVER = 0.52;
+const LIB_GAP = 0.16;
+const LIB_ROW_Y = [0.88, 1.47, 2.09, 2.71];
+const LIB_SHELF_Y = [0.6, 1.19, 1.81, 2.43, 3.02];
+const LIB_PANEL_X = 5.32;
+const LIB_SHELF_Z = 0.5;
+
+export type StoreZoneName = 'menu' | 'library';
+
+export interface StoreZoneState {
+  zone: StoreZoneName;
+  title: string;
+  count: number;
+  page: number;
+  pages: number;
+}
+
+interface CameraPose {
+  target: THREE.Vector3;
+  yaw: number;
+  pitch: number;
+  distance: number;
+  yawRange: number;
+  pitchMin: number;
+  pitchMax: number;
+}
+
+const MENU_POSE: CameraPose = {
+  target: new THREE.Vector3(0.1, 1.45, 0),
+  yaw: BASE_YAW,
+  pitch: 0.12,
+  distance: 6.6,
+  yawRange: 0.9,
+  pitchMin: -0.14,
+  pitchMax: 0.34,
+};
+
+const LIB_POSE: CameraPose = {
+  target: new THREE.Vector3(5.05, 1.72, LIB_SHELF_Z),
+  yaw: -1.34,
+  pitch: 0.0,
+  distance: 4.8,
+  yawRange: 0.36,
+  pitchMin: -0.1,
+  pitchMax: 0.26,
+};
 
 type QualityName = 'high' | 'medium' | 'low';
 
@@ -74,6 +131,8 @@ export interface StoreSceneOptions {
   onFocus?: (song: StoreSceneSong | null) => void;
   /** 信息卡上点「播放」。 */
   onPlay?: (song: StoreSceneSong) => void;
+  /** 区域切换（菜单 / 歌单大架），供外层更新面包屑。 */
+  onZone?: (state: StoreZoneState) => void;
   onReady?: () => void;
   /** WebGL2 不可用，场景已切换为扁平列表。 */
   onFallback?: () => void;
@@ -97,6 +156,12 @@ export interface StoreScene {
   resetView(): void;
   focusIndex(index: number): void;
   readonly focusedIndex: number;
+  readonly zone: StoreZoneName;
+  backToMenu(): void;
+  /** 打开指定分类（调试/预览用；界面上走点击分类牌）。 */
+  openCollection(index: number): void;
+  /** 翻到大架的第 page 页（调试/预览用；界面上走滚轮）。 */
+  setPage(page: number): void;
   stats(): StoreSceneStats;
   dispose(): void;
 }
@@ -109,6 +174,19 @@ interface CoverSlot {
   texture: THREE.CanvasTexture | null;
   song: StoreSceneSong | null;
   neutralScale: number;
+  hovered: boolean;
+  /** 唱片所在墙面的外法线（世界坐标），聚焦时相机沿法线前移。 */
+  normal: THREE.Vector3;
+}
+
+interface MenuBoardSlot {
+  index: number;
+  group: THREE.Group;
+  plate: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshStandardMaterial>;
+  frame: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshStandardMaterial>;
+  texture: THREE.CanvasTexture | null;
+  title: string;
+  count: number;
   hovered: boolean;
 }
 
@@ -205,6 +283,13 @@ class StoreSceneImpl implements StoreScene {
 
   private readonly covers: CoverSlot[] = [];
   private readonly coverMeshes: THREE.Mesh[] = [];
+  private readonly menuBoards: MenuBoardSlot[] = [];
+  private readonly menuBoardMeshes: THREE.Mesh[] = [];
+  private zoneName: StoreZoneName = 'menu';
+  private collections: StoreSceneCollection[] = [];
+  private activeCollectionIndex = 0;
+  private page = 0;
+  private libraryHeader: { mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshStandardMaterial>; texture: THREE.Texture | null } | null = null;
   private readonly textures: THREE.Texture[] = [];
   private readonly disposables: Array<{ dispose: () => void }> = [];
 
@@ -225,9 +310,15 @@ class StoreSceneImpl implements StoreScene {
 
   /** 相机围绕的注视点（预览/调试可改）。 */
   private readonly camTarget = BASE_TARGET.clone();
+  private readonly camTargetDesired = BASE_TARGET.clone();
+  private yawBase = BASE_YAW;
+  private yawRange = MENU_POSE.yawRange;
+  private pitchMin = MENU_POSE.pitchMin;
+  private pitchMax = MENU_POSE.pitchMax;
 
   private focused = -1;
   private hovered = -1;
+  private hoveredKind: 'menu' | 'cover' | '' = '';
   private activeTrackKey: string | null = null;
 
   private dragging = false;
@@ -254,7 +345,7 @@ class StoreSceneImpl implements StoreScene {
     this.canvas = el('canvas');
     this.canvas.className = 'zls-canvas';
     const fade = el('div', 'zls-fade');
-    const hint = el('div', 'zls-hint', '拖拽环视 · 滚轮推进 · 点击唱片聚焦 · Esc 返回');
+    const hint = el('div', 'zls-hint', '点击分类牌进入 · 拖拽环视 · 滚轮推进 · Esc 退出');
     const vignette = el('div', 'zls-vignette');
 
     const card = el('div', 'zls-card');
@@ -296,6 +387,7 @@ class StoreSceneImpl implements StoreScene {
     this.applyEnvironment();
     this.buildRoom();
     this.buildShelf();
+    this.buildLibraryShelf();
     this.buildDust();
     this.bindEvents();
     this.setCollections([]);
@@ -667,75 +759,157 @@ class StoreSceneImpl implements StoreScene {
   }
 
   private buildShelf(): void {
-    const shelfWidth = COLS * (COVER_SIZE + COVER_GAP_X) + 0.1;
+    const step = MENU_BOARD_W + MENU_BOARD_GAP;
+    const shelfWidth = (MENU_COLUMNS - 1) * step + MENU_BOARD_W + 0.24;
     const walnut = makeWalnutTexture();
     this.textures.push(walnut);
     const woodMat = new THREE.MeshStandardMaterial({ map: walnut, color: 0x8a6a46, roughness: 0.6, metalness: 0.08 });
     const brassMat = new THREE.MeshStandardMaterial({ color: 0xb08a54, roughness: 0.3, metalness: 0.9 });
     const backMat = new THREE.MeshStandardMaterial({ color: 0x211a13, roughness: 0.92, metalness: 0.04 });
 
-    // 柜体背板
-    const backPanel = new THREE.Mesh(new THREE.BoxGeometry(shelfWidth + 0.35, 2.35, 0.06), backMat);
-    backPanel.position.set(0, 1.28, -0.32);
+    const backPanel = new THREE.Mesh(new THREE.BoxGeometry(shelfWidth + 0.3, 2.72, 0.06), backMat);
+    backPanel.position.set(0, 1.66, -0.32);
     this.scene.add(backPanel);
     this.disposables.push(backPanel.geometry, backMat);
 
-    // 左右立板 + 顶板 + 每排搁板 + 铜条
     for (const side of [-1, 1]) {
-      const board = new THREE.Mesh(new THREE.BoxGeometry(0.07, 2.35, 0.52), woodMat);
-      board.position.set(side * (shelfWidth / 2 + 0.08), 1.28, -0.02);
+      const board = new THREE.Mesh(new THREE.BoxGeometry(0.07, 2.72, 0.52), woodMat);
+      board.position.set(side * (shelfWidth / 2 + 0.04), 1.66, -0.02);
       this.scene.add(board);
       this.disposables.push(board.geometry);
     }
-    const top = new THREE.Mesh(new THREE.BoxGeometry(shelfWidth + 0.4, 0.08, 0.56), woodMat);
-    top.position.set(0, 2.42, -0.02);
+    const top = new THREE.Mesh(new THREE.BoxGeometry(shelfWidth + 0.36, 0.08, 0.56), woodMat);
+    top.position.set(0, 3.0, -0.02);
     this.scene.add(top);
     this.disposables.push(top.geometry);
+    const plinth = new THREE.Mesh(new THREE.BoxGeometry(shelfWidth + 0.3, 0.16, 0.5), woodMat);
+    plinth.position.set(0, 0.44, -0.04);
+    this.scene.add(plinth);
+    this.disposables.push(plinth.geometry);
 
-    for (let row = 0; row < ROWS; row += 1) {
-      const plank = new THREE.Mesh(new THREE.BoxGeometry(shelfWidth + 0.24, PLANK_THICKNESS, 0.54), woodMat);
-      plank.position.set(0, ROW_Y[row] - COVER_SIZE / 2 - 0.1, -0.01);
+    for (let row = 0; row < MENU_ROWS; row += 1) {
+      const plankY = MENU_BOARD_Y[row] - MENU_BOARD_H / 2 - 0.07;
+      const plank = new THREE.Mesh(new THREE.BoxGeometry(shelfWidth + 0.2, 0.045, 0.5), woodMat);
+      plank.position.set(0, plankY, -0.01);
       this.scene.add(plank);
       this.disposables.push(plank.geometry);
-
-      const brass = new THREE.Mesh(new THREE.BoxGeometry(shelfWidth + 0.24, 0.012, 0.014), brassMat);
-      brass.position.set(0, ROW_Y[row] - COVER_SIZE / 2 - 0.072, 0.27);
+      const brass = new THREE.Mesh(new THREE.BoxGeometry(shelfWidth + 0.2, 0.012, 0.014), brassMat);
+      brass.position.set(0, plankY - 0.028, 0.24);
       this.scene.add(brass);
       this.disposables.push(brass.geometry);
     }
     this.disposables.push(woodMat, brassMat);
 
-    // 唱片：黑胶托盘 + 封面，两者一起缩放/高亮。
-    const frameGeo = new THREE.PlaneGeometry(COVER_SIZE + 0.065, COVER_SIZE + 0.065);
-    const coverGeo = new THREE.PlaneGeometry(COVER_SIZE, COVER_SIZE);
-    this.disposables.push(frameGeo, coverGeo);
-
+    // 后墙菜单：6 块「分类牌」，点击进入右侧大唱片架。
+    const boardGeo = new THREE.PlaneGeometry(MENU_BOARD_W, MENU_BOARD_H);
+    const frameGeo = new THREE.PlaneGeometry(MENU_BOARD_W + 0.05, MENU_BOARD_H + 0.05);
+    this.disposables.push(boardGeo, frameGeo);
     let index = 0;
-    for (let row = 0; row < ROWS; row += 1) {
-      for (let col = 0; col < COLS; col += 1) {
-        const x = (col - (COLS - 1) / 2) * (COVER_SIZE + COVER_GAP_X);
+    for (let row = 0; row < MENU_ROWS; row += 1) {
+      for (let col = 0; col < MENU_COLUMNS; col += 1) {
+        const x = (col - (MENU_COLUMNS - 1) / 2) * step;
         const group = new THREE.Group();
-        group.position.set(x, ROW_Y[row], 0.0);
-
-        const frameMat = new THREE.MeshStandardMaterial({ color: 0x120d09, roughness: 0.55, metalness: 0.35, emissive: 0x000000 });
+        group.position.set(x, MENU_BOARD_Y[row], 0.3);
+        const frameMat = new THREE.MeshStandardMaterial({ color: 0x140f0b, roughness: 0.55, metalness: 0.4, emissive: 0x000000 });
         const frame = new THREE.Mesh(frameGeo, frameMat);
-        frame.position.z = -0.002;
-        this.disposables.push(frameMat);
-
-        const coverMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.72, metalness: 0.04 });
-        const cover = new THREE.Mesh(coverGeo, coverMat);
-        cover.position.z = 0.006;
-        this.disposables.push(coverMat);
-        this.coverMeshes.push(cover);
-
-        group.add(frame, cover);
+        frame.position.z = -0.012;
+        const plateMat = new THREE.MeshStandardMaterial({ color: 0x1a1410, roughness: 0.66, metalness: 0.05, emissive: 0x000000, map: null });
+        const plate = new THREE.Mesh(boardGeo, plateMat);
+        plate.position.z = 0;
+        group.add(frame, plate);
         this.scene.add(group);
-        this.covers.push({ index, group, cover, frame, texture: null, song: null, neutralScale: 1, hovered: false });
+        this.menuBoards.push({ index, group, plate, frame, texture: null, title: '', count: 0, hovered: false });
+        this.menuBoardMeshes.push(plate);
+        this.disposables.push(frameMat, plateMat);
         index += 1;
       }
     }
   }
 
+  /** R3：右墙整面大唱片架（6×4 = 24 张/页，墙面朝 -X 方向）。 */
+  private buildLibraryShelf(): void {
+    const step = LIB_COVER + LIB_GAP;
+    const width = (LIB_COLS - 1) * step + LIB_COVER + 0.36;
+    const group = new THREE.Group();
+    group.position.set(LIB_PANEL_X, 0, LIB_SHELF_Z);
+    group.rotation.y = -Math.PI / 2;
+    this.scene.add(group);
+
+    const walnut = makeWalnutTexture();
+    this.textures.push(walnut);
+    const woodMat = new THREE.MeshStandardMaterial({ map: walnut, color: 0x7a5a3a, roughness: 0.62, metalness: 0.08 });
+    const brassMat = new THREE.MeshStandardMaterial({ color: 0xb08a54, roughness: 0.3, metalness: 0.9 });
+    const backMat = new THREE.MeshStandardMaterial({ color: 0x1b1510, roughness: 0.94, metalness: 0.03 });
+
+    const back = new THREE.Mesh(new THREE.BoxGeometry(width + 0.2, 2.72, 0.05), backMat);
+    back.position.set(0, 1.8, -0.06);
+    group.add(back);
+
+    for (const side of [-1, 1]) {
+      const board = new THREE.Mesh(new THREE.BoxGeometry(0.08, 2.72, 0.52), woodMat);
+      board.position.set(side * (width / 2 + 0.02), 1.8, 0.0);
+      group.add(board);
+    }
+    const top = new THREE.Mesh(new THREE.BoxGeometry(width + 0.2, 0.08, 0.56), woodMat);
+    top.position.set(0, 3.06, 0.0);
+    group.add(top);
+    const bottom = new THREE.Mesh(new THREE.BoxGeometry(width + 0.2, 0.14, 0.54), woodMat);
+    bottom.position.set(0, 0.52, 0.0);
+    group.add(bottom);
+
+    for (const y of LIB_SHELF_Y) {
+      const plank = new THREE.Mesh(new THREE.BoxGeometry(width + 0.2, 0.045, 0.5), woodMat);
+      plank.position.set(0, y, 0.0);
+      group.add(plank);
+      const brass = new THREE.Mesh(new THREE.BoxGeometry(width + 0.2, 0.012, 0.014), brassMat);
+      brass.position.set(0, y - 0.028, 0.26);
+      group.add(brass);
+    }
+    this.disposables.push(woodMat, brassMat, backMat);
+
+    // 封面：24 个席位。
+    const frameGeo = new THREE.PlaneGeometry(LIB_COVER + 0.05, LIB_COVER + 0.05);
+    const coverGeo = new THREE.PlaneGeometry(LIB_COVER, LIB_COVER);
+    this.disposables.push(frameGeo, coverGeo);
+    let index = 0;
+    for (let row = 0; row < LIB_ROWS; row += 1) {
+      for (let col = 0; col < LIB_COLS; col += 1) {
+        const x = (col - (LIB_COLS - 1) / 2) * step;
+        const slotGroup = new THREE.Group();
+        slotGroup.position.set(x, LIB_ROW_Y[row], 0.3);
+        const frameMat = new THREE.MeshStandardMaterial({ color: 0x120d09, roughness: 0.55, metalness: 0.35, emissive: 0x000000 });
+        const frame = new THREE.Mesh(frameGeo, frameMat);
+        frame.position.z = -0.004;
+        const coverMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.72, metalness: 0.04 });
+        const cover = new THREE.Mesh(coverGeo, coverMat);
+        cover.position.z = 0.006;
+        slotGroup.add(frame, cover);
+        group.add(slotGroup);
+        this.coverMeshes.push(cover);
+        this.covers.push({
+          index,
+          group: slotGroup,
+          cover,
+          frame,
+          texture: null,
+          song: null,
+          neutralScale: 1,
+          hovered: false,
+          normal: new THREE.Vector3(-1, 0, 0),
+        });
+        this.disposables.push(frameMat, coverMat);
+        index += 1;
+      }
+    }
+
+    // 大架标题牌。
+    const headerMat = new THREE.MeshStandardMaterial({ color: 0x1a1310, roughness: 0.6, metalness: 0.1, emissive: 0x000000, map: null });
+    const header = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 0.34), headerMat);
+    header.position.set(0, 3.22, 0.12);
+    group.add(header);
+    this.disposables.push(header.geometry, headerMat);
+    this.libraryHeader = { mesh: header, texture: null };
+  }
 
   // ---------- R2 细节 ----------
 
@@ -857,31 +1031,15 @@ class StoreSceneImpl implements StoreScene {
     moonLight.position.set(-4.6, 1.9, 1.85);
     this.scene.add(moonLight);
 
-    // 右墙后门
-    const doorMat = new THREE.MeshStandardMaterial({ color: 0x2a1f16, roughness: 0.7, metalness: 0.08 });
-    const door = new THREE.Mesh(new THREE.BoxGeometry(0.06, 2.3, 1.06), doorMat);
-    door.position.set(5.36, 1.15, 1.9);
-    this.scene.add(door);
-    const doorGlass = new THREE.Mesh(new THREE.PlaneGeometry(0.72, 0.66), new THREE.MeshStandardMaterial({ color: 0x1d2a33, roughness: 0.18, metalness: 0.6, emissive: 0x223040, emissiveIntensity: 0.35 }));
-    doorGlass.position.set(5.32, 1.9, 1.9);
-    doorGlass.rotation.y = -Math.PI / 2;
-    this.scene.add(doorGlass);
-    const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.16, 12), new THREE.MeshStandardMaterial({ color: 0xc4a06a, roughness: 0.28, metalness: 0.95 }));
-    handle.position.set(5.3, 1.12, 1.42);
-    handle.rotation.z = Math.PI / 2.6;
-    this.scene.add(handle);
-    this.disposables.push(door.geometry, doorMat, doorGlass.geometry, doorGlass.material as THREE.Material, handle.geometry, handle.material as THREE.Material);
-
-    // 后门上方 OPEN 霓虹
+    // 后墙 OPEN 霓虹（右上方墙面，避开大货架）
     const openTexture = makeNeonTexture('OPEN', '#ff9a6a', 384, 144);
     this.textures.push(openTexture);
     const openMat = new THREE.MeshBasicMaterial({ map: openTexture, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
     const openSign = new THREE.Mesh(new THREE.PlaneGeometry(0.66, 0.25), openMat);
-    openSign.position.set(5.31, 2.62, 1.9);
-    openSign.rotation.y = -Math.PI / 2;
+    openSign.position.set(3.55, 2.92, -1.0);
     this.scene.add(openSign);
-    const openLight = new THREE.PointLight(0xff8a5a, 2.6, 2.6, 2);
-    openLight.position.set(5.0, 2.55, 1.9);
+    const openLight = new THREE.PointLight(0xff8a5a, 2.2, 2.4, 2);
+    openLight.position.set(3.55, 2.55, -0.8);
     this.scene.add(openLight);
     this.disposables.push(openSign.geometry, openMat);
 
@@ -1245,37 +1403,16 @@ class StoreSceneImpl implements StoreScene {
   // ---------- 数据 ----------
 
   setCollections(collections: StoreSceneCollection[]): void {
+    this.collections = collections;
     if (this.root.classList.contains('is-fallback')) {
       this.fillFallback(collections);
       return;
     }
-    const songs: Array<StoreSceneSong | null> = [];
-    for (const collection of collections) {
-      for (const song of collection.songs) {
-        if (songs.length >= COLS * ROWS) break;
-        songs.push(song);
-      }
-      if (songs.length >= COLS * ROWS) break;
-    }
-    for (const slot of this.covers) {
-      const song = songs[slot.index] ?? null;
-      slot.song = song;
-      const material = slot.cover.material;
-      material.map?.dispose();
-      if (slot.texture) {
-        const position = this.textures.indexOf(slot.texture);
-        if (position >= 0) this.textures.splice(position, 1);
-        slot.texture.dispose();
-        slot.texture = null;
-      }
-      const texture = makeCoverArtTexture(song, slot.index);
-      slot.texture = texture;
-      this.textures.push(texture);
-      material.map = texture;
-      material.color.set(0xffffff);
-      material.needsUpdate = true;
-    }
-    this.syncActiveHighlight();
+    if (this.activeCollectionIndex >= collections.length) this.activeCollectionIndex = 0;
+    this.page = 0;
+    this.renderMenu();
+    if (this.zoneName === 'library') this.renderLibrary();
+    this.emitZone();
   }
 
   setActiveTrack(trackKey: string | null): void {
@@ -1305,6 +1442,177 @@ class StoreSceneImpl implements StoreScene {
       card.addEventListener('click', () => this.options.onPlay?.(song));
       grid.append(card);
     }
+  }
+
+  // ---------- R3：两区状态 / 菜单 / 大架 ----------
+
+  get zone(): StoreZoneName {
+    return this.zoneName;
+  }
+
+  openCollection(index: number): void {
+    this.enterLibrary(index);
+  }
+
+  setPage(page: number): void {
+    if (this.zoneName !== 'library') return;
+    this.page = page;
+    this.renderLibrary();
+    this.emitZone();
+  }
+
+  backToMenu(): void {
+    this.zoneName = 'menu';
+    this.focused = -1;
+    this.card.classList.remove('is-open');
+    this.options.onFocus?.(null);
+    this.applyPose(MENU_POSE);
+    this.emitZone();
+  }
+
+  private enterLibrary(index: number): void {
+    const collection = this.collections[index];
+    if (!collection) return;
+    this.activeCollectionIndex = index;
+    this.page = 0;
+    this.zoneName = 'library';
+    this.focused = -1;
+    this.card.classList.remove('is-open');
+    this.options.onFocus?.(null);
+    this.applyPose(LIB_POSE);
+    this.renderLibrary();
+    this.emitZone();
+  }
+
+  private applyPose(pose: CameraPose): void {
+    this.camTargetDesired.copy(pose.target);
+    this.yawBase = pose.yaw;
+    this.yawRange = pose.yawRange;
+    this.pitchMin = pose.pitchMin;
+    this.pitchMax = pose.pitchMax;
+    this.yawTarget = pose.yaw;
+    this.pitchTarget = pose.pitch;
+    this.distanceTarget = pose.distance;
+  }
+
+  private setHint(text: string): void {
+    this.hint.textContent = text;
+    this.hint.classList.remove('is-hidden');
+    window.clearTimeout(this.hintTimer);
+    this.hintTimer = window.setTimeout(() => this.hint.classList.add('is-hidden'), 6500);
+  }
+
+  private emitZone(): void {
+    const collection = this.collections[this.activeCollectionIndex] ?? null;
+    const count = collection?.songs.length ?? 0;
+    const pages = Math.max(1, Math.ceil(count / (LIB_COLS * LIB_ROWS)));
+    this.options.onZone?.({
+      zone: this.zoneName,
+      title: this.zoneName === 'menu' ? '菜单' : collection?.title ?? '歌单',
+      count,
+      page: this.page,
+      pages,
+    });
+    if (this.zoneName === 'menu') {
+      this.setHint('点击分类牌进入 · 拖拽环视 · 滚轮推进 · Esc 退出');
+    } else if (pages > 1) {
+      this.setHint(`滚轮翻页（${this.page + 1}/${pages}）· 点击唱片聚焦 · Esc 返回菜单`);
+    } else {
+      this.setHint('点击唱片聚焦 · Esc 返回菜单');
+    }
+  }
+
+  private renderMenu(): void {
+    for (const board of this.menuBoards) {
+      const collection = this.collections[board.index];
+      const material = board.plate.material;
+      material.map?.dispose();
+      if (board.texture) {
+        const position = this.textures.indexOf(board.texture);
+        if (position >= 0) this.textures.splice(position, 1);
+        board.texture.dispose();
+        board.texture = null;
+      }
+      if (!collection) {
+        const decor = makeMenuBoardTexture({
+          title: 'ZILUX2 RECORDS',
+          subtitle: '黑胶 · 唱片 · 聆听室',
+          count: 0,
+          index: board.index,
+          decorative: true,
+        });
+        board.texture = decor;
+        this.textures.push(decor);
+        material.map = decor;
+        material.color.set(0xffffff);
+        material.needsUpdate = true;
+        board.title = '';
+        board.count = 0;
+        continue;
+      }
+      const texture = makeMenuBoardTexture({
+        title: collection.title,
+        subtitle: collection.subtitle ?? '',
+        count: collection.songs.length,
+        index: board.index,
+      });
+      board.texture = texture;
+      this.textures.push(texture);
+      material.map = texture;
+      material.color.set(0xffffff);
+      material.needsUpdate = true;
+      board.title = collection.title;
+      board.count = collection.songs.length;
+    }
+  }
+
+  private renderLibrary(): void {
+    const collection = this.collections[this.activeCollectionIndex] ?? null;
+    const perPage = LIB_COLS * LIB_ROWS;
+    const songs = collection?.songs ?? [];
+    const pages = Math.max(1, Math.ceil(songs.length / perPage));
+    this.page = clamp(this.page, 0, pages - 1);
+    const start = this.page * perPage;
+    for (const slot of this.covers) {
+      const song = songs[start + slot.index] ?? null;
+      slot.song = song;
+      const material = slot.cover.material;
+      material.map?.dispose();
+      if (slot.texture) {
+        const position = this.textures.indexOf(slot.texture);
+        if (position >= 0) this.textures.splice(position, 1);
+        slot.texture.dispose();
+        slot.texture = null;
+      }
+      // 空位直接隐藏整格（连同画框/阴影），避免翻到最后一页时出现空框
+      slot.group.visible = song !== null;
+      if (!song) {
+        material.map = null;
+        material.needsUpdate = true;
+        continue;
+      }
+      const texture = makeCoverArtTexture(song, slot.index);
+      texture.anisotropy = this.renderer?.capabilities.getMaxAnisotropy() ?? 8;
+      slot.texture = texture;
+      this.textures.push(texture);
+      material.map = texture;
+      material.color.set(song ? 0xffffff : 0x2a241d);
+      material.needsUpdate = true;
+    }
+    if (this.libraryHeader) {
+      if (this.libraryHeader.texture) {
+        const position = this.textures.indexOf(this.libraryHeader.texture);
+        if (position >= 0) this.textures.splice(position, 1);
+        this.libraryHeader.texture.dispose();
+      }
+      const texture = makeShelfHeaderTexture(collection?.title ?? '唱片架', songs.length, this.page, pages);
+      texture.anisotropy = this.renderer?.capabilities.getMaxAnisotropy() ?? 8;
+      this.libraryHeader.texture = texture;
+      this.textures.push(texture);
+      this.libraryHeader.mesh.material.map = texture;
+      this.libraryHeader.mesh.material.needsUpdate = true;
+    }
+    this.syncActiveHighlight();
   }
 
   // ---------- 交互 ----------
@@ -1342,8 +1650,8 @@ class StoreSceneImpl implements StoreScene {
       this.dragStartY = event.clientY;
       this.dragMoved += Math.abs(dx) + Math.abs(dy);
       if (this.focused >= 0) this.resetView();
-      this.yawTarget = clamp(this.yawTarget - dx * 0.0042, BASE_YAW - 0.95, BASE_YAW + 0.95);
-      this.pitchTarget = clamp(this.pitchTarget + dy * 0.0028, -0.16, 0.34);
+      this.yawTarget = clamp(this.yawTarget - dx * 0.0042, this.yawBase - this.yawRange, this.yawBase + this.yawRange);
+      this.pitchTarget = clamp(this.pitchTarget + dy * 0.0028, this.pitchMin, this.pitchMax);
       return;
     }
     const rect = this.canvas.getBoundingClientRect();
@@ -1364,8 +1672,10 @@ class StoreSceneImpl implements StoreScene {
     this.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
     this.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
     const hit = this.pick();
-    if (hit >= 0) {
-      this.focusIndex(hit);
+    if (hit?.kind === 'menu') {
+      this.enterLibrary(hit.index);
+    } else if (hit?.kind === 'cover') {
+      this.focusIndex(hit.index);
     } else if (this.focused >= 0) {
       this.resetView();
     }
@@ -1373,13 +1683,30 @@ class StoreSceneImpl implements StoreScene {
 
   private handleWheel = (event: WheelEvent): void => {
     event.preventDefault();
+    if (this.zoneName === 'library' && this.focused < 0) {
+      const collection = this.collections[this.activeCollectionIndex];
+      const pages = Math.max(1, Math.ceil((collection?.songs.length ?? 0) / (LIB_COLS * LIB_ROWS)));
+      if (pages > 1) {
+        const next = clamp(this.page + (event.deltaY > 0 ? 1 : -1), 0, pages - 1);
+        if (next !== this.page) {
+          this.page = next;
+          this.renderLibrary();
+          this.emitZone();
+        }
+        return;
+      }
+    }
     this.distanceTarget = clamp(this.distanceTarget + event.deltaY * 0.0017, 2.15, 7.4);
     if (this.focused >= 0) this.resetView();
   };
 
   private handleKeyDown = (event: KeyboardEvent): void => {
     if (event.key === 'Escape') {
-      if (this.focused >= 0) this.resetView();
+      if (this.focused >= 0) {
+        this.resetView();
+        return;
+      }
+      if (this.zoneName === 'library') this.backToMenu();
       return;
     }
     if (this.focused >= 0 && (event.key === 'Enter' || event.key === ' ')) {
@@ -1422,6 +1749,7 @@ class StoreSceneImpl implements StoreScene {
     if (typeof next.yaw === 'number') {
       this.yaw = next.yaw;
       this.yawTarget = next.yaw;
+      this.yawBase = next.yaw;
     }
     if (typeof next.pitch === 'number') {
       this.pitch = next.pitch;
@@ -1444,11 +1772,10 @@ class StoreSceneImpl implements StoreScene {
     const slot = this.covers[index];
     if (!slot) return;
     this.focused = index;
-    const position = slot.group.position;
-    const world = new THREE.Vector3(position.x, position.y, position.z);
-    // 相机站在封面正前方稍微偏下的位置，看向封面中心。
-    this.focusCamPos.set(world.x * 0.94, world.y + 0.03, world.z + FOCUS_DISTANCE);
-    this.focusLook.set(world.x * 0.96, world.y - 0.015, world.z);
+    const world = slot.group.getWorldPosition(new THREE.Vector3());
+    this.focusCamPos.copy(world).addScaledVector(slot.normal, FOCUS_DISTANCE);
+    this.focusCamPos.y += 0.02;
+    this.focusLook.copy(world);
     this.options.onFocus?.(slot.song);
     this.cardArt.style.background = `linear-gradient(140deg, ${slot.song?.color ?? '#c9a068'}, #2b2118)`;
     this.cardArt.textContent = slot.song ? Array.from(slot.song.title)[0] ?? '' : '·';
@@ -1456,6 +1783,7 @@ class StoreSceneImpl implements StoreScene {
     this.cardArtist.textContent = slot.song ? `${slot.song.artist}` : '——';
     this.cardMeta.textContent = slot.song?.album ? `专辑 · ${slot.song.album}` : 'Zilux2 唱片店 · 原型';
     this.card.classList.add('is-open');
+    this.setHint('Enter 播放 · 点击空白或 Esc 关闭卡片');
   }
 
   get focusedIndex(): number {
@@ -1463,20 +1791,38 @@ class StoreSceneImpl implements StoreScene {
   }
 
   private updateHover(): void {
+    if (this.focused >= 0) return;
     const hit = this.pick();
-    if (hit === this.hovered) return;
-    this.hovered = hit;
-    this.root.classList.toggle('is-hovering', hit >= 0);
+    const kind = hit?.kind ?? '';
+    const index = hit?.index ?? -1;
+    if (kind === this.hoveredKind && index === this.hovered) return;
+
+    if (this.hoveredKind === 'menu' && this.menuBoards[this.hovered]) this.menuBoards[this.hovered].hovered = false;
+    if (this.hoveredKind === 'cover' && this.covers[this.hovered]) this.covers[this.hovered].hovered = false;
+
+    this.hoveredKind = kind;
+    this.hovered = index;
+    if (kind === 'menu' && this.menuBoards[index]) this.menuBoards[index].hovered = true;
+    if (kind === 'cover' && this.covers[index]) this.covers[index].hovered = true;
+    this.root.classList.toggle('is-hovering', Boolean(kind));
   }
 
-  private pick(): number {
-    if (!this.renderer) return -1;
+  private pick(): { kind: 'menu' | 'cover'; index: number } | null {
+    if (!this.renderer) return null;
     this.raycaster.setFromCamera(this.pointer, this.camera);
+    if (this.zoneName === 'menu') {
+      const hits = this.raycaster.intersectObjects(this.menuBoardMeshes, false);
+      const first = hits[0];
+      if (!first) return null;
+      const board = this.menuBoards.find((item) => item.plate === first.object);
+      return board ? { kind: 'menu', index: board.index } : null;
+    }
     const hits = this.raycaster.intersectObjects(this.coverMeshes, false);
     const first = hits[0];
-    if (!first) return -1;
-    const found = this.covers.find((slot) => slot.cover === first.object);
-    return found ? found.index : -1;
+    if (!first) return null;
+    const slot = this.covers.find((item) => item.cover === first.object);
+    if (!slot || !slot.song || !slot.group.visible) return null;
+    return { kind: 'cover', index: slot.index };
   }
 
   // ---------- 渲染循环 ----------
@@ -1503,6 +1849,7 @@ class StoreSceneImpl implements StoreScene {
       this.camera.position.lerp(this.focusCamPos, 1 - Math.exp(-7.4 * dt));
       this.currentLook.lerp(this.focusLook, 1 - Math.exp(-7.4 * dt));
     } else {
+      this.camTarget.lerp(this.camTargetDesired, 1 - Math.exp(-3.4 * dt));
       this.yaw = damp(this.yaw, this.yawTarget, 5.4, dt);
       this.pitch = damp(this.pitch, this.pitchTarget, 5.4, dt);
       this.distance = damp(this.distance, this.distanceTarget, 5.0, dt);
@@ -1522,6 +1869,13 @@ class StoreSceneImpl implements StoreScene {
       slot.group.scale.setScalar(damp(slot.group.scale.x, wanted, 9, dt));
       const hoverIdle = time * 0.0022;
       slot.cover.position.z = 0.006 + Math.sin(hoverIdle + slot.index) * 0.0006;
+    }
+
+    for (const board of this.menuBoards) {
+      const wanted = board.hovered ? 1.035 : 1;
+      board.group.scale.setScalar(damp(board.group.scale.x, wanted, 9, dt));
+      board.frame.material.emissive.setHex(board.hovered ? 0x5a431d : 0x000000);
+      board.frame.material.emissiveIntensity = board.hovered ? 0.55 : 0;
     }
 
     if (this.dust && this.dustOrigin) {
