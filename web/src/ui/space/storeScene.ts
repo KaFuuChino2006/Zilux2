@@ -286,6 +286,10 @@ class StoreSceneImpl implements StoreScene {
   private readonly covers: CoverSlot[] = [];
   /** 菜单区（后墙货架）的对象，进入大架时整体隐藏，避免挡住镜头。 */
   private menuObjects: THREE.Object3D[] = [];
+  private menuMaterials: THREE.Material[] = [];
+  private menuMaterialBase = new Map<THREE.Material, { transparent: boolean; opacity: number }>();
+  private menuFade = 1;
+  private menuFadeTarget = 1;
   /** 真实专辑封面纹理缓存（按 URL）。 */
   private readonly coverCache = new Map<string, THREE.Texture>();
   /** 正在加载中的封面等待队列（同一 URL 只发一次请求）。 */
@@ -397,6 +401,17 @@ class StoreSceneImpl implements StoreScene {
     const menuStart = this.scene.children.length;
     this.buildShelf();
     this.menuObjects = this.scene.children.slice(menuStart);
+    this.menuMaterials = [];
+    for (const object of this.menuObjects) {
+      object.traverse((child) => {
+        const mesh = child as THREE.Mesh;
+        if (!mesh.isMesh || !mesh.material) return;
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const material of materials) {
+          if (!this.menuMaterials.includes(material)) this.menuMaterials.push(material);
+        }
+      });
+    }
     this.buildLibraryShelf();
     this.buildDust();
     this.bindEvents();
@@ -1477,8 +1492,22 @@ class StoreSceneImpl implements StoreScene {
   }
 
   openCollection(index: number): void {
-    for (const object of this.menuObjects) object.visible = false;
+    // 不瞬间隐藏：镜头飞向大架时菜单牌在 ~0.6s 内淡出，避免「点一下全部消失」的突兀感。
+    this.menuFadeTarget = 0;
     this.enterLibrary(index);
+  }
+
+  private applyMenuFade(opacity: number): void {
+    for (const material of this.menuMaterials) {
+      let base = this.menuMaterialBase.get(material);
+      if (!base) {
+        base = { transparent: material.transparent, opacity: material.opacity };
+        this.menuMaterialBase.set(material, base);
+      }
+      material.transparent = opacity < 0.999 ? true : base.transparent;
+      material.opacity = base.opacity * opacity;
+    }
+    for (const object of this.menuObjects) object.visible = opacity > 0.02;
   }
 
   setPage(page: number): void {
@@ -1490,6 +1519,7 @@ class StoreSceneImpl implements StoreScene {
 
   backToMenu(): void {
     for (const object of this.menuObjects) object.visible = true;
+    this.menuFadeTarget = 1;
     this.zoneName = 'menu';
     this.focused = -1;
     this.card.classList.remove('is-open');
@@ -1959,6 +1989,12 @@ class StoreSceneImpl implements StoreScene {
       board.group.scale.setScalar(damp(board.group.scale.x, wanted, 9, dt));
       board.frame.material.emissive.setHex(board.hovered ? 0x5a431d : 0x000000);
       board.frame.material.emissiveIntensity = board.hovered ? 0.55 : 0;
+    }
+
+    if (Math.abs(this.menuFade - this.menuFadeTarget) > 0.002) {
+      this.menuFade = damp(this.menuFade, this.menuFadeTarget, 6.5, dt);
+      if (Math.abs(this.menuFade - this.menuFadeTarget) <= 0.002) this.menuFade = this.menuFadeTarget;
+      this.applyMenuFade(this.menuFade);
     }
 
     if (this.dust && this.dustOrigin) {
