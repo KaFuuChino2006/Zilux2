@@ -6686,6 +6686,10 @@ html.is-pb-expanded .playerbar.is-hidden {
 .metro-overlay .mt-hud {
   display: none;
 }
+/* 单线页底部图例与面包屑重复（只显示一条线），覆盖层内一并隐藏。 */
+.metro-overlay .mt-legend {
+  display: none;
+}
 .metro-overlay-stage {
   position: absolute;
   inset: 0;
@@ -6792,4 +6796,467 @@ html.is-pb-expanded .playerbar.is-hidden {
 @keyframes metro-overlay-in {
   from { opacity: 0; }
   to { opacity: 1; }
+}
+/* ─────────────────────────────────────────────────────────────────────
+   音乐地铁图 · 分类主干线画布（大图标 = 车站，点击延伸支线）
+   2026-10-28 晚（第二轮）：用户要求「点击的图标本身就是一个站，点击之后自动延伸出去」，
+   因此首页没有跳转，只有一条主干线 + 五座大图标车站 + 点开后长出来的支线。
+   坐标全部由 metroOverlay.ts 计算，这里只负责观感与动效。
+   ───────────────────────────────────────────────────────────────────── */
+
+/* 画布与文案 */
+.metro-overlay-board {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  /* 极淡的点阵，让空白画布也像一张地图纸。 */
+  background-image: radial-gradient(
+    color-mix(in srgb, var(--mt-text) 7%, transparent) 1px,
+    transparent 1.2px
+  );
+  background-size: 26px 26px;
+}
+.mh-head {
+  position: absolute;
+  top: 40px;
+  left: 52px;
+  z-index: 2;
+  pointer-events: none;
+}
+.mh-kicker {
+  margin: 0 0 8px;
+  color: var(--mt-muted);
+  font-size: 11.5px;
+  letter-spacing: 0.28em;
+}
+.mh-title {
+  margin: 0;
+  color: var(--mt-text);
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.mh-sub {
+  margin: 9px 0 0;
+  color: var(--mt-muted);
+  font-size: 12.5px;
+  letter-spacing: 0.04em;
+}
+.mh-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.mh-hubs,
+.mh-cards {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* 主干线 */
+.mh-trunk {
+  fill: none;
+  stroke: color-mix(in srgb, var(--mt-muted) 52%, transparent);
+  stroke-width: 5;
+  stroke-linecap: round;
+}
+
+/* 大图标车站（可点击的原生按钮） */
+.mh-hub {
+  position: absolute;
+  width: 64px;
+  height: 64px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--mh-tone);
+  transform: translate(-50%, -50%);
+  cursor: pointer;
+  pointer-events: auto;
+  transition: transform 0.22s cubic-bezier(.34, 1.56, .64, 1);
+}
+.mh-hub-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  border: 1.5px solid color-mix(in srgb, var(--mh-tone) 60%, transparent);
+  border-radius: 50%;
+  background:
+    radial-gradient(120% 120% at 32% 22%, color-mix(in srgb, var(--mh-tone-glow) 34%, transparent), transparent 66%),
+    color-mix(in srgb, var(--mt-paper) 90%, var(--mh-tone-soft));
+  box-shadow:
+    0 0 0 6px color-mix(in srgb, var(--mh-tone) 9%, transparent),
+    0 10px 26px -12px rgba(0, 0, 0, 0.55);
+  transition:
+    box-shadow 0.24s ease,
+    border-color 0.24s ease;
+}
+.mh-hub:hover {
+  transform: translate(-50%, -50%) scale(1.06);
+}
+.mh-hub:hover .mh-hub-badge {
+  border-color: var(--mh-tone-glow);
+}
+.mh-hub:focus-visible {
+  outline: none;
+}
+.mh-hub:focus-visible .mh-hub-badge {
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--mh-tone) 58%, transparent),
+    0 10px 26px -12px rgba(0, 0, 0, 0.55);
+}
+.mh-hub.is-open .mh-hub-badge {
+  border-color: var(--mh-tone);
+  box-shadow:
+    0 0 0 8px color-mix(in srgb, var(--mh-tone) 14%, transparent),
+    0 0 34px color-mix(in srgb, var(--mh-tone) 34%, transparent);
+}
+.mh-hub-count {
+  position: absolute;
+  top: 0;
+  right: -2px;
+  min-width: 21px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--mt-paper) 94%, var(--mh-tone-soft));
+  color: var(--mh-tone);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.5;
+  text-align: center;
+}
+.mh-hub-text {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  transform: translate(-100%, -50%);
+  pointer-events: none;
+  white-space: nowrap;
+  text-align: right;
+}
+.mh-hub-title {
+  color: var(--mt-text);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.mh-hub-sub {
+  color: var(--mt-muted);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+}
+
+/* 支线：线条从图标里生长出去 */
+.mh-line-path {
+  fill: none;
+  stroke: var(--mh-tone);
+  stroke-width: 7;
+  stroke-linecap: round;
+  transition: stroke-dashoffset var(--mh-grow, 620ms) cubic-bezier(.22, 1, .36, 1);
+}
+.mh-line.is-static .mh-line-path {
+  transition: none;
+}
+.mh-line.is-entering .mh-line-path {
+  filter: drop-shadow(0 0 10px color-mix(in srgb, var(--mh-tone) 40%, transparent));
+}
+
+/* 小站点 */
+.mh-station {
+  cursor: pointer;
+  outline: none;
+}
+.mh-station-dot {
+  fill: var(--mt-paper);
+  stroke: var(--mh-tone);
+  stroke-width: 3.5;
+  transform-box: fill-box;
+  transform-origin: center;
+  transition:
+    transform 0.18s ease,
+    stroke 0.18s ease;
+}
+.mh-station-halo {
+  fill: none;
+  stroke: var(--mh-tone);
+  stroke-width: 1.2;
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: opacity 0.18s ease;
+}
+.mh-station.is-terminus .mh-station-dot {
+  stroke-width: 4;
+}
+.mh-station:hover .mh-station-dot,
+.mh-station:focus-visible .mh-station-dot {
+  transform: scale(1.28);
+}
+.mh-station:hover .mh-station-halo,
+.mh-station:focus-visible .mh-station-halo {
+  opacity: 0.5;
+}
+.mh-station.is-active .mh-station-halo {
+  opacity: 0.85;
+  stroke-width: 1.6;
+}
+.mh-station.is-playing .mh-station-dot {
+  stroke: var(--mt-accent);
+  stroke-width: 4;
+}
+.mh-station.is-playing .mh-station-halo {
+  stroke: var(--mt-accent);
+  opacity: 0.9;
+  animation: mh-pulse 1.8s ease-out infinite;
+}
+.mh-station-label {
+  fill: var(--mt-text);
+  font-size: 12.5px;
+  letter-spacing: 0.01em;
+  paint-order: stroke;
+  stroke: var(--mt-paper);
+  stroke-width: 3.5px;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+/* 入场动效：线条先长，站点再依次弹出（用子元素动画，避免覆盖 SVG transform 定位） */
+.mh-line.is-entering .mh-station-dot,
+.mh-line.is-entering .mh-station-halo {
+  animation: mh-pop 0.34s cubic-bezier(.34, 1.56, .64, 1) both;
+  animation-delay: calc(70ms + var(--mh-i, 0) * var(--mh-stagger, 26ms));
+}
+.mh-line.is-entering .mh-station-label {
+  animation: mh-label-in 0.3s ease both;
+  animation-delay: calc(70ms + var(--mh-i, 0) * var(--mh-stagger, 26ms));
+}
+
+/* 歌曲卡 */
+.mh-card {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  width: 336px;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--mh-tone) 34%, transparent);
+  border-radius: 18px;
+  background:
+    radial-gradient(120% 160% at 8% 0%, color-mix(in srgb, var(--mh-tone) 16%, transparent), transparent 52%),
+    var(--mt-surface-strong);
+  box-shadow: 0 22px 44px -20px rgba(0, 0, 0, 0.66);
+  pointer-events: auto;
+  animation: mh-card-in 0.22s cubic-bezier(.34, 1.56, .64, 1) both;
+}
+.mh-card-cover {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 12px;
+  background: linear-gradient(
+    150deg,
+    color-mix(in srgb, var(--mh-tone) 82%, #fff 6%),
+    color-mix(in srgb, var(--mh-tone) 44%, transparent)
+  );
+  color: var(--mt-paper);
+}
+.mh-card-cover-char {
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1;
+}
+.mh-card-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.mh-card-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding-right: 20px;
+}
+.mh-card-title {
+  overflow: hidden;
+  color: var(--mt-text);
+  font-size: 14.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mh-card-artist {
+  overflow: hidden;
+  color: var(--mt-text-soft);
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mh-card-meta {
+  overflow: hidden;
+  color: var(--mt-muted);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mh-card-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: row;
+  gap: 8px;
+}
+.mh-card-actions .mh-card-btn {
+  flex: 1 1 0;
+}
+.mh-card-btn {
+  min-width: 70px;
+  height: 27px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--mt-text) 16%, transparent);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--mt-text-soft);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition:
+    background 0.16s ease,
+    border-color 0.16s ease,
+    color 0.16s ease;
+}
+.mh-card-btn:hover {
+  border-color: color-mix(in srgb, var(--mh-tone) 46%, transparent);
+  color: var(--mt-text);
+}
+.mh-card-btn.is-primary {
+  border-color: color-mix(in srgb, var(--mh-tone) 62%, transparent);
+  background: color-mix(in srgb, var(--mh-tone) 84%, transparent);
+  color: var(--mt-paper);
+}
+.mh-card-btn.is-primary:hover {
+  border-color: var(--mh-tone-glow);
+  background: color-mix(in srgb, var(--mh-tone) 100%, transparent);
+  color: var(--mt-paper);
+}
+.mh-card-close {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--mt-muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background 0.16s ease,
+    color 0.16s ease;
+}
+.mh-card-close:hover {
+  background: color-mix(in srgb, var(--mt-text) 10%, transparent);
+  color: var(--mt-text);
+}
+
+/* 底部操作提示 */
+.mh-hint {
+  position: absolute;
+  bottom: 26px;
+  left: 50%;
+  margin: 0;
+  padding: 8px 18px;
+  border: 1px solid color-mix(in srgb, var(--mt-text) 12%, transparent);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--mt-paper) 74%, transparent);
+  color: var(--mt-muted);
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  pointer-events: none;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+
+/* 动效关键帧 */
+@keyframes mh-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.3);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes mh-label-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes mh-pulse {
+  0% {
+    opacity: 0.9;
+    transform: scale(0.7);
+  }
+  70% {
+    opacity: 0;
+    transform: scale(1.5);
+  }
+  100% { opacity: 0; }
+}
+@keyframes mh-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 窄窗口兜底 */
+@media (max-width: 960px) {
+  .mh-head { top: 26px; left: 26px; }
+  .mh-title { font-size: 21px; }
+  .mh-hint { display: none; }
+  .mh-card { width: 300px; }
+}
+
+/* 降低动效偏好 */
+@media (prefers-reduced-motion: reduce) {
+  .mh-line-path,
+  .mh-hub,
+  .mh-hub-badge,
+  .mh-station-dot,
+  .mh-station-halo,
+  .mh-card {
+    transition: none !important;
+  }
+  .mh-line.is-entering .mh-station-dot,
+  .mh-line.is-entering .mh-station-halo,
+  .mh-line.is-entering .mh-station-label,
+  .mh-station.is-playing .mh-station-halo,
+  .mh-card {
+    animation: none !important;
+  }
 }

@@ -525,6 +525,68 @@ export function layoutMetro(data: MetroData, options?: MetroLayoutOptions): Metr
   };
 }
 
+/** 单线「直线页」布局参数。 */
+export interface MetroStraightLayoutOptions {
+  /** 相邻站点步长（px），默认 64。 */
+  step?: number;
+  /** 多线并排时的行距（px），默认 150；单线页只用到第 0 行。 */
+  rowGap?: number;
+  /** bounds 外扩（px），默认 110（容纳两端线名与上下站名）。 */
+  padding?: number;
+}
+
+const STRAIGHT_STEP = 64;
+const STRAIGHT_ROW_GAP = 150;
+const STRAIGHT_PADDING = 110;
+
+/**
+ * 「单线直线页」布局：每一条线都画成一条水平直线，站点沿线等距排列。
+ *
+ * 用于「分类大图标 → 点进去看这条线」的第一版形态（用户要求：每条线路默认都是直线的）：
+ *   - 站点 x = 以线中心对称的等距序列，y = 行号 × rowGap（单线页恒为 0，垂直居中）；
+ *   - 环线的闭合语义在直线页不成立，这里强制 `loop = false` 并去掉 `pathPoints`，
+ *     渲染层就会按站点顺序连一条直线（不再画八边形/闭合路径）；
+ *   - 只保证「一条线」的坐标正确：同一站出现在多条线时取第一次出现的位置（后续多线页再扩展）。
+ *
+ * 纯函数、确定性；不修改入参。
+ */
+export function layoutStraightLine(data: MetroData, options?: MetroStraightLayoutOptions): MetroMap {
+  const step = Math.max(16, options?.step ?? STRAIGHT_STEP);
+  const rowGap = Math.max(0, options?.rowGap ?? STRAIGHT_ROW_GAP);
+  const padding = Math.max(0, options?.padding ?? STRAIGHT_PADDING);
+
+  const stations: Record<string, MetroStation> = {};
+  const lines: MetroLine[] = [];
+
+  data.lines.forEach((line, row) => {
+    const count = line.stationIds.length;
+    const y = row * rowGap;
+    const startX = count > 1 ? -((count - 1) * step) / 2 : 0;
+    line.stationIds.forEach((stationId, index) => {
+      const seed: MetroStationSeed | undefined = data.stations[stationId];
+      if (seed === undefined || stations[stationId] !== undefined) return;
+      stations[stationId] = { ...seed, x: startX + index * step, y };
+    });
+    // 直线页的线路一律不闭合、不走折点：显式重建字段，避免把环线语义带过来。
+    lines.push({
+      id: line.id,
+      name: line.name,
+      subtitle: line.subtitle,
+      tone: line.tone,
+      loop: false,
+      dashed: line.dashed,
+      stationIds: [...line.stationIds],
+      source: line.source,
+    });
+  });
+
+  return {
+    lines,
+    stations,
+    bounds: computeBounds(Object.values(stations), padding),
+  };
+}
+
 /** 线路按 stationIds 顺序的坐标序列（环线不重复首点）——供渲染层/列车使用。 */
 export function linePoints(map: MetroMap, line: MetroLine): Array<{ x: number; y: number }> {
   const points: Array<{ x: number; y: number }> = [];
