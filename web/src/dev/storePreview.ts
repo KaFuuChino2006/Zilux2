@@ -57,6 +57,21 @@ const scene: StoreScene = createStoreScene(stage, {
 });
 
 scene.setCollections(mockCollections());
+
+// 预览调试：?yaw=0.9&pitch=-0.1&dist=7&ty=1.4 可直接摆机位
+const num = (key: string): number | undefined => {
+  const raw = params.get(key);
+  if (raw === null || raw.trim() === '') return undefined;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : undefined;
+};
+const camYaw = num('yaw');
+const camPitch = num('pitch');
+const camDist = num('dist');
+const camTy = num('ty');
+if (camYaw !== undefined || camPitch !== undefined || camDist !== undefined || camTy !== undefined) {
+  scene.setCamera({ yaw: camYaw, pitch: camPitch, distance: camDist, targetY: camTy });
+}
 scene.setActiveTrack('mock-1');
 
 const initialFocus = focusParam === null ? Number.NaN : Number(focusParam);
