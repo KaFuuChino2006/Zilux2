@@ -4,7 +4,7 @@ import { host, hostAvailable, type UpdateSnapshot } from './core/bridge';
 import { initAccount } from './core/account';
 import { loadSettings } from './core/settings';
 import { initOnline, onlineReady, setStreamQuality } from './online/client';
-import { App, readInterfaceMode } from './ui/app';
+import { App } from './ui/app';
 import { restoreLastPlayback, setVolume } from './ui/player';
 import { startAutoPlayOnBoot } from './ui/autoPlay';
 import { h, toast } from './ui/dom';
@@ -123,11 +123,6 @@ async function main(): Promise<void> {
   } else {
     await app.enter();
     if (hostAvailable()) toast('在线服务未就绪，只能使用本地曲库', 'error');
-  }
-
-  // 启动界面选择「地铁图」时：应用启动后直接进入音乐地铁图（覆盖层内自带加载态）。
-  if (readInterfaceMode() === 'metro') {
-    void import('./ui/metro/metroOverlay').then((mod) => mod.openMetroOverlay());
   }
 
   // 更新提示等界面就绪后再处理，避免被启动画面盖住；先补一次已到达的快照再订阅后续推送。

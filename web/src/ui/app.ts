@@ -236,10 +236,6 @@ function formatPlays(value: number): string {
 
 const WINDOW_ICON = { minimize: 'minimize', maximize: 'maximize', close: 'close' } as const;
 
-// 界面模式（经典界面 / 音乐地铁图）：实现见 `./interfaceMode`，这里转出以保持既有导入路径。
-import { readInterfaceMode, writeInterfaceMode, type InterfaceMode } from './interfaceMode';
-export { readInterfaceMode, writeInterfaceMode, type InterfaceMode };
-
 export class App {
   readonly root: HTMLDivElement;
 
@@ -3640,89 +3636,12 @@ export class App {
       const shortcutsSection = this.buildShortcutsSection(section);
       const updatesSection = this.buildUpdatesSection(section, toggleField, segField);
 
-      // 界面模式（音乐地铁图）：热切换 + 记住启动界面。
-      const interfaceSection = section(
-        '界面模式',
-        segField<InterfaceMode>(
-          '界面模式',
-          [
-            { value: 'classic', label: '经典界面' },
-            { value: 'metro', label: '地铁图' },
-          ],
-          readInterfaceMode(),
-          (mode) => {
-            writeInterfaceMode(mode);
-            // 热切换：立刻打开 / 关闭地铁图覆盖层，不需要重启应用。
-            void import('./metro/metroOverlay').then((mod) => {
-              if (mode === 'metro') {
-                this.sheet?.close();
-                mod.openMetroOverlay();
-                toast('已切换到「地铁图」');
-              } else {
-                mod.closeMetroOverlay();
-                toast('已切换到「经典界面」');
-              }
-            });
-          },
-          '切换立即生效，并会记住；下次启动按此界面进入。',
-        ),
-        h(
-          'div',
-          { class: 'field' },
-          h(
-            'div',
-            {},
-            h('div', { class: 'field-label', text: '音乐地铁图（预览）' }),
-            h('div', {
-              class: 'field-hint',
-              text: '把今日推荐 / 我喜欢 / 最近播放 / 歌单 / 私人雷达画成线路图：点击站点开卡、播放或加入队列，Esc 逐级返回。',
-            }),
-          ),
-          (() => {
-            const open = h('button', { class: 'btn metro-open-btn', text: '打开地铁图' });
-            open.addEventListener('click', () => {
-              // 打开即切到地铁图界面，并记住（下次启动直接进入）。
-              writeInterfaceMode('metro');
-              void import('./metro/metroOverlay').then((mod) => mod.openMetroOverlay());
-            });
-            return open;
-          })(),
-        ),
-      );
-
-      // 空间界面（唱片店 R1 原型）：设置里给一个入口，方便直接试玩 3D 场景。
-      const spaceSection = section(
-        '空间界面',
-        h(
-          'div',
-          { class: 'field' },
-          h(
-            'div',
-            {},
-            h('div', { class: 'field-label', text: '唱片店（预览）' }),
-            h('div', {
-              class: 'field-hint',
-              text: '3D 唱片店界面原型：拖拽环视、滚轮推进、点击唱片聚焦、Esc 返回。当前为占位数据，正式内容在后续版本接入。',
-            }),
-          ),
-          (() => {
-            const open = h('button', { class: 'btn space-open-btn', text: '打开预览' });
-            open.addEventListener('click', () => {
-              void import('./space/storeOverlay').then((mod) => mod.openStoreSpacePreview());
-            });
-            return open;
-          })(),
-        ),
-      );
-
       // 两栏设置：左侧导航 + 右侧内容（与快捷设置的 tab 选中样式一致）
       type SettingsEntry = { key: string; label: string; node: HTMLElement };
       const entries: SettingsEntry[] = [
         { key: 'general', label: '通用', node: general },
         { key: 'appearance', label: '外观', node: appearance },
         { key: 'playback', label: '播放', node: playback },
-        { key: 'interface', label: '界面模式', node: interfaceSection },
-        { key: 'space', label: '空间界面', node: spaceSection },
         { key: 'shortcuts', label: '快捷键', node: shortcutsSection },
         { key: 'eq', label: '均衡器', node: eqSection },
         { key: 'downloads', label: '下载', node: downloadsSection },
