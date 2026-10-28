@@ -4,10 +4,11 @@
  * 用户方向（2026-10-28 晚，第二轮）：
  *   「我要的不是点击之后进去展开，而是点击的图标本身就是一个站，点击之后自动延伸出去」
  * 因此这里只有一层画布，不再有「分类页 / 线路页」两级导航：
- *   - 左侧一条竖直主干线上排着 5 座大图标车站（收藏 / 推荐 / 历史播放 / 热门歌单 / 私人雷达）；
+ *   - 左侧竖直排着 5 座大图标车站（收藏 / 推荐 / 历史播放 / 热门歌单 / 私人雷达），
+ *     图标是前三首歌封面的叠层，不再画灰色连线；
  *   - 点某个大图标 = 点那座车站：对应的线路立刻从图标里向右侧生长出来（站点依次弹出）；
  *   - 再点一次同一座大图标，这条线路收回；多条线路可以同时展开；
- *   - 点任意小站点弹出歌曲卡（播放 / 加入队列），当前播放曲的站点会亮起。
+ *   - 点任意小站点弹出迷你歌曲卡（双击直接播放），当前播放曲的站点会亮起。
  *
  * 同时保留：加载 / 空 / 失败三态 + 重试、Esc 逐级（卡片 → 全部收回 → 关闭）、
  * 焦点恢复、窗口自适应（ResizeObserver），以及资源释放。
@@ -15,7 +16,8 @@
 
 import { SOURCE_LABEL } from '../../online/sources';
 import type { OnlineTrack } from '../../online/types';
-import { h, icon, toast } from '../dom';
+import { h, toast } from '../dom';
+import { writeInterfaceMode } from '../interfaceMode';
 import { onPlayer, playerState, playQueue } from '../player';
 import { buildGalleryEntries } from './metroGallery';
 import type { MetroGalleryEntry } from './metroGallery';
@@ -34,11 +36,10 @@ const OVERLAY_LABEL = '音乐地铁图';
 /* 布局常量（CSS 像素，与设计稿一致）                                    */
 /* ------------------------------------------------------------------ */
 
-/** 主干线所在的 x（大图标车站中心）。 */
+/** 大图标车站列所在的 x（大图标车站中心）。 */
 const HUB_COLUMN_X = 236;
-/** 大图标徽章边长（DOM 按钮，方形圆角）与从中心算起的留白半径。 */
+/** 大图标徽章边长（DOM 按钮，方形圆角，内部是封面叠层）。 */
 const HUB_BADGE_SIZE = 68;
-const HUB_RADIUS = 46;
 /** 第一条小站点相对主干线的水平距离。 */
 const BRANCH_START_GAP = 128;
 /** 支线右端留白。 */
@@ -239,7 +240,9 @@ export function openMetroOverlay(): void {
   stateLayer.setAttribute('aria-live', 'polite');
 
   root.append(board, stateLayer, closeBtn);
-  document.body.append(root);
+  // 挂到应用根内：`.app` 是 position:fixed（会建立堆叠上下文），播放条在其中；
+  // 若挂到 body，覆盖层会整层盖住播放条，抬 z-index 也无效。
+  (document.querySelector('.app') ?? document.body).append(root);
   // 打开地铁图时让底部播放条浮到覆盖层之上（用户要求播放条保持显示）。
   document.body.classList.add('is-metro-open');
   root.focus({ preventScroll: true });
@@ -270,9 +273,8 @@ export function openMetroOverlay(): void {
   let cardAt: { entryId: string; index: number } | null = null;
   let offPlayer: (() => void) | null = null;
 
-  const trunkLayer = svgEl('g', { class: 'mh-trunk-layer' });
   const branchLayer = svgEl('g', { class: 'mh-branch-layer' });
-  svg.append(trunkLayer, branchLayer);
+  svg.append(branchLayer);
 
   // ── 状态层：加载 / 空 / 失败 ────────────────────────────────────────
   type LoadState = 'loading' | 'empty' | 'error';
@@ -312,7 +314,28 @@ export function openMetroOverlay(): void {
     stateLayer.replaceChildren();
   }
 
-  // ── 大图标车站（DOM 按钮 + SVG 外环 + 下方标题）─────────────────────
+  // ── 大图标车站（DOM 按钮 + 封面叠层 + 左侧标题）─────────────────────
+  /**
+   * 单张封面：有真实封面时用 <img>，加载失败/无封面时回退到「首字 + 板块色」色块。
+   * baseClass 同时决定子元素类名：`${base}-img` / `${base}-char`。
+   */
+  function coverNode(song: MetroSong, baseClass: string): HTMLElement {
+    if (song.coverUrl) {
+      const img = h('img', {
+        class: `${baseClass}-img`,
+        src: song.coverUrl,
+        alt: '',
+        loading: 'lazy',
+        decoding: 'async',
+      });
+      img.addEventListener('error', () => {
+        img.replaceWith(h('span', { class: `${baseClass}-char`, text: song.title.slice(0, 1) }));
+      });
+      return img;
+    }
+    return h('span', { class: `${baseClass}-char`, text: song.title.slice(0, 1) });
+  }
+
   function createHubNode(entry: MetroGalleryEntry): void {
     const tone = theme.tones[entry.tone];
     const button = document.createElement('button');
@@ -325,9 +348,19 @@ export function openMetroOverlay(): void {
     button.style.setProperty('--mh-tone-soft', tone.soft);
     button.setAttribute('aria-label', `${entry.title}：${entry.subtitle} · ${entry.count} 首`);
     button.setAttribute('aria-expanded', 'false');
-    button.append(
-      h('span', { class: 'mh-hub-badge', 'aria-hidden': 'true' }, icon(entry.iconName, 30)),
-    );
+
+    // 封面叠层：前三首歌的封面叠成一叠（后面的两层旋转露出边角）。
+    const coverStack = h('span', { class: 'mh-hub-badge', 'aria-hidden': 'true' });
+    entry.songs.slice(0, 3).forEach((song, index) => {
+      coverStack.append(
+        h(
+          'span',
+          { class: 'mh-hub-cover', 'data-i': String(index) },
+          coverNode(song, 'mh-hub-cover'),
+        ),
+      );
+    });
+    button.append(coverStack);
     button.append(h('span', { class: 'mh-hub-count', 'aria-hidden': 'true', text: String(entry.count) }));
 
     const label = h(
@@ -346,17 +379,6 @@ export function openMetroOverlay(): void {
     if (geo === null || entries === null) return;
     const { width, height } = geo;
     svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
-
-    trunkLayer.replaceChildren();
-
-    const first = geo.rows[0] ?? 0;
-    const last = geo.rows[geo.rows.length - 1] ?? 0;
-    trunkLayer.append(
-      svgEl('path', {
-        class: 'mh-trunk',
-        d: `M ${geo.hubX} ${first - HUB_RADIUS - 26} L ${geo.hubX} ${last + HUB_RADIUS + 26}`,
-      }),
-    );
 
     entries.forEach((entry, index) => {
       const rowY = geo?.rows[index] ?? 0;
@@ -536,7 +558,7 @@ export function openMetroOverlay(): void {
     const cover = h(
       'span',
       { class: 'mh-card-cover', 'aria-hidden': 'true' },
-      h('span', { class: 'mh-card-cover-char', text: song.title.slice(0, 1) }),
+      coverNode(song, 'mh-card-cover'),
     );
     const main = h(
       'span',
@@ -761,7 +783,6 @@ export function openMetroOverlay(): void {
     hubs.clear();
     branchLayer.replaceChildren();
     expanded.clear();
-    trunkLayer.replaceChildren();
     showState('loading');
     try {
       const metro = wantsMockData() ? mockMetroData() : await loadMetroData();
@@ -807,6 +828,8 @@ export function openMetroOverlay(): void {
     window.removeEventListener('keydown', onEscape, true);
     root.remove();
     document.body.classList.remove('is-metro-open');
+    // 关闭覆盖层 = 切回经典界面：同步界面模式，保证「看到的」与「记住的」一致。
+    writeInterfaceMode('classic');
     active = null;
     if (previousFocus?.isConnected) {
       try {
@@ -830,4 +853,14 @@ export function openMetroOverlay(): void {
   offPlayer = onPlayer(() => syncPlaying());
 
   void load();
+}
+
+/** 关闭当前地铁图覆盖层（界面模式热切换用；未打开时无操作）。 */
+export function closeMetroOverlay(): void {
+  active?.close();
+}
+
+/** 当前是否已打开地铁图覆盖层。 */
+export function isMetroOverlayOpen(): boolean {
+  return active !== null;
 }
