@@ -57,7 +57,7 @@ const LIB_GAP = 0.16;
 const LIB_ROW_Y = [0.88, 1.47, 2.09, 2.71];
 const LIB_SHELF_Y = [0.6, 1.19, 1.81, 2.43, 3.02];
 const LIB_PANEL_X = 5.32;
-const LIB_SHELF_Z = 0.5;
+const LIB_SHELF_Z = 1.25;
 
 export type StoreZoneName = 'menu' | 'library';
 
@@ -855,31 +855,31 @@ class StoreSceneImpl implements StoreScene {
     group.add(back);
 
     for (const side of [-1, 1]) {
-      const board = new THREE.Mesh(new THREE.BoxGeometry(0.08, 2.72, 0.8), woodMat);
-      board.position.set(side * (width / 2 + 0.02), 1.8, 0.1);
+      const board = new THREE.Mesh(new THREE.BoxGeometry(0.08, 2.72, 0.34), woodMat);
+      board.position.set(side * (width / 2 + 0.02), 1.8, -0.02);
       group.add(board);
     }
-    const top = new THREE.Mesh(new THREE.BoxGeometry(width + 0.24, 0.1, 0.84), woodMat);
-    top.position.set(0, 3.08, 0.1);
+    const top = new THREE.Mesh(new THREE.BoxGeometry(width + 0.24, 0.1, 0.5), woodMat);
+    top.position.set(0, 3.08, 0.02);
     group.add(top);
-    const crown = new THREE.Mesh(new THREE.BoxGeometry(width + 0.34, 0.06, 0.92), woodMat);
-    crown.position.set(0, 3.14, 0.1);
+    const crown = new THREE.Mesh(new THREE.BoxGeometry(width + 0.34, 0.06, 0.56), woodMat);
+    crown.position.set(0, 3.14, 0.02);
     group.add(crown);
-    const bottom = new THREE.Mesh(new THREE.BoxGeometry(width + 0.24, 0.16, 0.82), woodMat);
-    bottom.position.set(0, 0.52, 0.1);
+    const bottom = new THREE.Mesh(new THREE.BoxGeometry(width + 0.24, 0.16, 0.5), woodMat);
+    bottom.position.set(0, 0.52, 0.02);
     group.add(bottom);
 
     for (const y of LIB_SHELF_Y) {
-      const plank = new THREE.Mesh(new THREE.BoxGeometry(width + 0.24, 0.045, 0.8), woodMat);
-      plank.position.set(0, y, 0.1);
+      const plank = new THREE.Mesh(new THREE.BoxGeometry(width + 0.24, 0.045, 0.5), woodMat);
+      plank.position.set(0, y, 0.02);
       group.add(plank);
       const brass = new THREE.Mesh(new THREE.BoxGeometry(width + 0.16, 0.012, 0.014), brassMat);
-      brass.position.set(0, y - 0.03, 0.49);
+      brass.position.set(0, y - 0.03, 0.27);
       group.add(brass);
       // 层板前沿暗藏灯带
       const ledMat = new THREE.MeshBasicMaterial({ color: 0xb97a4a });
       const led = new THREE.Mesh(new THREE.BoxGeometry(width + 0.02, 0.008, 0.012), ledMat);
-      led.position.set(0, y - 0.05, 0.42);
+      led.position.set(0, y - 0.05, 0.24);
       group.add(led);
       this.disposables.push(led.geometry, ledMat);
     }
@@ -889,7 +889,7 @@ class StoreSceneImpl implements StoreScene {
     const postXs = [-2.02, -1.36, -0.68, 0, 0.68, 1.36, 2.02];
     for (const px of postXs) {
       const post = new THREE.Mesh(new THREE.BoxGeometry(0.055, 2.62, 0.07), postMat);
-      post.position.set(px, 1.79, 0.45);
+      post.position.set(px, 1.79, 0.3);
       group.add(post);
     }
     this.disposables.push(postMat);
@@ -904,7 +904,7 @@ class StoreSceneImpl implements StoreScene {
       for (let col = 0; col < LIB_COLS; col += 1) {
         const x = (col - (LIB_COLS - 1) / 2) * step;
         const slotGroup = new THREE.Group();
-        slotGroup.position.set(x, LIB_ROW_Y[row], 0.18);
+        slotGroup.position.set(x, LIB_ROW_Y[row], 0.3);
         const frameMat = new THREE.MeshStandardMaterial({ color: 0x120d09, roughness: 0.55, metalness: 0.35, emissive: 0x000000 });
         const frame = new THREE.Mesh(frameGeo, frameMat);
         frame.position.z = -0.004;
@@ -933,7 +933,7 @@ class StoreSceneImpl implements StoreScene {
     // 大架标题牌。
     const headerMat = new THREE.MeshStandardMaterial({ color: 0x1a1310, roughness: 0.6, metalness: 0.1, emissive: 0x000000, map: null });
     const header = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 0.34), headerMat);
-    header.position.set(0, 3.22, 0.12);
+    header.position.set(0, 3.22, 0.2);
     group.add(header);
     this.disposables.push(header.geometry, headerMat);
     this.libraryHeader = { mesh: header, texture: null };
