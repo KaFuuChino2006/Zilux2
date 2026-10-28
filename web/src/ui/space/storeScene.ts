@@ -11,6 +11,20 @@
  */
 
 import * as THREE from 'three';
+import {
+  makeCardboardTexture,
+  makeCoverArtTexture,
+  makeNeonTexture,
+  makeNightWindowTexture,
+  makePosterArtTexture,
+  makeRugTexture,
+  makeLeafTexture,
+  makeShaftTexture,
+  makeVinylDiscTexture,
+  makeWallPlasterTexture,
+  makeWalnutTexture,
+  makeWoodFloorTexture,
+} from './storeTextures';
 
 const STYLE_ID = 'zl-store-style';
 
@@ -22,10 +36,10 @@ const COVER_GAP_X = 0.12;
 const ROW_Y = [1.04, 1.72];
 const PLANK_THICKNESS = 0.045;
 /** 相机基准目标点（货架中部）。 */
-const BASE_TARGET = new THREE.Vector3(0.12, 1.36, 0);
+const BASE_TARGET = new THREE.Vector3(0.1, 1.32, 0);
 const BASE_YAW = 0.34;
-const BASE_PITCH = 0.15;
-const BASE_DISTANCE = 5.6;
+const BASE_PITCH = 0.11;
+const BASE_DISTANCE = 6.9;
 const FOCUS_DISTANCE = 1.22;
 
 type QualityName = 'high' | 'medium' | 'low';
@@ -35,22 +49,6 @@ const QUALITY_PRESETS: Record<QualityName, { dpr: number; dust: number }> = {
   medium: { dpr: 1.25, dust: 140 },
   low: { dpr: 1, dust: 80 },
 };
-
-/** 原型期封面底色池（R3 会换成真实封面的主色/贴图）。 */
-const COVER_PALETTE: ReadonlyArray<readonly [string, string]> = [
-  ['#8c5a3c', '#3a2015'],
-  ['#6f4430', '#2c1710'],
-  ['#44655c', '#16251f'],
-  ['#3d5068', '#161f2b'],
-  ['#7d4b5c', '#2b1620'],
-  ['#8a6a3e', '#352513'],
-  ['#4f5f3f', '#1d2517'],
-  ['#5f4a70', '#241a2e'],
-  ['#8f5a3a', '#371d10'],
-  ['#3f666b', '#142528'],
-  ['#9a7345', '#3d2714'],
-  ['#564a6b', '#211b2c'],
-];
 
 export interface StoreSceneSong {
   trackKey: string;
@@ -95,6 +93,7 @@ export interface StoreScene {
   resize(): void;
   setCollections(collections: StoreSceneCollection[]): void;
   setActiveTrack(trackKey: string | null): void;
+  setCamera(next: { yaw?: number; pitch?: number; distance?: number; targetY?: number }): void;
   resetView(): void;
   focusIndex(index: number): void;
   readonly focusedIndex: number;
@@ -129,204 +128,9 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, h
   return node;
 }
 
-function parseHex(hex: string): [number, number, number] {
-  const normalized = hex.replace('#', '');
-  const value = Number.parseInt(normalized.length === 3 ? normalized.replace(/(.)/g, '$1$1') : normalized, 16);
-  if (!Number.isFinite(value)) return [120, 100, 80];
-  return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
-}
-
 /** 把颜色向白 / 黑混合，amount > 0 提亮，< 0 压暗。 */
-function shade(hex: string, amount: number): string {
-  const [r, g, b] = parseHex(hex);
-  const mix = (channel: number): number => {
-    const target = amount >= 0 ? 255 : 0;
-    return Math.round(channel + (target - channel) * Math.min(1, Math.abs(amount)));
-  };
-  return `rgb(${mix(r)} ${mix(g)} ${mix(b)})`;
-}
-
-function rgba(hex: string, alpha: number): string {
-  const [r, g, b] = parseHex(hex);
-  return `rgba(${r},${g},${b},${alpha})`;
-}
-
-function wrapCoverText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number, maxLines: number): string[] {
-  const lines: string[] = [];
-  const words = text.split(/\s+/).filter(Boolean);
-  const latin = words.length > 1;
-  const tokens = latin ? words : Array.from(text);
-  let current = '';
-  const push = (): boolean => {
-    if (!current) return false;
-    lines.push(current);
-    current = '';
-    return lines.length >= maxLines;
-  };
-  for (const token of tokens) {
-    const next = latin ? (current ? `${current} ${token}` : token) : current + token;
-    if (ctx.measureText(next).width > maxWidth && current) {
-      if (push()) return lines;
-      current = latin ? token : token;
-    } else {
-      current = next;
-    }
-  }
-  push();
-  return lines.slice(0, maxLines);
-}
-
-function makeCoverTexture(song: StoreSceneSong | null, index: number): THREE.CanvasTexture {
-  const size = 512;
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  const palette = COVER_PALETTE[index % COVER_PALETTE.length] ?? ['#c9a068', '#6b4a2f'];
-  const base = song?.color ?? palette[0];
-  const deep = palette[1];
-
-  if (ctx) {
-    const grad = ctx.createLinearGradient(0, 0, size, size);
-    grad.addColorStop(0, shade(base, 0.28));
-    grad.addColorStop(0.55, base);
-    grad.addColorStop(1, shade(deep, -0.32));
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, size, size);
-
-    const sheen = ctx.createRadialGradient(size * 0.74, size * 0.2, size * 0.02, size * 0.74, size * 0.2, size * 0.82);
-    sheen.addColorStop(0, 'rgba(255,244,222,0.24)');
-    sheen.addColorStop(0.45, 'rgba(255,244,222,0.08)');
-    sheen.addColorStop(1, 'rgba(255,244,222,0)');
-    ctx.fillStyle = sheen;
-    ctx.fillRect(0, 0, size, size);
-
-    if (song) {
-      let seed = 0;
-      for (const char of song.title) seed = (seed * 31 + char.charCodeAt(0)) >>> 0;
-      const rng = (slot: number): number => {
-        seed = (seed * 1664525 + 1013904223) >>> 0;
-        return ((seed >>> 8) + slot * 7919) % 1000 / 1000;
-      };
-      ctx.save();
-      for (let i = 0; i < 60; i += 1) {
-        const x = rng(i) * size;
-        const y = rng(i + 97) * size;
-        const r = 0.5 + rng(i + 193) * 2.2;
-        ctx.fillStyle = rgba('#fff4dc', 0.04 + rng(i + 311) * 0.06);
-        ctx.beginPath();
-        ctx.arc(x, y, r, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      ctx.restore();
-    }
-
-    ctx.strokeStyle = 'rgba(255,240,214,0.22)';
-    ctx.lineWidth = 10;
-    ctx.strokeRect(18, 18, size - 36, size - 36);
-
-    if (song) {
-      const titleFont = song.title.length > 14 ? 44 : song.title.length > 9 ? 52 : 62;
-      ctx.save();
-      ctx.shadowColor = 'rgba(0, 0, 0, 0.45)';
-      ctx.shadowBlur = 18;
-      ctx.shadowOffsetY = 4;
-      ctx.fillStyle = 'rgba(255,248,235,0.94)';
-      ctx.textBaseline = 'alphabetic';
-      ctx.textAlign = 'left';
-      ctx.font = `600 ${titleFont}px 'Zilux2 Sans SC', 'Microsoft YaHei', sans-serif`;
-      const lines = wrapCoverText(ctx, song.title, size - 128, 2);
-      let lineY = size * 0.44;
-      for (const line of lines) {
-        ctx.fillText(line, 60, lineY);
-        lineY += titleFont * 1.12;
-      }
-      ctx.restore();
-      ctx.fillStyle = 'rgba(255,244,226,0.62)';
-      ctx.font = `400 21px 'Zilux2 Sans SC', 'Microsoft YaHei', sans-serif`;
-      ctx.fillText(song.artist.slice(0, 18), 60, size - 84);
-      ctx.fillStyle = 'rgba(255,244,226,0.3)';
-      ctx.font = `400 16px 'Zilux2 Sans SC', 'Microsoft YaHei', sans-serif`;
-      ctx.textAlign = 'right';
-      ctx.fillText('ZILUX2 RECORDS', size - 58, size - 44);
-    } else {
-      ctx.fillStyle = 'rgba(255,246,232,0.86)';
-      ctx.font = `500 46px 'Zilux2 Sans SC', 'Microsoft YaHei', sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.fillText('待载入', size / 2, size * 0.56);
-      ctx.fillStyle = 'rgba(255,246,232,0.4)';
-      ctx.font = `400 20px 'Zilux2 Sans SC', 'Microsoft YaHei', sans-serif`;
-      ctx.fillText('ZILUX2 RECORDS', size / 2, size * 0.68);
-    }
-  }
-
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.anisotropy = 4;
-  texture.needsUpdate = true;
-  return texture;
-}
-
 /** 木地板贴图：底色 + 板缝 + 细微噪点（程序生成，避免额外资源）。 */
-function makeFloorTexture(): THREE.CanvasTexture {
-  const size = 512;
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  if (ctx) {
-    ctx.fillStyle = '#241b13';
-    ctx.fillRect(0, 0, size, size);
-    for (let row = 0; row < 8; row += 1) {
-      const y = (row / 8) * size;
-      const shadeBase = 0.03 + (row % 3) * 0.014;
-      ctx.fillStyle = `rgba(255,214,168,${shadeBase})`;
-      ctx.fillRect(0, y + 1, size, size / 8 - 2);
-      ctx.fillStyle = 'rgba(8,5,3,0.55)';
-      ctx.fillRect(0, y, size, 2);
-      ctx.fillStyle = 'rgba(255,226,180,0.06)';
-      ctx.fillRect(0, y + 3, size, 1);
-    }
-    for (let i = 0; i < 1400; i += 1) {
-      const x = Math.random() * size;
-      const y = Math.random() * size;
-      ctx.fillStyle = `rgba(255,220,180,${Math.random() * 0.05})`;
-      ctx.fillRect(x, y, 1 + Math.random() * 2, 1);
-    }
-  }
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.wrapS = THREE.RepeatWrapping;
-  texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(6, 6);
-  return texture;
-}
-
 /** 墙面贴图：深色灰泥 + 噪点。 */
-function makeWallTexture(): THREE.CanvasTexture {
-  const size = 512;
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  if (ctx) {
-    ctx.fillStyle = '#3a2d22';
-    ctx.fillRect(0, 0, size, size);
-    for (let i = 0; i < 5200; i += 1) {
-      const x = Math.random() * size;
-      const y = Math.random() * size;
-      ctx.fillStyle = Math.random() > 0.5 ? `rgba(255,226,186,${Math.random() * 0.035})` : `rgba(0,0,0,${Math.random() * 0.05})`;
-      ctx.fillRect(x, y, 1 + Math.random() * 2, 1 + Math.random() * 2);
-    }
-  }
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.wrapS = THREE.RepeatWrapping;
-  texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(3, 2);
-  return texture;
-}
-
 /** 吊牌贴图：黑底 + 铜色字 + 细边框。 */
 function makeSignTexture(): THREE.CanvasTexture {
   const width = 1024;
@@ -357,45 +161,6 @@ function makeSignTexture(): THREE.CanvasTexture {
 }
 
 /** 墙上海报：深色底 + 抽象色块 + 标题。 */
-function makePosterTexture(title: string, base: string): THREE.CanvasTexture {
-  const size = 512;
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  if (ctx) {
-    ctx.fillStyle = '#191310';
-    ctx.fillRect(0, 0, size, size);
-    const grad = ctx.createLinearGradient(0, 0, size, size);
-    grad.addColorStop(0, shade(base, 0.1));
-    grad.addColorStop(1, '#0e0b08');
-    ctx.fillStyle = grad;
-    ctx.fillRect(46, 46, size - 92, size - 92);
-    ctx.strokeStyle = 'rgba(255, 226, 180, 0.28)';
-    ctx.lineWidth = 4;
-    ctx.strokeRect(46, 46, size - 92, size - 92);
-    ctx.beginPath();
-    ctx.arc(size / 2, size * 0.44, size * 0.2, 0, Math.PI * 2);
-    ctx.fillStyle = rgba('#f2ddb8', 0.16);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(size / 2, size * 0.44, size * 0.06, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(20, 14, 10, 0.85)';
-    ctx.fill();
-    ctx.fillStyle = 'rgba(255, 238, 210, 0.88)';
-    ctx.textAlign = 'center';
-    ctx.font = `500 34px 'Zilux2 Sans SC', 'Microsoft YaHei', sans-serif`;
-    ctx.fillText(title, size / 2, size - 78);
-    ctx.fillStyle = 'rgba(255, 238, 210, 0.4)';
-    ctx.font = `400 18px 'Zilux2 Sans SC', 'Microsoft YaHei', sans-serif`;
-    ctx.fillText('ZILUX2 RECORDS', size / 2, size - 44);
-  }
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.anisotropy = 4;
-  return texture;
-}
-
 /** 径向光晕贴图：尘埃 / 灯头泛光共用。 */
 function makeGlowTexture(): THREE.CanvasTexture {
   const size = 128;
@@ -457,6 +222,9 @@ class StoreSceneImpl implements StoreScene {
   private pitchTarget = BASE_PITCH;
   private distance = BASE_DISTANCE;
   private distanceTarget = BASE_DISTANCE;
+
+  /** 相机围绕的注视点（预览/调试可改）。 */
+  private readonly camTarget = BASE_TARGET.clone();
 
   private focused = -1;
   private hovered = -1;
@@ -525,6 +293,7 @@ class StoreSceneImpl implements StoreScene {
     backBtn.addEventListener('click', () => this.resetView());
 
     if (!this.initWebGL()) return;
+    this.applyEnvironment();
     this.buildRoom();
     this.buildShelf();
     this.buildDust();
@@ -550,7 +319,7 @@ class StoreSceneImpl implements StoreScene {
     }
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.0;
+    this.renderer.toneMappingExposure = 0.98;
     this.renderer.setClearColor(0x0b0806, 1);
     this.applySize();
     return true;
@@ -570,22 +339,61 @@ class StoreSceneImpl implements StoreScene {
     this.options.onFallback?.();
   }
 
+  /** 用程序化环境贴图给黄铜 / 木面一点反射层次。 */
+  private applyEnvironment(): void {
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = 256;
+      canvas.height = 128;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      const grad = ctx.createLinearGradient(0, 0, 0, 128);
+      grad.addColorStop(0, '#1a120c');
+      grad.addColorStop(0.45, '#4a3423');
+      grad.addColorStop(0.62, '#8a6236');
+      grad.addColorStop(1, '#120c08');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, 256, 128);
+      // 顶部三团暖光，模拟轨道灯在环境里的高光
+      for (const x of [58, 128, 198]) {
+        const glow = ctx.createRadialGradient(x, 34, 2, x, 34, 46);
+        glow.addColorStop(0, 'rgba(255, 214, 160, 0.9)');
+        glow.addColorStop(1, 'rgba(255, 214, 160, 0)');
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(x, 34, 46, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.mapping = THREE.EquirectangularReflectionMapping;
+      texture.colorSpace = THREE.SRGBColorSpace;
+      const pmrem = new THREE.PMREMGenerator(this.renderer as THREE.WebGLRenderer);
+      const envMap = pmrem.fromEquirectangular(texture).texture;
+      this.scene.environment = envMap;
+      this.scene.environmentIntensity = 0.55;
+      this.textures.push(texture, envMap);
+      pmrem.dispose();
+    } catch {
+      // 环境贴图只是加分项，失败不影响场景。
+    }
+  }
+
   private buildRoom(): void {
     const renderer = this.renderer;
     if (!renderer) return;
 
-    const floorTexture = makeFloorTexture();
+    const floorTexture = makeWoodFloorTexture();
     this.textures.push(floorTexture);
-    const floorMat = new THREE.MeshStandardMaterial({ map: floorTexture, color: 0x9a7f60, roughness: 0.82, metalness: 0.08 });
+    const floorMat = new THREE.MeshStandardMaterial({ map: floorTexture, color: 0x7a6248, roughness: 0.82, metalness: 0.08 });
     const floor = new THREE.Mesh(new THREE.PlaneGeometry(36, 36), floorMat);
     floor.rotation.x = -Math.PI / 2;
     floor.position.set(0, 0, 1.2);
     this.scene.add(floor);
     this.disposables.push(floor.geometry, floorMat);
 
-    const wallTexture = makeWallTexture();
+    const wallTexture = makeWallPlasterTexture();
     this.textures.push(wallTexture);
-    const wallMat = new THREE.MeshStandardMaterial({ map: wallTexture, color: 0xb29a80, roughness: 0.96, metalness: 0.02 });
+    const wallMat = new THREE.MeshStandardMaterial({ map: wallTexture, color: 0x8f7a62, roughness: 0.96, metalness: 0.02 });
     const backWall = new THREE.Mesh(new THREE.PlaneGeometry(18, 6), wallMat);
     backWall.position.set(0, 2.6, -1.05);
     this.scene.add(backWall);
@@ -618,18 +426,18 @@ class StoreSceneImpl implements StoreScene {
     this.scene.add(rug);
     this.disposables.push(rug.geometry, rugMat);
 
-    this.scene.add(new THREE.HemisphereLight(0xffe4bd, 0x120c08, 0.62));
+    this.scene.add(new THREE.HemisphereLight(0xffe4bd, 0x120c08, 0.58));
 
-    const keyLight = new THREE.DirectionalLight(0xffd8a4, 0.62);
+    const keyLight = new THREE.DirectionalLight(0xffd8a4, 0.5);
     keyLight.position.set(3.2, 4.1, 3.4);
     this.scene.add(keyLight);
 
-    const fillLight = new THREE.PointLight(0xffcf9a, 7, 9, 1.6);
+    const fillLight = new THREE.PointLight(0xffcf9a, 5, 9, 1.7);
     fillLight.position.set(-1.2, 1.7, 4.2);
     this.scene.add(fillLight);
 
     for (const side of [-1, 1] as const) {
-      const wallGlow = new THREE.PointLight(0xffb877, 12, 11, 1.7);
+      const wallGlow = new THREE.PointLight(0xffb877, 8, 11, 1.8);
       wallGlow.position.set(side * 3.1, 3.0, 2.2);
       this.scene.add(wallGlow);
     }
@@ -643,7 +451,7 @@ class StoreSceneImpl implements StoreScene {
       [2.05, 1.1],
     ];
     for (const [x, z] of spotPositions) {
-      const spot = new THREE.SpotLight(0xffc98c, 12, 9, 0.6, 0.85, 1.8);
+      const spot = new THREE.SpotLight(0xffc98c, 9, 9.5, 0.62, 0.85, 1.85);
       spot.position.set(x, 3.05, z);
       spot.target.position.set(x * 0.42, 1.05, 0.1);
       this.scene.add(spot, spot.target);
@@ -697,25 +505,49 @@ class StoreSceneImpl implements StoreScene {
     }
     this.disposables.push(crateGeo, crateMat);
 
-    // 两侧高唱片架：只作为前景剪影，给画面左右边界一点“店”的重量。
-    const rackMat = new THREE.MeshStandardMaterial({ color: 0x241a12, roughness: 0.88, metalness: 0.04 });
-    for (const side of [-1, 1]) {
-      const rack = new THREE.Mesh(new THREE.BoxGeometry(1.05, 1.68, 0.5), rackMat);
-      rack.position.set(side * 2.62, 0.9, -0.15);
-      rack.rotation.y = side * 0.1;
-      this.scene.add(rack);
-      this.disposables.push(rack.geometry);
-      const recordMat = new THREE.MeshStandardMaterial({ color: 0x12100d, roughness: 0.7, metalness: 0.06 });
-      for (let i = 0; i < 6; i += 1) {
-        const disc = new THREE.Mesh(new THREE.BoxGeometry(0.022, 0.44 + (i % 3) * 0.012, 0.4), recordMat);
-        disc.position.set(side * 2.62 - 0.42 + i * 0.14, 1.42, -0.42);
-        disc.rotation.y = side * 0.1;
-        this.scene.add(disc);
-        this.disposables.push(disc.geometry);
+    // 两侧矮唱片箱（替代原先的高架）：箱体贴牛皮纸，里面插彩色唱片脊，让左右边界有细节。
+    const cardboard = makeCardboardTexture();
+    this.textures.push(cardboard);
+    const binBoxMat = new THREE.MeshStandardMaterial({ map: cardboard, color: 0xb08d62, roughness: 0.85, metalness: 0.02 });
+    const spineColors = [0x5a2f28, 0x2f4448, 0x5a462e, 0x40364f, 0x4a5638, 0x5a4048, 0x6a5a44];
+    for (const side of [-1, 1] as const) {
+      const bin = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.62, 0.5), binBoxMat);
+      bin.position.set(side * 3.02, 0.31, -0.02);
+      bin.rotation.y = side * 0.08;
+      this.scene.add(bin);
+      this.disposables.push(bin.geometry, binBoxMat);
+      for (let i = 0; i < 9; i += 1) {
+        const spineMat = new THREE.MeshStandardMaterial({ color: spineColors[(i + (side > 0 ? 3 : 0)) % spineColors.length], roughness: 0.8, metalness: 0.02 });
+        const spine = new THREE.Mesh(new THREE.BoxGeometry(0.022, 0.44 + (i % 3) * 0.018, 0.4), spineMat);
+        spine.position.set(side * 3.02 - 0.5 + i * 0.115, 0.62, -0.02);
+        spine.rotation.y = side * 0.08;
+        spine.rotation.z = (i % 2 === 0 ? 1 : -1) * 0.012;
+        this.scene.add(spine);
+        this.disposables.push(spine.geometry, spineMat);
       }
-      this.disposables.push(recordMat);
+      // 箱上：小立牌与铜灯
+      const lampMat = new THREE.MeshStandardMaterial({ color: 0xc4a06a, roughness: 0.3, metalness: 0.9 });
+      const lampPole = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.4, 10), lampMat);
+      lampPole.position.set(side * 3.35, 0.82, 0.12);
+      const lampShade = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.12, 16, 1, true), new THREE.MeshStandardMaterial({ color: 0x2a2019, roughness: 0.5, metalness: 0.6, side: THREE.DoubleSide }));
+      lampShade.position.set(side * 3.35, 1.02, 0.12);
+      lampShade.rotation.x = Math.PI;
+      const lampBulb = new THREE.Mesh(new THREE.SphereGeometry(0.028, 12, 8), new THREE.MeshBasicMaterial({ color: 0xffd9a0 }));
+      lampBulb.position.set(side * 3.35, 0.98, 0.12);
+      const lampLight = new THREE.PointLight(0xffc080, 2.4, 2.2, 2);
+      lampLight.position.set(side * 3.35, 0.95, 0.12);
+      this.scene.add(lampPole, lampShade, lampBulb, lampLight);
+      this.disposables.push(lampPole.geometry, lampShade.geometry, lampShade.material as THREE.Material, lampBulb.geometry, lampBulb.material as THREE.Material, lampMat);
     }
-    this.disposables.push(rackMat);
+
+    // 货架后方暖雾光层：让灯光有体积感
+    const hazeTexture = makeGlowTexture();
+    this.textures.push(hazeTexture);
+    const hazeMat = new THREE.MeshBasicMaterial({ map: hazeTexture, color: 0xffb877, transparent: true, opacity: 0.1, depthWrite: false, blending: THREE.AdditiveBlending });
+    const haze = new THREE.Mesh(new THREE.PlaneGeometry(6.4, 3.4), hazeMat);
+    haze.position.set(0, 1.75, -1.0);
+    this.scene.add(haze);
+    this.disposables.push(haze.geometry, hazeMat);
 
     // 吊牌
     const signTexture = makeSignTexture();
@@ -731,14 +563,16 @@ class StoreSceneImpl implements StoreScene {
       ['午夜唱片', '#7d4b5c', -3.55],
       ['夜航星', '#3d5068', 3.55],
     ];
+    let posterVariant = 0;
     for (const [title, color, x] of posterData) {
-      const texture = makePosterTexture(title, color);
+      const texture = makePosterArtTexture({ title, subtitle: posterVariant % 2 === 0 ? 'MONO SERIES' : 'NIGHT EDITION', accent: color, variant: posterVariant });
       this.textures.push(texture);
       const mat = new THREE.MeshStandardMaterial({ map: texture, roughness: 0.85, metalness: 0.02 });
       const poster = new THREE.Mesh(new THREE.PlaneGeometry(0.96, 0.96), mat);
-      poster.position.set(x, 1.95, -0.92);
+      poster.position.set(x, 1.95, -0.905);
       this.scene.add(poster);
       this.disposables.push(poster.geometry, mat);
+      posterVariant += 1;
     }
 
     // 视听桌 + 唱片机（右侧前景，让镜头有“店内”参照物）
@@ -823,11 +657,20 @@ class StoreSceneImpl implements StoreScene {
       this.disposables.push(disc.geometry);
     }
     this.disposables.push(discMat);
+
+    this.buildRug();
+    this.buildCeilingDetail();
+    this.buildWallDetail();
+    this.buildListeningDetail();
+    this.buildShelfDetail();
+    this.buildAtmosphereDetail();
   }
 
   private buildShelf(): void {
     const shelfWidth = COLS * (COVER_SIZE + COVER_GAP_X) + 0.1;
-    const woodMat = new THREE.MeshStandardMaterial({ color: 0x4a3625, roughness: 0.62, metalness: 0.12 });
+    const walnut = makeWalnutTexture();
+    this.textures.push(walnut);
+    const woodMat = new THREE.MeshStandardMaterial({ map: walnut, color: 0x8a6a46, roughness: 0.6, metalness: 0.08 });
     const brassMat = new THREE.MeshStandardMaterial({ color: 0xb08a54, roughness: 0.3, metalness: 0.9 });
     const backMat = new THREE.MeshStandardMaterial({ color: 0x211a13, roughness: 0.92, metalness: 0.04 });
 
@@ -893,6 +736,484 @@ class StoreSceneImpl implements StoreScene {
     }
   }
 
+
+  // ---------- R2 细节 ----------
+
+  /** 地毯 */
+  private buildRug(): void {
+    const texture = makeRugTexture();
+    this.textures.push(texture);
+    const mat = new THREE.MeshStandardMaterial({ map: texture, color: 0x9a8272, roughness: 0.96, metalness: 0.02 });
+    const rug = new THREE.Mesh(new THREE.PlaneGeometry(4.9, 3.5), mat);
+    rug.rotation.x = -Math.PI / 2;
+    rug.position.set(0, 0.018, 1.95);
+    this.scene.add(rug);
+    this.disposables.push(rug.geometry, mat);
+  }
+
+  /** 天花板：木梁 + 灯轨 + 视听桌上方的吊灯 */
+  private buildCeilingDetail(): void {
+    const walnut = makeWalnutTexture();
+    this.textures.push(walnut);
+    const beamMat = new THREE.MeshStandardMaterial({ map: walnut, color: 0x6a4a30, roughness: 0.82, metalness: 0.03 });
+    for (const z of [-0.3, 1.3, 2.9]) {
+      const beam = new THREE.Mesh(new THREE.BoxGeometry(10.6, 0.15, 0.17), beamMat);
+      beam.position.set(0, 3.2, z);
+      this.scene.add(beam);
+      this.disposables.push(beam.geometry);
+    }
+    const railMat = new THREE.MeshStandardMaterial({ color: 0x2b2620, roughness: 0.4, metalness: 0.9 });
+    const rail = new THREE.Mesh(new THREE.BoxGeometry(5.8, 0.05, 0.07), railMat);
+    rail.position.set(0, 3.12, 1.28);
+    this.scene.add(rail);
+    this.disposables.push(rail.geometry, railMat, beamMat);
+
+    // 吊灯
+    const cordMat = new THREE.MeshStandardMaterial({ color: 0x14100d, roughness: 0.8, metalness: 0.1 });
+    const cord = new THREE.Mesh(new THREE.CylinderGeometry(0.007, 0.007, 1.1, 8), cordMat);
+    cord.position.set(2.6, 2.75, 2.35);
+    this.scene.add(cord);
+    const shadeMat = new THREE.MeshStandardMaterial({ color: 0x1c1916, roughness: 0.45, metalness: 0.72, side: THREE.DoubleSide });
+    const shade = new THREE.Mesh(new THREE.ConeGeometry(0.2, 0.2, 26, 1, true), shadeMat);
+    shade.position.set(2.6, 2.14, 2.35);
+    shade.rotation.x = Math.PI;
+    this.scene.add(shade);
+    const bulbMat = new THREE.MeshBasicMaterial({ color: 0xffdca6 });
+    const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.042, 16, 12), bulbMat);
+    bulb.position.set(2.6, 2.05, 2.35);
+    this.scene.add(bulb);
+    const pendant = new THREE.PointLight(0xffc47e, 7, 5, 1.9);
+    pendant.position.set(2.6, 1.92, 2.35);
+    this.scene.add(pendant);
+    this.disposables.push(cord.geometry, cordMat, shade.geometry, shadeMat, bulb.geometry, bulbMat);
+  }
+
+  /** 墙纸细节：护墙板、夜景窗、后门、霓虹、画框、壁灯 */
+  private buildWallDetail(): void {
+    const walnut = makeWalnutTexture();
+    this.textures.push(walnut);
+    const trimMat = new THREE.MeshStandardMaterial({ map: walnut, color: 0x8a6a46, roughness: 0.62, metalness: 0.08 });
+
+    // 后墙护墙板与踢脚线
+    const wainscot = new THREE.Mesh(new THREE.BoxGeometry(9.2, 0.36, 0.05), trimMat);
+    wainscot.position.set(0, 0.21, -1.02);
+    this.scene.add(wainscot);
+    const baseTrim = new THREE.Mesh(new THREE.BoxGeometry(9.2, 0.1, 0.08), trimMat);
+    baseTrim.position.set(0, 0.05, -1.0);
+    this.scene.add(baseTrim);
+
+    // 左墙夜景窗
+    const windowTexture = makeNightWindowTexture();
+    this.textures.push(windowTexture);
+    const glassMat = new THREE.MeshBasicMaterial({ map: windowTexture });
+    const glass = new THREE.Mesh(new THREE.PlaneGeometry(2.35, 1.45), glassMat);
+    glass.position.set(-5.33, 1.92, 1.85);
+    glass.rotation.y = Math.PI / 2;
+    const glassSheen = new THREE.Mesh(
+      new THREE.PlaneGeometry(2.3, 1.4),
+      new THREE.MeshBasicMaterial({ color: 0xaec8ff, transparent: true, opacity: 0.05, depthWrite: false, blending: THREE.AdditiveBlending }),
+    );
+    glassSheen.position.set(-5.31, 1.92, 1.85);
+    glassSheen.rotation.y = Math.PI / 2;
+    this.scene.add(glass, glassSheen);
+    const frameMat = new THREE.MeshStandardMaterial({ color: 0x231b14, roughness: 0.6, metalness: 0.18 });
+    const frameParts: Array<[number, number, number, number, number]> = [
+      [-5.32, 2.66, 1.85, 2.5, 0.07],
+      [-5.32, 1.18, 1.85, 2.5, 0.07],
+      [-5.32, 1.92, 0.64, 0.06, 1.5],
+      [-5.32, 1.92, 3.06, 0.06, 1.5],
+    ];
+    for (const [x, y, z, w, h] of frameParts) {
+      const piece = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.05), frameMat);
+      piece.position.set(x, y, z);
+      piece.rotation.y = Math.PI / 2;
+      this.scene.add(piece);
+      this.disposables.push(piece.geometry);
+    }
+    for (const dz of [-0.78, 0.78]) {
+      const mullion = new THREE.Mesh(new THREE.BoxGeometry(0.045, 1.5, 0.04), frameMat);
+      mullion.position.set(-5.31, 1.92, 1.85 + dz);
+      mullion.rotation.y = Math.PI / 2;
+      this.scene.add(mullion);
+      this.disposables.push(mullion.geometry);
+    }
+    const sill = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.07, 2.6), trimMat);
+    sill.position.set(-5.22, 1.14, 1.85);
+    this.scene.add(sill);
+    // 窗光落在地面
+    const glow = this.textures[1];
+    if (glow) {
+      const lightPool = new THREE.Mesh(
+        new THREE.PlaneGeometry(2.6, 1.9),
+        new THREE.MeshBasicMaterial({ map: glow, color: 0x7f9dc8, transparent: true, opacity: 0.16, depthWrite: false, blending: THREE.AdditiveBlending }),
+      );
+      lightPool.rotation.x = -Math.PI / 2;
+      lightPool.position.set(-4.2, 0.02, 1.9);
+      this.scene.add(lightPool);
+      this.disposables.push(lightPool.geometry, lightPool.material);
+    }
+    this.disposables.push(glass.geometry, glassMat, glassSheen.geometry, glassSheen.material as THREE.Material, frameMat);
+    const moonLight = new THREE.PointLight(0x7f9fd0, 4.2, 5.5, 2);
+    moonLight.position.set(-4.6, 1.9, 1.85);
+    this.scene.add(moonLight);
+
+    // 右墙后门
+    const doorMat = new THREE.MeshStandardMaterial({ color: 0x2a1f16, roughness: 0.7, metalness: 0.08 });
+    const door = new THREE.Mesh(new THREE.BoxGeometry(0.06, 2.3, 1.06), doorMat);
+    door.position.set(5.36, 1.15, 1.9);
+    this.scene.add(door);
+    const doorGlass = new THREE.Mesh(new THREE.PlaneGeometry(0.72, 0.66), new THREE.MeshStandardMaterial({ color: 0x1d2a33, roughness: 0.18, metalness: 0.6, emissive: 0x223040, emissiveIntensity: 0.35 }));
+    doorGlass.position.set(5.32, 1.9, 1.9);
+    doorGlass.rotation.y = -Math.PI / 2;
+    this.scene.add(doorGlass);
+    const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.16, 12), new THREE.MeshStandardMaterial({ color: 0xc4a06a, roughness: 0.28, metalness: 0.95 }));
+    handle.position.set(5.3, 1.12, 1.42);
+    handle.rotation.z = Math.PI / 2.6;
+    this.scene.add(handle);
+    this.disposables.push(door.geometry, doorMat, doorGlass.geometry, doorGlass.material as THREE.Material, handle.geometry, handle.material as THREE.Material);
+
+    // 后门上方 OPEN 霓虹
+    const openTexture = makeNeonTexture('OPEN', '#ff9a6a', 384, 144);
+    this.textures.push(openTexture);
+    const openMat = new THREE.MeshBasicMaterial({ map: openTexture, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+    const openSign = new THREE.Mesh(new THREE.PlaneGeometry(0.66, 0.25), openMat);
+    openSign.position.set(5.31, 2.62, 1.9);
+    openSign.rotation.y = -Math.PI / 2;
+    this.scene.add(openSign);
+    const openLight = new THREE.PointLight(0xff8a5a, 2.6, 2.6, 2);
+    openLight.position.set(5.0, 2.55, 1.9);
+    this.scene.add(openLight);
+    this.disposables.push(openSign.geometry, openMat);
+
+    // 画框：给两张海报加木框与玻璃反光
+    for (const x of [-3.55, 3.55]) {
+      const frame = new THREE.Mesh(new THREE.BoxGeometry(1.12, 1.12, 0.05), trimMat);
+      frame.position.set(x, 1.95, -0.94);
+      this.scene.add(frame);
+      const sheen = new THREE.Mesh(
+        new THREE.PlaneGeometry(1.06, 1.06),
+        new THREE.MeshBasicMaterial({ color: 0xffe8c8, transparent: true, opacity: 0.05, depthWrite: false, blending: THREE.AdditiveBlending }),
+      );
+      sheen.position.set(x, 1.95, -0.9);
+      this.scene.add(sheen);
+      this.disposables.push(frame.geometry, sheen.geometry, sheen.material as THREE.Material);
+    }
+    this.disposables.push(trimMat);
+
+    // 后墙壁灯（画框外侧，铜杆朝下挂球泡）
+    for (const side of [-1, 1] as const) {
+      const x = side * 3.55;
+      const backPlate = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.03, 16), frameMat);
+      backPlate.rotation.x = Math.PI / 2;
+      backPlate.position.set(x, 2.42, -1.0);
+      const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.24, 10), frameMat);
+      arm.position.set(x, 2.3, -0.9);
+      arm.rotation.x = -0.9;
+      const shade = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.1, 18, 1, true), new THREE.MeshStandardMaterial({ color: 0x2a241d, roughness: 0.5, metalness: 0.6, side: THREE.DoubleSide }));
+      shade.position.set(x, 2.18, -0.83);
+      shade.rotation.x = Math.PI;
+      const bulbMat = new THREE.MeshBasicMaterial({ color: 0xffd09a });
+      const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.032, 14, 10), bulbMat);
+      bulb.position.set(x, 2.13, -0.83);
+      const light = new THREE.PointLight(0xffb877, 3.6, 3.2, 2);
+      light.position.set(x, 2.05, -0.7);
+      this.scene.add(backPlate, arm, shade, bulb, light);
+      this.disposables.push(backPlate.geometry, arm.geometry, shade.geometry, shade.material as THREE.Material, bulb.geometry, bulbMat);
+    }
+  }
+
+  /** 视听角：现有唱机上加细节 + 音箱 / 功放 / 耳机 / 植物 / 凳子 / 杯子 */
+  private buildListeningDetail(): void {
+    const woodTexture = makeWalnutTexture();
+    this.textures.push(woodTexture);
+    const woodMat = new THREE.MeshStandardMaterial({ map: woodTexture, color: 0xb08a5c, roughness: 0.55, metalness: 0.06 });
+    const metalMat = new THREE.MeshStandardMaterial({ color: 0x8f8a84, roughness: 0.3, metalness: 0.95 });
+    const darkMat = new THREE.MeshStandardMaterial({ color: 0x15120f, roughness: 0.5, metalness: 0.35 });
+
+    // 桌面板 / 唱机底座换成木纹
+    const tableTop = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.06, 0.72), woodMat);
+    tableTop.position.set(2.6, 0.735, 2.35);
+    this.scene.add(tableTop);
+    const plinth = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.1, 0.48), woodMat);
+    plinth.position.set(2.6, 0.81, 2.35);
+    this.scene.add(plinth);
+    this.disposables.push(tableTop.geometry, plinth.geometry, woodMat);
+
+    // 唱盘上的黑胶 + 毛毡垫
+    const felt = new THREE.Mesh(new THREE.CylinderGeometry(0.255, 0.255, 0.008, 48), new THREE.MeshStandardMaterial({ color: 0x1a1512, roughness: 1, metalness: 0 }));
+    felt.position.set(2.54, 0.886, 2.35);
+    const vinylTexture = makeVinylDiscTexture();
+    this.textures.push(vinylTexture);
+    const vinyl = new THREE.Mesh(new THREE.CylinderGeometry(0.244, 0.244, 0.007, 64), new THREE.MeshStandardMaterial({ map: vinylTexture, color: 0xffffff, roughness: 0.42, metalness: 0.2 }));
+    vinyl.position.set(2.54, 0.893, 2.35);
+    this.scene.add(felt, vinyl);
+    this.disposables.push(felt.geometry, felt.material as THREE.Material, vinyl.geometry, vinyl.material as THREE.Material);
+
+    // 唱臂小部件
+    const pivot = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.034, 0.05, 20), metalMat);
+    pivot.position.set(2.88, 0.92, 2.52);
+    const counter = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.07, 16), metalMat);
+    counter.rotation.z = Math.PI / 2;
+    counter.position.set(2.94, 0.93, 2.55);
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.014, 0.038), darkMat);
+    head.position.set(2.6, 0.925, 2.4);
+    head.rotation.y = -0.7;
+    this.scene.add(pivot, counter, head);
+    this.disposables.push(pivot.geometry, counter.geometry, head.geometry);
+
+    // 功放 + 旋钮 + 指示灯
+    const amp = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.11, 0.3), darkMat);
+    amp.position.set(3.02, 0.845, 2.16);
+    const face = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.09, 0.012), metalMat);
+    face.position.set(3.02, 0.845, 2.0);
+    this.scene.add(amp, face);
+    for (let i = 0; i < 3; i += 1) {
+      const knob = new THREE.Mesh(new THREE.CylinderGeometry(0.017, 0.017, 0.014, 18), metalMat);
+      knob.rotation.x = Math.PI / 2;
+      knob.position.set(2.88 + i * 0.075, 0.85, 1.99);
+      this.scene.add(knob);
+      this.disposables.push(knob.geometry);
+    }
+    const led = new THREE.Mesh(new THREE.SphereGeometry(0.007, 8, 6), new THREE.MeshBasicMaterial({ color: 0xffb066 }));
+    led.position.set(3.16, 0.85, 1.99);
+    this.scene.add(led);
+    this.disposables.push(amp.geometry, face.geometry, led.geometry, led.material as THREE.Material, darkMat, metalMat);
+
+    // 两侧音箱
+    for (const x of [2.02, 3.28]) {
+      const cab = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.52, 0.32), woodMat);
+      cab.position.set(x, 0.26, 2.72);
+      const woofer = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.02, 40), darkMat);
+      woofer.rotation.x = Math.PI / 2;
+      woofer.position.set(x, 0.22, 2.555);
+      const tweeter = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.016, 24), metalMat);
+      tweeter.rotation.x = Math.PI / 2;
+      tweeter.position.set(x, 0.41, 2.56);
+      this.scene.add(cab, woofer, tweeter);
+      this.disposables.push(cab.geometry, woofer.geometry, tweeter.geometry);
+    }
+
+    // 耳机架：小立杆 + 竖直半环 + 耳罩
+    const stand = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.045, 0.26, 14), darkMat);
+    stand.position.set(2.72, 0.9, 2.56);
+    const band = new THREE.Mesh(new THREE.TorusGeometry(0.058, 0.009, 8, 20, Math.PI), metalMat);
+    band.rotation.x = Math.PI / 2;
+    band.rotation.z = Math.PI;
+    band.position.set(2.72, 1.03, 2.56);
+    for (const side of [-1, 1] as const) {
+      const cup = new THREE.Mesh(new THREE.CylinderGeometry(0.032, 0.032, 0.022, 18), darkMat);
+      cup.rotation.x = Math.PI / 2;
+      cup.position.set(2.72 + side * 0.058, 0.99, 2.56);
+      this.scene.add(cup);
+      this.disposables.push(cup.geometry);
+    }
+    this.scene.add(stand, band);
+    this.disposables.push(stand.geometry, band.geometry);
+
+    // 凳子
+    const stoolMat = new THREE.MeshStandardMaterial({ color: 0x3a2a1d, roughness: 0.8, metalness: 0.06 });
+    const seat = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.06, 28), stoolMat);
+    seat.position.set(2.6, 0.5, 1.55);
+    this.scene.add(seat);
+    this.disposables.push(seat.geometry, stoolMat);
+    for (let i = 0; i < 3; i += 1) {
+      const angle = (i / 3) * Math.PI * 2;
+      const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.018, 0.5, 10), darkMat);
+      leg.position.set(2.6 + Math.cos(angle) * 0.17, 0.25, 1.55 + Math.sin(angle) * 0.17);
+      leg.rotation.set(Math.sin(angle) * 0.12, 0, -Math.cos(angle) * 0.12);
+      this.scene.add(leg);
+      this.disposables.push(leg.geometry);
+    }
+
+    // 绿植
+    const potMat = new THREE.MeshStandardMaterial({ color: 0x6a4a34, roughness: 0.8, metalness: 0.05 });
+    const pot = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.11, 0.26, 20), potMat);
+    pot.position.set(-1.2, 0.13, 2.9);
+    this.scene.add(pot);
+    const leafTexture = makeLeafTexture();
+    this.textures.push(leafTexture);
+    const leafMat = new THREE.MeshStandardMaterial({ map: leafTexture, transparent: true, alphaTest: 0.5, roughness: 0.8, metalness: 0.02, side: THREE.DoubleSide });
+    const leafGeo = new THREE.PlaneGeometry(0.16, 0.5);
+    for (let i = 0; i < 16; i += 1) {
+      const angle = (i / 16) * Math.PI * 2 + (i % 3) * 0.2;
+      const spread = 0.09 + (i % 4) * 0.03;
+      const leaf = new THREE.Mesh(leafGeo, leafMat);
+      leaf.position.set(-1.2 + Math.cos(angle) * spread, 0.46 + (i % 5) * 0.055, 2.9 + Math.sin(angle) * spread);
+      leaf.rotation.set(-0.35 + (i % 3) * 0.25, angle, (i % 2 === 0 ? 1 : -1) * (0.25 + (i % 4) * 0.1));
+      this.scene.add(leaf);
+    }
+    const stemGeo = new THREE.CylinderGeometry(0.006, 0.01, 0.42, 6);
+    const stemMat = new THREE.MeshStandardMaterial({ color: 0x3a4a32, roughness: 0.8, metalness: 0.02 });
+    for (let i = 0; i < 5; i += 1) {
+      const angle = (i / 5) * Math.PI * 2;
+      const stem = new THREE.Mesh(stemGeo, stemMat);
+      stem.position.set(-1.2 + Math.cos(angle) * 0.03, 0.42, 2.9 + Math.sin(angle) * 0.03);
+      stem.rotation.set(Math.cos(angle) * 0.25, 0, Math.sin(angle) * 0.25);
+      this.scene.add(stem);
+    }
+    this.disposables.push(pot.geometry, potMat, leafMat, leafGeo, stemGeo, stemMat);
+
+    // 桌上杯子
+    const mugMat = new THREE.MeshStandardMaterial({ color: 0xc9b39a, roughness: 0.7, metalness: 0.05 });
+    const mug = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.03, 0.08, 18), mugMat);
+    mug.position.set(2.86, 0.79, 2.62);
+    const handle = new THREE.Mesh(new THREE.TorusGeometry(0.026, 0.008, 8, 16), mugMat);
+    handle.position.set(2.9, 0.79, 2.62);
+    handle.rotation.y = Math.PI / 2;
+    this.scene.add(mug, handle);
+    this.disposables.push(mug.geometry, handle.geometry, mugMat);
+  }
+
+  /** 货架细节：木纹背板、压条、灯带、铜角、价签 */
+  private buildShelfDetail(): void {
+    const shelfWidth = COLS * (COVER_SIZE + COVER_GAP_X) + 0.1;
+    const walnut = makeWalnutTexture();
+    this.textures.push(walnut);
+    const insetMat = new THREE.MeshStandardMaterial({ map: walnut, color: 0x553d28, roughness: 0.9, metalness: 0.02 });
+    const inset = new THREE.Mesh(new THREE.PlaneGeometry(shelfWidth + 0.2, 2.28), insetMat);
+    inset.position.set(0, 1.28, -0.286);
+    this.scene.add(inset);
+
+    const lipMat = new THREE.MeshStandardMaterial({ map: walnut, color: 0x8a6a46, roughness: 0.55, metalness: 0.12 });
+    const brassMat = new THREE.MeshStandardMaterial({ color: 0xb08a54, roughness: 0.3, metalness: 0.9 });
+    const ledMat = new THREE.MeshBasicMaterial({ color: 0xffd8a2 });
+    for (let row = 0; row < ROWS; row += 1) {
+      const y = ROW_Y[row] - COVER_SIZE / 2 - 0.078;
+      const lip = new THREE.Mesh(new THREE.BoxGeometry(shelfWidth + 0.3, 0.048, 0.032), lipMat);
+      lip.position.set(0, y + 0.012, 0.283);
+      const led = new THREE.Mesh(new THREE.BoxGeometry(shelfWidth - 0.2, 0.012, 0.014), ledMat);
+      led.position.set(0, y - 0.045, 0.236);
+      this.scene.add(lip, led);
+      this.disposables.push(lip.geometry, led.geometry);
+    }
+    this.disposables.push(inset.geometry, insetMat, lipMat, brassMat, ledMat);
+
+    // 货架顶左侧：平放的一摞黑胶（三张）
+    const stackColors = [0x2a2018, 0x1d1712, 0x241c15];
+    for (let i = 0; i < 3; i += 1) {
+      const sleeve = new THREE.Mesh(
+        new THREE.BoxGeometry(0.42, 0.012, 0.42),
+        new THREE.MeshStandardMaterial({ color: stackColors[i], roughness: 0.8, metalness: 0.03 }),
+      );
+      sleeve.position.set(-1.5 + i * 0.012, 2.47 + i * 0.014, -0.05 + i * 0.01);
+      sleeve.rotation.y = (i - 1) * 0.06;
+      this.scene.add(sleeve);
+      this.disposables.push(sleeve.geometry, sleeve.material as THREE.Material);
+    }
+    const standTexture = makePosterArtTexture({ title: 'STAFF PICKS', subtitle: '店员私藏 · 每周更新', accent: '#6a4a30', variant: 1 });
+    this.textures.push(standTexture);
+    const standMat = new THREE.MeshStandardMaterial({ map: standTexture, color: 0xe8dcc8, roughness: 0.85, metalness: 0.02, side: THREE.DoubleSide });
+    const stand = new THREE.Mesh(new THREE.PlaneGeometry(0.34, 0.44), standMat);
+    stand.position.set(1.4, 2.64, -0.08);
+    stand.rotation.x = -0.1;
+    this.scene.add(stand);
+    this.disposables.push(stand.geometry, standMat);
+
+    // 铜角铁
+    for (const side of [-1, 1] as const) {
+      for (const y of [0.12, 2.38]) {
+        const corner = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.06), brassMat);
+        corner.position.set(side * (shelfWidth / 2 + 0.06), y, 0.24);
+        this.scene.add(corner);
+        this.disposables.push(corner.geometry);
+      }
+    }
+
+    // 价签：几张小纸片挂在封面下方
+    const tagTexture = makeCardboardTexture();
+    this.textures.push(tagTexture);
+    const tagMat = new THREE.MeshStandardMaterial({ map: tagTexture, color: 0xd9c4a2, roughness: 0.9, metalness: 0.02, side: THREE.DoubleSide });
+    for (const [x, y] of [
+      [-1.42, 0.74],
+      [0.86, 1.42],
+      [1.9, 0.74],
+    ] as const) {
+      const tag = new THREE.Mesh(new THREE.PlaneGeometry(0.18, 0.085), tagMat);
+      tag.position.set(x, y, 0.3);
+      tag.rotation.x = -0.1;
+      this.scene.add(tag);
+      this.disposables.push(tag.geometry);
+    }
+    this.disposables.push(tagMat);
+  }
+
+
+  /** 体积光柱 + 墙面装裱唱片 + 角落纸箱 */
+  private buildAtmosphereDetail(): void {
+    // 三束柔光柱（对应三盏轨道射灯）
+    const shaftTexture = makeShaftTexture();
+    this.textures.push(shaftTexture);
+    const spots: Array<[number, number]> = [
+      [-2.05, 1.1],
+      [0, 1.35],
+      [2.05, 1.1],
+    ];
+    for (const [x, z] of spots) {
+      const shaft = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.08, 0.62, 2.9, 24, 1, true),
+        new THREE.MeshBasicMaterial({
+          map: shaftTexture,
+          color: 0xffc98c,
+          transparent: true,
+          opacity: 0.07,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+          side: THREE.DoubleSide,
+        }),
+      );
+      shaft.position.set(x, 1.56, z);
+      this.scene.add(shaft);
+      this.disposables.push(shaft.geometry, shaft.material as THREE.Material);
+    }
+
+    // 装裱唱片（后墙货架两侧）
+    const frameMat = new THREE.MeshStandardMaterial({ color: 0x2a2018, roughness: 0.55, metalness: 0.15 });
+    const wallMat = new THREE.MeshStandardMaterial({ color: 0x120d09, roughness: 0.92, metalness: 0.03 });
+    const vinylTexture = makeVinylDiscTexture();
+    this.textures.push(vinylTexture);
+    const vinylMat = new THREE.MeshStandardMaterial({ map: vinylTexture, color: 0xffffff, roughness: 0.55, metalness: 0.08 });
+    for (const side of [-1, 1] as const) {
+      const frame = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.62, 0.045), frameMat);
+      frame.position.set(side * 2.45, 2.12, -0.98);
+      const back = new THREE.Mesh(new THREE.PlaneGeometry(0.54, 0.54), wallMat);
+      back.position.set(side * 2.45, 2.12, -0.955);
+      const disc = new THREE.Mesh(new THREE.CircleGeometry(0.225, 48), vinylMat);
+      disc.position.set(side * 2.45, 2.12, -0.95);
+      this.scene.add(frame, back, disc);
+      this.disposables.push(frame.geometry, frameMat, back.geometry, wallMat, disc.geometry);
+    }
+    this.disposables.push(vinylMat);
+
+    // 角落纸箱堆
+    const cardboard = makeCardboardTexture();
+    this.textures.push(cardboard);
+    const boxMat = new THREE.MeshStandardMaterial({ map: cardboard, color: 0xb08a5e, roughness: 0.9, metalness: 0.02 });
+    const boxes: Array<[number, number, number, number, number, number, number]> = [
+      [-3.55, 0.19, 0.55, 0.52, 0.38, 0.46, 0.12],
+      [-3.42, 0.55, 0.5, 0.42, 0.32, 0.38, -0.18],
+      [-3.72, 0.13, 0.9, 0.34, 0.26, 0.3, 0.42],
+    ];
+    for (const [x, y, z, w, h, d, rot] of boxes) {
+      const box = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), boxMat);
+      box.position.set(x, y, z);
+      box.rotation.y = rot;
+      this.scene.add(box);
+      this.disposables.push(box.geometry);
+    }
+    this.disposables.push(boxMat);
+
+    // 斜靠墙边的木牌「新品上架」
+    const boardTex = makePosterArtTexture({ title: '新品上架', subtitle: 'NEW ARRIVALS · WEEKLY', accent: '#7a5a38', variant: 2 });
+    this.textures.push(boardTex);
+    const boardMat = new THREE.MeshStandardMaterial({ map: boardTex, color: 0xd8c8ae, roughness: 0.85, metalness: 0.02, side: THREE.DoubleSide });
+    const board = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.7), boardMat);
+    board.position.set(-4.05, 0.36, 0.05);
+    board.rotation.y = 0.42;
+    board.rotation.x = -0.12;
+    this.scene.add(board);
+    this.disposables.push(board.geometry, boardMat);
+  }
+
   private buildDust(): void {
     const count = this.quality.dust;
     const positions = new Float32Array(count * 3);
@@ -947,7 +1268,7 @@ class StoreSceneImpl implements StoreScene {
         slot.texture.dispose();
         slot.texture = null;
       }
-      const texture = makeCoverTexture(song, slot.index);
+      const texture = makeCoverArtTexture(song, slot.index);
       slot.texture = texture;
       this.textures.push(texture);
       material.map = texture;
@@ -1021,7 +1342,7 @@ class StoreSceneImpl implements StoreScene {
       this.dragStartY = event.clientY;
       this.dragMoved += Math.abs(dx) + Math.abs(dy);
       if (this.focused >= 0) this.resetView();
-      this.yawTarget = clamp(this.yawTarget + dx * 0.0042, BASE_YAW - 0.95, BASE_YAW + 0.95);
+      this.yawTarget = clamp(this.yawTarget - dx * 0.0042, BASE_YAW - 0.95, BASE_YAW + 0.95);
       this.pitchTarget = clamp(this.pitchTarget + dy * 0.0028, -0.16, 0.34);
       return;
     }
@@ -1097,6 +1418,22 @@ class StoreSceneImpl implements StoreScene {
 
   // ---------- 相机 / 聚焦 ----------
 
+  setCamera(next: { yaw?: number; pitch?: number; distance?: number; targetY?: number }): void {
+    if (typeof next.yaw === 'number') {
+      this.yaw = next.yaw;
+      this.yawTarget = next.yaw;
+    }
+    if (typeof next.pitch === 'number') {
+      this.pitch = next.pitch;
+      this.pitchTarget = next.pitch;
+    }
+    if (typeof next.distance === 'number') {
+      this.distance = next.distance;
+      this.distanceTarget = next.distance;
+    }
+    if (typeof next.targetY === 'number') this.camTarget.setY(next.targetY);
+  }
+
   resetView(): void {
     this.focused = -1;
     this.card.classList.remove('is-open');
@@ -1171,12 +1508,12 @@ class StoreSceneImpl implements StoreScene {
       this.distance = damp(this.distance, this.distanceTarget, 5.0, dt);
       const cosPitch = Math.cos(this.pitch);
       const desired = new THREE.Vector3(
-        BASE_TARGET.x + Math.sin(this.yaw) * cosPitch * this.distance,
-        BASE_TARGET.y + Math.sin(this.pitch) * this.distance,
-        BASE_TARGET.z + Math.cos(this.yaw) * cosPitch * this.distance,
+        this.camTarget.x + Math.sin(this.yaw) * cosPitch * this.distance,
+        this.camTarget.y + Math.sin(this.pitch) * this.distance,
+        this.camTarget.z + Math.cos(this.yaw) * cosPitch * this.distance,
       );
       this.camera.position.lerp(desired, 1 - Math.exp(-7 * dt));
-      this.currentLook.lerp(BASE_TARGET, 1 - Math.exp(-7 * dt));
+      this.currentLook.lerp(this.camTarget, 1 - Math.exp(-7 * dt));
     }
     this.camera.lookAt(this.currentLook);
 
