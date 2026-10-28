@@ -12,6 +12,7 @@
 
 import { toast } from '../dom';
 import { mockCollections } from './mockCollections';
+import { loadStoreCollections } from './storeCollections';
 import type { StoreScene, StoreZoneState } from './storeScene';
 
 interface PreviewHandle {
@@ -31,7 +32,7 @@ export function openStoreSpacePreview(): void {
 
   const crumb = document.createElement('div');
   crumb.className = 'space-overlay-crumb';
-  crumb.textContent = '唱片店 · 菜单';
+  crumb.textContent = '唱片店 · 载入中…';
 
   const closeBtn = document.createElement('button');
   closeBtn.type = 'button';
@@ -98,13 +99,28 @@ export function openStoreSpacePreview(): void {
         quality: 'high',
         onZone,
         onPlay: (song) => {
-          toast(`R3 原型：将播放《${song.title}》（R5 接入真实播放器）`);
+          toast(`即将播放《${song.title}》— ${song.artist}（播放接入下一步）`);
         },
         onFallback: () => {
           toast('当前环境不支持 WebGL2，已回退为扁平货架');
         },
       });
+      // 先放入演示数据占位，真实数据到达后整体替换（封面按 URL 懒加载）。
       scene.setCollections(mockCollections());
+      void loadStoreCollections()
+        .then((collections) => {
+          if (disposed || !scene) return;
+          if (collections.length > 0) {
+            scene.setCollections(collections);
+            crumb.textContent = '唱片店 · 菜单';
+          } else {
+            toast('未能读取在线歌单，先使用演示数据');
+          }
+        })
+        .catch((error: unknown) => {
+          console.warn('[space] 在线歌单载入失败', error);
+          if (!disposed) toast('在线歌单载入失败，先使用演示数据');
+        });
     })
     .catch((error: unknown) => {
       console.error('[space] 唱片店预览加载失败', error);

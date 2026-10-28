@@ -90,10 +90,10 @@ const MENU_POSE: CameraPose = {
 };
 
 const LIB_POSE: CameraPose = {
-  target: new THREE.Vector3(5.05, 1.72, LIB_SHELF_Z),
-  yaw: -1.34,
-  pitch: 0.0,
-  distance: 4.8,
+  target: new THREE.Vector3(5.02, 1.7, LIB_SHELF_Z + 0.05),
+  yaw: -Math.PI / 2,
+  pitch: 0.04,
+  distance: 4.2,
   yawRange: 0.36,
   pitchMin: -0.1,
   pitchMax: 0.26,
@@ -116,6 +116,8 @@ export interface StoreSceneSong {
   coverUrl?: string;
   /** 封面主色（十六进制），没有封面图时用来生成渐变。 */
   color?: string;
+  /** 时长（毫秒），播放接入后用于队列。 */
+  durationMs?: number;
 }
 
 export interface StoreSceneCollection {
@@ -282,6 +284,12 @@ class StoreSceneImpl implements StoreScene {
   private readonly pointer = new THREE.Vector2(-10, -10);
 
   private readonly covers: CoverSlot[] = [];
+  /** 菜单区（后墙货架）的对象，进入大架时整体隐藏，避免挡住镜头。 */
+  private menuObjects: THREE.Object3D[] = [];
+  /** 真实专辑封面纹理缓存（按 URL）。 */
+  private readonly coverCache = new Map<string, THREE.Texture>();
+  /** 正在加载中的封面等待队列（同一 URL 只发一次请求）。 */
+  private readonly coverRequests = new Map<string, Array<(texture: THREE.Texture) => void>>();
   private readonly coverMeshes: THREE.Mesh[] = [];
   private readonly menuBoards: MenuBoardSlot[] = [];
   private readonly menuBoardMeshes: THREE.Mesh[] = [];
@@ -386,7 +394,9 @@ class StoreSceneImpl implements StoreScene {
     if (!this.initWebGL()) return;
     this.applyEnvironment();
     this.buildRoom();
+    const menuStart = this.scene.children.length;
     this.buildShelf();
+    this.menuObjects = this.scene.children.slice(menuStart);
     this.buildLibraryShelf();
     this.buildDust();
     this.bindEvents();
@@ -621,11 +631,10 @@ class StoreSceneImpl implements StoreScene {
       const lampMat = new THREE.MeshStandardMaterial({ color: 0xc4a06a, roughness: 0.3, metalness: 0.9 });
       const lampPole = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.4, 10), lampMat);
       lampPole.position.set(side * 3.35, 0.82, 0.12);
-      const lampShade = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.12, 16, 1, true), new THREE.MeshStandardMaterial({ color: 0x2a2019, roughness: 0.5, metalness: 0.6, side: THREE.DoubleSide }));
+      const lampShade = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.1, 0.12, 16, 1, true), new THREE.MeshStandardMaterial({ color: 0x2a2019, roughness: 0.5, metalness: 0.6, side: THREE.DoubleSide }));
       lampShade.position.set(side * 3.35, 1.02, 0.12);
-      lampShade.rotation.x = Math.PI;
-      const lampBulb = new THREE.Mesh(new THREE.SphereGeometry(0.028, 12, 8), new THREE.MeshBasicMaterial({ color: 0xffd9a0 }));
-      lampBulb.position.set(side * 3.35, 0.98, 0.12);
+      const lampBulb = new THREE.Mesh(new THREE.SphereGeometry(0.026, 12, 8), new THREE.MeshBasicMaterial({ color: 0xffd9a0 }));
+      lampBulb.position.set(side * 3.35, 1.005, 0.12);
       const lampLight = new THREE.PointLight(0xffc080, 2.4, 2.2, 2);
       lampLight.position.set(side * 3.35, 0.95, 0.12);
       this.scene.add(lampPole, lampShade, lampBulb, lampLight);
@@ -831,7 +840,7 @@ class StoreSceneImpl implements StoreScene {
     const step = LIB_COVER + LIB_GAP;
     const width = (LIB_COLS - 1) * step + LIB_COVER + 0.36;
     const group = new THREE.Group();
-    group.position.set(LIB_PANEL_X, 0, LIB_SHELF_Z);
+    group.position.set(LIB_PANEL_X - 0.06, 0, LIB_SHELF_Z);
     group.rotation.y = -Math.PI / 2;
     this.scene.add(group);
 
@@ -846,25 +855,44 @@ class StoreSceneImpl implements StoreScene {
     group.add(back);
 
     for (const side of [-1, 1]) {
-      const board = new THREE.Mesh(new THREE.BoxGeometry(0.08, 2.72, 0.52), woodMat);
-      board.position.set(side * (width / 2 + 0.02), 1.8, 0.0);
+      const board = new THREE.Mesh(new THREE.BoxGeometry(0.08, 2.72, 0.8), woodMat);
+      board.position.set(side * (width / 2 + 0.02), 1.8, 0.1);
       group.add(board);
     }
-    const top = new THREE.Mesh(new THREE.BoxGeometry(width + 0.2, 0.08, 0.56), woodMat);
-    top.position.set(0, 3.06, 0.0);
+    const top = new THREE.Mesh(new THREE.BoxGeometry(width + 0.24, 0.1, 0.84), woodMat);
+    top.position.set(0, 3.08, 0.1);
     group.add(top);
-    const bottom = new THREE.Mesh(new THREE.BoxGeometry(width + 0.2, 0.14, 0.54), woodMat);
-    bottom.position.set(0, 0.52, 0.0);
+    const crown = new THREE.Mesh(new THREE.BoxGeometry(width + 0.34, 0.06, 0.92), woodMat);
+    crown.position.set(0, 3.14, 0.1);
+    group.add(crown);
+    const bottom = new THREE.Mesh(new THREE.BoxGeometry(width + 0.24, 0.16, 0.82), woodMat);
+    bottom.position.set(0, 0.52, 0.1);
     group.add(bottom);
 
     for (const y of LIB_SHELF_Y) {
-      const plank = new THREE.Mesh(new THREE.BoxGeometry(width + 0.2, 0.045, 0.5), woodMat);
-      plank.position.set(0, y, 0.0);
+      const plank = new THREE.Mesh(new THREE.BoxGeometry(width + 0.24, 0.045, 0.8), woodMat);
+      plank.position.set(0, y, 0.1);
       group.add(plank);
-      const brass = new THREE.Mesh(new THREE.BoxGeometry(width + 0.2, 0.012, 0.014), brassMat);
-      brass.position.set(0, y - 0.028, 0.26);
+      const brass = new THREE.Mesh(new THREE.BoxGeometry(width + 0.16, 0.012, 0.014), brassMat);
+      brass.position.set(0, y - 0.03, 0.49);
       group.add(brass);
+      // 层板前沿暗藏灯带
+      const ledMat = new THREE.MeshBasicMaterial({ color: 0xb97a4a });
+      const led = new THREE.Mesh(new THREE.BoxGeometry(width + 0.02, 0.008, 0.012), ledMat);
+      led.position.set(0, y - 0.05, 0.42);
+      group.add(led);
+      this.disposables.push(led.geometry, ledMat);
     }
+
+    // 前立柱：让大架读起来是立在地上的柜子，而不是贴在墙上的贴图
+    const postMat = new THREE.MeshStandardMaterial({ map: woodMat.map, color: 0x9a764f, roughness: 0.7, metalness: 0.06 });
+    const postXs = [-2.02, -1.36, -0.68, 0, 0.68, 1.36, 2.02];
+    for (const px of postXs) {
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.055, 2.62, 0.07), postMat);
+      post.position.set(px, 1.79, 0.45);
+      group.add(post);
+    }
+    this.disposables.push(postMat);
     this.disposables.push(woodMat, brassMat, backMat);
 
     // 封面：24 个席位。
@@ -876,7 +904,7 @@ class StoreSceneImpl implements StoreScene {
       for (let col = 0; col < LIB_COLS; col += 1) {
         const x = (col - (LIB_COLS - 1) / 2) * step;
         const slotGroup = new THREE.Group();
-        slotGroup.position.set(x, LIB_ROW_Y[row], 0.3);
+        slotGroup.position.set(x, LIB_ROW_Y[row], 0.18);
         const frameMat = new THREE.MeshStandardMaterial({ color: 0x120d09, roughness: 0.55, metalness: 0.35, emissive: 0x000000 });
         const frame = new THREE.Mesh(frameGeo, frameMat);
         frame.position.z = -0.004;
@@ -948,13 +976,12 @@ class StoreSceneImpl implements StoreScene {
     cord.position.set(2.6, 2.75, 2.35);
     this.scene.add(cord);
     const shadeMat = new THREE.MeshStandardMaterial({ color: 0x1c1916, roughness: 0.45, metalness: 0.72, side: THREE.DoubleSide });
-    const shade = new THREE.Mesh(new THREE.ConeGeometry(0.2, 0.2, 26, 1, true), shadeMat);
+    const shade = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.2, 0.2, 26, 1, true), shadeMat);
     shade.position.set(2.6, 2.14, 2.35);
-    shade.rotation.x = Math.PI;
     this.scene.add(shade);
     const bulbMat = new THREE.MeshBasicMaterial({ color: 0xffdca6 });
-    const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.042, 16, 12), bulbMat);
-    bulb.position.set(2.6, 2.05, 2.35);
+    const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.036, 16, 12), bulbMat);
+    bulb.position.set(2.6, 2.1, 2.35);
     this.scene.add(bulb);
     const pendant = new THREE.PointLight(0xffc47e, 7, 5, 1.9);
     pendant.position.set(2.6, 1.92, 2.35);
@@ -1067,12 +1094,11 @@ class StoreSceneImpl implements StoreScene {
       const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.24, 10), frameMat);
       arm.position.set(x, 2.3, -0.9);
       arm.rotation.x = -0.9;
-      const shade = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.1, 18, 1, true), new THREE.MeshStandardMaterial({ color: 0x2a241d, roughness: 0.5, metalness: 0.6, side: THREE.DoubleSide }));
+      const shade = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.08, 0.1, 18, 1, true), new THREE.MeshStandardMaterial({ color: 0x2a241d, roughness: 0.5, metalness: 0.6, side: THREE.DoubleSide }));
       shade.position.set(x, 2.18, -0.83);
-      shade.rotation.x = Math.PI;
       const bulbMat = new THREE.MeshBasicMaterial({ color: 0xffd09a });
-      const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.032, 14, 10), bulbMat);
-      bulb.position.set(x, 2.13, -0.83);
+      const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.026, 14, 10), bulbMat);
+      bulb.position.set(x, 2.165, -0.83);
       const light = new THREE.PointLight(0xffb877, 3.6, 3.2, 2);
       light.position.set(x, 2.05, -0.7);
       this.scene.add(backPlate, arm, shade, bulb, light);
@@ -1451,6 +1477,7 @@ class StoreSceneImpl implements StoreScene {
   }
 
   openCollection(index: number): void {
+    for (const object of this.menuObjects) object.visible = false;
     this.enterLibrary(index);
   }
 
@@ -1462,6 +1489,7 @@ class StoreSceneImpl implements StoreScene {
   }
 
   backToMenu(): void {
+    for (const object of this.menuObjects) object.visible = true;
     this.zoneName = 'menu';
     this.focused = -1;
     this.card.classList.remove('is-open');
@@ -1566,6 +1594,39 @@ class StoreSceneImpl implements StoreScene {
     }
   }
 
+  /** 加载真实封面（带缓存/去重）。失败时保留程序化占位封面。 */
+  private requestCoverTexture(url: string, apply: (texture: THREE.Texture) => void): void {
+    const cached = this.coverCache.get(url);
+    if (cached) {
+      apply(cached);
+      return;
+    }
+    const waiting = this.coverRequests.get(url);
+    if (waiting) {
+      waiting.push(apply);
+      return;
+    }
+    const callbacks: Array<(texture: THREE.Texture) => void> = [apply];
+    this.coverRequests.set(url, callbacks);
+    const image = new Image();
+    image.crossOrigin = 'anonymous';
+    image.decoding = 'async';
+    image.onload = () => {
+      this.coverRequests.delete(url);
+      if (this.disposed) return;
+      const texture = new THREE.Texture(image);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.anisotropy = this.renderer?.capabilities.getMaxAnisotropy() ?? 8;
+      texture.needsUpdate = true;
+      this.coverCache.set(url, texture);
+      for (const callback of callbacks) callback(texture);
+    };
+    image.onerror = () => {
+      this.coverRequests.delete(url);
+    };
+    image.src = url;
+  }
+
   private renderLibrary(): void {
     const collection = this.collections[this.activeCollectionIndex] ?? null;
     const perPage = LIB_COLS * LIB_ROWS;
@@ -1577,7 +1638,8 @@ class StoreSceneImpl implements StoreScene {
       const song = songs[start + slot.index] ?? null;
       slot.song = song;
       const material = slot.cover.material;
-      material.map?.dispose();
+      if (material.map === slot.texture) material.map?.dispose();
+      else material.map = null;
       if (slot.texture) {
         const position = this.textures.indexOf(slot.texture);
         if (position >= 0) this.textures.splice(position, 1);
@@ -1598,6 +1660,15 @@ class StoreSceneImpl implements StoreScene {
       material.map = texture;
       material.color.set(song ? 0xffffff : 0x2a241d);
       material.needsUpdate = true;
+      if (song.coverUrl) {
+        const coverUrl = song.coverUrl;
+        this.requestCoverTexture(coverUrl, (coverTexture) => {
+          if (slot.song !== song) return;
+          slot.cover.material.map = coverTexture;
+          slot.cover.material.color.setHex(0xffffff);
+          slot.cover.material.needsUpdate = true;
+        });
+      }
     }
     if (this.libraryHeader) {
       if (this.libraryHeader.texture) {
@@ -1673,7 +1744,8 @@ class StoreSceneImpl implements StoreScene {
     this.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
     const hit = this.pick();
     if (hit?.kind === 'menu') {
-      this.enterLibrary(hit.index);
+      // 走 openCollection：进入大架时隐藏菜单区，避免镜头穿过分类牌。
+      this.openCollection(hit.index);
     } else if (hit?.kind === 'cover') {
       this.focusIndex(hit.index);
     } else if (this.focused >= 0) {
@@ -1777,8 +1849,19 @@ class StoreSceneImpl implements StoreScene {
     this.focusCamPos.y += 0.02;
     this.focusLook.copy(world);
     this.options.onFocus?.(slot.song);
-    this.cardArt.style.background = `linear-gradient(140deg, ${slot.song?.color ?? '#c9a068'}, #2b2118)`;
-    this.cardArt.textContent = slot.song ? Array.from(slot.song.title)[0] ?? '' : '·';
+    const coverUrl = slot.song?.coverUrl ?? '';
+    if (coverUrl) {
+      // 有真实封面时卡片左侧直接用封面图，没有时退回主色渐变 + 首字。
+      this.cardArt.style.background = 'transparent';
+      this.cardArt.style.backgroundImage = `url("${coverUrl}")`;
+      this.cardArt.style.backgroundSize = 'cover';
+      this.cardArt.style.backgroundPosition = 'center';
+      this.cardArt.textContent = '';
+    } else {
+      this.cardArt.style.backgroundImage = '';
+      this.cardArt.style.background = `linear-gradient(140deg, ${slot.song?.color ?? '#c9a068'}, #2b2118)`;
+      this.cardArt.textContent = slot.song ? Array.from(slot.song.title)[0] ?? '' : '·';
+    }
     this.cardTitle.textContent = slot.song?.title ?? '未载入唱片';
     this.cardArtist.textContent = slot.song ? `${slot.song.artist}` : '——';
     this.cardMeta.textContent = slot.song?.album ? `专辑 · ${slot.song.album}` : 'Zilux2 唱片店 · 原型';
@@ -1930,6 +2013,9 @@ class StoreSceneImpl implements StoreScene {
     document.removeEventListener('visibilitychange', this.handleVisibility);
     this.canvas.removeEventListener('pointerdown', this.handlePointerDown);
     this.canvas.removeEventListener('wheel', this.handleWheel);
+    for (const texture of this.coverCache.values()) texture.dispose();
+    this.coverCache.clear();
+    this.coverRequests.clear();
     for (const item of this.disposables) item.dispose();
     for (const texture of this.textures) texture.dispose();
     this.textures.length = 0;
