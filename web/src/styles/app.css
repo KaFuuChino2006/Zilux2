@@ -6642,6 +6642,23 @@ html.is-pb-expanded .playerbar.is-hidden {
 .space-open-btn {
   white-space: nowrap;
 }
+/* R3：空间内左上角面包屑（菜单 / 歌单名 · 张数 · 页码） */
+.space-overlay-crumb {
+  position: absolute;
+  top: 22px;
+  left: 24px;
+  z-index: 3;
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 226, 180, 0.16);
+  background: rgba(20, 15, 10, 0.5);
+  color: rgba(255, 233, 200, 0.9);
+  font-size: 12.5px;
+  letter-spacing: 0.08em;
+  backdrop-filter: blur(6px);
+  pointer-events: none;
+  user-select: none;
+}
 .space-overlay-close:hover {
   background: rgba(48, 36, 24, 0.72);
   border-color: rgba(255, 226, 180, 0.4);

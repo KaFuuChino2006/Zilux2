@@ -1,13 +1,13 @@
 /**
- * 「唱片店」演示数据（R1 原型用）
+ * 「唱片店」演示数据（R3）
  *
- * 仅用于预览页与设置里的空间预览入口；R3 会替换为真实的
- * 最近播放 / 我喜欢的音乐 / 推荐歌单数据。
+ * 正式接入前用来验证两区结构：后墙 5 个分类 + 右墙大唱片架翻页。
+ * R5 会替换成真实的今日推荐 / 我喜欢的音乐 / 最近播放 / 歌单数据。
  */
 
 import type { StoreSceneCollection } from './storeScene';
 
-const TEMP_TITLES: ReadonlyArray<readonly [string, string, string]> = [
+const BASE_TRACKS: ReadonlyArray<readonly [string, string, string]> = [
   ['夜色落在唱片上', 'Zilux2 试听', '午夜唱片'],
   ['old songs keep turning', 'muque', 'bestie'],
   ['暖光沿着纹路慢慢走', '演示歌手', '黑胶练习曲'],
@@ -22,18 +22,39 @@ const TEMP_TITLES: ReadonlyArray<readonly [string, string, string]> = [
   ['Midnight Pretenders', 'Tomoko Aran', 'Fuyu-Kukan'],
 ];
 
+const VARIANT_LABELS = ['', ' · Live', ' · Acoustic', ' · Demo'];
+
+const MENU: ReadonlyArray<{ id: string; title: string; subtitle: string; accent: string }> = [
+  { id: 'daily', title: '今日推荐', subtitle: '每天 6:00 更新', accent: '#c9a068' },
+  { id: 'liked', title: '我喜欢的音乐', subtitle: '收藏的唱片', accent: '#8fb3a6' },
+  { id: 'recent', title: '最近播放', subtitle: '最近在听的', accent: '#9a7fb0' },
+  { id: 'playlists', title: '我的歌单', subtitle: '全部歌单', accent: '#7f9bb5' },
+  { id: 'radar', title: '私人雷达', subtitle: '为你推荐', accent: '#b58b7a' },
+];
+
+const SONG_COUNT_PER_COLLECTION = 30;
+
+function songsFor(collectionIndex: number): StoreSceneCollection['songs'] {
+  const songs: StoreSceneCollection['songs'] = [];
+  for (let i = 0; i < SONG_COUNT_PER_COLLECTION; i += 1) {
+    const [title, artist, album] = BASE_TRACKS[i % BASE_TRACKS.length];
+    const round = Math.floor(i / BASE_TRACKS.length) % VARIANT_LABELS.length;
+    songs.push({
+      trackKey: `mock-${collectionIndex}-${i}`,
+      title: `${title}${VARIANT_LABELS[round]}`,
+      artist,
+      album,
+      color: ['#8a5a34', '#7a4a34', '#5a6a4a', '#45586a', '#6a4a5e', '#8a6a3a'][(i + collectionIndex) % 6],
+    });
+  }
+  return songs;
+}
+
 export function mockCollections(): StoreSceneCollection[] {
-  return [
-    {
-      id: 'recent',
-      title: '最近播放',
-      subtitle: 'R1 占位数据',
-      songs: TEMP_TITLES.map(([title, artist, album], index) => ({
-        trackKey: `mock-${index}`,
-        title,
-        artist,
-        album,
-      })),
-    },
-  ];
+  return MENU.map((menu, index) => ({
+    id: menu.id,
+    title: menu.title,
+    subtitle: menu.subtitle,
+    songs: songsFor(index),
+  }));
 }

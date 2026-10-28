@@ -1,10 +1,12 @@
 /**
- * Zilux2 · 「唱片店」独立预览页（R1 原型）
+ * Zilux2 · 「唱片店」独立预览页（R3 两区版）
  *
  * 只用于验证 3D 场景与相机手感，不接入主界面：
  * - ?quality=high|medium|low  画质档（默认 high）
  * - ?debug=1                  左上角调试角标（fps / draw call / dpr）
- * - ?focus=索引               打开后直接聚焦某张唱片（调试用）
+ * - ?collection=索引          打开后直接进入该分类的大唱片架（调试用）
+ * - ?page=页码                大唱片架翻到第 N 页（0 起）
+ * - ?focus=索引               打开后直接聚焦大架上某张唱片（调试用）
  *
  * window.__storePreview 暴露 DOM 无关的调试接口，方便 CDP 脚本操作。
  */
@@ -18,6 +20,7 @@ const debugBadge = document.getElementById('debug-badge');
 const showDebug = params.get('debug') === '1';
 const quality = params.get('quality');
 const focusParam = params.get('focus');
+const collectionParam = params.get('collection');
 
 if (debugBadge) debugBadge.style.display = showDebug ? 'block' : 'none';
 
@@ -49,7 +52,7 @@ const scene: StoreScene = createStoreScene(stage, {
     if (showDebug && debugBadge) debugBadge.dataset.focus = song ? song.title : '';
   },
   onPlay: (song) => {
-    toast(`原型：将播放《${song.title}》· R3 接入真实播放器`);
+    toast(`原型：将播放《${song.title}》· R5 接入真实播放器`);
   },
   onFallback: () => {
     toast('当前环境不支持 WebGL2，已回退为扁平货架');
@@ -72,18 +75,26 @@ const camTy = num('ty');
 if (camYaw !== undefined || camPitch !== undefined || camDist !== undefined || camTy !== undefined) {
   scene.setCamera({ yaw: camYaw, pitch: camPitch, distance: camDist, targetY: camTy });
 }
-scene.setActiveTrack('mock-1');
+
+const collectionIndex = collectionParam === null ? Number.NaN : Number(collectionParam);
+if (Number.isFinite(collectionIndex)) {
+  requestAnimationFrame(() => {
+    scene.openCollection(Math.max(0, Math.trunc(collectionIndex)));
+    const pageParam = Number(params.get('page'));
+    if (Number.isFinite(pageParam) && pageParam > 0) scene.setPage(Math.trunc(pageParam));
+  });
+}
 
 const initialFocus = focusParam === null ? Number.NaN : Number(focusParam);
 if (Number.isFinite(initialFocus)) {
-  requestAnimationFrame(() => scene.focusIndex(Math.max(0, Math.min(11, Math.trunc(initialFocus)))));
+  requestAnimationFrame(() => scene.focusIndex(Math.max(0, Math.min(23, Math.trunc(initialFocus)))));
 }
 
 if (showDebug && debugBadge) {
   const tick = (): void => {
     const stats = scene.stats();
     debugBadge.textContent =
-      `R1 Store Preview  ${stats.fps} fps  draws=${stats.drawCalls}  tris=${stats.triangles}\n` +
+      `R3 Store Preview  ${stats.fps} fps  draws=${stats.drawCalls}  tris=${stats.triangles}  zone=${scene.zone}\n` +
       `dpr=${stats.dpr}  canvas=${stats.width}x${stats.height}`;
     requestAnimationFrame(tick);
   };
@@ -97,6 +108,9 @@ declare global {
       setCollections: (collections: StoreSceneCollection[]) => void;
       focus: (index: number) => void;
       reset: () => void;
+      zone: () => string;
+      openCollection: (index: number) => void;
+      backToMenu: () => void;
       stats: () => ReturnType<StoreScene['stats']>;
     };
   }
@@ -107,5 +121,8 @@ window.__storePreview = {
   setCollections: (collections) => scene.setCollections(collections),
   focus: (index) => scene.focusIndex(index),
   reset: () => scene.resetView(),
+  zone: () => scene.zone,
+  openCollection: (index) => scene.openCollection(index),
+  backToMenu: () => scene.backToMenu(),
   stats: () => scene.stats(),
 };
