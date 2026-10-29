@@ -114,7 +114,7 @@ import { buildEqPresetManager } from './eqPresets';
 import { buildSearchHistoryPanel, recordSearch, type SearchHistoryPanelHandle } from './searchHistory';
 import { buildSettingsIOActions } from './settingsIO';
 import { buildSleepTimerPanel, completeSleepTimer, getSleepTimerState } from './sleepTimer';
-import { currentLyricSource, lyricGrowMode, lyricMatchMinScore, lyricOffsetOf, LYRIC_UNSUNG_PRESETS, lyricsBackgroundMode, lyricsLumiereMode, lyricUnsungColor, LyricsView, primeLyrics, setLyricGrowMode, setLyricsBackgroundMode, setLyricsLumiereMode, setLyricMatchMinScore, setLyricOffset, setLyricUnsungColor, updateCurrentLyricLine, lyricMatchText } from './lyrics';
+import { currentLyricSnapshot, currentLyricSource, lyricGrowMode, lyricMatchMinScore, lyricOffsetOf, LYRIC_UNSUNG_PRESETS, lyricsBackgroundMode, lyricsLumiereMode, lyricUnsungColor, LyricsView, primeLyrics, setLyricGrowMode, setLyricsBackgroundMode, setLyricsLumiereMode, setLyricMatchMinScore, setLyricOffset, setLyricUnsungColor, updateCurrentLyricLine, lyricMatchText } from './lyrics';
 import { LUMIERE_MODES } from './lumiere';
 import { LYRIC_STYLES, lyricStyle, setLyricStyle } from './lyricStyle';
 import {
@@ -811,6 +811,7 @@ export class App {
       settings: () => this.openSettingsSheet(),
       account: () => this.openAccountPanel(),
       lyrics: () => this.openLyrics(),
+      lyric: () => currentLyricSnapshot(),
     });
     this.mgHome = view;
     this.homeHost.append(view.root);

@@ -29,6 +29,15 @@ export interface MgPlaneCallbacks {
   account(): void;
   /** 打开歌词浮层（原播放条歌词入口）。 */
   lyrics(): void;
+  /** 当前歌词窗口（供播放台展示；无歌词时为空串）。 */
+  lyric(): { prev: string; now: string; next: string };
+}
+
+/** 歌单区的一组歌单（世界里的「歌单 / 收藏」分册，可切换）。 */
+export interface MgPlaylistGroup {
+  id: string;
+  label: string;
+  items: LibraryPlaylist[];
 }
 
 /** 画布渲染所需的全部数据（首页每次刷新时整体传入，模块内部做增量）。 */
@@ -42,6 +51,8 @@ export interface MgPlaneData {
   radarAvailable: boolean;
   radar: OnlineTrack[];
   playlists: LibraryPlaylist[];
+  /** 歌单区分册：热门歌单 / 网易云歌单 / 我的收藏，可切换。 */
+  playlistGroups: MgPlaylistGroup[];
 }
 
 /** 空数据（未登录、宿主未就绪时先用它渲染骨架）。 */
@@ -55,6 +66,7 @@ export const MG_EMPTY_DATA: MgPlaneData = {
   radarAvailable: false,
   radar: [],
   playlists: [],
+  playlistGroups: [],
 };
 
 /** 有限世界尺寸（世界单位；缩放 z=1 时 1 单位 = 1 CSS 像素）。 */
@@ -137,6 +149,25 @@ export function fromHomeData(data: HomeData): MgPlaneData {
     }
   }
   const likedCount = data.collections.reduce((sum, item) => sum + Math.max(0, item.count), 0);
+  const playlistGroups: MgPlaylistGroup[] = [];
+  if (data.playlists.length > 0) {
+    playlistGroups.push({ id: 'hot', label: '热门歌单', items: data.playlists });
+  }
+  if (data.neteasePlaylists.length > 0) {
+    playlistGroups.push({ id: 'netease', label: '网易云歌单', items: data.neteasePlaylists });
+  }
+  const likedGroups = data.collections
+    .filter((item) => item.loggedIn && item.count > 0)
+    .map((item) => ({
+      source: item.source as LibraryPlaylist['source'],
+      id: 'liked',
+      title: item.label,
+      count: item.count,
+      special: 'liked' as const,
+    }));
+  if (likedGroups.length > 0) {
+    playlistGroups.push({ id: 'liked', label: '我的收藏', items: likedGroups });
+  }
   return {
     loggedIn: data.loggedIn,
     localCount: data.localCount,
@@ -147,5 +178,6 @@ export function fromHomeData(data: HomeData): MgPlaneData {
     radarAvailable: data.radarAvailable,
     radar: data.radar,
     playlists: data.playlists,
+    playlistGroups,
   };
 }
