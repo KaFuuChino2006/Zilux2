@@ -138,7 +138,8 @@ import {
   type PlayerState,
 } from './player';
 import { host, hostAvailable, getShortcutsState, onMiniMode, onShortcutsState, type UpdateSnapshot } from '../core/bridge';
-import { HomeView } from './home';
+import { MgPlaneView } from './mgplane/mgplane';
+import { fromHomeData } from './mgplane/model';
 import { DiscoverView } from './discover';
 import { openSongInfo, setSongInfoView, songInfoView } from './songInfo';
 import { createUpNextToast, type UpNextToastHandle } from './upNextToast';
@@ -241,7 +242,7 @@ export class App {
 
   private stage: HTMLDivElement;
   private homeHost!: HTMLDivElement;
-  private home!: HomeView;
+  private home!: MgPlaneView;
   private homeData: HomeData | null = null;
   private feedRailKey: string | null = null;
   private wallHost: HTMLDivElement;
@@ -749,18 +750,22 @@ export class App {
     rail.append(settingsBtn);
 
     this.homeHost = h('div', { class: 'home-host' });
-    this.home = new HomeView({
-      onLogin: () => this.openLogin(),
-      onLiked: (source) => void this.showLiked(source),
-      onPlayLiked: (source) => void this.playLikedAll(source),
-      onRecent: () => void this.showRecentWall(),
-      onRecommend: () => void this.openRecommendSheet(),
-      onDaily: () => void this.showDailyWall(),
-      onDaily30: () => void this.showDailyWall(true),
-      onRadar: () => void this.showRadarWall(),
-      onSearch: () => this.focusSearch(),
-      onPlay: (tracks, index, scope) => this.playFromHome(tracks, index, scope),
-      onPlaylist: (item) => void this.showPlaylist(item),
+    this.home = new MgPlaneView({
+      play: (tracks, index, scope) => {
+        // 歌单环与本地曲库直接开播；daily/recent/liked/radar 交给首页逻辑异步补全整队列。
+        if (scope === 'playlist' || scope === 'local') playQueue(tracks, index, true);
+        else this.playFromHome(tracks, index, scope);
+      },
+      openList: (kind) => {
+        if (kind === 'liked') void this.showLiked();
+        else if (kind === 'recent') void this.showRecentWall();
+        else if (kind === 'daily') void this.showDailyWall();
+        else if (kind === 'radar') void this.showRadarWall();
+        else this.showLocal();
+      },
+      search: () => this.focusSearch(),
+      login: () => this.openLogin(),
+      openPlaylist: (item) => void this.showPlaylist(item),
     });
     this.homeHost.append(this.home.root);
     const main = h('div', { class: 'main' }, rail, this.stage);
@@ -969,7 +974,7 @@ export class App {
       neteasePlaylists: neteasePlaylists.slice(0, 14),
     };
     this.homeData = data;
-    this.home.update(data);
+    this.home.update(fromHomeData(data));
   }
 
   /** 首页「最近播放」即时更新：刚播的歌放到最前（回到首页时再以宿主记录为准）。 */
@@ -980,7 +985,7 @@ export class App {
     const recent = [track, ...data.recent.filter((item) => `${item.source}:${item.id}` !== key)].slice(0, 160);
     const next: HomeData = { ...data, recent };
     this.homeData = next;
-    if (!this.homeHost.classList.contains('is-hidden')) this.home.update(next);
+    if (!this.homeHost.classList.contains('is-hidden')) this.home.update(fromHomeData(next));
   }
 
   /** 把多个平台的今日推荐按轮次交错合并（同一平台不会连续刷屏）。 */
@@ -1545,26 +1550,6 @@ export class App {
       tracks,
     };
     this.renderWall(true);
-  }
-
-  /** 用一个平台拉「我喜欢的音乐」（带缓存）。返回 null 表示该平台不可用。 */
-  private async playLikedAll(preferred?: OnlineSource): Promise<void> {
-    const modes = preferred
-      ? (sourceSupportsLikedWrite(preferred) ? [preferred] : [])
-      : this.likedMode === 'all'
-        ? sourceIds().filter((id) => sourceSupportsLikedWrite(id))
-        : [this.likedMode];
-    let tracks: OnlineTrack[] = [];
-    for (const source of modes) {
-      const list = await this.fetchLikedTracks(source);
-      if (list && list.length > 0) tracks = tracks.concat(list);
-    }
-    if (tracks.length === 0) tracks = this.homeData?.collections.flatMap((item) => item.tracks).slice(0, 30) ?? [];
-    if (tracks.length === 0) {
-      toast('收藏列表还没有歌曲', 'error');
-      return;
-    }
-    playQueue(tracks, 0);
   }
 
   /** rail 双击快捷播放：先进入对应列表页，再从第一首开始整列表播放（单击仍然只进页面）。 */
@@ -6686,6 +6671,7 @@ export class App {
     this.closeLyrics();
     this.sheet?.close();
     this.closeLogin();
+    this.home?.dispose();
     this.root.remove();
   }
 
