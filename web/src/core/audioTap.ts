@@ -85,6 +85,11 @@ let deckMix: GainNode | null = null;
 /** 已接进图的 deck 源节点缓存（同一元素只能建一次 MediaElementAudioSourceNode）。 */
 interface DeckGraphNodes {
   source: MediaElementAudioSourceNode;
+  /** 「交融」风格的低通/高通互补扫频：A 逐渐闷掉、B 逐渐变亮，两首频谱错开后叠在一起也不糊。 */
+  lowpass: BiquadFilterNode;
+  highpass: BiquadFilterNode;
+  /** 「交融」风格的低频架（120 Hz）：在 75% 处做低频交接（A 的底鼓退出、B 的底鼓接管）。 */
+  bass: BiquadFilterNode;
   /** 人声/伴奏分离用的低架/高架滤波 + 1.8 kHz 临场感峰：过渡时压低伴奏、抬高人中频。 */
   low: BiquadFilterNode;
   high: BiquadFilterNode;
@@ -92,6 +97,12 @@ interface DeckGraphNodes {
   presence: BiquadFilterNode;
   gain: GainNode;
 }
+
+/** 滤波器频率下限/上限（Hz）：exponentialRamp 不接受 0，20 Hz 以下对听感也没有意义。 */
+const FILTER_FREQ_MIN = 20;
+const FILTER_FREQ_MAX = 20000;
+/** 「低频交接」用的低架滤波中心频率（Hz）。 */
+const BASS_SHELF_FREQ = 120;
 const deckNodes = new Map<HTMLAudioElement, DeckGraphNodes>();
 let workletNode: AudioWorkletNode | null = null;
 let processor: ScriptProcessorNode | null = null;
@@ -139,14 +150,37 @@ export function audioTapGraphActive(): boolean {
 }
 
 /**
- * 单个 deck 的图内链路：源 → 低架（伴奏）→ 高架（伴奏）→ deck gain。
- * 搁架滤波平时 0dB（直通），只在交叉淡化期间用来做人声/伴奏分离。
+ * 单个 deck 的图内链路：源 → 低通 → 高通 → 低频架 → 低架（伴奏）→ 高架（伴奏）→ 临场感 → deck gain。
+ * 低通/高通/低频架平时直通（20 kHz / 20 Hz / 0 dB），只在「交融」风格过渡期间做互补扫频与低频交接；
+ * 搁架滤波平时 0 dB（直通），只在交叉淡化期间用来做人声/伴奏分离。
  */
 function buildDeckChain(
   ctx: AudioContext,
   source: AudioNode,
-): { chain: { low: BiquadFilterNode; high: BiquadFilterNode; presence: BiquadFilterNode; gain: GainNode } } | null {
+): {
+  chain: {
+    lowpass: BiquadFilterNode;
+    highpass: BiquadFilterNode;
+    bass: BiquadFilterNode;
+    low: BiquadFilterNode;
+    high: BiquadFilterNode;
+    presence: BiquadFilterNode;
+    gain: GainNode;
+  };
+} | null {
   try {
+    const lowpass = ctx.createBiquadFilter();
+    lowpass.type = 'lowpass';
+    lowpass.frequency.value = FILTER_FREQ_MAX;
+    lowpass.Q.value = 0.7071;
+    const highpass = ctx.createBiquadFilter();
+    highpass.type = 'highpass';
+    highpass.frequency.value = FILTER_FREQ_MIN;
+    highpass.Q.value = 0.7071;
+    const bass = ctx.createBiquadFilter();
+    bass.type = 'lowshelf';
+    bass.frequency.value = BASS_SHELF_FREQ;
+    bass.gain.value = 0;
     const low = ctx.createBiquadFilter();
     low.type = 'lowshelf';
     low.frequency.value = 180;
@@ -162,11 +196,14 @@ function buildDeckChain(
     presence.gain.value = 0;
     const gain = ctx.createGain();
     gain.gain.value = 1;
-    source.connect(low);
+    source.connect(lowpass);
+    lowpass.connect(highpass);
+    highpass.connect(bass);
+    bass.connect(low);
     low.connect(high);
     high.connect(presence);
     presence.connect(gain);
-    return { chain: { low, high, presence, gain } };
+    return { chain: { lowpass, highpass, bass, low, high, presence, gain } };
   } catch (err) {
     console.warn('[audioTap] buildDeckChain failed', err);
     return null;
@@ -258,15 +295,134 @@ export function setDeckGraphGain(element: HTMLAudioElement, value: number): void
   }
 }
 
+/**
+ * 冻结某个 AudioParam 上已经排好的自动化：停在当前值、丢掉后面的事件。
+ * cancelAndHoldAtTime 能把正在进行的斜坡停在当前位置；老内核没有它时退回 cancelScheduledValues。
+ */
+function freezeParam(param: AudioParam, now: number): void {
+  try {
+    const holder = param as AudioParam & { cancelAndHoldAtTime?: (when: number) => AudioParam };
+    if (typeof holder.cancelAndHoldAtTime === 'function') holder.cancelAndHoldAtTime(now);
+    else param.cancelScheduledValues(now);
+  } catch {
+    /* 忽略：个别内核在时间点早于当前时刻时会抛错 */
+  }
+}
+
+/** 当前音频时钟（秒）；图没建立时返回 null（此时只能走元素音量路径）。 */
+export function audioTapClock(): number | null {
+  if (!context) return null;
+  return Number.isFinite(context.currentTime) ? context.currentTime : null;
+}
+
+/** 「交融」风格的滤波/低频控制点：atMs 是相对淡化起点的毫秒数。 */
+export interface DeckBandPoint {
+  atMs: number;
+  /** 低通截止频率（Hz）：20000 = 直通，越低越闷 */
+  lowpassHz?: number;
+  /** 高通截止频率（Hz）：20 = 直通，越高越只剩高频 */
+  highpassHz?: number;
+  /** 低频架（120 Hz）增益（dB）：0 = 直通，负值 = 抽掉底鼓 */
+  bassDb?: number;
+}
+
+/**
+ * 把一组滤波/低频控制点一次性排到 deck 的 AudioParam 时间线：
+ * 频率用 exponentialRamp（等比扫频，听感均匀），低频梯度用 linearRamp。
+ * originSec 是「atMs = 0」对应的音频时钟秒数（调用方用 audioTapClock() 取）。
+ */
+export function scheduleDeckBands(
+  element: HTMLAudioElement,
+  originSec: number,
+  points: readonly DeckBandPoint[],
+): void {
+  const node = deckNodes.get(element);
+  if (!node || !Number.isFinite(originSec)) return;
+  const sorted = points.filter((point) => Number.isFinite(point.atMs)).slice().sort((a, b) => a.atMs - b.atMs);
+  if (sorted.length === 0) return;
+  const timeOf = (ms: number): number => originSec + Math.max(0, ms) / 1000;
+  const freq = (hz: number): number => Math.max(FILTER_FREQ_MIN, Math.min(FILTER_FREQ_MAX, hz));
+  try {
+    for (const point of sorted) {
+      const time = timeOf(point.atMs);
+      if (point.lowpassHz !== undefined && Number.isFinite(point.lowpassHz)) {
+        node.lowpass.frequency.exponentialRampToValueAtTime(freq(point.lowpassHz), time);
+      }
+      if (point.highpassHz !== undefined && Number.isFinite(point.highpassHz)) {
+        node.highpass.frequency.exponentialRampToValueAtTime(freq(point.highpassHz), time);
+      }
+      if (point.bassDb !== undefined && Number.isFinite(point.bassDb)) {
+        node.bass.gain.linearRampToValueAtTime(Math.max(-40, Math.min(12, point.bassDb)), time);
+      }
+    }
+  } catch (err) {
+    console.warn('[audioTap] scheduleDeckBands failed', err);
+  }
+}
+
+/** deck gain 控制点：atMs 是相对淡化起点的毫秒数，gain 是线性幅度（0–1）。 */
+export interface DeckGainPoint {
+  atMs: number;
+  gain: number;
+}
+
+/** 把一组增益控制点排到 deck gain 的时间线（线性插值；调用方先给一个起点值）。 */
+export function scheduleDeckGain(
+  element: HTMLAudioElement,
+  originSec: number,
+  points: readonly DeckGainPoint[],
+): void {
+  const node = deckNodes.get(element);
+  if (!node || !Number.isFinite(originSec)) return;
+  const sorted = points.filter((point) => Number.isFinite(point.atMs)).slice().sort((a, b) => a.atMs - b.atMs);
+  const first = sorted[0];
+  if (!first) return;
+  const timeOf = (ms: number): number => originSec + Math.max(0, ms) / 1000;
+  const amp = (value: number): number => (Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0);
+  try {
+    node.gain.gain.setValueAtTime(amp(first.gain), timeOf(first.atMs));
+    for (let index = 1; index < sorted.length; index += 1) {
+      const point = sorted[index]!;
+      node.gain.gain.linearRampToValueAtTime(amp(point.gain), timeOf(point.atMs));
+    }
+  } catch (err) {
+    console.warn('[audioTap] scheduleDeckGain failed', err);
+  }
+}
+
+/**
+ * 撤掉 deck 上所有已排的自动化（增益 / 低通 / 高通 / 低频架），并把滤波与倾斜复位成直通。
+ * 取消、收尾、硬切都走这里，避免停在同一首曲子的中途时还带着上一段过渡的扫频。
+ */
+export function releaseDeckFx(element: HTMLAudioElement, gain?: number): void {
+  const node = deckNodes.get(element);
+  if (!node) return;
+  const now = context?.currentTime ?? 0;
+  const amp = (value: number): number => (Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0);
+  try {
+    freezeParam(node.gain.gain, now);
+    if (gain !== undefined) node.gain.gain.setValueAtTime(amp(gain), now);
+    freezeParam(node.lowpass.frequency, now);
+    node.lowpass.frequency.setValueAtTime(FILTER_FREQ_MAX, now);
+    freezeParam(node.highpass.frequency, now);
+    node.highpass.frequency.setValueAtTime(FILTER_FREQ_MIN, now);
+    freezeParam(node.bass.gain, now);
+    node.bass.gain.setValueAtTime(0, now);
+    node.low.gain.value = 0;
+    node.high.gain.value = 0;
+    node.presence.gain.value = 0;
+  } catch (err) {
+    console.warn('[audioTap] releaseDeckFx failed', err);
+  }
+}
+
 /** 把 deck 从混音入口上摘下来（元素本身保留源节点，下次重新 attach 复用）。 */
 export function detachDeckFromGraph(element: HTMLAudioElement): void {
   const node = deckNodes.get(element);
   if (!node) return;
   try {
-    // 摘下来时把「人声/伴奏分离」的搁架滤波复位，避免下一首歌继承过渡期的倾斜。
-    node.low.gain.value = 0;
-    node.high.gain.value = 0;
-    node.presence.gain.value = 0;
+    // 摘下来时把「交融」的扫频与「人声/伴奏分离」的搁架滤波一起复位，避免下一首继承过渡期的滤镜。
+    releaseDeckFx(element);
     node.gain.disconnect();
   } catch {
     /* 忽略 */

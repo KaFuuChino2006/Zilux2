@@ -25,16 +25,28 @@
  *   B 的人声不做硬切：起音用 smoothstep 在约 2–6 秒内缓慢浮现（淡化越长越慢）；前几秒再用「人声聚焦」EQ
  *   （低频 -15 dB / 高频 -11 dB / 1.8 kHz +4.5 dB）压住伴奏、突出中频人声，随后慢慢打开；
  *   A 的尾奏在约 2 秒内让位到 45% 再随淡化收干。首句/末句都由 lyricRange.ts 过滤掉制作人员行。
+ * - 过渡风格（2026-10-29）：默认「交融」，仿 QQ 音乐的「智能混音 · 进阶交融」——两首不做等功率
+ *   直接相加，而是用互补的低通/高通把两首的频谱错开，并在 75% 处做低频交接：
+ *   A 的低通从 20 kHz 扫到 2.3 kHz、音量先保持再一路收到 −25 dB，75% 时低频架再抽掉 15 dB；
+ *   B 的高通从 10 kHz 扫到 20 Hz、音量从 −30 dB 抬到 0 dB，75% 时低频架从 −15 dB 回正。
+ *   全部曲线在淡化开始时一次性排到 AudioParam 时间线（音频线程驱动，不受 rAF 掉帧影响）；
+ *   「等功率」保留原来的 cos/sin 曲线（图内路径仍带人声/伴奏倾斜），可作为回退档位。
  */
 
 import {
   attachDeckToGraph,
+  audioTapClock,
   audioTapGraphActive,
   detachDeckFromGraph,
+  ensureEqualizerGraph,
+  releaseDeckFx,
+  scheduleDeckBands,
+  scheduleDeckGain,
   setAudioTapVolume,
   setDeckGraphGain,
   setDeckGraphTilt,
   setDeckGraphVocalFocus,
+  type DeckBandPoint,
 } from '../core/audioTap';
 import type { AnalysisResult, BeatAnalysis } from '../online/analysis';
 import type { OnlineTrack } from '../online/types';
@@ -46,10 +58,15 @@ import { h, toast, type Disposers } from './dom';
 
 export type CrossfadeLength = 'auto' | number;
 
+/** 过渡风格：am = 交融（互补滤波 + 低频交接，仿 QQ 音乐「进阶交融」）；equal = 等功率（旧曲线）。 */
+export type CrossfadeStyle = 'am' | 'equal';
+
 export interface CrossfadeSettings {
   enabled: boolean;
   /** auto = 按两首歌的拍点/小节与前后奏空间自适应（不固定 5–10 秒）；3–30 的整数 = 固定秒数 */
   length: CrossfadeLength;
+  /** 交融 = 低通/高通互补扫频 + 75% 低频交接；等功率 = cos/sin 交叉淡化 */
+  style: CrossfadeStyle;
   /**
    * 歌词衔接（仅过渡时长为 auto 时生效）：上一首最后一句歌词唱完的瞬间接下一首第一句，
    * 人声缓慢浮现（约 2–6 秒，随淡化长度）、伴奏先被 EQ 压住再慢慢打开；过渡时长按两首协调后的
@@ -66,8 +83,9 @@ export const CROSSFADE_LENGTH_CHOICES: number[] = [3, 5, 8, 10, 15, 20, 30];
 const LENGTH_MIN_SEC = 3;
 const LENGTH_MAX_SEC = 30;
 
-const DEFAULT_SETTINGS: CrossfadeSettings = { enabled: true, length: 'auto', handoff: true };
+const DEFAULT_SETTINGS: CrossfadeSettings = { enabled: true, length: 'auto', style: 'am', handoff: true };
 const LENGTH_VALUES: CrossfadeLength[] = [...CROSSFADE_LENGTH_CHOICES, 'auto'];
+const STYLE_VALUES: CrossfadeStyle[] = ['am', 'equal'];
 
 /**
  * auto 过渡时长（自由变换，不再固定「当前歌曲 4 小节 + 5–10 秒」）：
@@ -128,7 +146,7 @@ function normalizeLength(value: unknown): CrossfadeLength {
   return DEFAULT_SETTINGS.length;
 }
 
-/** 读取无缝衔接设置；坏值 / 无值一律回退默认（开启 + auto）。 */
+/** 读取无缝衔接设置；坏值 / 无值一律回退默认（开启 + auto + 交融）。 */
 export function readCrossfadeSettings(): CrossfadeSettings {
   try {
     const raw = localStorage.getItem(CROSSFADE_STORAGE_KEY);
@@ -139,6 +157,7 @@ export function readCrossfadeSettings(): CrossfadeSettings {
     return {
       enabled: typeof record.enabled === 'boolean' ? record.enabled : DEFAULT_SETTINGS.enabled,
       length: normalizeLength(record.length),
+      style: record.style === 'equal' || record.style === 'am' ? record.style : DEFAULT_SETTINGS.style,
       handoff: typeof record.handoff === 'boolean' ? record.handoff : DEFAULT_SETTINGS.handoff,
     };
   } catch {
@@ -155,6 +174,8 @@ export function writeCrossfadeSettings(patch: Partial<CrossfadeSettings>): Cross
   const next: CrossfadeSettings = {
     enabled: typeof patch.enabled === 'boolean' ? patch.enabled : current.enabled,
     length: patch.length === undefined ? current.length : normalizeLength(patch.length),
+    style:
+      patch.style === undefined ? current.style : patch.style === 'equal' || patch.style === 'am' ? patch.style : current.style,
     handoff: typeof patch.handoff === 'boolean' ? patch.handoff : current.handoff,
   };
   try {
@@ -164,6 +185,7 @@ export function writeCrossfadeSettings(patch: Partial<CrossfadeSettings>): Cross
   }
   debug.enabled = next.enabled;
   debug.length = next.length;
+  debug.style = next.style;
   debug.handoff = next.handoff;
   window.dispatchEvent(new CustomEvent<CrossfadeSettings>('zilux:crossfade', { detail: next }));
   return next;
@@ -185,6 +207,10 @@ export interface CrossfadeDebugEvent {
 export interface CrossfadeDebugState {
   enabled: boolean;
   length: CrossfadeLength;
+  /** 设置：过渡风格（am = 交融的互补滤波 + 低频交接；equal = 等功率） */
+  style: CrossfadeStyle;
+  /** 本次过渡是否真的按「交融」曲线走（需要 Web Audio 图 + auto 档 + 非歌词衔接） */
+  amActive: boolean;
   /** 设置：歌词衔接（A 末句唱完接 B 首句）是否开启 */
   handoff: boolean;
   phase: CrossfadePhase;
@@ -245,6 +271,8 @@ export interface CrossfadeDebugState {
 const debug: CrossfadeDebugState = {
   enabled: DEFAULT_SETTINGS.enabled,
   length: DEFAULT_SETTINGS.length,
+  style: DEFAULT_SETTINGS.style,
+  amActive: false,
   handoff: DEFAULT_SETTINGS.handoff,
   phase: 'idle',
   reason: '',
@@ -290,6 +318,7 @@ exposeDebug();
 const initialSettings = readCrossfadeSettings();
 debug.enabled = initialSettings.enabled;
 debug.length = initialSettings.length;
+debug.style = initialSettings.style;
 debug.handoff = initialSettings.handoff;
 
 /**
@@ -423,6 +452,11 @@ interface ActivePlan {
   tempoRate: number;
   /** 本次是否走「歌词衔接」（A 末句唱完接 B 首句；手动/loop 恒 false） */
   handoff: boolean;
+  /**
+   * 本次是否走「交融」曲线（互补滤波 + 低频交接 + AudioParam 时间线）。
+   * 只有 auto 档、图已建立、且没走歌词衔接时才为 true；否则退回等功率曲线。
+   */
+  am: boolean;
   /** A 的「最后一句歌词唱完」位置（曲内毫秒）；0 = 未启用 */
   lastVocalEndPosMs: number;
   /** 本次歌词衔接先保留尾奏的后移量（毫秒）：0 = 末句唱完立刻开始交接 */
@@ -569,6 +603,167 @@ function applyEqualPowerGains(plan: ActivePlan, progress: number): void {
   setDeckVolume(plan.options.standby, plan.baseVolume * inGain);
 }
 
+/* ------------------------------------------------------------------ */
+/* 「交融」风格：仿 QQ 音乐「智能混音 · 进阶交融」的互补滤波 + 低频交接   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 交融曲线的一个控制点：p = 淡化进度（0..1）。
+ * db = 音量（dB），lpf/hpf = 低通/高通截止频率（Hz），bass = 120 Hz 低频架增益（dB）。
+ */
+interface AmPoint {
+  p: number;
+  db?: number;
+  lpf?: number;
+  hpf?: number;
+  bass?: number;
+}
+
+/**
+ * A 曲（正在播的那首）：
+ * - 低通从 20 kHz 一路扫到 2.3 kHz（10% 10k → 15% 6.5k → 25% 6k → 35% 4.8k → 40% 3k → 55% 2.3k），
+ *   把高频让给 B，自己只剩中频，两首叠在一起也不糊；
+ * - 音量 40% 前基本不动（给足重叠空间），之后按 dB 线性收到 −25 dB；
+ * - 75% 处低频架阶跃 −15 dB，底鼓让给 B（对应 QQ 曲线里标出的「75% 低频切换」）。
+ */
+const AM_A_POINTS: readonly AmPoint[] = [
+  { p: 0, db: 0, lpf: 20000, bass: 0 },
+  { p: 0.1, db: 0, lpf: 10000 },
+  { p: 0.15, db: 0, lpf: 6500 },
+  { p: 0.25, db: 0, lpf: 6000 },
+  { p: 0.35, db: 0, lpf: 4800 },
+  { p: 0.4, db: 0, lpf: 3000 },
+  { p: 0.55, db: -8, lpf: 2300 },
+  { p: 1, db: -25 },
+];
+
+/**
+ * B 曲（下一首）：
+ * - 前 25% 是 −30 dB + 10 kHz 高通（相当于从「隔壁房间」里透进来，不会一上来就抢）；
+ * - 40% 高通 3 kHz → 45% 1 kHz + 音量 −10 dB → 55% 300 Hz / −5 dB → 90% 回到 0 dB；
+ * - 75% 处低频架从 −15 dB 回正，把底鼓接过来；100% 高通落到 20 Hz（全频恢复）。
+ */
+const AM_B_POINTS: readonly AmPoint[] = [
+  { p: 0, db: -30, hpf: 10000, bass: -15 },
+  { p: 0.25, db: -30, hpf: 10000 },
+  { p: 0.4, hpf: 3000 },
+  { p: 0.45, db: -10, hpf: 1000 },
+  { p: 0.55, db: -5, hpf: 300 },
+  { p: 0.9, db: 0 },
+  { p: 1, db: 0, hpf: 20 },
+];
+
+/** 低频交接的进度点（QQ 曲线里的 75%）：A 的低频架掉下去、B 的低频架回正。 */
+const AM_BASS_HANDOFF_P = 0.75;
+/** 曲线采样步长（进度）：8 秒过渡里约 40 ms 一个点，足够密，也远低于 AudioParam 事件上限。 */
+const AM_SAMPLE_STEP = 0.005;
+/** 收尾把 A 从 −25 dB 再压到 −60 dB 的进度窗口：避免 fade 结束时硬切到 0 的爆音。 */
+const AM_A_TAIL_P = 0.96;
+const AM_A_TAIL_DB = -60;
+
+function dbToAmp(db: number): number {
+  return Math.pow(10, db / 20);
+}
+
+/** 从控制点里抽出某条曲线（按出现顺序，缺省的控制点跳过）。 */
+function curveOf(points: readonly AmPoint[], key: 'db' | 'lpf' | 'hpf'): Array<{ p: number; value: number }> {
+  const curve: Array<{ p: number; value: number }> = [];
+  for (const point of points) {
+    const value = point[key];
+    if (typeof value === 'number' && Number.isFinite(value)) curve.push({ p: point.p, value });
+  }
+  return curve;
+}
+
+/**
+ * 在控制点之间插值：音量按 dB 线性（听感均匀），滤波频率按对数线性（与 exponentialRamp 一致）。
+ */
+function interpolateCurve(
+  curve: ReadonlyArray<{ p: number; value: number }>,
+  p: number,
+  logScale = false,
+): number | null {
+  const first = curve[0];
+  if (!first) return null;
+  if (p <= first.p) return first.value;
+  const last = curve[curve.length - 1]!;
+  if (p >= last.p) return last.value;
+  for (let index = 1; index < curve.length; index += 1) {
+    const right = curve[index]!;
+    if (p <= right.p) {
+      const left = curve[index - 1]!;
+      const span = right.p - left.p;
+      if (!(span > 0)) return right.value;
+      const t = (p - left.p) / span;
+      if (logScale && left.value > 0 && right.value > 0) {
+        return Math.exp(Math.log(left.value) + (Math.log(right.value) - Math.log(left.value)) * t);
+      }
+      return left.value + (right.value - left.value) * t;
+    }
+  }
+  return last.value;
+}
+
+interface AmTracks {
+  aBands: DeckBandPoint[];
+  bBands: DeckBandPoint[];
+  aGain: Array<{ atMs: number; gain: number }>;
+  bGain: Array<{ atMs: number; gain: number }>;
+}
+
+/** 把「交融」的控制点展开成 AudioParam 时间线要的采样点（时间相对淡化起点）。 */
+function buildAmTracks(fadeMs: number): AmTracks {
+  const duration = Math.max(1, fadeMs);
+  const aDb = curveOf(AM_A_POINTS, 'db');
+  const aLpf = curveOf(AM_A_POINTS, 'lpf');
+  const bDb = curveOf(AM_B_POINTS, 'db');
+  const bHpf = curveOf(AM_B_POINTS, 'hpf');
+  const aBands: DeckBandPoint[] = [{ atMs: 0, lowpassHz: 20000, highpassHz: 20, bassDb: 0 }];
+  const bBands: DeckBandPoint[] = [{ atMs: 0, lowpassHz: 20000, highpassHz: 10000, bassDb: -15 }];
+  const aGain: Array<{ atMs: number; gain: number }> = [];
+  const bGain: Array<{ atMs: number; gain: number }> = [];
+  const steps = Math.max(20, Math.min(400, Math.round(1 / AM_SAMPLE_STEP)));
+  for (let index = 0; index <= steps; index += 1) {
+    const p = index / steps;
+    const atMs = p * duration;
+    const aLowpass = interpolateCurve(aLpf, p, true);
+    if (aLowpass !== null) aBands.push({ atMs, lowpassHz: aLowpass });
+    const bHighpass = interpolateCurve(bHpf, p, true);
+    if (bHighpass !== null) bBands.push({ atMs, highpassHz: bHighpass });
+    const aDbValue = interpolateCurve(aDb, p);
+    if (aDbValue !== null) {
+      // 最后 4% 再从 −25 dB 滑到 −60 dB：fade 结束时 A 已经基本没声，收尾不会有台阶。
+      const tail = p <= AM_A_TAIL_P ? 0 : (p - AM_A_TAIL_P) / (1 - AM_A_TAIL_P);
+      const fadedDb = aDbValue + (AM_A_TAIL_DB - aDbValue) * tail;
+      aGain.push({ atMs, gain: dbToAmp(fadedDb) });
+    }
+    const bDbValue = interpolateCurve(bDb, p);
+    if (bDbValue !== null) bGain.push({ atMs, gain: dbToAmp(bDbValue) });
+  }
+  // 低频交接：75% 处直接阶跃（QQ 的 step 型 automation），不做渐变。
+  const handoffMs = AM_BASS_HANDOFF_P * duration;
+  aBands.push({ atMs: Math.max(0, handoffMs - 1), bassDb: 0 });
+  aBands.push({ atMs: handoffMs, bassDb: -15 });
+  bBands.push({ atMs: Math.max(0, handoffMs - 1), bassDb: -15 });
+  bBands.push({ atMs: handoffMs, bassDb: 0 });
+  return { aBands, bBands, aGain, bGain };
+}
+
+/**
+ * 把「交融」的整套曲线一次性排到音频线程：滤波扫频 + 低频交接走 AudioParam 时间线，
+ * 音量同样走时间线（dB 采样后换线性幅度），rAF 只负责推进度与收尾——掉帧也不会让曲线变形。
+ */
+function scheduleAmFade(plan: ActivePlan): boolean {
+  const clock = audioTapClock();
+  if (clock === null) return false;
+  const tracks = buildAmTracks(plan.fadeMs);
+  scheduleDeckBands(plan.options.active, clock, tracks.aBands);
+  scheduleDeckBands(plan.options.standby, clock, tracks.bBands);
+  scheduleDeckGain(plan.options.active, clock, tracks.aGain);
+  scheduleDeckGain(plan.options.standby, clock, tracks.bGain);
+  return true;
+}
+
 /** 取离目标最近的强拍；离目标超过 1.5 拍就放弃对齐（宁可普通淡化）。 */
 function pickDownbeatNear(analysis: BeatAnalysis, targetFileMs: number, startAtMs: number): number | null {
   const downbeats = analysis.downbeats.filter((value) => Number.isFinite(value) && value >= startAtMs);
@@ -678,8 +873,8 @@ function buildAutoFadePlan(
     return { ms: AUTO_FALLBACK_MS, auto: true, bars: 0, barMs: 0, note: '无拍点，回退固定时长' };
   }
 
-  let bars = AUTO_BARS;
-  let note = tempoAligned ? '两首变速对齐，默认一个乐句' : '两首拍速差较大，取平均小节';
+  let bars = tempoAligned ? AUTO_BARS : AUTO_BARS_MID;
+  let note = tempoAligned ? '两首变速对齐，默认一个乐句' : '两首拍速差较大，多留两小节让鼓点交叠';
   // 小节特别短（快歌 / 双拍被分析成两倍速）：一个乐句只有 4 秒上下，取两个乐句更合适。
   if (barMs < AUTO_SHORT_BAR_MS) {
     bars = AUTO_BARS_LONG;
@@ -1025,7 +1220,15 @@ export function prepareCrossfade(options: CrossfadePrepareOptions): boolean {
   }
   // Web Audio 图已建立（EQ / 人声保留淡出 / 歌词页分析器）时走图内增益淡化：
   // 两个 deck 都接到 deckMix 上，淡化用各自 gain 做等功率曲线，主音量仍由本地 gain 控制。
-  const graphMode = audioTapGraphActive();
+  // 「交融」风格还需要低通/高通/低频架，元素音量路径做不到：图没建立时主动建一次。
+  const settings = readCrossfadeSettings();
+  let graphMode = audioTapGraphActive();
+  if (!graphMode && settings.style === 'am') {
+    // 「交融」需要低通/高通/低频架，元素音量做不到：借均衡器的建图入口把图建起来（并 resume），再挂 deck。
+    ensureEqualizerGraph();
+    graphMode = audioTapGraphActive();
+    if (graphMode) logEvent('graph-auto', '为「交融」风格建立 Web Audio 图');
+  }
   if (graphMode && (!attachDeckToGraph(options.active) || !attachDeckToGraph(options.standby))) {
     logEvent('prepare-skip', '无法把两个 deck 接入 Web Audio 图，回退硬切');
     return false;
@@ -1033,6 +1236,8 @@ export function prepareCrossfade(options: CrossfadePrepareOptions): boolean {
   if (graphMode) {
     setDeckGraphGain(options.active, 1);
     setDeckGraphGain(options.standby, 0);
+    releaseDeckFx(options.active, 1);
+    releaseDeckFx(options.standby, 0);
   }
   const plan: ActivePlan = {
     kind: 'auto',
@@ -1041,6 +1246,7 @@ export function prepareCrossfade(options: CrossfadePrepareOptions): boolean {
     graphMode,
     tempoRate: 1,
     handoff: false,
+    am: false,
     lastVocalEndPosMs: 0,
     handoffHoldMs: 0,
     fadeStartFileMs: 0,
@@ -1055,13 +1261,17 @@ export function prepareCrossfade(options: CrossfadePrepareOptions): boolean {
     raf: 0,
   };
   applySchedule(plan, schedule);
+  // 交融只用于「结构自适应过渡」且没走歌词衔接时：歌词衔接有自己的浮现曲线，手动/循环窗口太短。
+  plan.am = graphMode && settings.style === 'am' && !plan.handoff;
   // 预先把 B 的速率与伴奏倾斜设置好：淡化开始时不用临时改，避免首帧爆音。
   const baseRate = baseDeckRate(options);
   setDeckPlaybackRate(options.standby, baseRate * plan.tempoRate);
   setDeckPlaybackRate(options.active, baseRate);
   if (graphMode) {
     setDeckGraphTilt(options.active, 0, 0);
-    setDeckGraphTilt(options.standby, -TILT_MAX_DB, -TILT_MAX_DB);
+    // 交融与歌词衔接都不用「人声/伴奏倾斜」这套搁架（前者靠滤波扫频，后者靠人声聚焦）。
+    const tilt = plan.am || plan.handoff ? 0 : -TILT_MAX_DB;
+    setDeckGraphTilt(options.standby, tilt, tilt);
   }
   activePlan = plan;
   debug.phase = 'prepared';
@@ -1069,16 +1279,19 @@ export function prepareCrossfade(options: CrossfadePrepareOptions): boolean {
   debug.currentTitle = options.current.track.title;
   debug.nextTitle = options.next.track.title;
   debug.crossfadeKind = 'auto';
+  debug.amActive = plan.am;
   debug.nextPrepared = true;
   debug.progress = 0;
   debug.baseVolume = clamp01(options.baseVolume());
   logEvent(
     'prepared',
-    plan.handoff
-      ? `「${options.current.track.title}」→「${options.next.track.title}」，歌词衔接：A 末句 ${plan.lastVocalEndPosMs} ms 唱完${
-          plan.handoffHoldMs > 0 ? `、先保留 ${plan.handoffHoldMs} ms 尾奏` : ''
-        }接 B 首句，${plan.fadeMs} ms 人声缓慢浮现、伴奏渐入`
-      : `「${options.current.track.title}」→「${options.next.track.title}」，${plan.fadeMs} ms 后在曲内 ${Math.round(plan.fadeStartPosMs)} ms 处淡化（可听结尾 ${plan.audibleEndPosMs} ms，尾部静音/渐弱 ${debug.tailSilenceMs} ms）`,
+    plan.am
+      ? `「${options.current.track.title}」→「${options.next.track.title}」，交融 ${plan.fadeMs} ms（A 低通 20k→2.3k、B 高通 10k→20 Hz，75% 低频交接）`
+      : plan.handoff
+        ? `「${options.current.track.title}」→「${options.next.track.title}」，歌词衔接：A 末句 ${plan.lastVocalEndPosMs} ms 唱完${
+            plan.handoffHoldMs > 0 ? `、先保留 ${plan.handoffHoldMs} ms 尾奏` : ''
+          }接 B 首句，${plan.fadeMs} ms 人声缓慢浮现、伴奏渐入`
+        : `「${options.current.track.title}」→「${options.next.track.title}」，${plan.fadeMs} ms 后在曲内 ${Math.round(plan.fadeStartPosMs)} ms 处淡化（可听结尾 ${plan.audibleEndPosMs} ms，尾部静音/渐弱 ${debug.tailSilenceMs} ms）`,
   );
   return true;
 }
@@ -1114,6 +1327,8 @@ function createManualPlan(options: ManualCrossfadeOptions, kind: 'manual' | 'loo
     setDeckGraphGain(options.standby, 0);
     setDeckGraphTilt(options.active, 0, 0);
     setDeckGraphTilt(options.standby, 0, 0);
+    releaseDeckFx(options.active, 1);
+    releaseDeckFx(options.standby, 0);
   }
   const requested = Number.isFinite(options.fadeMs) ? options.fadeMs : MANUAL_FADE_DEFAULT_MS;
   const fadeMs = Math.round(Math.max(MANUAL_FADE_MIN_MS, Math.min(MANUAL_FADE_MAX_MS, requested)));
@@ -1124,6 +1339,7 @@ function createManualPlan(options: ManualCrossfadeOptions, kind: 'manual' | 'loo
     graphMode,
     tempoRate: 1,
     handoff: false,
+    am: false,
     lastVocalEndPosMs: 0,
     handoffHoldMs: 0,
     fadeStartFileMs: 0,
@@ -1276,6 +1492,7 @@ function failManualFade(plan: ActivePlan, reason: string): void {
   }
   activePlan = null;
   debug.phase = 'canceled';
+  debug.amActive = false;
   debug.reason = reason;
   debug.progress = 0;
   debug.nextPrepared = false;
@@ -1365,17 +1582,24 @@ function startFade(plan: ActivePlan): void {
   debug.reason = '';
   debug.progress = 0;
   debug.baseVolume = base;
+  debug.amActive = plan.am;
   if (plan.graphMode) {
     // 图内淡化：主音量走本地 gain（元素音量固定 1），A/B 各自由 deck gain 控制。
     setAudioTapVolume(base, true);
-    setDeckGraphGain(plan.options.active, 1);
-    setDeckGraphGain(plan.options.standby, 0);
-    // 起始时 B 的伴奏压到最低（只留中频和人声），随后在淡化中慢慢回到 0dB。
+    // 先把上一次过渡可能留下的自动化撤干净，再按本次风格重新起步。
+    releaseDeckFx(plan.options.active, 1);
+    releaseDeckFx(plan.options.standby, 0);
     setDeckGraphTilt(plan.options.active, 0, 0);
-    if (plan.handoff) {
+    if (plan.am) {
+      // 交融：低通/高通/低频架与音量全部交给 AudioParam 时间线，倾斜与人声聚焦保持直通。
+      setDeckGraphTilt(plan.options.standby, 0, 0);
+      setDeckGraphVocalFocus(plan.options.active, 0);
+      setDeckGraphVocalFocus(plan.options.standby, 0);
+    } else if (plan.handoff) {
       setDeckGraphTilt(plan.options.standby, 0, 0);
       setDeckGraphVocalFocus(plan.options.standby, 1);
     } else {
+      // 起始时 B 的伴奏压到最低（只留中频和人声），随后在淡化中慢慢回到 0dB。
       setDeckGraphTilt(plan.options.standby, -TILT_MAX_DB, -TILT_MAX_DB);
     }
   } else {
@@ -1390,10 +1614,22 @@ function startFade(plan: ActivePlan): void {
     cancelCrossfade('b-seek-failed');
     return;
   }
-  logEvent('fade-start', `B 从文件 ${Math.round(plan.bStartFileMs)} ms 起播，淡化 ${plan.fadeMs} ms`);
+  logEvent(
+    'fade-start',
+    `B 从文件 ${Math.round(plan.bStartFileMs)} ms 起播，${plan.am ? '交融' : '等功率'} ${plan.fadeMs} ms`,
+  );
   plan.options.standby.play().then(
     () => {
       if (activePlan !== plan || plan.phase !== 'fading') return;
+      if (plan.am) {
+        // B 真正出声之后才排曲线：以「现在」为 0% 起点，进度也在这里重新计时，收尾时刻才和曲线对齐。
+        plan.startedAt = performance.now();
+        if (!scheduleAmFade(plan)) {
+          logEvent('am-fallback', '音频时钟不可用，本轮退回等功率曲线');
+          plan.am = false;
+          debug.amActive = false;
+        }
+      }
       plan.raf = requestAnimationFrame(fadeStep);
     },
     (err: unknown) => {
@@ -1420,7 +1656,8 @@ function fadeStep(): void {
   const progress = Math.min(1, (performance.now() - plan.startedAt) / Math.max(1, plan.fadeMs));
   plan.progress = progress;
   debug.progress = progress;
-  applyEqualPowerGains(plan, progress);
+  // 交融风格的增益/滤波已经排在 AudioParam 时间线上，这里只推进度，不再逐帧写参数。
+  if (!plan.am) applyEqualPowerGains(plan, progress);
   if (progress >= 1) {
     finishFade(plan);
     return;
@@ -1436,9 +1673,10 @@ function finishFade(plan: ActivePlan): void {
   }
   if (plan.graphMode) {
     // 图内收尾：B 满音量、A 静音并从混音入口摘下；主音量仍由本地 gain 保持。
+    // releaseDeckFx 会撤掉「交融」残留的扫频/低频交接，并停在指定增益上，避免收尾继承滤镜。
     setAudioTapVolume(plan.baseVolume, true);
-    setDeckGraphGain(plan.options.active, 0);
-    setDeckGraphGain(plan.options.standby, 1);
+    releaseDeckFx(plan.options.active, 0);
+    releaseDeckFx(plan.options.standby, 1);
     setDeckGraphTilt(plan.options.active, 0, 0);
     setDeckGraphTilt(plan.options.standby, 0, 0);
     setDeckGraphVocalFocus(plan.options.active, 0);
@@ -1459,6 +1697,7 @@ function finishFade(plan: ActivePlan): void {
   setDeckPlaybackRate(plan.options.active, baseRate);
   activePlan = null;
   debug.phase = 'done';
+  debug.amActive = false;
   debug.reason = plan.kind === 'manual' ? 'manual-done' : plan.kind === 'loop' ? 'loop-done' : 'fade-done';
   debug.nextPrepared = false;
   debug.progress = 1;
@@ -1488,8 +1727,8 @@ function hardCutToStandby(plan: ActivePlan): void {
   setDeckVolume(plan.options.active, 0);
   setDeckVolume(plan.options.standby, base);
   if (audioTapGraphActive()) {
-    // A 可能仍在图里，确保它静音；B 没接图，继续用元素音量。
-    setDeckGraphGain(plan.options.active, 0);
+    // A 可能仍在图里，确保它静音（顺带撤掉交融残留的扫频）；B 没接图，继续用元素音量。
+    releaseDeckFx(plan.options.active, 0);
     setDeckGraphVocalFocus(plan.options.active, 0);
     setDeckGraphVocalFocus(plan.options.standby, 0);
     detachDeckFromGraph(plan.options.standby);
@@ -1501,6 +1740,7 @@ function hardCutToStandby(plan: ActivePlan): void {
   plan.baseVolume = base;
   activePlan = null;
   debug.phase = 'done';
+  debug.amActive = false;
   debug.reason = 'graph-hard-cut';
   debug.nextPrepared = false;
   debug.progress = 1;
@@ -1525,9 +1765,10 @@ export function cancelCrossfade(reason = 'manual'): void {
     const base = clamp01(plan.options.baseVolume());
     if (plan.graphMode) {
       setAudioTapVolume(base, true);
-      setDeckGraphGain(plan.options.active, 1);
-      setDeckGraphGain(plan.options.standby, 0);
+      releaseDeckFx(plan.options.active, 1);
+      releaseDeckFx(plan.options.standby, 0);
       setDeckGraphTilt(plan.options.active, 0, 0);
+      setDeckGraphTilt(plan.options.standby, 0, 0);
       setDeckGraphVocalFocus(plan.options.active, 0);
       setDeckGraphVocalFocus(plan.options.standby, 0);
       detachDeckFromGraph(plan.options.standby);
@@ -1550,6 +1791,7 @@ export function cancelCrossfade(reason = 'manual'): void {
     /* 忽略 */
   }
   debug.phase = 'canceled';
+  debug.amActive = false;
   debug.reason = reason;
   debug.progress = 0;
   logEvent('cancel', reason);
@@ -1642,6 +1884,28 @@ export function buildCrossfadeSection(scope: Disposers | null): HTMLElement {
     title: '上一首最后一句歌词唱完的瞬间接下一首第一句：人声先出、伴奏渐入（需要过渡时长为「自动」）',
   });
 
+  const styleRow = h('div', { class: 'analysis-actions', 'data-qa': 'crossfade-style-row' });
+  const styleButtons: Array<{ value: CrossfadeStyle; button: HTMLButtonElement }> = [];
+  for (const value of STYLE_VALUES) {
+    const button = h(
+      'button',
+      {
+        class: 'analysis-toggle',
+        type: 'button',
+        'data-qa': 'crossfade-style',
+        'data-style': value,
+        'aria-pressed': 'false',
+        title:
+          value === 'am'
+            ? '交融：仿 QQ 音乐「智能混音 · 进阶交融」——A 的低通从 20k 扫到 2.3k、B 的高通从 10k 扫到 20 Hz，75% 处交接低频，用互补滤波把两首的频谱错开'
+            : '等功率：cos/sin 交叉淡化（旧曲线），B 晚一点进入、A 多留一点尾音',
+      },
+      value === 'am' ? '交融' : '等功率',
+    );
+    styleButtons.push({ value, button });
+    styleRow.append(button);
+  }
+
   const root = h('div', { class: 'analysis-section', 'data-qa': 'crossfade-section' });
 
   function paint(): void {
@@ -1661,6 +1925,11 @@ export function buildCrossfadeSection(scope: Disposers | null): HTMLElement {
       button.classList.toggle('is-on', on);
       button.setAttribute('aria-pressed', on ? 'true' : 'false');
     }
+    for (const { value, button } of styleButtons) {
+      const on = value === settings.style;
+      button.classList.toggle('is-on', on);
+      button.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
     root.dataset.enabled = settings.enabled ? '1' : '0';
   }
 
@@ -1674,6 +1943,13 @@ export function buildCrossfadeSection(scope: Disposers | null): HTMLElement {
     button.addEventListener('click', () => {
       writeCrossfadeSettings({ length: value });
       paint();
+    });
+  }
+  for (const { value, button } of styleButtons) {
+    button.addEventListener('click', () => {
+      writeCrossfadeSettings({ style: value });
+      paint();
+      toast(value === 'am' ? '过渡风格：交融（互补滤波 + 低频交接）' : '过渡风格：等功率');
     });
   }
   handoffToggle.addEventListener('click', () => {
@@ -1695,7 +1971,7 @@ export function buildCrossfadeSection(scope: Disposers | null): HTMLElement {
     h('h3', { class: 'section-title', text: '无缝衔接（实验）' }),
     h('p', {
       class: 'analysis-desc',
-      text: '当前歌曲结束前，按鼓点提前开始下一首，并按等功率曲线交叉淡化（B 用更慢的进入曲线，避免一上来就大声；A 多留一点尾音），避免曲间静音；淡化终点对齐歌曲的可听结尾，自动跳过曲尾静音与明显渐弱收尾（需宿主分析支持 audibleEndMs，p0-5 起）。淡化结束时机对齐下一首的「开始唱词」（有歌词时）：前奏较长会跳过前奏、从唱词前若干秒切入；前奏较短则把整段前奏当作过渡，结束时正好进入唱词。过渡时长「自动」不再固定 5–10 秒：以两首歌的小节为基准（默认一个乐句 4 小节，拍速差大时取两首的平均小节），B 前奏到唱词的空间不足时按整小节缩短、A 尾奏与 B 前奏都宽裕时放宽到 6–8 小节、小节很短（快歌/双拍）时取两个乐句，实际时长随歌曲自由变化。两首 BPM 不同时会用 WSOLA 变速不变调（±12% 内）把 B 的节拍拉齐，过渡结束后平滑恢复原速；图内路径下 A 的伴奏先退、B 的伴奏慢慢回正，人声先出现、伴奏后融进来。自然播完（列表循环 / 随机播放）与单曲循环都会自动衔接；手动切歌（下一首 / 上一首 / 点列表）走 1.2–2.0 秒等功率短过渡，不等节拍分析。均衡器/人声保留淡出等 Web Audio 音效开启时自动改走图内增益淡化，否则回退为原来的硬切。「歌词衔接」（默认开启，仅过渡时长=自动时生效）：上一首最后一句歌词唱完的瞬间接下一首第一句——B 的起播点直接对准首句，B 的人声用约 2–6 秒缓慢浮现（淡化越长越慢）、不再硬切入，前几秒用「人声聚焦」把 B 的低频/高频压住、抬高 1.8 kHz 临场感，让中频人声先出来，伴奏随后慢慢打开；如果上一首末句之后没有足够长的尾奏（不足 1.2 秒），自动回退成上面的普通淡化；过渡时长不再用固定秒数封顶：按两首协调后的真实小节实时计算——尾奏超过一个乐句时，先用整小节让上一首的尾奏独听一段（交接点自然往后），剩下的尾奏约一个乐句用来完成交叠，交叠终点正好落在上一首的可听结尾；尾奏不足一个乐句时整段尾奏都用来交叠，尾奏不足 1.2 秒时回退普通淡化。首句/末句都会过滤歌词里的制作人员名单（作词、作曲、Lyrics by…）和间奏标记，避免过渡点落到没人唱的地方。',
+      text: '当前歌曲结束前，按鼓点提前开始下一首，并按等功率曲线交叉淡化（B 用更慢的进入曲线，避免一上来就大声；A 多留一点尾音），避免曲间静音；淡化终点对齐歌曲的可听结尾，自动跳过曲尾静音与明显渐弱收尾（需宿主分析支持 audibleEndMs，p0-5 起）。淡化结束时机对齐下一首的「开始唱词」（有歌词时）：前奏较长会跳过前奏、从唱词前若干秒切入；前奏较短则把整段前奏当作过渡，结束时正好进入唱词。过渡时长「自动」不再固定 5–10 秒：以两首歌的小节为基准（默认一个乐句 4 小节，拍速差大时取两首的平均小节），B 前奏到唱词的空间不足时按整小节缩短、A 尾奏与 B 前奏都宽裕时放宽到 6–8 小节、小节很短（快歌/双拍）时取两个乐句，实际时长随歌曲自由变化。两首 BPM 不同时会用 WSOLA 变速不变调（±12% 内）把 B 的节拍拉齐，过渡结束后平滑恢复原速；图内路径下 A 的伴奏先退、B 的伴奏慢慢回正，人声先出现、伴奏后融进来。自然播完（列表循环 / 随机播放）与单曲循环都会自动衔接；手动切歌（下一首 / 上一首 / 点列表）走 1.2–2.0 秒等功率短过渡，不等节拍分析。均衡器/人声保留淡出等 Web Audio 音效开启时自动改走图内增益淡化，否则回退为原来的硬切。「歌词衔接」（默认开启，仅过渡时长=自动时生效）：上一首最后一句歌词唱完的瞬间接下一首第一句——B 的起播点直接对准首句，B 的人声用约 2–6 秒缓慢浮现（淡化越长越慢）、不再硬切入，前几秒用「人声聚焦」把 B 的低频/高频压住、抬高 1.8 kHz 临场感，让中频人声先出来，伴奏随后慢慢打开；如果上一首末句之后没有足够长的尾奏（不足 1.2 秒），自动回退成上面的普通淡化；过渡时长不再用固定秒数封顶：按两首协调后的真实小节实时计算——尾奏超过一个乐句时，先用整小节让上一首的尾奏独听一段（交接点自然往后），剩下的尾奏约一个乐句用来完成交叠，交叠终点正好落在上一首的可听结尾；尾奏不足一个乐句时整段尾奏都用来交叠，尾奏不足 1.2 秒时回退普通淡化。首句/末句都会过滤歌词里的制作人员名单（作词、作曲、Lyrics by…）和间奏标记，避免过渡点落到没人唱的地方。过渡风格默认「交融」（2026-10-29 新增）：两首不再只是等功率相加，而是用互补滤波把频谱错开——A 的低通从 20 kHz 一路扫到 2.3 kHz、音量 40% 后收到 −25 dB；B 的高通从 10 kHz 扫到 20 Hz、音量从 −30 dB 抬到 0 dB；75% 处做低频交接（A 的低频架 −15 dB、B 回正），底鼓不会两首打架。整套曲线在淡化开始时一次性排到音频线程的 AudioParam 时间线（扫频用等比、音量按 dB 线性），rAF 掉帧也不会让曲线变形；「等功率」保留原来的 cos/sin 曲线，可随时切回。',
     }),
     h(
       'div',
@@ -1728,6 +2004,20 @@ export function buildCrossfadeSection(scope: Disposers | null): HTMLElement {
         h(
           'div',
           {},
+          h('div', { class: 'field-label', text: '过渡风格' }),
+          h('div', {
+            class: 'field-hint',
+            text: '交融 = 互补滤波 + 75% 低频交接（仿 QQ 音乐智能混音「进阶交融」），需要 Web Audio 图、会自动建立；等功率 = 原来的 cos/sin 曲线',
+          }),
+        ),
+        styleRow,
+      ),
+      h(
+        'div',
+        { class: 'field' },
+        h(
+          'div',
+          {},
           h('div', { class: 'field-label', text: '歌词衔接' }),
           h('div', {
             class: 'field-hint',
@@ -1739,7 +2029,7 @@ export function buildCrossfadeSection(scope: Disposers | null): HTMLElement {
     ),
     h('p', {
       class: 'analysis-footnote',
-      text: '切歌后先异步分析当前与下一首（本地约 1–5 秒）并读取两首歌词的人声首末句（本地同名 .lrc / 在线歌词，自动过滤制作人员名单），任一失败则回退为普通淡化或硬切。开启均衡器 / 人声保留淡出 / 歌词页频谱等 Web Audio 音效时，两个 deck 都会接进混音图，用各自增益做等功率淡化（主音量不变），并靠低/高架滤波做「人声先出现、伴奏慢慢融合」；过渡期间用 WSOLA 变速不变调对齐鼓点（preservesPitch），结束后平滑恢复原速。',
+      text: '切歌后先异步分析当前与下一首（本地约 1–5 秒）并读取两首歌词的人声首末句（本地同名 .lrc / 在线歌词，自动过滤制作人员名单），任一失败则回退为普通淡化或硬切。开启均衡器 / 人声保留淡出 / 歌词页频谱等 Web Audio 音效时，两个 deck 都会接进混音图，用各自增益做等功率淡化（主音量不变），并靠低/高架滤波做「人声先出现、伴奏慢慢融合」；过渡期间用 WSOLA 变速不变调对齐鼓点（preservesPitch），结束后平滑恢复原速。「交融」风格下低通/高通/低频架与音量都排在音频线程的时间线上，页面掉帧不会影响曲线。',
     }),
   );
 
