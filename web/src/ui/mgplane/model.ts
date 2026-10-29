@@ -63,7 +63,12 @@ export const MG_WORLD_H = 3400;
 /** 安全边：相机中心限制在世界内缩 400 单位范围内。 */
 export const MG_SAFE = 400;
 
-/** 五个分类区 + 中心 NOW 的世界坐标（区中心点）。 */
+/** 分区表 + 中心 NOW 的世界坐标（区中心点）。
+ *
+ * 画布上已经没有分区：2026-10-29 按用户要求先删掉画布内的歌单 / 分类展示
+ * （今日推荐 / 最近播放 / 我喜欢的音乐 / 私人雷达），随后又把最后剩下的「本地曲库」
+ * 也删了。现在整张平面只有中心 NOW 一张卡；分区数据结构保留，方便以后加回来。
+ */
 export interface MgZoneSpec {
   kind: MgListKind;
   no: string;
@@ -74,13 +79,7 @@ export interface MgZoneSpec {
   y: number;
 }
 
-export const MG_ZONES: MgZoneSpec[] = [
-  { kind: 'daily', no: '01', en: 'DAILY', cn: '今日推荐', hint: '每天 6:00 更新', x: 1500, y: 900 },
-  { kind: 'recent', no: '02', en: 'RECENT', cn: '最近播放', hint: '按播放时间排序', x: 4500, y: 900 },
-  { kind: 'liked', no: '03', en: 'LIKED', cn: '我喜欢的音乐', hint: '收藏过的曲目', x: 1500, y: 2520 },
-  { kind: 'radar', no: '05', en: 'RADAR', cn: '私人雷达', hint: '只属于你的推荐', x: 3000, y: 3020 },
-  { kind: 'local', no: '04', en: 'LOCAL', cn: '本地曲库', hint: '本地文件与收藏', x: 3000, y: 560 },
-];
+export const MG_ZONES: MgZoneSpec[] = [];
 
 /** 中心 NOW 封面与标题排版锚点。 */
 export const MG_NOW = { x: 2280, y: 1360 };
@@ -120,8 +119,9 @@ export function mgIsLocal(track: OnlineTrack): boolean {
  * 首页数据 → 画布数据。
  *
  * HomeData 里没有单独的 likedTracks：用各平台「我喜欢的音乐」收藏卡片里的前几首
- * 合并去重（卡片最多 5 首，足够铺 03 区的 8 格）；likedCount 取各卡片 count 之和。
- * 画布不展示任何歌单（歌单只在经典首页 / 浮层里出现），所以这里不再搬歌单数据。
+ * 合并去重（卡片最多 5 首），likedCount 取各卡片 count 之和。
+ * 画布当前只渲染「本地曲库」一个分区（歌单 / 其它分类区都只在经典首页与浮层里出现），
+ * 这里搬运的几组曲目数据保留给后续分区复用。
  */
 export function fromHomeData(data: HomeData): MgPlaneData {
   const likedTracks: OnlineTrack[] = [];

@@ -2,10 +2,13 @@
  * MG 画布（首页平面世界）生产视图。
  *
  * 设计基准来自 research/mockups/mg-canvas 的静态原型，这里按应用真实数据重做：
- * - 一张 6000×3400 的「平面」：五个分类区 + 中心 NOW，全部画在同一层；
- * - 相机可自由拖动 / 滚轮锚定缩放 / Tab 五区飞行 / Home 回全景；
- * - 点封面原地展开播放台，长按弹径向菜单，可进入多选；
- * - 平面世界里不再出现任何歌单（歌单只在经典首页 / 浮层里），所以没有歌单区、没有歌单环；
+ * - 一张 6000×3400 的「平面」：现在只剩中心 NOW 一张卡（分区已全部删除，见下）；
+ * - 相机可自由拖动 / 滚轮锚定缩放 / Tab·Home 回全景；
+ * - 现在能点的只有 NOW 卡：单击选中、双击播放；分区封面 / 径向菜单 / 多选等逻辑保留，
+ *   但没有分区时不可达；
+ * - 画布内不出现任何歌单，也没有分区展示卡：今日推荐 / 最近播放 / 我喜欢的音乐 /
+ *   私人雷达四个区已整体删除，最后剩下的「本地曲库」也删了；歌单与分类只留在经典首页与浮层里；
+ * - 分区渲染逻辑（叠放 / 展开纵向列表 / 滚轮分页）保留，往 MG_ZONES 里加条目就能恢复；
  * - grade 跟随封面主色；底部不画播放条（沿用应用 fixed 播放条）。
  *
  * 交互只通过 callbacks 交给 app.ts：本模块不直接跳页、不直接开播（Space 除外）。
@@ -508,7 +511,14 @@ export class MgPlaneView {
     const nowDot = h('i', { class: 'mg-mini-dot is-now' });
     nowDot.style.left = `${(MG_NOW.x / MG_WORLD_W) * 100}%`;
     nowDot.style.top = `${(MG_NOW.y / MG_WORLD_H) * 100}%`;
-    this.miniEl.append(nowDot, this.miniFrame, h('span', { class: 'mg-mini-cap', text: `PLANE · ${MG_ZONES.length} ZONES` }));
+    this.miniEl.append(
+      nowDot,
+      this.miniFrame,
+      h('span', {
+        class: 'mg-mini-cap',
+        text: MG_ZONES.length === 0 ? 'PLANE' : MG_ZONES.length === 1 ? 'PLANE · 1 ZONE' : `PLANE · ${MG_ZONES.length} ZONES`,
+      }),
+    );
   }
 
   private buildSelection(): void {
@@ -982,7 +992,7 @@ export class MgPlaneView {
       hint.style.top = `${MG_NOW.y - 90}px`;
       hint.append(
         h('b', { text: '还没有在放的唱片' }),
-        h('span', { text: '点一张封面开始播放' }),
+        h('span', { text: '从播放条或搜索开始播放' }),
       );
       this.nowLayer.append(hint);
       return;
@@ -1911,7 +1921,7 @@ export class MgPlaneView {
       h('div', { class: 'mg-debug-row' }, inertia, parallax, motion),
       gradeRow,
       h('div', { class: 'mg-debug-row' }, reset, auto),
-      h('span', { class: 'mg-debug-note', text: '滚轮缩放 · 拖动画面 · 单击封面展开 · 长按径向 · Tab 分区 · / 搜索' }),
+      h('span', { class: 'mg-debug-note', text: '滚轮缩放 · 拖动画面 · 单击 NOW 选中 · 双击播放 · Tab 回全景 · / 搜索' }),
     );
     this.debugEl.append(head, body);
   }
@@ -2040,10 +2050,15 @@ export class MgPlaneView {
     const ownsFocus = document.activeElement === this.root || this.root.contains(document.activeElement);
     if (key === 'Tab') {
       if (!ownsFocus) return;
+      // 画布上没有分区时，Tab 只剩「回全景」这一档。
       const index = this.zoneIndex + 1;
-      this.zoneIndex = index % (MG_ZONES.length + 1);
-      if (this.zoneIndex === MG_ZONES.length) this.flyToOverview();
-      else this.flyToZone(MG_ZONES[this.zoneIndex]!);
+      this.zoneIndex = MG_ZONES.length ? index % (MG_ZONES.length + 1) : -1;
+      if (this.zoneIndex < 0 || this.zoneIndex >= MG_ZONES.length) {
+        this.zoneIndex = -1;
+        this.flyToOverview();
+      } else {
+        this.flyToZone(MG_ZONES[this.zoneIndex]!);
+      }
       event.preventDefault();
       return;
     }
@@ -2109,13 +2124,7 @@ export class MgPlaneView {
   private runAuto(): void {
     this.stopAuto();
     this.toast('自动演示开始 · 任意操作可中断');
-    const steps: Array<() => void> = [
-      () => this.flyToZone(MG_ZONES[0]!),
-      () => this.flyToZone(MG_ZONES[2]!),
-      () => this.flyToZone(MG_ZONES[3]!),
-      () => this.flyToZone(MG_ZONES[4]!),
-      () => this.flyToOverview(),
-    ];
+    const steps: Array<() => void> = [() => this.focusNow(), () => this.flyToOverview()];
     let delay = 0;
     steps.forEach((step, index) => {
       delay += 900;
