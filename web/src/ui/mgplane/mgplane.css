@@ -518,29 +518,21 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 20px 26px 22px;
-  margin-left: -26px;
-  /* 世界封面会从背后穿过，加一层暗角衬底保证标题可读，同时保持画面不闷。 */
-  background: radial-gradient(130% 150% at 0% 40%, rgba(7, 6, 5, 0.9), rgba(7, 6, 5, 0.55) 62%, rgba(7, 6, 5, 0));
   pointer-events: none;
 }
 
-/* 世界歌词窗口：固定在屏幕右中（箭头位置），不随相机缩放，播放中常驻。 */
+/* 世界歌词窗口：世界坐标（NOW 右侧空场），随世界一起缩放/拖动；无底框，只有文字。 */
 .mg-now-lyric {
   position: absolute;
-  left: 61%;
-  top: 43%;
   z-index: 4;
-  width: 460px;
+  width: 1120px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 18px 22px;
+  gap: 16px;
   opacity: 0;
-  transform: translateY(6px);
+  transform: translateY(10px);
   transition: opacity 260ms ease, transform 260ms ease;
   pointer-events: none;
-  background: radial-gradient(130% 170% at 0% 45%, rgba(7, 6, 5, 0.74), rgba(7, 6, 5, 0.3) 58%, rgba(7, 6, 5, 0));
 }
 
 .mg-now-lyric.is-on {
@@ -554,20 +546,22 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-shadow: 0 4px 26px rgba(0, 0, 0, 0.6);
 }
 
 .mg-now-ly.is-prev,
 .mg-now-ly.is-next {
-  font-size: 13px;
-  letter-spacing: 0.02em;
+  font-size: 48px;
+  letter-spacing: 0.01em;
   color: var(--mg-ink-3);
 }
 
 .mg-now-ly.is-now {
-  font-size: 22px;
-  letter-spacing: 0.01em;
+  font-size: 112px;
+  line-height: 1.04;
+  letter-spacing: -0.01em;
   color: var(--mg-accent);
-  text-shadow: 0 2px 18px rgba(0, 0, 0, 0.55);
+  text-shadow: 0 6px 40px rgba(0, 0, 0, 0.65);
 }
 
 .mg-now-kicker {
