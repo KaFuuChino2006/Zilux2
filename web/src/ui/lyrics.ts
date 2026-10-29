@@ -933,6 +933,23 @@ export function currentLyricLine(): string {
   return doc.lines[index]?.text ?? '';
 }
 
+/**
+ * 当前歌词窗口（上一句 / 正在唱的一句 / 下一句），供首页平面世界的播放台展示。
+ * 无歌词或还没加载完时三行都返回空串。
+ */
+export function currentLyricSnapshot(): { prev: string; now: string; next: string } {
+  const doc = lastDoc;
+  if (!doc || doc.lines.length === 0) return { prev: '', now: '', next: '' };
+  const state = playerState();
+  const position = state.positionMs + lyricOffsetOf(doc.trackKey);
+  const index = activeIndexOf(doc.lines, position);
+  return {
+    prev: doc.lines[index - 1]?.text ?? '',
+    now: doc.lines[index]?.text ?? '',
+    next: doc.lines[index + 1]?.text ?? '',
+  };
+}
+
 /** 偏移/切歌后刷新缓存的当前句（供快捷面板直接读取）。 */
 export function updateCurrentLyricLine(): void {
   const doc = lastDoc;

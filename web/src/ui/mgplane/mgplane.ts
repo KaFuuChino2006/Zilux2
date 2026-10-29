@@ -31,9 +31,8 @@ import {
   mgDuration,
   mgIsLocal,
   mgTrackKey,
-  mgZoneTracks,
 } from './model';
-import type { MgPlaneCallbacks, MgPlaneData, MgZoneSpec } from './model';
+import type { MgListKind, MgPlaneCallbacks, MgPlaneData, MgPlaylistGroup, MgZoneSpec } from './model';
 import './mgplane.css';
 
 export { fromHomeData };
@@ -104,6 +103,9 @@ const PAN_STEP = 320;
 const PAN_MS = 320;
 /** prefers-reduced-motion 下降级时长（线性/直接到位）。 */
 const REDUCED_MS = 80;
+
+/** 视图层可见封面数（不改 model.ts 的 MG_ZONE_LIMIT，只覆盖渲染数量）。 */
+const ZONE_VIS: Record<MgListKind, number> = { daily: 12, recent: 8, liked: 12, radar: 8, local: 8 };
 
 /** 线性 / ease-out / ease-in-out 缓动。 */
 function easeOutCubic(t: number): number {
@@ -186,6 +188,15 @@ export class MgPlaneView {
   private readonly selEl: HTMLDivElement;
   private readonly debugEl: HTMLElement;
   private readonly toastEl: HTMLDivElement;
+  private readonly pickEl: HTMLDivElement;
+  /** 世界画布上的歌词窗口（屏幕层，不随相机缩放）。 */
+  private readonly nowLyricEl: HTMLDivElement;
+  private lyricKey = '';
+  private picked: MgCoverBinding | null = null;
+  private pickedNow = false;
+  private theaterTrackKey = '';
+  private plGroupId = '';
+  private readonly plNodes: HTMLElement[] = [];
 
   // 相机
   private cam: MgCam = { x: MG_WORLD_W / 2, y: MG_WORLD_H / 2, z: 0.24 };
@@ -284,6 +295,12 @@ export class MgPlaneView {
     this.selEl = h('div', { class: 'mg-selbar', hidden: 'hidden' } as Record<string, string>);
     this.debugEl = h('aside', { class: 'mg-debug' });
     this.toastEl = h('div', { class: 'mg-toast', role: 'status', 'aria-live': 'polite' });
+    this.pickEl = h('div', { class: 'mg-pickbar', hidden: 'hidden' } as Record<string, string>);
+    this.nowLyricEl = h('div', { class: 'mg-now-lyric', 'aria-hidden': 'true' },
+      h('span', { class: 'mg-now-ly is-prev' }),
+      h('span', { class: 'mg-now-ly is-now' }),
+      h('span', { class: 'mg-now-ly is-next' }),
+    );
 
     this.worldEl.append(this.gridEl, this.zoneLayer, this.coversLayer, this.nowLayer, this.ghostEl);
     this.viewportEl.append(this.worldEl);
@@ -295,10 +312,12 @@ export class MgPlaneView {
       this.miniEl,
       this.readoutEl,
       this.hoverEl,
+      this.nowLyricEl,
       this.theaterEl,
       this.expandEl,
       this.ringEl,
       this.selEl,
+      this.pickEl,
       this.debugEl,
       this.toastEl,
     );
@@ -308,6 +327,7 @@ export class MgPlaneView {
     this.buildDebug();
     this.buildMini();
     this.buildSelection();
+    this.buildPickBar();
 
     this.onResizeBound = () => this.onResize();
     this.resizeObserver = new ResizeObserver(() => this.onResize());
@@ -384,6 +404,90 @@ export class MgPlaneView {
       h('div', { class: 'mg-hud-actions' }, search, discover, myPlaylists, settings, account, lyrics, radar),
     );
     this.crumbEl.textContent = '平面世界 · 拖动探索';
+  }
+
+  private buildPickBar(): void {
+    this.pickEl.hidden = true;
+    this.pickEl.classList.remove('is-on');
+  }
+
+  /** 单击封面：高亮选中（同一时刻只有一个），底部浮出细信息条；双击才播放。 */
+  private pickCover(binding: MgCoverBinding): void {
+    this.clearPick();
+    this.picked = binding;
+    binding.el.classList.add('is-picked');
+    this.pickEl.innerHTML = '';
+    this.pickEl.append(
+      h('b', { class: 'mg-pick-title', text: binding.track.title }),
+      h('span', { class: 'mg-pick-artist', text: `${binding.track.artist} · ${mgDuration(binding.track.durationMs)}` }),
+      h('span', { class: 'mg-pick-hint', text: '双击播放 · Esc 取消' }),
+    );
+    this.pickEl.hidden = false;
+    this.pickEl.classList.add('is-on');
+    this.crumbEl.textContent = `${binding.track.title} · 已选中`;
+    this.hideHover();
+  }
+
+  /** 单击 NOW 封面：高亮选中（双击才进入播放台）。 */
+  private pickNow(art: HTMLElement): void {
+    this.clearPick();
+    this.pickedNow = true;
+    art.classList.add('is-picked');
+    const state = playerState();
+    if (!state.track) return;
+    this.pickEl.innerHTML = '';
+    this.pickEl.append(
+      h('b', { class: 'mg-pick-title', text: state.track.title }),
+      h('span', { class: 'mg-pick-artist', text: state.track.artist }),
+      h('span', { class: 'mg-pick-hint', text: '双击进入播放台 · Esc 取消' }),
+    );
+    this.pickEl.hidden = false;
+    this.pickEl.classList.add('is-on');
+    this.crumbEl.textContent = `${state.track.title} · 已选中`;
+    this.hideHover();
+  }
+
+  private clearPick(): void {
+    if (this.picked) this.picked.el.classList.remove('is-picked');
+    this.picked = null;
+    if (this.pickedNow) {
+      this.nowLayer.querySelectorAll('.mg-now-art.is-picked').forEach((el) => el.classList.remove('is-picked'));
+    }
+    this.pickedNow = false;
+    this.pickEl.classList.remove('is-on');
+    this.pickEl.hidden = true;
+    if (this.scene === 'world') this.crumbEl.textContent = '平面世界 · 拖动探索';
+  }
+
+  /** 双击封面：开播并进入居中播放台，用源封面 rect 做 FLIP 飞入。 */
+  private playCover(binding: MgCoverBinding): void {
+    this.callbacks.play(binding.tracks, binding.index, binding.scope);
+    this.enterTheaterFrom(binding.el);
+  }
+
+  private playNow(): void {
+    if (!playerState().track) return;
+    const art = this.nowLayer.querySelector('.mg-now-art');
+    this.enterTheaterFrom(art instanceof HTMLElement ? art : null);
+  }
+
+  private enterTheaterFrom(from: HTMLElement | null): void {
+    if (!playerState().track) return;
+    this.clearPick();
+    this.enterTheater();
+    const art = this.theaterEl.querySelector('.mg-th-art');
+    if (!(art instanceof HTMLElement)) return;
+    art.classList.remove('is-fly');
+    if (!from || this.reducedMotion) return;
+    const target = art.getBoundingClientRect();
+    const source = from.getBoundingClientRect();
+    if (!target.width || !source.width) return;
+    const scale = source.width / target.width;
+    art.style.setProperty('--mg-fly-x', `${source.left + source.width / 2 - (target.left + target.width / 2)}px`);
+    art.style.setProperty('--mg-fly-y', `${source.top + source.height / 2 - (target.top + target.height / 2)}px`);
+    art.style.setProperty('--mg-fly-s', String(scale));
+    void art.offsetWidth;
+    art.classList.add('is-fly');
   }
 
   private buildTheater(): void {
@@ -494,142 +598,208 @@ export class MgPlaneView {
         this.toggleSelection(binding);
         return;
       }
-      this.openCover(binding);
+      this.pickCover(binding);
+    });
+    btn.addEventListener('dblclick', (event) => {
+      if (this.drag.moved || this.sel.size) return;
+      event.stopPropagation();
+      this.playCover(binding);
     });
     this.coversLayer.append(btn);
     return btn;
   }
 
+  private tracksFor(kind: MgListKind): OnlineTrack[] {
+    const source =
+      kind === 'daily' ? this.data.daily :
+      kind === 'recent' ? this.data.recent :
+      kind === 'liked' ? this.data.likedTracks :
+      kind === 'radar' ? this.data.radar : [];
+    return source.slice(0, ZONE_VIS[kind]);
+  }
+
   private buildDaily(): void {
     const zone = MG_ZONES[0]!;
-    const tracks = mgZoneTracks(this.data, 'daily');
-    const sig = `daily:${this.sigOf(tracks)}`;
-    const frame = this.zoneLayer.querySelector(`[data-frame="daily"]`) as HTMLElement | null;
+    const tracks = this.tracksFor('daily');
+    const frame = this.zoneLayer.querySelector('[data-frame="daily"]') as HTMLElement | null;
     if (frame) frame.remove();
     const f = h('div', { class: 'mg-zone-frame', 'data-frame': 'daily' });
-    f.style.left = `${zone.x - 410}px`;
-    f.style.top = `${zone.y - 410}px`;
-    f.style.width = '820px';
-    f.style.height = '820px';
+    f.style.left = `${zone.x - 560}px`;
+    f.style.top = `${zone.y - 560}px`;
+    f.style.width = '1120px';
+    f.style.height = '1120px';
     f.append(h('span', { class: 'mg-zone-num', text: '01' }));
     this.zoneLayer.append(f);
-    this.zoneSigs.set('daily', sig);
+    this.zoneSigs.set('daily', `daily:${this.sigOf(tracks)}`);
+    const size = 188;
+    const step = 240;
     tracks.forEach((track, index) => {
-      const col = index % 3;
-      const row = Math.floor(index / 3);
-      this.placeCover(track, 220, zone.x + (col - 1) * 260, zone.y + (row - 1) * 260, tracks, index, 'daily');
+      const col = index % 4;
+      const row = Math.floor(index / 4);
+      this.placeCover(track, size, zone.x + (col - 1.5) * step, zone.y + (row - 1) * step, tracks, index, 'daily');
     });
     if (!tracks.length) this.addEmptyNote(zone.x, zone.y, this.data.loggedIn ? '今日推荐补货中' : '登录后显示今日推荐');
-    this.addZoneLabel(zone, 410);
+    this.addZoneLabel(zone, 560);
   }
 
   private buildRecent(): void {
     const zone = MG_ZONES[1]!;
-    const tracks = mgZoneTracks(this.data, 'recent');
+    const tracks = this.tracksFor('recent');
     const f = h('div', { class: 'mg-zone-frame', 'data-frame': 'recent' });
     f.style.left = `${zone.x - 560}px`;
-    f.style.top = `${zone.y - 150}px`;
+    f.style.top = `${zone.y - 175}px`;
     f.style.width = '1120px';
-    f.style.height = '300px';
+    f.style.height = '350px';
     f.append(h('span', { class: 'mg-zone-num', text: '02' }));
     this.zoneLayer.append(f);
     this.zoneSigs.set('recent', `recent:${this.sigOf(tracks)}`);
+    const size = 166;
+    const step = 148;
     tracks.forEach((track, index) => {
-      this.placeCover(track, 200, zone.x - 460 + index * 236, zone.y + (index % 2 === 0 ? -22 : 22), tracks, index, 'recent');
+      const x = zone.x - ((tracks.length - 1) * step) / 2 + index * step;
+      const y = zone.y + (index % 2 === 0 ? -34 : 34);
+      this.placeCover(track, size, x, y, tracks, index, 'recent');
     });
     if (!tracks.length) this.addEmptyNote(zone.x, zone.y, '还没有最近播放');
-    this.addZoneLabel(zone, 150);
+    this.addZoneLabel(zone, 175);
   }
 
   private buildLiked(): void {
     const zone = MG_ZONES[2]!;
-    const tracks = mgZoneTracks(this.data, 'liked');
+    const tracks = this.tracksFor('liked');
     const f = h('div', { class: 'mg-zone-frame', 'data-frame': 'liked' });
-    f.style.left = `${zone.x - 440}px`;
-    f.style.top = `${zone.y - 250}px`;
-    f.style.width = '880px';
-    f.style.height = '500px';
+    f.style.left = `${zone.x - 500}px`;
+    f.style.top = `${zone.y - 400}px`;
+    f.style.width = '1000px';
+    f.style.height = '800px';
     f.append(h('span', { class: 'mg-zone-num', text: '03' }));
     this.zoneLayer.append(f);
     this.zoneSigs.set('liked', `liked:${this.sigOf(tracks)}:${this.data.likedCount}`);
+    const size = 180;
+    const stepX = 236;
+    const stepY = 220;
     tracks.forEach((track, index) => {
       const col = index % 4;
       const row = Math.floor(index / 4);
-      this.placeCover(track, 200, zone.x - 345 + col * 230, zone.y - 135 + row * 250, tracks, index, 'liked');
+      this.placeCover(track, size, zone.x + (col - 1.5) * stepX, zone.y - 220 + row * stepY, tracks, index, 'liked');
     });
     if (!tracks.length) this.addEmptyNote(zone.x, zone.y, this.data.loggedIn ? '喜欢列表补货中' : '登录后同步我喜欢的音乐');
     else {
       const count = h('div', { class: 'mg-zone-count', text: `${this.data.likedCount} 首` });
+      count.style.left = `${zone.x + 400}px`;
+      count.style.top = `${zone.y - 420}px`;
       this.zoneLayer.append(count);
-      count.style.left = `${zone.x + 330}px`;
-      count.style.top = `${zone.y - 268}px`;
     }
-    this.addZoneLabel(zone, 250);
+    this.addZoneLabel(zone, 400);
   }
 
   private buildPlaylists(): void {
     const zone = MG_PLAYLIST_ZONE;
-    const items = this.data.playlists.slice(0, 4);
+    const groups = this.data.playlistGroups.length
+      ? this.data.playlistGroups
+      : this.data.playlists.length
+        ? [{ id: 'hot', label: '热门歌单', items: this.data.playlists }]
+        : [];
     const f = h('div', { class: 'mg-zone-frame', 'data-frame': 'playlists' });
-    f.style.left = `${zone.x - 390}px`;
-    f.style.top = `${zone.y - 390}px`;
-    f.style.width = '780px';
-    f.style.height = '780px';
+    f.style.left = `${zone.x - 560}px`;
+    f.style.top = `${zone.y - 330}px`;
+    f.style.width = '1120px';
+    f.style.height = '660px';
     f.append(h('span', { class: 'mg-zone-num', text: '04' }));
     this.zoneLayer.append(f);
-    this.zoneSigs.set('playlists', `pl:${items.map((item) => `${item.source}:${item.id}`).join('|')}`);
+    this.zoneSigs.set('playlists', `pl:${groups.map((group) => `${group.id}:${group.items.map((item) => `${item.source}:${item.id}`).join('|')}`).join('/')}`);
+    const zoneLabel = h('div', { class: 'mg-zone-label' });
+    zoneLabel.style.left = `${zone.x}px`;
+    zoneLabel.style.top = `${zone.y - 348}px`;
+    zoneLabel.append(
+      h('span', { class: 'mg-zone-kicker', text: '04 / PLAYLISTS' }),
+      h('b', { class: 'mg-zone-name', text: zone.cn }),
+      h('span', { class: 'mg-zone-hint', text: '点歌单块展开曲目环' }),
+    );
+    if (groups.length) {
+      if (!groups.some((group) => group.id === this.plGroupId)) this.plGroupId = groups[0]!.id;
+      const tabs = h('div', { class: 'mg-pl-tabs' });
+      groups.forEach((group) => {
+        const tab = h('button', {
+          class: `mg-pl-tab${group.id === this.plGroupId ? ' is-on' : ''}`,
+          type: 'button',
+          text: group.label,
+        });
+        tab.addEventListener('click', (event) => {
+          event.stopPropagation();
+          this.plGroupId = group.id;
+          this.buildPlaylists();
+        });
+        tabs.append(tab);
+      });
+      zoneLabel.append(tabs);
+    }
+    this.zoneLayer.append(zoneLabel);
+    const active = groups.find((group) => group.id === this.plGroupId) ?? groups[0];
+    if (active) this.renderPlaylistBlocks(zone, active);
+    else this.addEmptyNote(zone.x, zone.y, '歌单补货中');
+  }
+
+  private renderPlaylistBlocks(zone: typeof MG_PLAYLIST_ZONE, group: MgPlaylistGroup): void {
+    for (const node of this.plNodes.splice(0)) {
+      if (node.parentElement) node.remove();
+    }
+    const items = group.items.slice(0, 10);
+    const size = 184;
     items.forEach((item, index) => {
-      const col = index % 2;
-      const row = Math.floor(index / 2);
-      const x = zone.x + (col - 0.5) * 360;
-      const y = zone.y + (row - 0.5) * 360;
+      const col = index % 5;
+      const row = Math.floor(index / 5);
+      const bx = zone.x + (col - 2) * 204;
+      const by = zone.y + 24 + (row - 0.5) * 212;
       const btn = h('button', { class: 'mg-pl-block', type: 'button', 'aria-label': `打开歌单 ${item.title}` });
-      btn.style.left = `${x - 170}px`;
-      btn.style.top = `${y - 170}px`;
-      btn.style.width = '340px';
-      btn.style.height = '340px';
+      btn.style.left = `${bx - size / 2}px`;
+      btn.style.top = `${by - size / 2}px`;
+      btn.style.width = `${size}px`;
+      btn.style.height = `${size}px`;
       btn.append(playlistArt(item));
       btn.append(
         h('i', { class: 'mg-pl-shade', 'aria-hidden': 'true' }),
-        h('span', { class: 'mg-pl-no', text: `${String(index + 1).padStart(2, '0')} / ${String(items.length).padStart(2, '0')}` }),
         h('b', { class: 'mg-pl-title', text: item.title }),
-        h('span', { class: 'mg-pl-meta', text: `${item.count} 首${item.creator ? ` · ${item.creator}` : ''}` }),
+        h('span', { class: 'mg-pl-meta', text: `${item.count} 首` }),
       );
       btn.addEventListener('click', (event) => {
         event.stopPropagation();
         void this.openRing(item);
       });
       this.coversLayer.append(btn);
+      this.plNodes.push(btn);
     });
-    const zoneLabel = h('div', { class: 'mg-zone-label' });
-    zoneLabel.style.left = `${zone.x}px`;
-    zoneLabel.style.top = `${zone.y - 408}px`;
-    zoneLabel.append(
-      h('span', { class: 'mg-zone-kicker', text: '04 / PLAYLISTS' }),
-      h('b', { class: 'mg-zone-name', text: zone.cn }),
-      h('span', { class: 'mg-zone-hint', text: '点歌单块展开曲目环' }),
-    );
-    this.zoneLayer.append(zoneLabel);
-    if (!items.length) this.addEmptyNote(zone.x, zone.y, '歌单补货中');
+    if (!items.length) {
+      const note = h('div', { class: 'mg-pl-empty', text: '这组歌单补货中' });
+      note.style.left = `${zone.x - 90}px`;
+      note.style.top = `${zone.y}px`;
+      this.zoneLayer.append(note);
+      this.plNodes.push(note);
+    }
   }
 
   private buildLocal(): void {
     const zone = MG_ZONES[4]!;
     const f = h('div', { class: 'mg-zone-frame', 'data-frame': 'local' });
-    f.style.left = `${zone.x - 140}px`;
-    f.style.top = `${zone.y - 380}px`;
-    f.style.width = '280px';
-    f.style.height = '760px';
+    f.style.left = `${zone.x - 160}px`;
+    f.style.top = `${zone.y - 390}px`;
+    f.style.width = '320px';
+    f.style.height = '780px';
     f.append(h('span', { class: 'mg-zone-num', text: '05' }));
     this.zoneLayer.append(f);
     this.zoneSigs.set('local', `local:${this.data.localCount}`);
-    for (let index = 0; index < 5; index += 1) {
+    const size = 118;
+    for (let index = 0; index < ZONE_VIS.local; index += 1) {
+      const col = index % 2;
+      const row = Math.floor(index / 2);
       const chip = h('button', { class: 'mg-local-chip', type: 'button', 'aria-label': `本地曲库第 ${index + 1} 张` });
-      chip.style.left = `${zone.x - 70}px`;
-      chip.style.top = `${zone.y - 300 + index * 152}px`;
-      chip.style.width = '140px';
-      chip.style.height = '140px';
+      chip.style.left = `${zone.x - size - 10 + col * (size + 20)}px`;
+      chip.style.top = `${zone.y - 262 + row * 148}px`;
+      chip.style.width = `${size}px`;
+      chip.style.height = `${size}px`;
       chip.dataset.seed = `local-${index}`;
+      const hue = 18 + index * 28;
+      chip.style.background = `linear-gradient(158deg, hsl(${hue} 34% 26%), hsl(${hue + 24} 30% 12%))`;
       chip.textContent = 'L';
       chip.addEventListener('click', (event) => {
         event.stopPropagation();
@@ -639,7 +809,7 @@ export class MgPlaneView {
     }
     const board = h('button', { class: 'mg-local-board', type: 'button', 'aria-label': '打开本地曲库' });
     board.style.left = `${zone.x - 150}px`;
-    board.style.top = `${zone.y + 300}px`;
+    board.style.top = `${zone.y + 286}px`;
     board.append(
       h('b', { class: 'mg-local-count', text: String(this.data.localCount) }),
       h('span', { class: 'mg-local-unit', text: '首 · 本地曲库' }),
@@ -650,27 +820,28 @@ export class MgPlaneView {
       this.callbacks.openList('local');
     });
     this.coversLayer.append(board);
-    this.addZoneLabel(zone, 380);
+    this.addZoneLabel(zone, 390);
   }
 
   private buildRadar(): void {
     const zone = MG_ZONES[3]!;
-    const tracks = mgZoneTracks(this.data, 'radar');
+    const tracks = this.tracksFor('radar');
     const f = h('div', { class: 'mg-zone-frame', 'data-frame': 'radar' });
-    f.style.left = `${zone.x - 430}px`;
-    f.style.top = `${zone.y - 380}px`;
-    f.style.width = '860px';
-    f.style.height = '760px';
+    f.style.left = `${zone.x - 450}px`;
+    f.style.top = `${zone.y - 410}px`;
+    f.style.width = '900px';
+    f.style.height = '820px';
     f.append(h('span', { class: 'mg-zone-num', text: '06' }));
     this.zoneLayer.append(f);
     this.zoneSigs.set('radar', `radar:${this.sigOf(tracks)}:${this.data.radarAvailable}`);
-    const radius = 300;
+    const radius = 340;
     tracks.forEach((track, index) => {
-      const angle = (-90 + index * 58) * (Math.PI / 180);
-      const r = index === 0 ? 0 : radius * (0.42 + 0.58 * (index / Math.max(1, tracks.length - 1)));
+      const angle = (-90 + index * 45) * (Math.PI / 180);
+      const ratio = index === 0 ? 0 : 0.5 + (0.5 * index) / Math.max(1, tracks.length - 1);
+      const r = radius * ratio;
       const x = zone.x + Math.cos(angle) * r;
       const y = zone.y + Math.sin(angle) * r * 0.72;
-      const size = index === 0 ? 200 : 180 - index * 8;
+      const size = index === 0 ? 200 : Math.max(120, 200 - index * 10);
       this.placeCover(track, size, x, y, tracks, index, 'radar');
     });
     if (!tracks.length) {
@@ -686,9 +857,8 @@ export class MgPlaneView {
         this.zoneLayer.append(login);
       }
     }
-    this.addZoneLabel(zone, 380);
+    this.addZoneLabel(zone, 410);
   }
-
   private addEmptyNote(x: number, y: number, text: string): void {
     const note = h('div', { class: 'mg-empty', text });
     note.style.left = `${x}px`;
@@ -719,7 +889,11 @@ export class MgPlaneView {
     art.style.left = `${MG_NOW.x - 260}px`;
     art.style.top = `${MG_NOW.y - 260}px`;
     art.append(coverImg(track, track.title));
-    art.addEventListener('click', () => this.openNow());
+    art.addEventListener('click', () => this.pickNow(art));
+    art.addEventListener('dblclick', (event) => {
+      event.stopPropagation();
+      this.playNow();
+    });
     const info = h('div', { class: 'mg-now-info' });
     info.style.left = `${MG_NOW.x + 330}px`;
     info.style.top = `${MG_NOW.y - 150}px`;
@@ -745,29 +919,72 @@ export class MgPlaneView {
     const state = playerState();
     const track = state.track;
     this.theaterEl.innerHTML = '';
-    if (!track) return;
-    const cover = h('div', { class: 'mg-th-art' });
-    cover.append(coverImg(track, track.title));
-    const ring = h('div', { class: 'mg-th-ring', 'aria-hidden': 'true' });
+    if (!track) {
+      this.theaterTrackKey = '';
+      return;
+    }
+    const key = `${mgTrackKey(track)}:${state.index}`;
+    const art = h('div', { class: 'mg-th-art' });
+    art.append(coverImg(track, track.title));
+    const stage = h('div', { class: 'mg-th-stage' }, art);
     const progress = state.durationMs > 0 ? clamp(state.positionMs / state.durationMs, 0, 1) : 0.32;
-    ring.style.setProperty('--mg-progress', `${progress * 100}%`);
-    const meta = h('div', { class: 'mg-th-meta' });
-    meta.append(
-      h('span', { class: 'mg-th-kicker', text: 'NOW PLAYING · 正在播放' }),
+    const fill = h('i', { class: 'mg-th-fill' });
+    fill.style.width = `${progress * 100}%`;
+    const bar = h('div', { class: 'mg-th-progress' },
+      fill,
+      h('span', { class: 'mg-th-time', text: `${state.positionMs > 0 ? mgDuration(state.positionMs) : '0:00'} / ${mgDuration(state.durationMs)}` }),
+    );
+    const info = h('div', { class: 'mg-th-info' },
       h('b', { class: 'mg-th-title', text: track.title }),
       h('span', { class: 'mg-th-artist', text: track.artist }),
-      h('span', { class: 'mg-th-sub', text: `${track.album || '未知专辑'} · ${mgDuration(track.durationMs)} · ${track.source.toUpperCase()}` }),
-      h('div', { class: 'mg-th-tags' },
-        h('i', { text: state.playing ? 'PLAYING' : 'PAUSED' }),
-        h('i', { text: `QUEUE ${String(state.index + 1).padStart(2, '0')} / ${String(Math.max(state.queue.length, 1)).padStart(2, '0')}` }),
-        h('i', { text: 'ISSUE 04' }),
-      ),
+      bar,
     );
-    this.theaterEl.append(
-      h('div', { class: 'mg-th-inner' }, cover, ring),
-      meta,
-      h('div', { class: 'mg-th-hint', text: '拖动画面 · 进入唱片世界' }),
-    );
+    this.theaterEl.append(stage, info, h('div', { class: 'mg-th-hint', text: 'Esc 回封面墙' }));
+    if (this.theaterTrackKey && this.theaterTrackKey !== key) art.classList.add('is-swap');
+    this.theaterTrackKey = key;
+  }
+
+  /** 世界画布右中位置的歌词窗口：上一句 / 当前句 / 下一句；无歌词或不在世界态时隐藏。 */
+  private applyNowLyric(): void {
+    const track = playerState().track;
+    if (!track || this.scene !== 'world') {
+      this.nowLyricEl.classList.remove('is-on');
+      return;
+    }
+    let line = { prev: '', now: '', next: '' };
+    try {
+      line = this.callbacks.lyric();
+    } catch {
+      line = { prev: '', now: '', next: '' };
+    }
+    const prev = (line.prev || '').trim();
+    const now = (line.now || '').trim();
+    const next = (line.next || '').trim();
+    if (!prev && !now && !next) {
+      this.nowLyricEl.classList.remove('is-on');
+      this.lyricKey = '';
+      return;
+    }
+    const key = `${prev}\u0001${now}\u0001${next}`;
+    if (key !== this.lyricKey) {
+      this.lyricKey = key;
+      const nodes = this.nowLyricEl.querySelectorAll('.mg-now-ly');
+      const values = [prev, now, next];
+      nodes.forEach((node, index) => {
+        if (node instanceof HTMLElement) node.textContent = values[index] ?? '';
+      });
+    }
+    this.nowLyricEl.classList.add('is-on');
+  }
+
+  /** 播放进度（不重建播放台，和歌词一起做轻量同步）。 */
+  private syncTheaterProgress(): void {
+    const state = playerState();
+    const progress = state.durationMs > 0 ? clamp(state.positionMs / state.durationMs, 0, 1) : 0;
+    const fill = this.theaterEl.querySelector('.mg-th-fill');
+    if (fill instanceof HTMLElement) fill.style.width = `${progress * 100}%`;
+    const time = this.theaterEl.querySelector('.mg-th-time');
+    if (time instanceof HTMLElement) time.textContent = `${state.positionMs > 0 ? mgDuration(state.positionMs) : '0:00'} / ${mgDuration(state.durationMs)}`;
   }
 
   private renderTheaterState(): void {
@@ -791,13 +1008,15 @@ export class MgPlaneView {
     this.root.dataset.scene = 'theater';
     this.renderTheaterState();
     this.stopAuto();
-    this.crumbEl.textContent = '正在播放 · 开场剧场';
+    this.applyNowLyric();
+    this.crumbEl.textContent = '正在播放 · 播放台';
   }
 
   private leaveTheater(): void {
     if (this.scene !== 'theater') return;
     this.scene = 'world';
     this.root.dataset.scene = 'world';
+    this.applyNowLyric();
     this.crumbEl.textContent = '平面世界 · 拖动探索';
   }
 
@@ -1377,18 +1596,6 @@ export class MgPlaneView {
     this.crumbEl.textContent = `${binding.track.title} · 展开`;
   }
 
-  private openNow(): void {
-    const state = playerState();
-    if (!state.track) return;
-    this.expanded = {
-      track: state.track,
-      tracks: state.queue.length ? state.queue : [state.track],
-      index: state.index,
-      scope: 'recent',
-    };
-    this.showExpand();
-  }
-
   private showExpand(): void {
     const info = this.expanded;
     if (!info) return;
@@ -1739,6 +1946,10 @@ export class MgPlaneView {
     if (track && this.autoTheater && this.scene === 'world' && !this.expanded) {
       this.enterTheater();
     }
+    if (this.scene === 'theater' && track) {
+      this.syncTheaterProgress();
+    }
+    this.applyNowLyric();
     this.root.classList.toggle('is-playing', state.playing);
   }
 
@@ -1772,6 +1983,8 @@ export class MgPlaneView {
         this.closeRing();
       } else if (this.sel.size) {
         this.exitSelection();
+      } else if (this.picked || this.pickedNow) {
+        this.clearPick();
       } else if (this.scene === 'theater') {
         this.leaveTheater();
       } else {
@@ -1794,6 +2007,18 @@ export class MgPlaneView {
       else this.flyToZone(MG_ZONES[this.zoneIndex]!);
       event.preventDefault();
       return;
+    }
+    if (key === 'Enter') {
+      if (this.picked) {
+        this.playCover(this.picked);
+        event.preventDefault();
+        return;
+      }
+      if (this.pickedNow) {
+        this.playNow();
+        event.preventDefault();
+        return;
+      }
     }
     if (key === ' ' || key === 'Spacebar') {
       toggle();

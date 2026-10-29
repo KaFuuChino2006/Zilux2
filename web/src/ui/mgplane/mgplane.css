@@ -518,6 +518,56 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
+  padding: 20px 26px 22px;
+  margin-left: -26px;
+  /* 世界封面会从背后穿过，加一层暗角衬底保证标题可读，同时保持画面不闷。 */
+  background: radial-gradient(130% 150% at 0% 40%, rgba(7, 6, 5, 0.9), rgba(7, 6, 5, 0.55) 62%, rgba(7, 6, 5, 0));
+  pointer-events: none;
+}
+
+/* 世界歌词窗口：固定在屏幕右中（箭头位置），不随相机缩放，播放中常驻。 */
+.mg-now-lyric {
+  position: absolute;
+  left: 61%;
+  top: 43%;
+  z-index: 4;
+  width: 460px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px 22px;
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 260ms ease, transform 260ms ease;
+  pointer-events: none;
+  background: radial-gradient(130% 170% at 0% 45%, rgba(7, 6, 5, 0.74), rgba(7, 6, 5, 0.3) 58%, rgba(7, 6, 5, 0));
+}
+
+.mg-now-lyric.is-on {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.mg-now-ly {
+  display: block;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mg-now-ly.is-prev,
+.mg-now-ly.is-next {
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  color: var(--mg-ink-3);
+}
+
+.mg-now-ly.is-now {
+  font-size: 22px;
+  letter-spacing: 0.01em;
+  color: var(--mg-accent);
+  text-shadow: 0 2px 18px rgba(0, 0, 0, 0.55);
 }
 
 .mg-now-kicker {
@@ -527,10 +577,16 @@
 }
 
 .mg-now-title {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  max-width: 100%;
   font-size: 84px;
   line-height: 0.96;
   letter-spacing: -0.02em;
   color: var(--mg-ink);
+  text-shadow: 0 4px 30px rgba(0, 0, 0, 0.55);
 }
 
 .mg-now-artist {
@@ -1485,4 +1541,484 @@
   z-index: -1;
   pointer-events: none;
   background: linear-gradient(180deg, rgba(6, 7, 10, 0.92) 0%, rgba(6, 7, 10, 0.62) 46%, rgba(6, 7, 10, 0) 100%);
+}
+/* ============================================================
+   v2 播放台 / 单击选中 / 歌单分册 / 更多封面
+   ============================================================ */
+
+/* ---------- 单击选中 + 底部信息条 ---------- */
+.mg-cover {
+  transition: box-shadow 180ms ease, transform 200ms var(--mg-ease, ease);
+}
+
+.mg-cover.is-picked {
+  transform: translateY(-10px);
+  z-index: 8;
+}
+
+.mg-cover.is-picked .mg-cover-art,
+.mg-cover.is-picked img {
+  outline: 2px solid var(--mg-accent);
+  outline-offset: 3px;
+  filter: brightness(1.07) saturate(1.04);
+}
+
+.mg-cover.is-picked {
+  box-shadow: 12px 14px 0 rgba(0, 0, 0, 0.55);
+}
+
+.mg-now-art.is-picked img {
+  outline: 2px solid var(--mg-accent);
+  outline-offset: 3px;
+  filter: brightness(1.06);
+}
+
+.mg-pickbar {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--mg-player) + 24px);
+  z-index: 46;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  max-width: min(720px, 60vw);
+  padding: 9px 14px;
+  border: 1px solid var(--mg-line-soft);
+  border-left: 2px solid var(--mg-accent);
+  background: rgba(10, 9, 8, 0.9);
+  transform: translate(-50%, 6px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease, transform 200ms ease;
+}
+
+.mg-pickbar[hidden] {
+  display: none;
+}
+
+.mg-pickbar.is-on {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.mg-pick-title {
+  font-size: 14px;
+  color: var(--mg-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mg-pick-artist {
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: var(--mg-ink-3);
+  white-space: nowrap;
+}
+
+.mg-pick-hint {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--mg-accent);
+  opacity: 0.86;
+  white-space: nowrap;
+}
+
+/* ---------- 播放台：单列居中 ---------- */
+.mgplane[data-scene='theater'] .mg-theater {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 48px calc(var(--mg-player) + 20px);
+  pointer-events: none;
+}
+
+.mg-th-stage {
+  position: relative;
+  width: min(52vw, 68vh);
+  aspect-ratio: 1;
+  flex: 0 0 auto;
+  border: 1px solid rgba(242, 237, 226, 0.14);
+  box-shadow: 26px 26px 0 rgba(0, 0, 0, 0.5);
+  background: #131110;
+  overflow: hidden;
+}
+
+.mg-th-art {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: #131110;
+}
+
+.mg-th-art img,
+.mg-th-art canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.mg-th-art.is-swap {
+  animation: mg-th-swap 260ms ease both;
+}
+
+@keyframes mg-th-swap {
+  from {
+    opacity: 0.25;
+    transform: scale(1.015);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.mg-th-art.is-fly {
+  animation: mg-fly-in 380ms cubic-bezier(0.22, 0.8, 0.28, 1) both;
+  transform-origin: 50% 50%;
+}
+
+@keyframes mg-fly-in {
+  from {
+    transform: translate(var(--mg-fly-x, 0px), var(--mg-fly-y, 0px)) scale(var(--mg-fly-s, 1));
+  }
+  to {
+    transform: none;
+  }
+}
+
+.mg-th-info {
+  width: min(52vw, 68vh);
+  margin-top: 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+}
+
+.mg-th-title {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  max-width: 100%;
+  font-size: clamp(30px, 3.4vw, 48px);
+  line-height: 1.06;
+  letter-spacing: -0.02em;
+  color: var(--mg-ink);
+}
+
+.mg-th-artist {
+  font-size: 16px;
+  color: var(--mg-ink-2);
+}
+
+.mg-th-progress {
+  position: relative;
+  width: 100%;
+  height: 2px;
+  margin-top: 14px;
+  background: var(--mg-line-soft);
+  overflow: visible;
+}
+
+.mg-th-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  background: var(--mg-accent);
+  transition: width 220ms linear;
+}
+
+.mg-th-time {
+  position: absolute;
+  right: 0;
+  top: 10px;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--mg-ink-3);
+}
+
+.mg-th-lyrics {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  margin-top: 30px;
+  min-height: 70px;
+}
+
+.mg-th-ly {
+  display: block;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mg-th-ly.is-prev,
+.mg-th-ly.is-next {
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  color: var(--mg-ink-3);
+}
+
+.mg-th-ly.is-now {
+  font-size: clamp(20px, 1.7vw, 26px);
+  letter-spacing: 0.01em;
+  color: var(--mg-accent);
+}
+
+.mg-th-hint {
+  position: static;
+  margin-top: 34px;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: var(--mg-ink-3);
+}
+
+/* ---------- 歌单分册 tabs ---------- */
+.mg-pl-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin-top: 10px;
+  pointer-events: auto;
+}
+
+.mg-pl-tab {
+  padding: 0 0 4px;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  background: none;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--mg-ink-3);
+  cursor: pointer;
+  transition: color 160ms ease, border-color 160ms ease;
+}
+
+.mg-pl-tab:hover {
+  color: var(--mg-ink-2);
+}
+
+.mg-pl-tab.is-on {
+  color: var(--mg-ink);
+  border-color: var(--mg-accent);
+}
+
+.mg-pl-title {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 26px;
+  z-index: 3;
+  font-size: 13px;
+  color: var(--mg-ink);
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mg-pl-meta {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 10px;
+  z-index: 3;
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  color: var(--mg-ink-3);
+  text-align: left;
+}
+
+.mg-pl-shade {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  background: linear-gradient(180deg, rgba(8, 8, 8, 0.04) 40%, rgba(8, 8, 8, 0.68));
+  pointer-events: none;
+}
+
+.mg-pl-empty {
+  position: absolute;
+  padding: 10px 14px;
+  border: 1px dashed var(--mg-line);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--mg-ink-3);
+}
+
+/* ---------- 本地曲库：8 个 chip + 数字板 ---------- */
+.mg-local-chip {
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(242, 237, 226, 0.16);
+  background: #14120f;
+  box-shadow: 5px 5px 0 var(--mg-hard);
+  font-size: 0;
+  overflow: hidden;
+  transition: border-color 160ms ease, box-shadow 200ms ease;
+}
+
+.mg-local-chip:hover {
+  border-color: var(--mg-line-strong);
+  box-shadow: 7px 8px 0 var(--mg-hard);
+}
+
+.mg-local-chip::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  opacity: 0.85;
+}
+
+.mg-local-board {
+  position: absolute;
+  width: 300px;
+  padding: 16px 18px;
+  border: 1px solid var(--mg-line);
+  background: rgba(16, 14, 12, 0.86);
+  text-align: left;
+  transition: border-color 160ms ease;
+}
+
+.mg-local-board:hover {
+  border-color: var(--mg-line-strong);
+}
+
+.mg-local-count {
+  display: block;
+  font-size: 54px;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  color: var(--mg-ink);
+}
+
+.mg-local-unit {
+  display: block;
+  margin-top: 4px;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: var(--mg-ink-3);
+}
+
+.mg-local-go {
+  display: block;
+  margin-top: 14px;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  font-style: normal;
+  color: var(--mg-accent);
+}
+
+@media (max-width: 1180px) {
+  .mg-th-title {
+    font-size: clamp(26px, 3.6vw, 38px);
+  }
+
+  .mg-pickbar {
+    max-width: 76vw;
+  }
+}
+
+/* v2 播放台高度收敛：保证 1600×960 下封面+信息+歌词+提示全部进画面 */
+.mgplane[data-scene='theater'] .mg-theater {
+  padding: 20px 48px calc(var(--mg-player) + 14px);
+}
+
+.mg-th-stage {
+  width: min(46vw, 54vh);
+}
+
+.mg-th-info {
+  width: min(46vw, 54vh);
+  margin-top: 24px;
+}
+
+.mg-th-progress {
+  margin-top: 12px;
+}
+
+.mg-th-lyrics {
+  margin-top: 24px;
+  min-height: 62px;
+  gap: 7px;
+}
+
+.mg-th-hint {
+  margin-top: 20px;
+}
+
+/* v2 播放台：让出顶部悬浮搜索胶囊（84px），并保证整列进画面 */
+.mgplane[data-scene='theater'] .mg-theater {
+  padding: 84px 48px calc(var(--mg-player) + 12px);
+}
+
+.mg-th-stage,
+.mg-th-info {
+  width: min(42vw, 48vh);
+}
+
+.mg-th-info {
+  margin-top: 22px;
+}
+
+.mg-th-lyrics {
+  margin-top: 20px;
+  min-height: 58px;
+  gap: 6px;
+}
+
+.mg-th-hint {
+  margin-top: 16px;
+}
+
+/* v2 修正：世界视图下 tab/选中环的可读尺寸 */
+.mg-pl-tabs {
+  margin-top: 14px;
+  gap: 44px;
+}
+
+.mg-pl-tab {
+  font-size: 44px;
+  letter-spacing: 0;
+  padding: 0 0 10px;
+  border-bottom-width: 2px;
+}
+
+.mg-pl-tab.is-on {
+  border-bottom-width: 3px;
+}
+
+.mg-cover.is-picked {
+  box-shadow: 0 0 0 2px var(--mg-accent), 14px 16px 0 rgba(0, 0, 0, 0.55);
+}
+
+.mg-cover.is-picked img,
+.mg-cover.is-picked canvas {
+  filter: brightness(1.08) saturate(1.04);
+}
+
+.mg-pickbar {
+  background: rgba(8, 8, 8, 0.94);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+}
+
+/* v2 修正：选中环在世界缩放（0.24x）下仍需可见 */
+.mg-cover.is-picked {
+  outline: 7px solid rgba(217, 192, 141, 0.9);
+  outline-offset: 5px;
+  box-shadow: 18px 20px 0 rgba(0, 0, 0, 0.55);
+}
+
+.mg-now-art.is-picked {
+  outline: 7px solid rgba(217, 192, 141, 0.9);
+  outline-offset: 5px;
 }
