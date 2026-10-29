@@ -6662,3 +6662,9 @@ html.is-pb-expanded .playerbar.is-hidden {
 .home-host.is-mg .ui-page.home {
   display: none;
 }
+
+/* 平面世界展开分区列表时隐藏顶部搜索胶囊，避免与列表 header 重叠 */
+.app.is-mg-mode:has(.mgplane.is-zone-open) .topbar-center {
+  opacity: 0;
+  pointer-events: none;
+}
