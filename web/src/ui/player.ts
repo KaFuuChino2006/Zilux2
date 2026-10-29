@@ -306,6 +306,32 @@ let startAt = 0;
 /** CUE 分轨时长（秒），0 = 播到文件尾 */
 let cueSeconds = 0;
 
+/**
+ * 「过渡一开始就显示下一首」的预览状态。
+ * 淡化开始瞬间把界面（播放条 / 迷你播放器 / 平面世界 NOW / 歌词页 / 系统媒体卡片）切到 B，
+ * 但 deck 交换仍等淡化结束（commitSeamless）；过渡被取消时按这里记录的 A 回退显示。
+ */
+interface SeamlessPreview {
+  /** 正在淡入的 deck（B） */
+  deck: HTMLAudioElement;
+  track: OnlineTrack;
+  index: number;
+  /** 正在淡出的那一轨（A）与它的下标，取消时用来回退 */
+  fromTrack: OnlineTrack | null;
+  fromIndex: number;
+  /** B 这一段的 CUE 起始秒数 */
+  startAt: number;
+  /** B 的曲内总时长（毫秒） */
+  durationMs: number;
+}
+
+let preview: SeamlessPreview | null = null;
+
+/** 当前真正发声的那一轨：过渡中仍是淡出的 A（此时 state.track 已经指向 B）。 */
+function outgoingTrack(): OnlineTrack | null {
+  return preview ? preview.fromTrack : state.track;
+}
+
 let reportTimer = 0;
 let lastReportAt = 0;
 let rafId = 0;
@@ -445,8 +471,13 @@ function durationMs(): number {
 function tick(): void {
   rafId = 0;
   if (!state.track) return;
-  const nextPos = positionMs();
-  const nextDur = durationMs();
+  // 兜底：引擎若在淡化中途自行取消（例如计划过期），界面不能停在已经切过去的 B 上。
+  if (preview && !crossfadeIsFading()) restorePreview('engine-stopped');
+  // 引擎永远看「正在淡出的 A」的进度；界面在过渡中看正在淡入的 B（preview）。
+  const deckPos = positionMs();
+  const deckDur = durationMs();
+  const nextPos = preview ? previewPositionMs() : deckPos;
+  const nextDur = preview ? preview.durationMs : deckDur;
   if (
     Math.abs(nextPos - state.positionMs) > 40 ||
     Math.abs(nextDur - state.durationMs) > 200 ||
@@ -455,7 +486,7 @@ function tick(): void {
     setState({ positionMs: nextPos, durationMs: nextDur, playing: !audio.paused });
   }
   // 到点就起播 B 并开始等功率交叉淡化（内部有开关/图表/过期守卫）。
-  crossfadeTick(nextPos, nextDur);
+  crossfadeTick(deckPos, deckDur);
   scheduleTick();
   maybeReport();
 }
@@ -974,8 +1005,10 @@ function manualSwitch(index: number): void {
       token === seamlessToken &&
       state.playing &&
       audio === fromDeck &&
-      state.track === fromTrack &&
+      outgoingTrack() === fromTrack &&
       readCrossfadeSettings().enabled,
+    onStart: () =>
+      beginSeamlessPreview(nextDeck, target, index, fromTrack, state.index, Math.max(0, Number(target.startAt ?? 0))),
     onFinish: () => commitSeamless(fromDeck, nextDeck, target, index),
     onFail: (reason) => {
       if (token !== seamlessToken) return;
@@ -1041,6 +1074,9 @@ export function prev(): void {
 
 export function seek(ms: number): void {
   if (!state.track) return;
+  // 过渡中拖进度条：界面与预告都已经指向 B，先把过渡立刻收尾（deck 交换到 B），
+  // 再按用户点的新位置继续 —— 否则进度条会落到正在淡出的 A 上。
+  if (preview && crossfadeIsFading()) crossfadeFinishNow('seek');
   // 拖动进度：旧的淡化窗口失效，先取消并清理 B，再按新位置重新准备。
   cancelSeamless('seek');
   const duration = durationMs();
@@ -1205,6 +1241,62 @@ function clearStandbyDeck(): void {
   }
 }
 
+/** 过渡中界面显示的进度：从正在淡入的 B 读。 */
+function previewPositionMs(): number {
+  if (!preview) return positionMs();
+  const raw = Number.isFinite(preview.deck.currentTime) ? preview.deck.currentTime : preview.startAt;
+  return Math.max(0, (raw - preview.startAt) * 1000);
+}
+
+/**
+ * 过渡开始（B 已起播、第一帧淡化之前）：把界面切到下一首。
+ * 只改展示状态，不动 deck —— 音频交换仍由 commitSeamless 在淡化结束时完成。
+ */
+function beginSeamlessPreview(
+  deck: HTMLAudioElement,
+  track: OnlineTrack,
+  index: number,
+  fromTrack: OnlineTrack | null,
+  fromIndex: number,
+  nextStartAt: number,
+): void {
+  const rawDuration = Number.isFinite(deck.duration) && deck.duration > nextStartAt ? deck.duration - nextStartAt : 0;
+  preview = {
+    deck,
+    track,
+    index,
+    fromTrack,
+    fromIndex,
+    startAt: nextStartAt,
+    durationMs: rawDuration > 0 ? rawDuration * 1000 : (track.durationMs ?? 0),
+  };
+  setState({
+    track,
+    index,
+    positionMs: previewPositionMs(),
+    durationMs: preview.durationMs,
+    playing: true,
+    loading: false,
+  });
+  refreshLiked(track);
+}
+
+/** 过渡被取消：界面回退到还在发声的 A，进度继续读 A 的真实位置。 */
+function restorePreview(reason: string): void {
+  if (!preview) return;
+  const back = preview;
+  preview = null;
+  setState({
+    track: back.fromTrack,
+    index: back.fromIndex,
+    positionMs: positionMs(),
+    durationMs: durationMs(),
+    playing: !audio.paused,
+  });
+  refreshLiked(back.fromTrack);
+  console.debug(`[player] seamless preview 回退（${reason}）`);
+}
+
 /**
  * 取消无缝衔接：作废异步准备与预取、中止引擎里的计划/淡化（引擎会恢复 A 的音量），
  * 并清掉 B 的预加载。任何显式切歌/暂停/seek/停止/改队列/关开关都走这里。
@@ -1219,6 +1311,8 @@ function cancelSeamless(reason: string): void {
   setPrefetch({ key: '', title: '', state: 'idle' });
   cancelCrossfade(reason);
   clearStandbyDeck();
+  // 过渡中界面已经切到 B：取消时回退显示到仍在发声的 A。
+  restorePreview(reason);
 }
 
 /**
@@ -1256,9 +1350,10 @@ function planSingleLoop(current: OnlineTrack, token: number): void {
       token === seamlessToken &&
       state.playing &&
       audio === activeDeck &&
-      state.track === current &&
+      outgoingTrack() === current &&
       state.mode === 'single' &&
       readCrossfadeSettings().enabled,
+    onStart: () => beginSeamlessPreview(activeStandby, current, loopIndex, current, loopIndex, Math.max(0, startAt)),
     onFinish: () => commitSeamless(activeDeck, activeStandby, current, loopIndex),
     onFail: (reason) => {
       if (token !== seamlessToken) return;
@@ -1278,7 +1373,8 @@ function planSingleLoop(current: OnlineTrack, token: number): void {
 function prepareSeamlessNext(): void {
   seamlessToken += 1;
   const token = seamlessToken;
-  // 上一份计划作废（引擎内部会恢复 A 音量、暂停 B）。
+  // 上一份计划作废（引擎内部会恢复 A 音量、暂停 B）；若界面已在过渡中切到 B，先退回 A。
+  restorePreview('replace');
   cancelCrossfade('replace');
   clearStandbyDeck();
   // 预分析状态跟着重排（同一首重排会命中缓存，不重复请求宿主）。
@@ -1321,6 +1417,7 @@ function prepareSeamlessNext(): void {
   const activeDeck = audio;
   const standbyDeck = standby;
   const currentStartAt = startAt;
+  const currentIndex = state.index;
   const currentDurationMs = durationMs();
   const currentPositionMs = positionMs();
   // 预分析「接下来会播的那首」：命中缓存时切歌瞬间无需等待宿主分析。
@@ -1336,7 +1433,7 @@ function prepareSeamlessNext(): void {
   Promise.all([analysisFor(current), analysisFor(nextTrack)])
     .then(async ([currentResult, nextResult]) => {
       if (token !== seamlessToken) return;
-      if (!state.playing || audio !== activeDeck || state.track !== current) return;
+      if (!state.playing || audio !== activeDeck || outgoingTrack() !== current) return;
       if (!readCrossfadeSettings().enabled) return;
       // 取两首歌词的人声首末句：B 的首句用于对齐过渡终点（前奏长/短两种安排），
       // A 的末句用于「歌词衔接」（A 末句唱完接 B 首句）。取不到（无歌词/超时）返回 null，
@@ -1345,7 +1442,7 @@ function prepareSeamlessNext(): void {
       const nextVocalStartMs = nextRange && nextRange.firstMs > 0 ? nextRange.firstMs : null;
       const currentLastVocalEndMs = currentRange && currentRange.lastEndMs > 0 ? currentRange.lastEndMs : null;
       if (token !== seamlessToken) return;
-      if (!state.playing || audio !== activeDeck || state.track !== current) return;
+      if (!state.playing || audio !== activeDeck || outgoingTrack() !== current) return;
       if (!readCrossfadeSettings().enabled) return;
       let nextUrl = '';
       try {
@@ -1372,8 +1469,17 @@ function prepareSeamlessNext(): void {
           token === seamlessToken &&
           state.playing &&
           audio === activeDeck &&
-          state.track === current &&
+          outgoingTrack() === current &&
           readCrossfadeSettings().enabled,
+        onStart: () =>
+          beginSeamlessPreview(
+            standbyDeck,
+            nextTrack,
+            nextIndex,
+            current,
+            currentIndex,
+            Number(nextTrack.startAt ?? 0),
+          ),
         onFinish: () => commitSeamless(activeDeck, standbyDeck, nextTrack, nextIndex),
       });
       if (prepared) {
@@ -1405,6 +1511,8 @@ function commitSeamless(
   }
   cancelFade();
   seamlessToken += 1;
+  // 界面可能已经在过渡开始时切到了这首：收尾时清掉预览，后面的 setState 直接以新 deck 为准。
+  preview = null;
   audio = nextDeck;
   standby = previousDeck;
   // 过渡结束：新 deck 回到用户倍速（引擎已把 WSOLA tempoRate 平滑拉回），旧预选/过渡目标作废。
