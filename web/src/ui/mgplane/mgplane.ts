@@ -50,6 +50,9 @@ interface MgCoverBinding {
 
 type MgScene = 'theater' | 'world';
 
+/** 世界歌词窗口的左上角世界坐标：NOW 右侧空场（用户箭头所指位置），随世界一起缩放/拖动。 */
+const MG_LYRIC_WORLD = { x: 4020, y: 1460 };
+
 interface MgCam {
   x: number;
   y: number;
@@ -226,13 +229,10 @@ export class MgPlaneView {
       ? window.matchMedia('(prefers-reduced-motion: reduce)')
       : null;
 
-  // 页面状态
+  // 页面状态（只保留世界态：播放不再跳转独立播放页）
   private scene: MgScene = 'world';
-  /**
-   * 启动自动进场：应用刚打开、播放器恢复曲目后只演一次「开场剧场」。
-   * 一旦用户按下鼠标/触摸，就视为已开始交互，不再自动进场，避免抢走用户操作。
-   */
-  private autoTheater = true;
+  /** 播放页已取消：保留字段给旧剧场代码兜底，始终为 false，避免任何入口再进入播放页。 */
+  private autoTheater = false;
   /** 本次 pointerdown 是否用于揭幕（剧场态第一下：只揭幕，不吞其余操作）。 */
   private theaterPress = false;
   private readonly covers: MgCoverBinding[] = [];
@@ -301,8 +301,10 @@ export class MgPlaneView {
       h('span', { class: 'mg-now-ly is-now' }),
       h('span', { class: 'mg-now-ly is-next' }),
     );
+    this.nowLyricEl.style.left = `${MG_LYRIC_WORLD.x}px`;
+    this.nowLyricEl.style.top = `${MG_LYRIC_WORLD.y}px`;
 
-    this.worldEl.append(this.gridEl, this.zoneLayer, this.coversLayer, this.nowLayer, this.ghostEl);
+    this.worldEl.append(this.gridEl, this.zoneLayer, this.coversLayer, this.nowLayer, this.ghostEl, this.nowLyricEl);
     this.viewportEl.append(this.worldEl);
     this.root.append(
       this.bg,
@@ -312,7 +314,6 @@ export class MgPlaneView {
       this.miniEl,
       this.readoutEl,
       this.hoverEl,
-      this.nowLyricEl,
       this.theaterEl,
       this.expandEl,
       this.ringEl,
@@ -339,7 +340,6 @@ export class MgPlaneView {
     this.unsubPlayer = onPlayer((state) => this.onPlayerState(state));
     this.renderTheaterState();
     this.renderZones();
-    if (playerState().track) this.enterTheater();
   }
 
   /* ------------------------------------------------------------------ */
@@ -459,16 +459,18 @@ export class MgPlaneView {
     if (this.scene === 'world') this.crumbEl.textContent = '平面世界 · 拖动探索';
   }
 
-  /** 双击封面：开播并进入居中播放台，用源封面 rect 做 FLIP 飞入。 */
+  /** 双击封面：直接开播（不跳页面，世界里的 NOW 封面会更新为这首）。 */
   private playCover(binding: MgCoverBinding): void {
+    this.clearPick();
     this.callbacks.play(binding.tracks, binding.index, binding.scope);
-    this.enterTheaterFrom(binding.el);
+    // 播放页已取消；这里保留旧入口的兜底调用但永不触发（autoTheater 恒为 false）。
+    if (this.autoTheater) this.enterTheaterFrom(binding.el);
   }
 
   private playNow(): void {
     if (!playerState().track) return;
-    const art = this.nowLayer.querySelector('.mg-now-art');
-    this.enterTheaterFrom(art instanceof HTMLElement ? art : null);
+    this.clearPick();
+    if (this.autoTheater) this.enterTheaterFrom(null);
   }
 
   private enterTheaterFrom(from: HTMLElement | null): void {
