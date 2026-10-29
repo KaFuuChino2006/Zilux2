@@ -664,7 +664,7 @@ export class App {
       if (event.clientY > 84) return;
       if (
         target.closest(
-          'button, input, textarea, select, .win-btns, .pill, .rail, .sheet, .lyrics-view, .playerbar, .upnext, .quick, .account-wrap, .search-wrap, .search-dock, .search-pop, .mgplane button, .mg-cover, .mg-now-art, .mg-hud, .mg-debug, .mg-mini, .mg-expand, .mg-ring, .mg-selbar, .mg-radial, .mg-theater',
+          'button, input, textarea, select, .win-btns, .pill, .rail, .sheet, .lyrics-view, .playerbar, .upnext, .quick, .account-wrap, .search-wrap, .search-dock, .search-pop, .mgplane button, .mg-cover, .mg-now-art, .mg-hud, .mg-debug, .mg-mini, .mg-expand, .mg-selbar, .mg-radial, .mg-theater',
         )
       ) {
         return;
@@ -830,8 +830,8 @@ export class App {
     if (this.mgHome) return this.mgHome;
     const view = new MgPlaneView({
       play: (tracks, index, scope) => {
-        // 歌单环与本地曲库直接开播；daily/recent/liked/radar 交给首页逻辑异步补全整队列。
-        if (scope === 'playlist' || scope === 'local') playQueue(tracks, index, true);
+        // 本地曲库直接开播；daily/recent/liked/radar 交给首页逻辑异步补全整队列。
+        if (scope === 'local') playQueue(tracks, index, true);
         else this.playFromHome(tracks, index, scope);
       },
       openList: (kind) => {
@@ -843,7 +843,6 @@ export class App {
       },
       search: () => this.focusSearch(),
       login: () => this.openLogin(),
-      openPlaylist: (item) => void this.showPlaylist(item),
       discover: () => void this.showDiscover(),
       myPlaylists: () => this.openPlaylistSheet(),
       settings: () => this.openSettingsSheet(),

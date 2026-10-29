@@ -5,7 +5,6 @@
  * 首页数据转成画布输入；具体渲染见 mgplane.ts。
  */
 
-import type { LibraryPlaylist } from '../../core/library';
 import type { OnlineTrack } from '../../online/types';
 import type { HomeData } from '../home';
 
@@ -14,11 +13,10 @@ export type MgListKind = 'daily' | 'recent' | 'liked' | 'radar' | 'local';
 
 /** 画布向外抛的所有交互回调（由 app.ts 提供，模块自身不直接跳转/开播）。 */
 export interface MgPlaneCallbacks {
-  play(tracks: OnlineTrack[], index: number, scope: MgListKind | 'playlist'): void;
+  play(tracks: OnlineTrack[], index: number, scope: MgListKind): void;
   openList(kind: MgListKind): void;
   search(): void;
   login(): void;
-  openPlaylist(item: LibraryPlaylist): void;
   /** 打开「发现」页（原左侧栏「发现」）。 */
   discover(): void;
   /** 打开「我的歌单」浮层（原左侧栏「我的歌单」）。 */
@@ -35,13 +33,6 @@ export interface MgPlaneCallbacks {
   moreTracks(kind: MgListKind, offset: number, limit: number): Promise<OnlineTrack[]>;
 }
 
-/** 歌单区的一组歌单（世界里的「歌单 / 收藏」分册，可切换）。 */
-export interface MgPlaylistGroup {
-  id: string;
-  label: string;
-  items: LibraryPlaylist[];
-}
-
 /** 画布渲染所需的全部数据（首页每次刷新时整体传入，模块内部做增量）。 */
 export interface MgPlaneData {
   loggedIn: boolean;
@@ -52,9 +43,6 @@ export interface MgPlaneData {
   likedCount: number;
   radarAvailable: boolean;
   radar: OnlineTrack[];
-  playlists: LibraryPlaylist[];
-  /** 歌单区分册：热门歌单 / 网易云歌单 / 我的收藏，可切换。 */
-  playlistGroups: MgPlaylistGroup[];
 }
 
 /** 空数据（未登录、宿主未就绪时先用它渲染骨架）。 */
@@ -67,8 +55,6 @@ export const MG_EMPTY_DATA: MgPlaneData = {
   likedCount: 0,
   radarAvailable: false,
   radar: [],
-  playlists: [],
-  playlistGroups: [],
 };
 
 /** 有限世界尺寸（世界单位；缩放 z=1 时 1 单位 = 1 CSS 像素）。 */
@@ -77,7 +63,7 @@ export const MG_WORLD_H = 3400;
 /** 安全边：相机中心限制在世界内缩 400 单位范围内。 */
 export const MG_SAFE = 400;
 
-/** 六个分类区 + 中心 NOW + 歌单区的世界坐标（区中心点）。 */
+/** 五个分类区 + 中心 NOW 的世界坐标（区中心点）。 */
 export interface MgZoneSpec {
   kind: MgListKind;
   no: string;
@@ -92,12 +78,9 @@ export const MG_ZONES: MgZoneSpec[] = [
   { kind: 'daily', no: '01', en: 'DAILY', cn: '今日推荐', hint: '每天 6:00 更新', x: 1500, y: 900 },
   { kind: 'recent', no: '02', en: 'RECENT', cn: '最近播放', hint: '按播放时间排序', x: 4500, y: 900 },
   { kind: 'liked', no: '03', en: 'LIKED', cn: '我喜欢的音乐', hint: '收藏过的曲目', x: 1500, y: 2520 },
-  { kind: 'radar', no: '06', en: 'RADAR', cn: '私人雷达', hint: '只属于你的推荐', x: 3000, y: 3020 },
-  { kind: 'local', no: '05', en: 'LOCAL', cn: '本地曲库', hint: '本地文件与收藏', x: 3000, y: 560 },
+  { kind: 'radar', no: '05', en: 'RADAR', cn: '私人雷达', hint: '只属于你的推荐', x: 3000, y: 3020 },
+  { kind: 'local', no: '04', en: 'LOCAL', cn: '本地曲库', hint: '本地文件与收藏', x: 3000, y: 560 },
 ];
-
-/** 歌单区（点击展开曲目环，不进入 openList）。 */
-export const MG_PLAYLIST_ZONE = { no: '04', en: 'PLAYLISTS', cn: '热门歌单', x: 4500, y: 2520 };
 
 /** 中心 NOW 封面与标题排版锚点。 */
 export const MG_NOW = { x: 2280, y: 1360 };
@@ -138,6 +121,7 @@ export function mgIsLocal(track: OnlineTrack): boolean {
  *
  * HomeData 里没有单独的 likedTracks：用各平台「我喜欢的音乐」收藏卡片里的前几首
  * 合并去重（卡片最多 5 首，足够铺 03 区的 8 格）；likedCount 取各卡片 count 之和。
+ * 画布不展示任何歌单（歌单只在经典首页 / 浮层里出现），所以这里不再搬歌单数据。
  */
 export function fromHomeData(data: HomeData): MgPlaneData {
   const likedTracks: OnlineTrack[] = [];
@@ -151,25 +135,6 @@ export function fromHomeData(data: HomeData): MgPlaneData {
     }
   }
   const likedCount = data.collections.reduce((sum, item) => sum + Math.max(0, item.count), 0);
-  const playlistGroups: MgPlaylistGroup[] = [];
-  if (data.playlists.length > 0) {
-    playlistGroups.push({ id: 'hot', label: '热门歌单', items: data.playlists });
-  }
-  if (data.neteasePlaylists.length > 0) {
-    playlistGroups.push({ id: 'netease', label: '网易云歌单', items: data.neteasePlaylists });
-  }
-  const likedGroups = data.collections
-    .filter((item) => item.loggedIn && item.count > 0)
-    .map((item) => ({
-      source: item.source as LibraryPlaylist['source'],
-      id: 'liked',
-      title: item.label,
-      count: item.count,
-      special: 'liked' as const,
-    }));
-  if (likedGroups.length > 0) {
-    playlistGroups.push({ id: 'liked', label: '我的收藏', items: likedGroups });
-  }
   return {
     loggedIn: data.loggedIn,
     localCount: data.localCount,
@@ -179,7 +144,5 @@ export function fromHomeData(data: HomeData): MgPlaneData {
     likedCount: likedCount > 0 ? likedCount : likedTracks.length,
     radarAvailable: data.radarAvailable,
     radar: data.radar,
-    playlists: data.playlists,
-    playlistGroups,
   };
 }
