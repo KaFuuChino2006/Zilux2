@@ -9,6 +9,8 @@ import { getTransitionTarget, type PlayerState } from './player';
  *   - 一个玻璃胶囊里始终只有一份内容：预告阶段显示「即将播放」的下一首 + 倒计时；
  *   - 无缝衔接（B 版 Phase 1）淡化进行中时，同一框内改为「正在无缝过渡到」下一首，
  *     进度条显示淡化进度、隐藏倒计时；手动切歌 / 单曲循环的短过渡同样走这个形态；
+ *   - 优先级：淡化进行中 > 「正在播放」停留。界面在淡化一开始就换到下一首，
+ *     所以这段时间不能再弹「正在播放」把过渡条盖住；淡化结束后才切回「正在播放」停留；
  *   - 切歌后同一个框内切换为「正在播放」并展示新歌曲，约 2.6 秒后收起；
  *   - 内容切换使用淡入淡出，倒计时数字用透明度渐变（不做弹跳）；
  *   - 点击框（预告阶段）立即切到下一首。
@@ -164,8 +166,11 @@ export function createUpNextToast(onSkip: () => void): UpNextToastHandle {
     // 手动切歌 / 单曲循环过渡时「下一首」不是队列里的下一项，改用 player 暴露的过渡目标。
     const next = getTransitionTarget() ?? upcoming(state);
     if (next) {
-      lastTransitionKey = `${next.source}:${next.id}`;
-      swapContent(next, '正在无缝过渡到');
+      const nextKey = `${next.source}:${next.id}`;
+      lastTransitionKey = nextKey;
+      // 预告阶段显示的就是这一首时，只把 kicker 从「即将播放」渐变过去，不重放整段换内容动画。
+      if (nextKey === lastPreviewKey) swapKicker('正在无缝过渡到');
+      else swapContent(next, '正在无缝过渡到');
     } else {
       const nextTitle = (snapshot.nextTitle ?? '').trim();
       if (kicker.textContent !== '正在无缝过渡到') swapKicker('正在无缝过渡到');
@@ -197,13 +202,34 @@ export function createUpNextToast(onSkip: () => void): UpNextToastHandle {
   };
 
   const render = (state: PlayerState): void => {
+    const crossfade = readCrossfadeSnapshot();
+    const fading = crossfade !== null && crossfade.phase === 'fading';
+
     // 任意方式切歌（自动/手动）都展示一段「正在播放」；首次开始播放不弹出。
     const key = trackKeyOf(state);
     if (key !== lastTrackKey) {
       const hadTrack = lastTrackKey.length > 0;
       const fromPreview = phase === 'preview';
       lastTrackKey = key;
-      if (hadTrack && state.track) enterCurrent(state.track, fromPreview);
+      // 淡化一开始就换轨的情况交给「正在无缝过渡到」接管，
+      // 这里不能再插一段「正在播放」把过渡条与进度盖掉（两者会打架）。
+      if (hadTrack && state.track && !fading) enterCurrent(state.track, fromPreview);
+    }
+
+    // 淡化进行中优先级最高：即便刚刚换轨，也保持过渡条可见。
+    if (crossfade && fading) {
+      renderTransition(crossfade, state);
+      return;
+    }
+
+    if (phase === 'transition') {
+      // 淡化刚结束：内容已经是下一首，只把 kicker 换回「正在播放」并停留一会儿。
+      if (!state.track) {
+        setPhase('hidden');
+        setVisible(false);
+        return;
+      }
+      enterCurrent(state.track, false);
     }
 
     if (phase === 'current') {
@@ -215,14 +241,6 @@ export function createUpNextToast(onSkip: () => void): UpNextToastHandle {
       setVisible(true);
       return;
     }
-
-    // 无缝衔接淡化进行中：顶部预告条改为「正在无缝过渡到 …」。
-    const crossfade = readCrossfadeSnapshot();
-    if (crossfade && crossfade.phase === 'fading') {
-      renderTransition(crossfade, state);
-      return;
-    }
-    if (phase === 'transition') setPhase('hidden');
 
     const previewable =
       state.track && state.playing && !state.loading && state.mode === 'list' ? upcoming(state) : null;
