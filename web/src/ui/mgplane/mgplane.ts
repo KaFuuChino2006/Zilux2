@@ -86,6 +86,29 @@ const DRAG_THRESHOLD = 6;
 const LONG_PRESS_MS = 350;
 const FLY_MS = 640;
 const MOTION_SPEED = 900;
+/** 滚轮缩放：目标 clamp 区间（任务规格 0.3–2.4）。 */
+const ZOOM_MIN = 0.3;
+/** 滚轮灵敏度：向下滚（deltaY>0）= 缩小、向上滚 = 放大。 */
+const ZOOM_WHEEL_K = 0.0016;
+/** 缩放趋近的时间常数（ms），约 100ms；180–260ms 内稳定。 */
+const ZOOM_TAU = 100;
+/** 缩放到位的判定阈值。 */
+const ZOOM_SETTLE = 0.0006;
+/** 惯性：起步阈值 20px/s、停止阈值 10px/s、最大 2200px/s、边界 6px 微弹。 */
+const INERTIA_START = 0.02;
+const INERTIA_STOP = 0.01;
+const INERTIA_MAX = 2.2;
+const INERTIA_BOUNCE = 6;
+/** 键盘平移：320px / 320ms ease-out。 */
+const PAN_STEP = 320;
+const PAN_MS = 320;
+/** prefers-reduced-motion 下降级时长（线性/直接到位）。 */
+const REDUCED_MS = 80;
+
+/** 线性 / ease-out / ease-in-out 缓动。 */
+function easeOutCubic(t: number): number {
+  return 1 - Math.pow(1 - t, 3);
+}
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -182,9 +205,25 @@ export class MgPlaneView {
     pointerType: 'mouse',
   };
   private inertiaRaf = 0;
+  /** 滚轮缩放的目标值（与缓动中的 cam.z 分离，便于连续滚轮累加）。 */
+  private zoomTarget = 0;
+  private zoomRaf = 0;
+  private zoomAnchor: { wx: number; wy: number; px: number; py: number } | null = null;
+  /** 系统「减弱动态效果」偏好；开启时所有相机动画降级为 80ms 线性/直接到位。 */
+  private readonly motionQuery: MediaQueryList | null =
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia('(prefers-reduced-motion: reduce)')
+      : null;
 
   // 页面状态
   private scene: MgScene = 'world';
+  /**
+   * 启动自动进场：应用刚打开、播放器恢复曲目后只演一次「开场剧场」。
+   * 一旦用户按下鼠标/触摸，就视为已开始交互，不再自动进场，避免抢走用户操作。
+   */
+  private autoTheater = true;
+  /** 本次 pointerdown 是否用于揭幕（剧场态第一下：只揭幕，不吞其余操作）。 */
+  private theaterPress = false;
   private readonly covers: MgCoverBinding[] = [];
   private readonly zoneSigs = new Map<string, string>();
   private expanded: { track: OnlineTrack; tracks: OnlineTrack[]; index: number; scope: MgCoverBinding['scope'] } | null = null;
@@ -305,6 +344,7 @@ export class MgPlaneView {
     this.disposed = true;
     this.stopAuto();
     this.cancelCamAnim();
+    this.stopZoomAnim();
     if (this.inertiaRaf) cancelAnimationFrame(this.inertiaRaf);
     this.inertiaRaf = 0;
     this.clearPress();
@@ -322,17 +362,26 @@ export class MgPlaneView {
   /* ------------------------------------------------------------------ */
 
   private buildHud(): void {
-    const search = h('button', { class: 'mg-hud-btn', type: 'button', title: '搜索', 'aria-label': '搜索' }, icon('search', 16));
-    search.addEventListener('click', () => this.callbacks.search());
-    const list = h('button', { class: 'mg-hud-btn', type: 'button', title: '打开私人雷达', 'aria-label': '打开私人雷达' }, icon('sparkle', 16));
-    list.addEventListener('click', () => this.callbacks.openList('radar'));
+    /* HUD 右侧把原左侧栏 / 顶栏入口全部融入画布：搜索、发现、我的歌单、设置、账号、歌词，外加私人雷达。 */
+    const hudBtn = (name: string, label: string, run: () => void): HTMLButtonElement => {
+      const btn = h('button', { class: 'mg-hud-btn', type: 'button', title: label, 'aria-label': label }, icon(name, 16));
+      btn.addEventListener('click', run);
+      return btn;
+    };
+    const search = hudBtn('search', '搜索', () => this.callbacks.search());
+    const discover = hudBtn('compass', '发现', () => this.callbacks.discover());
+    const myPlaylists = hudBtn('list', '我的歌单', () => this.callbacks.myPlaylists());
+    const settings = hudBtn('sliders', '设置', () => this.callbacks.settings());
+    const account = hudBtn('user', '账号', () => this.callbacks.account());
+    const lyrics = hudBtn('lyrics', '歌词', () => this.callbacks.lyrics());
+    const radar = hudBtn('sparkle', '私人雷达', () => this.callbacks.openList('radar'));
     this.hudEl.append(
       h('div', { class: 'mg-hud-brand' },
         h('span', { class: 'mg-hud-word', text: 'ZILUX2' }),
         h('i', { class: 'mg-hud-sep' }),
         h('span', { class: 'mg-hud-page' }, this.crumbEl),
       ),
-      h('div', { class: 'mg-hud-actions' }, search, list),
+      h('div', { class: 'mg-hud-actions' }, search, discover, myPlaylists, settings, account, lyrics, radar),
     );
     this.crumbEl.textContent = '平面世界 · 拖动探索';
   }
@@ -733,6 +782,7 @@ export class MgPlaneView {
   }
 
   private enterTheater(): void {
+    this.autoTheater = false;
     if (!playerState().track) return;
     this.closeExpand(false);
     this.closeRing();
@@ -765,15 +815,52 @@ export class MgPlaneView {
     return Math.min((w * 0.92) / MG_WORLD_W, (usableH * 0.9) / MG_WORLD_H);
   }
 
-  private clampCam(cam: MgCam): MgCam {
+  /**
+   * 相机可移动范围（世界坐标）。
+   *
+   * 视野比「世界 + 安全边」还大时（缩到全貌），世界本来就装得下，不限制移动而是
+   * 固定在世界中心，否则会被错误地夹到一侧（旧实现第一次拖动会跳一下）。
+   * 视野更小时，允许看到世界外最多 MG_SAFE 的留白。
+   */
+  private camLimits(z: number): { minX: number; maxX: number; minY: number; maxY: number } {
     const { w, h } = this.size();
-    const viewW = w / cam.z;
-    const viewH = h / cam.z;
-    const minX = Math.max(-MG_SAFE, viewW / 2 - MG_SAFE * 0.5);
-    const maxX = MG_WORLD_W - minX;
-    const minY = Math.max(-MG_SAFE, viewH / 2 - MG_SAFE * 0.5);
-    const maxY = MG_WORLD_H - minY;
-    return { x: clamp(cam.x, minX, maxX), y: clamp(cam.y, minY, maxY), z: cam.z };
+    const viewW = w / z;
+    const viewH = h / z;
+    const spanX = MG_WORLD_W + MG_SAFE * 2;
+    const spanY = MG_WORLD_H + MG_SAFE * 2;
+    if (viewW >= spanX) {
+      const x = MG_WORLD_W / 2;
+      if (viewH >= spanY) {
+        const y = MG_WORLD_H / 2;
+        return { minX: x, maxX: x, minY: y, maxY: y };
+      }
+      return {
+        minX: x,
+        maxX: x,
+        minY: -MG_SAFE + viewH / 2,
+        maxY: MG_WORLD_H + MG_SAFE - viewH / 2,
+      };
+    }
+    if (viewH >= spanY) {
+      const y = MG_WORLD_H / 2;
+      return {
+        minX: -MG_SAFE + viewW / 2,
+        maxX: MG_WORLD_W + MG_SAFE - viewW / 2,
+        minY: y,
+        maxY: y,
+      };
+    }
+    return {
+      minX: -MG_SAFE + viewW / 2,
+      maxX: MG_WORLD_W + MG_SAFE - viewW / 2,
+      minY: -MG_SAFE + viewH / 2,
+      maxY: MG_WORLD_H + MG_SAFE - viewH / 2,
+    };
+  }
+
+  private clampCam(cam: MgCam): MgCam {
+    const limits = this.camLimits(cam.z);
+    return { x: clamp(cam.x, limits.minX, limits.maxX), y: clamp(cam.y, limits.minY, limits.maxY), z: cam.z };
   }
 
   private applyCam(): void {
@@ -781,6 +868,7 @@ export class MgPlaneView {
     const style = this.worldEl.style;
     style.transform = `translate(${w / 2 - this.cam.x * this.cam.z}px, ${h / 2 - this.cam.y * this.cam.z}px) scale(${this.cam.z})`;
     this.readoutEl.textContent = `X ${Math.round(this.cam.x)} · Y ${Math.round(this.cam.y)} · Z ${this.cam.z.toFixed(2)}`;
+    this.root.dataset.cam = `${Math.round(this.cam.x)},${Math.round(this.cam.y)},${this.cam.z.toFixed(3)}`;
     const left = ((this.cam.x - this.size().w / (2 * this.cam.z)) / MG_WORLD_W) * 100;
     const top = ((this.cam.y - this.size().h / (2 * this.cam.z)) / MG_WORLD_H) * 100;
     const wPct = ((this.size().w / this.cam.z) / MG_WORLD_W) * 100;
@@ -808,31 +896,77 @@ export class MgPlaneView {
     resolve();
   }
 
-  private flyTo(to: Partial<MgCam>, duration = FLY_MS): Promise<void> {
-    const box = this.size();
+  /** prefers-reduced-motion：动画降级为 80ms 线性 / 直接到位。 */
+  private get reducedMotion(): boolean {
+    return Boolean(this.motionQuery?.matches);
+  }
+
+  private zoomMin(): number {
+    // 规格下限 0.3；但 1600×960 世界全貌 fit≈0.22，若硬性 0.3，第一次向下滚会“缩小却变大”。
+    // 所以取 min(0.3, 全貌下限)，既尊重规格又保证从全貌能继续缩小。
+    return Math.min(ZOOM_MIN, this.minZoom());
+  }
+
+  /** 停止滚轮平滑缩放（不清目标值，供指针按下 / 飞行 / dispose 打断）。 */
+  private stopZoomAnim(): void {
+    if (this.zoomRaf) cancelAnimationFrame(this.zoomRaf);
+    this.zoomRaf = 0;
+    this.zoomAnchor = null;
+    this.zoomTarget = this.cam.z;
+  }
+
+  /** 用 rAF 指数趋近目标缩放（时间常数 ~100ms），指针锚定世界点保持不动。 */
+  private startZoomAnim(): void {
+    if (this.zoomRaf) return;
+    let last = nowMs();
+    const step = (): void => {
+      this.zoomRaf = 0;
+      if (this.disposed || !this.isActive()) return;
+      const now = nowMs();
+      const dt = clamp(now - last, 1, 64);
+      last = now;
+      const { w, h } = this.size();
+      const k = this.reducedMotion ? 1 : 1 - Math.exp(-dt / ZOOM_TAU);
+      const zNext = this.cam.z + (this.zoomTarget - this.cam.z) * k;
+      const z = Math.abs(this.zoomTarget - zNext) < ZOOM_SETTLE ? this.zoomTarget : zNext;
+      const anchor = this.zoomAnchor;
+      this.cam = this.clampCam(
+        anchor
+          ? {
+              x: anchor.wx - (anchor.px - w / 2) / z,
+              y: anchor.wy - (anchor.py - h / 2) / z,
+              z,
+            }
+          : { ...this.cam, z },
+      );
+      this.applyCam();
+      if (Math.abs(this.zoomTarget - this.cam.z) > ZOOM_SETTLE) {
+        this.zoomRaf = requestAnimationFrame(step);
+      } else {
+        this.zoomAnchor = null;
+      }
+    };
+    this.zoomRaf = requestAnimationFrame(step);
+  }
+
+  private flyTo(to: Partial<MgCam>, duration = FLY_MS, ease: (t: number) => number = easeInOut): Promise<void> {
     const targetZ = clamp(to.z ?? this.cam.z, this.minZoom(), CAM_MAX_Z);
-    const viewW = box.w / targetZ;
-    const viewH = box.h / targetZ;
+    const limits = this.camLimits(targetZ);
     const target: MgCam = {
-      x: clamp(
-        to.x ?? this.cam.x,
-        Math.min(0, viewW / 2 - MG_SAFE),
-        MG_WORLD_W - Math.min(0, viewW / 2 - MG_SAFE),
-      ),
-      y: clamp(
-        to.y ?? this.cam.y,
-        Math.min(0, viewH / 2 - MG_SAFE),
-        MG_WORLD_H - Math.min(0, viewH / 2 - MG_SAFE),
-      ),
+      x: clamp(to.x ?? this.cam.x, limits.minX, limits.maxX),
+      y: clamp(to.y ?? this.cam.y, limits.minY, limits.maxY),
       z: targetZ,
     };
     this.cancelCamAnim();
+    this.stopZoomAnim();
+    const targetDuration = this.reducedMotion ? Math.min(REDUCED_MS, duration) : duration;
+    const easing = this.reducedMotion ? (t: number): number => t : ease;
     const from = { ...this.cam };
     return new Promise((resolve) => {
       const started = nowMs();
       const step = (): void => {
-        const t = clamp((nowMs() - started) / duration, 0, 1);
-        const k = easeInOut(t);
+        const t = clamp((nowMs() - started) / targetDuration, 0, 1);
+        const k = easing(t);
         this.cam = {
           x: from.x + (target.x - from.x) * k,
           y: from.y + (target.y - from.y) * k,
@@ -841,13 +975,14 @@ export class MgPlaneView {
         this.applyCam();
         if (t >= 1) {
           this.camAnim = null;
+          this.zoomTarget = this.cam.z;
           resolve();
           return;
         }
         if (this.camAnim) this.camAnim.raf = requestAnimationFrame(step);
       };
       const raf = requestAnimationFrame(step);
-      this.camAnim = { raf, from, to: target, started, duration, resolve };
+      this.camAnim = { raf, from, to: target, started, duration: targetDuration, resolve };
     });
   }
 
@@ -876,6 +1011,7 @@ export class MgPlaneView {
     } else {
       this.cam.z = clamp(this.cam.z, this.minZoom(), CAM_MAX_Z);
     }
+    this.zoomTarget = this.cam.z;
     this.applyCam();
   }
 
@@ -906,12 +1042,16 @@ export class MgPlaneView {
     if (event.button !== undefined && event.button !== 0) return;
     this.stopAuto();
     this.root.focus({ preventScroll: true });
+    this.autoTheater = false;
     if (this.scene === 'theater') {
       this.leaveTheater();
-      // 第一次 pointerdown 只用来揭幕，不立即进入拖拽
-      return;
+      // 剧场态第一下：既揭幕，也继续完成这次按下（可立即拖动），不再直接 return
+      this.theaterPress = true;
+    } else {
+      this.theaterPress = false;
     }
-    if (this.isUiTarget(event.target)) return;
+    // 剧场层已经隐藏，本次按下不再按 UI 目标拦截，否则第一下拖动会被吞掉
+    if (!this.theaterPress && this.isUiTarget(event.target)) return;
     if (this.expanded) this.closeExpand(false);
     if (this.ring) this.closeRing();
     this.clearRadial();
@@ -930,8 +1070,11 @@ export class MgPlaneView {
     this.drag.lastT = nowMs();
     this.drag.moved = false;
     this.drag.pointerType = event.pointerType;
-    this.root.setPointerCapture?.(event.pointerId);
+    // 不在 pointerdown 立即 setPointerCapture：一旦捕获，浏览器会把 pointerup 重定向到
+    // root，导致封面/NOW 封面的原生 click 永远不触发（「哪都点不了」的根因）。
+    // 真正开始拖动（超过阈值）时才捕获，保证单击仍能命中按钮。
     this.cancelCamAnim();
+    this.stopZoomAnim();
     if (coverEl instanceof HTMLElement) {
       const binding = this.covers.find((item) => item.el === coverEl);
       if (binding) {
@@ -956,6 +1099,8 @@ export class MgPlaneView {
     const dy = event.clientY - this.drag.startY;
     if (!this.drag.moved && Math.hypot(dx, dy) > DRAG_THRESHOLD) {
       this.drag.moved = true;
+      // 超过拖动阈值才捕获指针：拖动划出画布仍可跟手；单击事件保持原生派发。
+      this.root.setPointerCapture?.(event.pointerId);
       this.clearPress();
       this.hideHover();
       this.root.classList.add('is-dragging');
@@ -965,8 +1110,9 @@ export class MgPlaneView {
     const t = nowMs();
     const z = this.cam.z;
     const next = this.clampCam({ x: this.drag.camX - dx / z, y: this.drag.camY - dy / z, z });
-    const vx = (next.x - this.cam.x) / Math.max(1, t - this.drag.lastT);
-    const vy = (next.y - this.cam.y) / Math.max(1, t - this.drag.lastT);
+    const dt = Math.max(4, t - this.drag.lastT);
+    const vx = (next.x - this.cam.x) / dt;
+    const vy = (next.y - this.cam.y) / dt;
     this.drag.lastT = t;
     this.drag.lastX = vx;
     this.drag.lastY = vy;
@@ -978,6 +1124,7 @@ export class MgPlaneView {
   private onPointerUp(event: PointerEvent): void {
     if (!this.drag.active || event.pointerId !== this.drag.id) return;
     this.drag.active = false;
+    this.theaterPress = false;
     this.clearPress();
     this.root.classList.remove('is-dragging');
     this.clearMotionGhosts();
@@ -986,36 +1133,55 @@ export class MgPlaneView {
       this.drag.moved = false;
       return;
     }
-    const vx = this.drag.lastX;
-    const vy = this.drag.lastY;
-    const speed = Math.hypot(vx, vy) * this.cam.z;
-    if (this.inertiaOn && speed > 60) {
-      this.startInertia(vx, vy);
+    // 惯性以「屏幕像素/ms」计，与缩放无关：阈值 20px/s，上限 2200px/s。
+    const vxScreen = this.drag.lastX * this.cam.z;
+    const vyScreen = this.drag.lastY * this.cam.z;
+    const speed = Math.hypot(vxScreen, vyScreen);
+    if (this.inertiaOn && !this.reducedMotion && speed > INERTIA_START) {
+      const scale = speed > INERTIA_MAX ? INERTIA_MAX / speed : 1;
+      this.startInertia(vxScreen * scale, vyScreen * scale);
     }
     // 拖动后短暂抑制 click
     this.drag.moved = false;
   }
 
-  private startInertia(vx: number, vy: number): void {
+  /** 边界软限制：允许最多 bounce 像素越界，用于惯性撞墙的 6px 微弹。 */
+  private clampCamSoft(cam: MgCam, bounce: number): { cam: MgCam; hitX: boolean; hitY: boolean } {
+    const { w, h } = this.size();
+    const viewW = w / cam.z;
+    const viewH = h / cam.z;
+    const minX = Math.max(-MG_SAFE, viewW / 2 - MG_SAFE * 0.5);
+    const maxX = MG_WORLD_W - minX;
+    const minY = Math.max(-MG_SAFE, viewH / 2 - MG_SAFE * 0.5);
+    const maxY = MG_WORLD_H - minY;
+    const x = clamp(cam.x, minX - bounce, maxX + bounce);
+    const y = clamp(cam.y, minY - bounce, maxY + bounce);
+    return { cam: { x, y, z: cam.z }, hitX: x !== cam.x, hitY: y !== cam.y };
+  }
+
+  private startInertia(vxScreen: number, vyScreen: number): void {
     let last = nowMs();
-    const step = () => {
-      if (this.disposed) return;
-      if (!this.isActive()) {
-        this.inertiaRaf = 0;
-        return;
-      }
+    const step = (): void => {
+      this.inertiaRaf = 0;
+      if (this.disposed || !this.isActive()) return;
       const t = nowMs();
-      const dt = clamp((t - last) / 16.67, 0.2, 3);
+      const dt = clamp(t - last, 1, 48);
       last = t;
-      const damp = Math.pow(0.92, dt * 60 / 60);
-      const p = { x: this.cam.x + vx * 16.67, y: this.cam.y + vy * 16.67, z: this.cam.z };
-      this.cam = this.clampCam(p);
+      const z = this.cam.z;
+      const soft = this.clampCamSoft(
+        { x: this.cam.x + (vxScreen * dt) / z, y: this.cam.y + (vyScreen * dt) / z, z },
+        INERTIA_BOUNCE,
+      );
+      this.cam = soft.cam;
       this.applyCam();
-      vx *= damp;
-      vy *= damp;
-      if (Math.hypot(vx, vy) < 0.004) {
-        this.inertiaRaf = 0;
-        // 480ms 停靠：这里直接吸附到合法范围
+      // 撞边界：该轴速度归零（保留软越界，由停靠时吸附回边界）
+      if (soft.hitX) vxScreen = 0;
+      if (soft.hitY) vyScreen = 0;
+      const damp = Math.pow(0.92, dt / 16.67);
+      vxScreen *= damp;
+      vyScreen *= damp;
+      if (Math.hypot(vxScreen, vyScreen) < INERTIA_STOP) {
+        // 480ms 停靠：吸附回合法范围
         this.cam = this.clampCam(this.cam);
         this.applyCam();
         return;
@@ -1030,24 +1196,37 @@ export class MgPlaneView {
     if (this.scene === 'theater') this.leaveTheater();
     if (this.isUiTarget(event.target)) return;
     event.preventDefault();
+    if (this.drag.active) return;
     this.stopAuto();
+    // 只打断飞行类动画，保留缩放累加状态（连续滚轮可以平滑衔接）
     this.cancelCamAnim();
     const rect = this.root.getBoundingClientRect();
     const px = event.clientX - rect.left;
     const py = event.clientY - rect.top;
     const { w, h } = this.size();
-    const before = {
-      x: this.cam.x + (px - w / 2) / this.cam.z,
-      y: this.cam.y + (py - h / 2) / this.cam.z,
+    // 以当前目标为基准累加；向下滚 deltaY>0 → 缩小，向上滚 → 放大
+    const baseZ = this.zoomTarget > 0 ? this.zoomTarget : this.cam.z;
+    const nextZ = clamp(baseZ * Math.exp(-event.deltaY * ZOOM_WHEEL_K), this.zoomMin(), CAM_MAX_Z);
+    this.zoomTarget = nextZ;
+    this.zoomAnchor = {
+      wx: this.cam.x + (px - w / 2) / this.cam.z,
+      wy: this.cam.y + (py - h / 2) / this.cam.z,
+      px,
+      py,
     };
-    const factor = Math.exp(1.0015 * event.deltaY);
-    const z = clamp(this.cam.z * factor, this.minZoom(), CAM_MAX_Z);
-    this.cam = this.clampCam({
-      x: before.x - (px - w / 2) / z,
-      y: before.y - (py - h / 2) / z,
-      z,
-    });
-    this.applyCam();
+    if (this.reducedMotion) {
+      const anchor = this.zoomAnchor;
+      this.cam = this.clampCam({
+        x: anchor.wx - (anchor.px - w / 2) / nextZ,
+        y: anchor.wy - (anchor.py - h / 2) / nextZ,
+        z: nextZ,
+      });
+      this.zoomTarget = this.cam.z;
+      this.zoomAnchor = null;
+      this.applyCam();
+      return;
+    }
+    this.startZoomAnim();
   }
 
   private trackHover(event: PointerEvent): void {
@@ -1555,6 +1734,11 @@ export class MgPlaneView {
         // 展开面板保持当前曲目信息
       }
     }
+    // 启动自动进场：应用刚打开时播放器曲目可能尚未恢复，第一首曲目到达时补上「开场剧场」。
+    // 用户一旦交互过（autoTheater=false）就不再自动进场，之后的播放不会抢镜头。
+    if (track && this.autoTheater && this.scene === 'world' && !this.expanded) {
+      this.enterTheater();
+    }
     this.root.classList.toggle('is-playing', state.playing);
   }
 
@@ -1629,15 +1813,20 @@ export class MgPlaneView {
       return;
     }
     if (key === 'ArrowLeft' || key === 'ArrowRight' || key === 'ArrowUp' || key === 'ArrowDown') {
-      const step = 120 / this.cam.z;
-      this.cancelCamAnim();
-      this.cam = this.clampCam({
-        x: this.cam.x + (key === 'ArrowLeft' ? -step : key === 'ArrowRight' ? step : 0),
-        y: this.cam.y + (key === 'ArrowUp' ? -step : key === 'ArrowDown' ? step : 0),
-        z: this.cam.z,
-      });
-      this.applyCam();
+      // 320 屏幕像素 / 320ms ease-out；可被下一次按键或指针打断（flyTo 内部会取消上一段）
+      const dxScreen = key === 'ArrowLeft' ? -PAN_STEP : key === 'ArrowRight' ? PAN_STEP : 0;
+      const dyScreen = key === 'ArrowUp' ? -PAN_STEP : key === 'ArrowDown' ? PAN_STEP : 0;
+      void this.flyTo(
+        {
+          x: this.cam.x + dxScreen / this.cam.z,
+          y: this.cam.y + dyScreen / this.cam.z,
+          z: this.cam.z,
+        },
+        PAN_MS,
+        easeOutCubic,
+      );
       event.preventDefault();
+      return;
     }
   }
 

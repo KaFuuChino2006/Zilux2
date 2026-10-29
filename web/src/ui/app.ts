@@ -140,6 +140,13 @@ import {
 import { host, hostAvailable, getShortcutsState, onMiniMode, onShortcutsState, type UpdateSnapshot } from '../core/bridge';
 import { MgPlaneView } from './mgplane/mgplane';
 import { fromHomeData } from './mgplane/model';
+import { HomeView } from './home';
+import {
+  readInterfaceMode,
+  saveInterfaceMode,
+  INTERFACE_MODE_OPTIONS,
+  type InterfaceMode,
+} from './interfaceMode';
 import { DiscoverView } from './discover';
 import { openSongInfo, setSongInfoView, songInfoView } from './songInfo';
 import { createUpNextToast, type UpNextToastHandle } from './upNextToast';
@@ -242,7 +249,12 @@ export class App {
 
   private stage: HTMLDivElement;
   private homeHost!: HTMLDivElement;
-  private home!: MgPlaneView;
+  /** 经典首页（默认模式）。 */
+  private classicHome: HomeView | null = null;
+  /** 平面世界 MG 画布（第二使用方式，首次切换时才创建）。 */
+  private mgHome: MgPlaneView | null = null;
+  /** 当前首页模式：经典 / 平面世界。 */
+  private interfaceMode: InterfaceMode = readInterfaceMode();
   private homeData: HomeData | null = null;
   private feedRailKey: string | null = null;
   private wallHost: HTMLDivElement;
@@ -650,7 +662,7 @@ export class App {
       if (event.clientY > 84) return;
       if (
         target.closest(
-          'button, input, textarea, select, .win-btns, .pill, .rail, .sheet, .lyrics-view, .playerbar, .upnext, .quick, .account-wrap',
+          'button, input, textarea, select, .win-btns, .pill, .rail, .sheet, .lyrics-view, .playerbar, .upnext, .quick, .account-wrap, .search-wrap, .search-dock, .search-pop, .mgplane button, .mg-cover, .mg-now-art, .mg-hud, .mg-debug, .mg-mini, .mg-expand, .mg-ring, .mg-selbar, .mg-radial, .mg-theater',
         )
       ) {
         return;
@@ -750,7 +762,35 @@ export class App {
     rail.append(settingsBtn);
 
     this.homeHost = h('div', { class: 'home-host' });
-    this.home = new MgPlaneView({
+    // 经典首页始终创建：它是默认模式，也是「平面世界」的兜底。
+    this.classicHome = new HomeView({
+      onLogin: () => this.openLogin(),
+      onLiked: (source) => void this.showLiked(source),
+      onPlayLiked: (source) => void this.playLikedAll(source),
+      onRecent: () => void this.showRecentWall(),
+      onRecommend: () => this.openRecommendSheet(),
+      onDaily: () => void this.showDailyWall(),
+      onDaily30: () => void this.showDailyWall(true),
+      onRadar: () => void this.showRadarWall(),
+      onSearch: () => this.focusSearch(),
+      onPlay: (tracks, index, scope) => this.playFromHome(tracks, index, scope),
+      onPlaylist: (item) => void this.showPlaylist(item),
+    });
+    this.homeHost.append(this.classicHome.root);
+    const main = h('div', { class: 'main' }, rail, this.stage);
+    this.stage.append(this.homeHost, this.wallHost);
+    this.root.append(main);
+    this.applyInterfaceMode();
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 首页模式（经典首页 / 平面世界）                                      */
+  /* ------------------------------------------------------------------ */
+
+  /** 懒创建 MG 画布：只有真正切到「平面世界」时才建 DOM 和事件。 */
+  private ensureMgHome(): MgPlaneView {
+    if (this.mgHome) return this.mgHome;
+    const view = new MgPlaneView({
       play: (tracks, index, scope) => {
         // 歌单环与本地曲库直接开播；daily/recent/liked/radar 交给首页逻辑异步补全整队列。
         if (scope === 'playlist' || scope === 'local') playQueue(tracks, index, true);
@@ -766,11 +806,26 @@ export class App {
       search: () => this.focusSearch(),
       login: () => this.openLogin(),
       openPlaylist: (item) => void this.showPlaylist(item),
+      discover: () => void this.showDiscover(),
+      myPlaylists: () => this.openPlaylistSheet(),
+      settings: () => this.openSettingsSheet(),
+      account: () => this.openAccountPanel(),
+      lyrics: () => this.openLyrics(),
     });
-    this.homeHost.append(this.home.root);
-    const main = h('div', { class: 'main' }, rail, this.stage);
-    this.stage.append(this.homeHost, this.wallHost);
-    this.root.append(main);
+    this.mgHome = view;
+    this.homeHost.append(view.root);
+    if (this.homeData) view.update(fromHomeData(this.homeData));
+    return view;
+  }
+
+  /** 按当前模式显示对应首页，并让全窗口样式跟着切换。 */
+  private applyInterfaceMode(): void {
+    const mgMode = this.interfaceMode === 'mgplane';
+    this.root.classList.toggle('is-mg-mode', mgMode);
+    this.homeHost.classList.toggle('is-mg', mgMode);
+    if (mgMode) this.ensureMgHome();
+    this.classicHome?.root.classList.toggle('is-hidden', mgMode);
+    if (this.mgHome) this.mgHome.root.classList.toggle('is-hidden', !mgMode);
   }
 
   private setRailActive(
@@ -812,6 +867,7 @@ export class App {
     this.homeHost.classList.remove('is-hidden');
     this.wallHost.classList.add('is-hidden');
     this.setRailActive('home');
+    this.applyInterfaceMode();
     await this.loadHomeData();
   }
 
@@ -974,7 +1030,8 @@ export class App {
       neteasePlaylists: neteasePlaylists.slice(0, 14),
     };
     this.homeData = data;
-    this.home.update(fromHomeData(data));
+    this.classicHome?.update(data);
+    this.mgHome?.update(fromHomeData(data));
   }
 
   /** 首页「最近播放」即时更新：刚播的歌放到最前（回到首页时再以宿主记录为准）。 */
@@ -985,7 +1042,32 @@ export class App {
     const recent = [track, ...data.recent.filter((item) => `${item.source}:${item.id}` !== key)].slice(0, 160);
     const next: HomeData = { ...data, recent };
     this.homeData = next;
-    if (!this.homeHost.classList.contains('is-hidden')) this.home.update(fromHomeData(next));
+    if (!this.homeHost.classList.contains('is-hidden')) {
+      this.classicHome?.update(next);
+      this.mgHome?.update(fromHomeData(next));
+    }
+  }
+
+  /** 播放「我喜欢的音乐」整列（经典首页收藏卡片的播放按钮）。 */
+  private async playLikedAll(preferred?: OnlineSource): Promise<void> {
+    const modes = preferred
+      ? sourceSupportsLikedWrite(preferred)
+        ? [preferred]
+        : []
+      : this.likedMode === 'all'
+        ? sourceIds().filter((id) => sourceSupportsLikedWrite(id))
+        : [this.likedMode];
+    let tracks: OnlineTrack[] = [];
+    for (const source of modes) {
+      const list = await this.fetchLikedTracks(source);
+      if (list && list.length > 0) tracks = tracks.concat(list);
+    }
+    if (tracks.length === 0) tracks = this.homeData?.collections.flatMap((item) => item.tracks).slice(0, 30) ?? [];
+    if (tracks.length === 0) {
+      toast('收藏列表还没有歌曲', 'error');
+      return;
+    }
+    playQueue(tracks, 0);
   }
 
   /** 把多个平台的今日推荐按轮次交错合并（同一平台不会连续刷屏）。 */
@@ -3027,6 +3109,20 @@ export class App {
             patchSettings({ general: { watchLocalFolder: value } });
             toast(value ? '已开启本地文件夹监控' : '已暂停本地文件夹监控');
           },
+        ),
+        segField<InterfaceMode>(
+          '首页模式',
+          [...INTERFACE_MODE_OPTIONS],
+          this.interfaceMode,
+          (value) => {
+            if (value === this.interfaceMode) return;
+            this.interfaceMode = value;
+            saveInterfaceMode(value);
+            this.applyInterfaceMode();
+            void this.showHome();
+            toast(value === 'mgplane' ? '已切换到平面世界' : '已切换到经典首页');
+          },
+          '经典首页保持原来的左栏 + 信息流；平面世界是第二种使用方式：整块画布可自由拖动缩放、封面原地展开、不跳页。两种模式互不影响，随时可切回。',
         ),
       );
 
@@ -6671,7 +6767,8 @@ export class App {
     this.closeLyrics();
     this.sheet?.close();
     this.closeLogin();
-    this.home?.dispose();
+    this.classicHome?.dispose();
+    this.mgHome?.dispose();
     this.root.remove();
   }
 
