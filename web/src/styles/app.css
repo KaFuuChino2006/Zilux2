@@ -6607,3 +6607,58 @@ html.is-pb-expanded .playerbar.is-hidden {
   outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
   outline-offset: 2px;
 }
+
+/* -------------------------------------------------------------------------- */
+/* 沉浸首页（MG 画布）：画布覆盖整个窗口，顶栏改为悬浮搜索胶囊，左栏隐藏        */
+/* -------------------------------------------------------------------------- */
+.app.is-mg-mode:has(.home-host:not(.is-hidden)) {
+  /* 顶栏改为绝对定位的悬浮搜索胶囊后，.app 只剩 main 一个在流子项：
+     若仍保留两行模板，main 会被自动放进高度为 0 的第一行。 */
+  grid-template-rows: 1fr;
+}
+.app.is-mg-mode:has(.home-host:not(.is-hidden)) .main {
+  grid-template-columns: 1fr;
+  height: 100%;
+}
+.app.is-mg-mode:has(.home-host:not(.is-hidden)) .stage {
+  inset: 0;
+}
+.app.is-mg-mode:has(.home-host:not(.is-hidden)) .rail {
+  display: none;
+}
+.app.is-mg-mode:has(.home-host:not(.is-hidden)) .topbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 0;
+  padding: 0;
+  overflow: visible;
+  z-index: 90;
+  background: none;
+  border: 0;
+  pointer-events: none;
+}
+.app.is-mg-mode:has(.home-host:not(.is-hidden)) .topbar-left,
+.app.is-mg-mode:has(.home-host:not(.is-hidden)) .topbar-right {
+  display: none;
+}
+.app.is-mg-mode:has(.home-host:not(.is-hidden)) .topbar-center {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  pointer-events: auto;
+  z-index: 91;
+}
+
+/* 首页两种模式互斥：经典首页（默认）/ 平面世界（第二使用方式） */
+.home-host .mgplane {
+  display: none;
+}
+.home-host.is-mg .mgplane {
+  display: block;
+}
+.home-host.is-mg .ui-page.home {
+  display: none;
+}

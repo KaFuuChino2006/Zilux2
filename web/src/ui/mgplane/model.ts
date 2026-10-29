@@ -19,6 +19,16 @@ export interface MgPlaneCallbacks {
   search(): void;
   login(): void;
   openPlaylist(item: LibraryPlaylist): void;
+  /** 打开「发现」页（原左侧栏「发现」）。 */
+  discover(): void;
+  /** 打开「我的歌单」浮层（原左侧栏「我的歌单」）。 */
+  myPlaylists(): void;
+  /** 打开设置浮层（原左侧栏底部「设置」）。 */
+  settings(): void;
+  /** 打开账号面板（原顶栏账号入口）。 */
+  account(): void;
+  /** 打开歌词浮层（原播放条歌词入口）。 */
+  lyrics(): void;
 }
 
 /** 画布渲染所需的全部数据（首页每次刷新时整体传入，模块内部做增量）。 */

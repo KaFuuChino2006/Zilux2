@@ -130,6 +130,7 @@
 .mg-grid {
   position: absolute;
   inset: 0;
+  pointer-events: none;
   background-image:
     repeating-linear-gradient(90deg, var(--mg-line-soft) 0 1px, transparent 1px 200px),
     repeating-linear-gradient(0deg, var(--mg-line-soft) 0 1px, transparent 1px 200px);
@@ -154,8 +155,23 @@
   inset: 0;
 }
 
+/* NOW 层铺满整个世界，层序又在封面之上；放行指针，避免整屏吞掉点击与 hover */
+.mg-now {
+  pointer-events: none;
+}
+
 .mg-zone-layer {
   pointer-events: none;
+}
+
+/* 封面层同样铺满世界：放行指针，只让真正的封面按钮接收事件 */
+.mg-covers {
+  pointer-events: none;
+}
+
+/* 分区标签/打开列表按钮位于 zone-layer 内，需要单独恢复指针事件 */
+.mg-zone-label {
+  pointer-events: auto;
 }
 
 .mg-ghosts {
@@ -301,6 +317,8 @@
   background: #131110;
   box-shadow: 6px 6px 0 var(--mg-hard);
   overflow: hidden;
+  pointer-events: auto;
+  cursor: pointer;
   transition: transform 220ms cubic-bezier(0.22, 0.8, 0.28, 1), box-shadow 220ms ease, outline-color 160ms ease;
   transform: translateY(var(--mg-sel-lift, 0px));
   outline: 1px solid transparent;
@@ -490,6 +508,8 @@
   background: #131110;
   box-shadow: 16px 16px 0 rgba(0, 0, 0, 0.5);
   overflow: hidden;
+  pointer-events: auto;
+  cursor: pointer;
 }
 
 .mg-now-info {
@@ -546,9 +566,9 @@
 
 .mg-hud {
   position: absolute;
-  left: 24px;
-  right: 24px;
-  top: 20px;
+  left: 30px;
+  right: 30px;
+  top: 86px;
   z-index: 30;
   display: flex;
   align-items: center;
@@ -1348,6 +1368,21 @@
 /* ---------- 小屏适配 ---------- */
 
 @media (max-width: 1180px) {
+  .mg-hud {
+    left: 20px;
+    right: 20px;
+    top: 84px;
+  }
+
+  .mg-hud-actions {
+    gap: 4px;
+  }
+
+  .mg-hud-btn {
+    width: 28px;
+    height: 28px;
+  }
+
   .mg-now-title {
     font-size: 68px;
   }
@@ -1411,4 +1446,43 @@
   left: 50%;
   transform: translateX(-50%);
   text-align: center;
+}
+
+
+/* ---------- 键盘焦点 & reduced-motion ---------- */
+.mg-hud-btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--mg-accent) 60%, transparent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mgplane *,
+  .mgplane *::before,
+  .mgplane *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
+}
+
+/* task-9 theater hud */
+.mgplane[data-scene="theater"] .mg-hud-brand {
+  opacity: 0;
+  pointer-events: none;
+}
+.mgplane[data-scene="theater"] .mg-hud {
+  top: 86px;
+}
+
+/* task-9 hud fade */
+.mgplane[data-scene="world"] .mg-hud::before {
+  content: "";
+  position: absolute;
+  left: -30px;
+  right: -30px;
+  top: -44px;
+  height: 132px;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(6, 7, 10, 0.92) 0%, rgba(6, 7, 10, 0.62) 46%, rgba(6, 7, 10, 0) 100%);
 }
