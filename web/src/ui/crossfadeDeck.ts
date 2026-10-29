@@ -374,6 +374,11 @@ interface DeckPlanCommon {
   isValid: () => boolean;
   /** 过渡完成（A 已静音、B 已满音量）：player 负责交换 deck 与状态迁移 */
   onFinish: () => void;
+  /**
+   * 过渡真正开始（B 已起播、第一帧淡化之前）：player 用它把界面提前切到下一首。
+   * deck 交换仍等 onFinish，所以此回调之后 state 与 deck 会短暂不一致，取消方负责回退。
+   */
+  onStart?: () => void;
 }
 
 export interface CrossfadePrepareOptions extends DeckPlanCommon {
@@ -1452,6 +1457,7 @@ function startManualFade(plan: ActivePlan): void {
   plan.options.standby.play().then(
     () => {
       if (activePlan !== plan || plan.phase !== 'fading') return;
+      notifyStart(plan);
       plan.raf = requestAnimationFrame(fadeStep);
     },
     (err: unknown) => {
@@ -1567,6 +1573,16 @@ export function crossfadeTick(positionMs: number, durationMs: number): void {
   startFade(plan);
 }
 
+/** 过渡开始的对外通知（B 已起播）：让界面提前切到下一首，deck 交换仍等 onFinish。 */
+function notifyStart(plan: ActivePlan): void {
+  if (!plan.options.onStart) return;
+  try {
+    plan.options.onStart();
+  } catch (err) {
+    console.warn('[crossfade] onStart failed', err);
+  }
+}
+
 function startFade(plan: ActivePlan): void {
   if (plan.phase !== 'prepared') return;
   if (!plan.graphMode && audioTapGraphActive()) {
@@ -1630,6 +1646,7 @@ function startFade(plan: ActivePlan): void {
           debug.amActive = false;
         }
       }
+      notifyStart(plan);
       plan.raf = requestAnimationFrame(fadeStep);
     },
     (err: unknown) => {
@@ -1812,6 +1829,12 @@ export function crossfadeApplyVolume(baseVolume: number): void {
   const plan = activePlan;
   if (!plan || plan.phase !== 'fading') return;
   plan.baseVolume = clamp01(baseVolume);
+  // 交融风格的增益/滤波在 AudioParam 时间线上，逐帧重算等功率会盖掉已经排好的曲线；
+  // 只把主音量（本地 gain）同步过去。
+  if (plan.am) {
+    setAudioTapVolume(plan.baseVolume, true);
+    return;
+  }
   applyEqualPowerGains(plan, plan.progress);
 }
 
