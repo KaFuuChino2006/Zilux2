@@ -514,21 +514,20 @@
 
 .mg-now-info {
   position: absolute;
-  width: 640px;
+  width: 760px;
   display: flex;
   flex-direction: column;
   gap: 6px;
   pointer-events: none;
 }
 
-/* 世界歌词窗口：世界坐标（NOW 右侧空场），随世界一起缩放/拖动；无底框，只有文字。 */
+/* 世界歌词：贴在歌曲名下方（随信息块自然排版，无底框、只有文字）。 */
 .mg-now-lyric {
-  position: absolute;
-  z-index: 4;
-  width: 1120px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 6px;
+  width: 100%;
+  margin-top: 16px;
   opacity: 0;
   transform: translateY(10px);
   transition: opacity 260ms ease, transform 260ms ease;
@@ -551,15 +550,16 @@
 
 .mg-now-ly.is-prev,
 .mg-now-ly.is-next {
-  font-size: 48px;
+  font-size: 20px;
+  line-height: 1.5;
   letter-spacing: 0.01em;
   color: var(--mg-ink-3);
 }
 
 .mg-now-ly.is-now {
-  font-size: 112px;
-  line-height: 1.04;
-  letter-spacing: -0.01em;
+  font-size: 40px;
+  line-height: 1.3;
+  letter-spacing: 0.01em;
   color: var(--mg-accent);
   text-shadow: 0 6px 40px rgba(0, 0, 0, 0.65);
 }
@@ -576,19 +576,28 @@
   -webkit-box-orient: vertical;
   overflow: hidden;
   max-width: 100%;
-  font-size: 84px;
-  line-height: 0.96;
+  padding-bottom: 2px;
+  font-size: 72px;
+  line-height: 1.08;
   letter-spacing: -0.02em;
   color: var(--mg-ink);
   text-shadow: 0 4px 30px rgba(0, 0, 0, 0.55);
 }
 
 .mg-now-artist {
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   font-size: 18px;
   color: var(--mg-ink-2);
 }
 
 .mg-now-meta {
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   font-size: 10px;
   letter-spacing: 0.14em;
   color: var(--mg-ink-3);
@@ -1434,7 +1443,16 @@
   }
 
   .mg-now-title {
-    font-size: 68px;
+    font-size: 58px;
+  }
+
+  .mg-now-ly.is-now {
+    font-size: 32px;
+  }
+
+  .mg-now-ly.is-prev,
+  .mg-now-ly.is-next {
+    font-size: 17px;
   }
 
   .mg-exp-info,
@@ -2015,4 +2033,421 @@
 .mg-now-art.is-picked {
   outline: 7px solid rgba(217, 192, 141, 0.9);
   outline-offset: 5px;
+}
+
+/* ------------------------------------------------------------------ */
+/* 切歌过渡（m02499）：旧信息淡出 → 新封面/文字依次入场，歌词逐句上浮 */
+/* ------------------------------------------------------------------ */
+
+.mg-now {
+  transition: opacity 160ms ease;
+}
+
+.mg-now.is-swapping > * {
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.mg-now-art.is-enter {
+  animation: mg-now-art-in 380ms cubic-bezier(0.22, 0.8, 0.28, 1) both;
+}
+
+@keyframes mg-now-art-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.972);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.mg-now-info > .is-enter {
+  animation: mg-now-line-in 340ms cubic-bezier(0.22, 0.8, 0.28, 1) both;
+  animation-delay: calc(var(--i, 0) * 46ms);
+}
+
+@keyframes mg-now-line-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.mg-now-lyric.is-flip .mg-now-ly {
+  animation: mg-lyric-rise 240ms cubic-bezier(0.22, 0.8, 0.28, 1) both;
+}
+
+.mg-now-lyric.is-flip .mg-now-ly.is-now {
+  animation-duration: 280ms;
+}
+
+@keyframes mg-lyric-rise {
+  from {
+    transform: translateY(8px);
+  }
+  to {
+    transform: none;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* v3：分区叠放 + 展开列表 + 歌单列表                                    */
+/* ------------------------------------------------------------------ */
+.mgplane .mg-stack {
+  position: absolute;
+  width: 520px;
+  height: 520px;
+  transform: translate(-50%, -50%);
+  cursor: pointer;
+  z-index: 3;
+  /* 父层 .mg-covers 为 pointer-events:none（避免遮挡点击），叠放自身必须恢复点击。 */
+  pointer-events: auto;
+}
+
+.mgplane .mg-stack-card {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 520px;
+  height: 520px;
+  border: 1px solid var(--mg-cover-bd);
+  box-shadow: 6px 6px 0 var(--mg-hard);
+  overflow: hidden;
+  transition: transform 220ms var(--mg-ease), filter 220ms var(--mg-ease);
+}
+
+.mgplane .mg-stack-card:nth-child(1) { transform: translate(0, 0) rotate(-2deg); }
+.mgplane .mg-stack-card:nth-child(2) { transform: translate(22px, 22px) rotate(1deg); }
+.mgplane .mg-stack-card:nth-child(3) { transform: translate(44px, 44px) rotate(3deg); }
+
+.mgplane .mg-stack-card img,
+.mgplane .mg-stack-card canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.mgplane .mg-stack::after {
+  content: '';
+  position: absolute;
+  inset: -22px -22px -30px -22px;
+  border: 2px solid transparent;
+  pointer-events: none;
+  transition: border-color 180ms var(--mg-ease), inset 220ms var(--mg-ease);
+}
+
+.mgplane .mg-stack:hover::after,
+.mgplane .mg-stack.is-hover::after {
+  border-color: rgba(217, 192, 141, 0.42);
+}
+
+.mgplane .mg-stack:hover .mg-stack-card:nth-child(1) { transform: translate(-6px, -14px) rotate(-3deg); }
+.mgplane .mg-stack:hover .mg-stack-card:nth-child(2) { transform: translate(26px, 12px) rotate(0.4deg); }
+.mgplane .mg-stack:hover .mg-stack-card:nth-child(3) { transform: translate(48px, 34px) rotate(3.6deg); }
+
+.mgplane .mg-stack-count {
+  position: absolute;
+  left: 548px;
+  top: 456px;
+  padding: 5px 12px 4px;
+  border: 1px solid var(--mg-line);
+  background: rgba(10, 9, 8, 0.72);
+  color: var(--mg-ink-2);
+  font: 500 15px/1 var(--mg-font);
+  letter-spacing: 0.12em;
+  white-space: nowrap;
+}
+
+.mgplane .mg-stack-hint {
+  position: absolute;
+  left: 4px;
+  top: 580px;
+  color: var(--mg-ink-3);
+  font: 400 13px/1 var(--mg-font);
+  letter-spacing: 0.14em;
+  white-space: nowrap;
+}
+
+.mgplane .mg-stack-pl .mg-stack-card:nth-child(1) { transform: translate(0, 0) rotate(-2deg); }
+.mgplane .mg-stack-pl .mg-stack-card:nth-child(2) { transform: translate(22px, 22px) rotate(1.2deg); }
+.mgplane .mg-stack-pl .mg-stack-card:nth-child(3) { transform: translate(44px, 44px) rotate(2.8deg); }
+
+/* 其它分区压暗 */
+.mgplane.is-zone-open .mgzone-cover,
+.mgplane.is-zone-open .mg-zone-label,
+.mgplane.is-zone-open .mg-stack,
+.mgplane.is-zone-open .mg-now,
+.mgplane.is-zone-open .mg-chips {
+  transition: opacity 220ms var(--mg-ease);
+}
+
+.mgplane.is-zone-open[data-open-kind='daily'] .mgzone-cover,
+.mgplane.is-zone-open[data-open-kind='daily'] .mg-now,
+.mgplane.is-zone-open[data-open-kind='daily'] .mg-chips { opacity: 0.35; }
+
+/* 展开列表容器 */
+.mgplane .mg-strip {
+  position: absolute;
+  width: 560px;
+  z-index: 6;
+  padding: 0;
+  background: rgba(9, 9, 8, 0.9);
+  border: 1px solid var(--mg-line);
+  box-shadow: 18px 18px 0 rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+.mgplane .mg-strip-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 18px 14px;
+  border-bottom: 1px solid var(--mg-line-soft);
+}
+
+.mgplane .mg-strip-title { display: flex; flex-direction: column; gap: 5px; }
+.mgplane .mg-strip-kicker { color: var(--mg-ink-3); font: 500 11px/1 var(--mg-font); letter-spacing: 0.24em; }
+.mgplane .mg-strip-name { color: var(--mg-ink); font: 600 30px/1.1 var(--mg-font); letter-spacing: 0.02em; }
+.mgplane .mg-strip-count { color: var(--mg-ink-3); font: 400 12px/1 var(--mg-font); letter-spacing: 0.12em; }
+
+.mgplane .mg-strip-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  color: var(--mg-ink-2);
+  background: transparent;
+  border: 1px solid var(--mg-line);
+  cursor: pointer;
+}
+
+.mgplane .mg-strip-close:hover { color: var(--mg-accent); border-color: rgba(217, 192, 141, 0.5); }
+
+.mgplane .mg-strip-view {
+  position: relative;
+  overflow: hidden;
+  height: 1000px;
+}
+
+.mgplane .mg-strip-inner {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  padding: 22px 20px 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  will-change: transform;
+}
+
+.mgplane .mg-strip-card {
+  position: relative;
+  width: 240px;
+  height: 240px;
+  flex: 0 0 auto;
+  margin: 0 auto;
+}
+
+.mgplane .mg-strip-card .mg-cover,
+.mgplane .mg-strip-card button { width: 240px; height: 240px; }
+
+.mgplane .mg-strip-card.is-append { animation: mg-append 220ms var(--mg-ease) both; }
+
+@keyframes mg-append {
+  from { opacity: 0; transform: translateY(10px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.mgplane .mg-strip-foot {
+  padding: 0 20px 18px;
+  color: var(--mg-ink-3);
+  font: 400 12px/1.4 var(--mg-font);
+  letter-spacing: 0.1em;
+}
+
+.mgplane .mg-strip-end {
+  width: 100%;
+  padding: 18px 12px;
+  border: 1px dashed var(--mg-line);
+  background: transparent;
+  color: var(--mg-ink-2);
+  font: 500 14px/1.4 var(--mg-font);
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+
+.mgplane .mg-strip-end:hover { color: var(--mg-accent); border-color: rgba(217, 192, 141, 0.5); }
+
+.mgplane .mg-strip-bar {
+  position: absolute;
+  right: 4px;
+  top: 96px;
+  bottom: 18px;
+  width: 2px;
+  background: rgba(242, 237, 226, 0.08);
+}
+
+.mgplane .mg-strip-thumb {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 2px;
+  background: rgba(217, 192, 141, 0.7);
+  border-radius: 2px;
+}
+
+.mgplane .mg-strip-inner::-webkit-scrollbar { width: 0; }
+
+.mgplane .mg-pl-strip {
+  width: 420px;
+  background: rgba(9, 9, 8, 0.9);
+}
+
+.mgplane .mg-pl-strip-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mgplane .mg-pl-strip-card:hover { border-color: var(--mg-line); background: rgba(242, 237, 226, 0.03); }
+
+.mgplane .mg-pl-strip-card .mg-pl-art,
+.mgplane .mg-pl-strip-card .mg-pl-cover {
+  width: 96px;
+  height: 96px;
+  flex: 0 0 auto;
+  overflow: hidden;
+}
+
+.mgplane .mg-pl-strip-meta { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.mgplane .mg-pl-strip-meta b { color: var(--mg-ink); font: 600 20px/1.2 var(--mg-font); letter-spacing: 0.02em; }
+.mgplane .mg-pl-strip-meta span { color: var(--mg-ink-3); font: 400 12px/1 var(--mg-font); letter-spacing: 0.1em; }
+
+.mgplane .mg-strip .mg-pl-tabs {
+  display: flex;
+  gap: 14px;
+  padding: 0 20px 12px;
+  flex-wrap: wrap;
+}
+
+.mgplane .mg-strip .mg-pl-tab {
+  padding: 6px 0 5px;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--mg-ink-3);
+  font: 500 12px/1 var(--mg-font);
+  letter-spacing: 0.12em;
+  cursor: pointer;
+}
+
+.mgplane .mg-strip .mg-pl-tab.is-on { color: var(--mg-ink); border-bottom-color: var(--mg-accent); }
+
+@media (prefers-reduced-motion: reduce) {
+  .mgplane .mg-stack-card,
+  .mgplane .mg-strip-inner { transition: none !important; }
+  .mgplane .mg-strip-card.is-append { animation: none !important; }
+}
+
+/* v3 修正：展开时隐藏被展开的叠放；列表按世界宽度铺满 */
+.mgplane.is-zone-open .mg-stack.is-active {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.mgplane .mg-strip-inner {
+  left: 0;
+  right: 0;
+  top: 0;
+  height: auto;
+  align-items: center;
+}
+
+/* v3 修正：歌单列表卡（封面 96 + 文案）与展开态压暗 */
+.mgplane .mg-pl-strip-card {
+  background: rgba(242, 237, 226, 0.025);
+  border: 1px solid var(--mg-line-soft);
+}
+
+.mgplane .mg-pl-strip-card .mg-pl-art {
+  position: relative;
+  inset: auto;
+  width: 96px;
+  height: 96px;
+  flex: 0 0 96px;
+  font-size: 34px;
+  overflow: hidden;
+}
+
+.mgplane .mg-pl-strip-card .mg-pl-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.mgplane .mg-pl-strip-card .mg-pl-strip-meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.mgplane .mg-pl-strip-card .mg-pl-strip-meta b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mgplane[data-open-kind='playlist'] .mg-stack-pl {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.mgplane.is-zone-open .mg-stack:not(.is-active) {
+  opacity: 0.25;
+  pointer-events: none;
+}
+
+/* v3 修正：展开时隐藏分区标签（标题已进列表头），其它分区进一步压暗 */
+.mgplane.is-zone-open .mg-zone-label {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.mgplane.is-zone-open .mg-stack:not(.is-active) .mg-stack-hint,
+.mgplane.is-zone-open .mg-stack:not(.is-active) .mg-stack-count {
+  opacity: 0;
+}
+
+.mgplane .mg-strip-tabs {
+  display: flex;
+  gap: 16px;
+  padding: 0 18px 12px;
+  border-bottom: 1px solid var(--mg-line-soft);
+  flex-wrap: wrap;
+}
+
+/* v3 规格对齐：hover 整摞抬 6px；展开时其它分区压暗 .35 */
+.mgplane .mg-stack:hover {
+  transform: translate(-50%, calc(-50% - 6px));
+}
+
+.mgplane.is-zone-open .mg-stack:not(.is-active) {
+  opacity: 0.35;
 }

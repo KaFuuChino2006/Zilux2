@@ -139,7 +139,7 @@ import {
 } from './player';
 import { host, hostAvailable, getShortcutsState, onMiniMode, onShortcutsState, type UpdateSnapshot } from '../core/bridge';
 import { MgPlaneView } from './mgplane/mgplane';
-import { fromHomeData } from './mgplane/model';
+import { fromHomeData, type MgListKind } from './mgplane/model';
 import { HomeView } from './home';
 import {
   readInterfaceMode,
@@ -255,6 +255,8 @@ export class App {
   private mgHome: MgPlaneView | null = null;
   /** 当前首页模式：经典 / 平面世界。 */
   private interfaceMode: InterfaceMode = readInterfaceMode();
+  /** 平面世界「加载更多曲目」的整表缓存（按分类缓存一次，滚动分页时切片）。 */
+  private mgMoreCache = new Map<MgListKind, OnlineTrack[]>();
   private homeData: HomeData | null = null;
   private feedRailKey: string | null = null;
   private wallHost: HTMLDivElement;
@@ -788,6 +790,42 @@ export class App {
   /* ------------------------------------------------------------------ */
 
   /** 懒创建 MG 画布：只有真正切到「平面世界」时才建 DOM 和事件。 */
+  /**
+   * 平面世界列表滚动到底部时按需加载更多曲目。
+   * 首次按分类整体拉取并缓存，之后按 offset/limit 切片返回（空数组表示已经到底）。
+   */
+  private async mgLoadMoreTracks(kind: MgListKind, offset: number, limit: number): Promise<OnlineTrack[]> {
+    let all = this.mgMoreCache.get(kind);
+    if (!all) {
+      try {
+        if (kind === 'daily') {
+          all = (await this.fetchDailyMerged(80)).tracks;
+        } else if (kind === 'recent') {
+          all = await fetchRecentMerged(300);
+        } else if (kind === 'liked') {
+          const sources: OnlineSource[] =
+            this.likedMode === 'all'
+              ? sourceIds().filter((source) => sourceSupportsLikedWrite(source))
+              : [this.likedMode];
+          const lists = await Promise.all(
+            sources.map((source) => this.fetchLikedTracks(source).catch(() => null)),
+          );
+          all = lists.flatMap((list) => list ?? []);
+        } else if (kind === 'radar') {
+          const source = this.preferredSource();
+          all = source ? (await fetchFeed(source, 'radar', 60)).tracks : [];
+        } else {
+          all = localTracks();
+        }
+      } catch (error) {
+        console.warn('[mgplane] 加载更多曲目失败', kind, error);
+        all = [];
+      }
+      this.mgMoreCache.set(kind, all);
+    }
+    return all.slice(offset, offset + limit);
+  }
+
   private ensureMgHome(): MgPlaneView {
     if (this.mgHome) return this.mgHome;
     const view = new MgPlaneView({
@@ -812,6 +850,7 @@ export class App {
       account: () => this.openAccountPanel(),
       lyrics: () => this.openLyrics(),
       lyric: () => currentLyricSnapshot(),
+      moreTracks: (kind, offset, limit) => this.mgLoadMoreTracks(kind, offset, limit),
     });
     this.mgHome = view;
     this.homeHost.append(view.root);

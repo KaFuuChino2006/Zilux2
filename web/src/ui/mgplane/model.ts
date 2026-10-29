@@ -31,6 +31,8 @@ export interface MgPlaneCallbacks {
   lyrics(): void;
   /** 当前歌词窗口（供播放台展示；无歌词时为空串）。 */
   lyric(): { prev: string; now: string; next: string };
+  /** 世界列表滚动到底部时按需加载更多曲目（返回空数组表示已经到底）。 */
+  moreTracks(kind: MgListKind, offset: number, limit: number): Promise<OnlineTrack[]>;
 }
 
 /** 歌单区的一组歌单（世界里的「歌单 / 收藏」分册，可切换）。 */
