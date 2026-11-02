@@ -8,6 +8,9 @@
 *.cmd text eol=crlf
 *.bat text eol=crlf
 
+# Shell 脚本必须 LF（Git Bash / macOS / Linux 才能执行）
+*.sh text eol=lf
+
 # 解决方案 / 项目文件：文本，但保留原有换行风格
 *.sln text eol=crlf
 *.csproj text
