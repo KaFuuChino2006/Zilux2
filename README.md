@@ -106,6 +106,7 @@ run-zilux2.cmd             双击启动（首次自动构建便携版）
 - .NET SDK 10
 - Node.js ≥ 22 与 pnpm
 - WebView2 Evergreen Runtime（Windows 11 通常已内置）
+- （可选）[GitHub CLI](https://cli.github.com/)：用于 GitHub 仓库操作（PR / Issue / Release）；Windows 上在 Git Bash 中运行 [`bash scripts/install-gh-cli.sh`](scripts/install-gh-cli.sh) 从官方渠道安装并完成登录。
 
 ## 构建
 
