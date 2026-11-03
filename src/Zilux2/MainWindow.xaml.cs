@@ -55,6 +55,11 @@ public partial class MainWindow : Window
     // 迷你播放器模式（契约 docs/zilux2-host-contract.md §15）：进入前保存原窗口状态，退出时精确还原。
     private const double MiniDefaultWidthDip = 420;
     private const double MiniDefaultHeightDip = 120;
+    // 尺寸预设：compact=360×100、standard=420×120、wide=520×150（设置页可选，宿主按 appearance.miniSize 兜底）。
+    private const double MiniCompactWidthDip = 360;
+    private const double MiniCompactHeightDip = 100;
+    private const double MiniWideWidthDip = 520;
+    private const double MiniWideHeightDip = 150;
     private const double MiniMinWidthDip = 360;
     private const double MiniMinHeightDip = 100;
     private const double MiniScreenMarginDip = 12;
@@ -87,6 +92,7 @@ public partial class MainWindow : Window
     // HotkeyCatalog）。_lastAppliedShortcuts 记录每个动作上一次注册成功的组合，用于非法配置时
     // 保留可用注册；_shortcutItems/_shortcutStateJson 是回推页面的生效状态。
     private readonly Dictionary<string, HotkeyBinding> _lastAppliedShortcuts = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, HotkeyBinding> _activeShortcutBindings = new(StringComparer.Ordinal);
     private readonly List<ShortcutItemState> _shortcutItems = new();
     private string? _shortcutStateJson;
     private bool _shortcutsEnabled = true;
@@ -96,6 +102,11 @@ public partial class MainWindow : Window
     // 由底层键盘钩子兜底（详见 MediaKeyHookService）；是否接管由 shortcuts.alwaysHandleMediaKeys
     // 决定，关闭后退回「媒体键跟着当前播放器走」的原生行为。
     private MediaKeyHookService? _mediaKeyHook;
+
+    // 全局热键的底层钩子兜底（详见 GlobalHotkeyHookService）：RegisterHotKey 在组合被抢占或
+    // 前台是管理员窗口时会失效，钩子仍能看到物理按键。_lastHookFireTicks 用于和 WM_HOTKEY 去重。
+    private GlobalHotkeyHookService? _hotkeyHook;
+    private readonly Dictionary<string, int> _lastHookFireTicks = new(StringComparer.Ordinal);
 
     internal MainWindow(
         WebContentPlan plan,
@@ -134,8 +145,64 @@ public partial class MainWindow : Window
     {
         _hwnd = new WindowInteropHelper(this).Handle;
         HwndSource.FromHwnd(_hwnd)?.AddHook(WndProc);
+        StartHotkeyHook();
         ApplyShortcutSettings("startup");
         InstallMediaKeyHook();
+    }
+
+    /// <summary>钩子线程只用来看按键，触发动作要回到 UI 线程；启动失败不影响 RegisterHotKey。</summary>
+    private void StartHotkeyHook()
+    {
+        if (_hotkeyHook is not null)
+        {
+            return;
+        }
+
+        _hotkeyHook = new GlobalHotkeyHookService(action =>
+            Dispatcher.BeginInvoke(DispatcherPriority.Normal, new Action(() => OnHookHotkey(action))));
+        _hotkeyHook.Start();
+    }
+
+    private void OnHookHotkey(string action)
+    {
+        _lastHookFireTicks[action] = Environment.TickCount;
+        HostLog.Info($"hotkey.hook.fire action={action}");
+        DispatchHotkeyAction(action);
+    }
+
+    private void DispatchHotkeyAction(string action)
+    {
+        if (action == "toggleWindow")
+        {
+            ToggleFromTray();
+            return;
+        }
+
+        SendCommand(action);
+    }
+
+    /// <summary>把「当前实际生效的组合」同步给钩子：注册失败/回落时钩子用同一份配置兜底。</summary>
+    private void UpdateHotkeyHookBindings()
+    {
+        if (_hotkeyHook is null)
+        {
+            return;
+        }
+
+        var bindings = new List<HotkeyHookBinding>();
+        if (_shortcutsEnabled)
+        {
+            foreach (var spec in HotkeyCatalog.Actions)
+            {
+                if (_activeShortcutBindings.TryGetValue(spec.Action, out var active))
+                {
+                    bindings.Add(new HotkeyHookBinding(active.Modifiers, active.VirtualKey, spec.Action));
+                }
+            }
+        }
+
+        _hotkeyHook.UpdateBindings(bindings);
+        HostLog.Info($"hotkey.hook bindings={bindings.Count} [{string.Join(", ", bindings.Select(b => b.Action + "=" + b.VirtualKey))}]");
     }
 
     private void OnLoaded(object? sender, RoutedEventArgs e)
@@ -143,6 +210,79 @@ public partial class MainWindow : Window
         Loaded -= OnLoaded;
         _host = new WebViewHost(this, Browser, _plan, _settings, _audio, _media, _airplay);
         _ = _host.InitializeAsync();
+        ApplyDesktopLyricsSettings();
+    }
+
+    // 桌面歌词窗口开关/样式都从设置里读；页面只负责推当前句（见 UpdateDesktopLyrics）。
+    private DesktopLyricsWindow? _desktopLyricsWindow;
+    private double _desktopLyricsLeft = double.NaN;
+    private double _desktopLyricsTop = double.NaN;
+
+    internal void ApplyDesktopLyricsSettings()
+    {
+        var options = _settings?.DesktopLyricsOptions;
+        var enabled = options?.Enabled == true;
+        if (!enabled)
+        {
+            if (_desktopLyricsWindow is not null)
+            {
+                var closing = _desktopLyricsWindow;
+                _desktopLyricsWindow = null;
+                closing.Close();
+            }
+
+            return;
+        }
+
+        if (_desktopLyricsWindow is null)
+        {
+            var window = new DesktopLyricsWindow();
+            window.ClosedByUser += OnDesktopLyricsClosedByUser;
+            if (!double.IsNaN(_desktopLyricsLeft) && !double.IsNaN(_desktopLyricsTop))
+            {
+                window.Left = _desktopLyricsLeft;
+                window.Top = _desktopLyricsTop;
+            }
+            else
+            {
+                window.PlaceDefault();
+            }
+
+            _desktopLyricsWindow = window;
+            window.Show();
+            HostLog.Info("[lyrics] desktop window shown");
+        }
+
+        _desktopLyricsWindow.ApplyStyle(
+            options?.FontSize ?? 40,
+            options?.Locked == true,
+            options?.Topmost != false);
+    }
+
+    internal void UpdateDesktopLyrics(string now, string translation)
+    {
+        _desktopLyricsWindow?.UpdateLines(now, translation);
+    }
+
+    private void OnDesktopLyricsClosedByUser()
+    {
+        if (_desktopLyricsWindow is not null)
+        {
+            _desktopLyricsLeft = _desktopLyricsWindow.Left;
+            _desktopLyricsTop = _desktopLyricsWindow.Top;
+        }
+
+        _desktopLyricsWindow = null;
+        HostLog.Info("[lyrics] desktop window hidden by user");
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse("{\"general\":{\"desktopLyrics\":false}}");
+            _settings?.Patch(document.RootElement);
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[lyrics] sync desktopLyrics=false failed: {exception.Message}");
+        }
     }
 
     private void OnStateChanged(object? sender, EventArgs e)
@@ -182,6 +322,8 @@ public partial class MainWindow : Window
         App.ArmShutdownWatchdog();
         _mediaKeyHook?.Dispose();
         _mediaKeyHook = null;
+        _hotkeyHook?.Dispose();
+        _hotkeyHook = null;
         HostLog.Info("window.closed dispose begin");
         try
         {
@@ -402,8 +544,14 @@ public partial class MainWindow : Window
         _miniSavedHasRestoreRect = _hasRestoreRect;
 
         var (scaleX, scaleY) = CurrentDpiScale();
-        var widthDip = width > 0 ? Math.Clamp(width, MiniMinWidthDip, 1600) : MiniDefaultWidthDip;
-        var heightDip = height > 0 ? Math.Clamp(height, MiniMinHeightDip, 900) : MiniDefaultHeightDip;
+        var (presetWidthDip, presetHeightDip) = (_settings?.MiniSize) switch
+        {
+            AppearanceSettings.MiniSizeCompact => (MiniCompactWidthDip, MiniCompactHeightDip),
+            AppearanceSettings.MiniSizeWide => (MiniWideWidthDip, MiniWideHeightDip),
+            _ => (MiniDefaultWidthDip, MiniDefaultHeightDip),
+        };
+        var widthDip = width > 0 ? Math.Clamp(width, MiniMinWidthDip, 1600) : presetWidthDip;
+        var heightDip = height > 0 ? Math.Clamp(height, MiniMinHeightDip, 900) : presetHeightDip;
         var pixelWidth = Math.Max(1, (int)Math.Round(widthDip * scaleX));
         var pixelHeight = Math.Max(1, (int)Math.Round(heightDip * scaleY));
 
@@ -422,7 +570,7 @@ public partial class MainWindow : Window
 
         MinWidth = MiniMinWidthDip;
         MinHeight = MiniMinHeightDip;
-        Topmost = true;
+        Topmost = _settings?.MiniAlwaysOnTop ?? true;
         // 迷你态窗口会被裁成圆角、页面满窗铺卡片：把 WebView 边距清零，否则窗口四周会露出
         // 6px 的 WPF 主题底色（用户看到的「正方形框」的来源之一）。
         Browser.Margin = new Thickness(0);
@@ -903,6 +1051,7 @@ public partial class MainWindow : Window
         var settings = _settings?.ShortcutsSnapshot ?? new ShortcutSettings();
         UnregisterHotkeys();
         _shortcutItems.Clear();
+        _activeShortcutBindings.Clear();
         _shortcutsEnabled = settings.Enabled;
         _alwaysHandleMediaKeys = settings.AlwaysHandleMediaKeys;
 
@@ -942,6 +1091,7 @@ public partial class MainWindow : Window
                     item.Ok = true;
                     item.Applied = previous.Key;
                     item.Fallback = true;
+                    _activeShortcutBindings[spec.Action] = previous;
                 }
             }
             else
@@ -954,10 +1104,16 @@ public partial class MainWindow : Window
                     item.Applied = applied.Key;
                     item.Fallback = !applied.Equals(binding);
                     _lastAppliedShortcuts[spec.Action] = applied;
+                    // 钩子按「用户配置的组合」兜底：被别的程序抢占（1409）或 WM_HOTKEY 被 UIPI
+                    // 拦下时，注册可能失败、也可能只是换成了备用组合，用户按原组合也要能触发。
+                    _activeShortcutBindings[spec.Action] = binding;
                 }
                 else
                 {
                     item.Error = lastError > 0 ? $"error={lastError}" : "unavailable";
+                    // 注册完全失败时更需要钩子：用户配置的组合由钩子直接接管。
+                    _activeShortcutBindings[spec.Action] = binding;
+                    HostLog.Warn($"hotkey.hook fallback action={spec.Action} key={binding.Key}");
                 }
             }
 
@@ -967,6 +1123,7 @@ public partial class MainWindow : Window
         HostLog.Info(
             $"hotkey.apply enabled={(settings.Enabled ? "true" : "false")} count={registeredCount} reason={reason}");
         BuildShortcutStateJson();
+        UpdateHotkeyHookBindings();
         PublishShortcutState();
     }
 
@@ -1089,8 +1246,7 @@ public partial class MainWindow : Window
                 FireHotkey("next");
                 break;
             case 4:
-                HostLog.Info("hotkey.fire action=toggleWindow");
-                ToggleFromTray();
+                FireHotkey("toggleWindow");
                 break;
             default:
                 HostLog.Warn($"hotkey.fire unknown id={id}");
@@ -1098,10 +1254,21 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// 钩子与 WM_HOTKEY 双通路的去重：钩子命中后会吞键，但 Windows 可能仍投一条 WM_HOTKEY，
+    /// 600ms 内同动作只处理一次，避免「按一下切两首」。
+    /// </summary>
     private void FireHotkey(string action)
     {
+        var now = Environment.TickCount;
+        if (_lastHookFireTicks.TryGetValue(action, out var last) && now - last < 600)
+        {
+            HostLog.Info($"hotkey.fire skipped action={action} reason=hook-dedupe");
+            return;
+        }
+
         HostLog.Info($"hotkey.fire action={action}");
-        SendCommand(action);
+        DispatchHotkeyAction(action);
     }
 
     /// <summary>

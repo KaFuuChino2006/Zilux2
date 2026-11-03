@@ -40,6 +40,19 @@ internal sealed class GeneralSettings
 
     // 本地曲库目录自动监控开关（LocalMusicService.Watch）。追加在最后，同上。
     public bool WatchLocalFolder { get; set; } = true;
+
+    // Windows 系统媒体控制（SMTC）：任务栏媒体弹窗、音量键旁的小卡片。默认开启。
+    public bool MediaSession { get; set; } = true;
+
+    // 桌面歌词独立窗口（无边框、置顶、可拖动；锁定后鼠标穿透）。
+    public bool DesktopLyrics { get; set; }
+
+    public bool DesktopLyricsLocked { get; set; }
+
+    // 32..64，默认 40（副行按 0.45 倍字号跟随）。
+    public int DesktopLyricsFontSize { get; set; } = 40;
+
+    public bool DesktopLyricsTopmost { get; set; } = true;
 }
 
 internal sealed class AppearanceSettings
@@ -75,6 +88,18 @@ internal sealed class AppearanceSettings
     // 底部播放条常驻展开：开着时不再依赖鼠标悬停，播放条始终保持展开形态。
     // 追加在最后，保证旧 settings.json 的字段顺序不变。
     public bool PlayerBarExpanded { get; set; }
+
+    // 迷你播放器尺寸预设：compact=360×100、standard=420×120、wide=520×150。
+    public const string MiniSizeCompact = "compact";
+    public const string MiniSizeStandard = "standard";
+    public const string MiniSizeWide = "wide";
+
+    internal static readonly string[] MiniSizes = { MiniSizeCompact, MiniSizeStandard, MiniSizeWide };
+
+    public string MiniSize { get; set; } = MiniSizeStandard;
+
+    // 迷你播放器是否置顶；关掉后小窗会像普通窗口一样被其它窗口盖住。
+    public bool MiniAlwaysOnTop { get; set; } = true;
 }
 
 internal sealed class PlaybackSettings
@@ -150,6 +175,21 @@ internal sealed class PlaybackSettings
 
     /// <summary>人声保留尾音（毫秒，0..3000）：淡出总时长 = FadeOutMs + 该值。</summary>
     public int FadeVocalTailMs { get; set; } = 600;
+
+    /// <summary>睡眠定时到点前的音量渐弱时长（秒，0..60；0 表示不渐弱，直接暂停）。</summary>
+    public int SleepFadeSeconds { get; set; } = 15;
+
+    public const string SleepActionPause = "pause";
+    public const string SleepActionMinimize = "minimize";
+    public const string SleepActionExit = "exit";
+
+    internal static readonly string[] SleepActions =
+    {
+        SleepActionPause, SleepActionMinimize, SleepActionExit,
+    };
+
+    /// <summary>睡眠定时到点后的动作：pause 暂停 / minimize 暂停并最小化 / exit 退出应用。</summary>
+    public string SleepAction { get; set; } = SleepActionPause;
 }
 
 internal sealed class DownloadSettings
@@ -165,6 +205,15 @@ internal sealed class DownloadSettings
 
     /// <summary>下载音质：standard=128k、high=320k、lossless=无损（平台不支持时自动降级）。</summary>
     public string Quality { get; set; } = QualityHigh;
+
+    /// <summary>同时下载的任务数（1–4）；超出后新任务会等前面的任务腾出位置再开始。</summary>
+    public int MaxConcurrent { get; set; } = 2;
+
+    /// <summary>文件名模板；支持 {artist} {title} {id} {quality} 占位符，非法字符会被替换成空格。</summary>
+    public string FileNameTemplate { get; set; } = "{artist} - {title}";
+
+    /// <summary>下载完成后自动打开文件所在文件夹（只打开一次，失败只记日志）。</summary>
+    public bool OpenFolderWhenDone { get; set; }
 }
 
 /// <summary>
@@ -188,6 +237,12 @@ internal sealed class UpdateSettings
 
     /// <summary>覆盖仓库（owner/name）；空字符串表示用构建时内置的仓库。</summary>
     public string Repo { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 检查更新/下载安装包时直连 GitHub，不走系统代理。
+    /// 系统代理的出口 IP 被 GitHub 限流（403 rate limit）时打开它。
+    /// </summary>
+    public bool DirectConnection { get; set; }
 }
 
 /// <summary>

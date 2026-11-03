@@ -933,6 +933,20 @@ export function currentLyricLine(): string {
   return doc.lines[index]?.text ?? '';
 }
 
+/** 桌面歌词窗口用：当前正在唱的一句 + 翻译（无歌词时都是空串）。 */
+export function currentLyricDisplay(): { now: string; translation: string } {
+  const doc = lastDoc;
+  const state = playerState();
+  const track = state.track;
+  if (!doc || doc.lines.length === 0 || !track) return { now: '', translation: '' };
+  // 换歌后新歌词还没拉回来时，lastDoc 仍是上一首的——不能把上一首的句子推给桌面歌词。
+  if (doc.trackKey !== `${track.source}:${track.id}`) return { now: '', translation: '' };
+  const position = state.positionMs + lyricOffsetOf(doc.trackKey);
+  const index = activeIndexOf(doc.lines, position);
+  const line = doc.lines[index];
+  return { now: line?.text ?? '', translation: line?.translation ?? '' };
+}
+
 /**
  * 当前歌词窗口（上一句 / 正在唱的一句 / 下一句），供首页平面世界的播放台展示。
  * 无歌词或还没加载完时三行都返回空串。

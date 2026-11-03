@@ -273,3 +273,39 @@
 .analysis-chips:not([hidden]) {
   animation: analysis-in 0.24s ease both;
 }
+
+/* 无缝衔接设置：统一用快捷设置同款分段滑块（.quick-seg-slider）。
+   设置页比快捷面板宽，药丸高度略抬一点，长文案不换行。 */
+.analysis-metronome .quick-seg-slider {
+  width: 100%;
+  height: 32px;
+  margin-top: 2px;
+}
+
+.analysis-metronome .quick-seg-btn {
+  height: 26px;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.analysis-metronome .quick-seg-btn.is-on {
+  font-weight: 600;
+}
+
+.analysis-metronome .quick-seg-slider.is-disabled .quick-seg-btn {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.analysis-metronome .quick-seg-slider.is-disabled .quick-seg-thumb {
+  opacity: 0.35;
+}
+
+.analysis-metronome .crossfade-seg-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}

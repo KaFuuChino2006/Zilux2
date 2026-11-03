@@ -47,6 +47,7 @@ internal sealed class UpdateService : IDisposable
     private readonly Action _requestExit;
     private readonly string _buildRepo;
     private readonly HttpClient _http;
+    private HttpClient? _httpDirect;
     private Timer? _autoTimer;
     private CancellationTokenSource? _downloadCts;
     private bool _disposed;
@@ -79,6 +80,30 @@ internal sealed class UpdateService : IDisposable
         _http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
         _http.DefaultRequestHeaders.UserAgent.ParseAdd($"Zilux2-Updater/{HostInfo.Version}");
         _http.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
+    }
+
+    /// <summary>
+    /// 按设置选客户端：默认走系统代理（HttpClient 默认行为）；「直连 GitHub」打开时用
+    /// 不走代理的客户端，避免代理出口 IP 被 GitHub 限流（403 rate limit）导致检查更新失败。
+    /// </summary>
+    private HttpClient Client()
+    {
+        if (!_settings.UpdateDirectConnection)
+        {
+            return _http;
+        }
+
+        if (_httpDirect is null)
+        {
+            var handler = new HttpClientHandler { UseProxy = false, Proxy = null };
+            var direct = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
+            direct.DefaultRequestHeaders.UserAgent.ParseAdd($"Zilux2-Updater/{HostInfo.Version}");
+            direct.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
+            _httpDirect = direct;
+            HostLog.Info("[update] using direct connection (system proxy bypassed)");
+        }
+
+        return _httpDirect;
     }
 
     /// <summary>页面 ready 后推送一次当前状态，并启动自动检查定时器。</summary>
@@ -144,6 +169,7 @@ internal sealed class UpdateService : IDisposable
         }
 
         _http.Dispose();
+        _httpDirect?.Dispose();
         HostLog.Info("[update] disposed");
     }
 
@@ -221,7 +247,7 @@ internal sealed class UpdateService : IDisposable
 
             using var timeout = new CancellationTokenSource(ApiTimeout);
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            using var response = await _http
+            using var response = await Client()
                 .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token)
                 .ConfigureAwait(false);
 
@@ -485,7 +511,7 @@ internal sealed class UpdateService : IDisposable
             HostLog.Info($"[update] download start url={assetUrl} target={targetPath}");
             using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(30));
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(cts.Token, timeout.Token);
-            using var response = await _http
+            using var response = await Client()
                 .GetAsync(assetUrl, HttpCompletionOption.ResponseHeadersRead, linked.Token)
                 .ConfigureAwait(false);
             response.EnsureSuccessStatusCode();

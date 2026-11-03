@@ -44,6 +44,20 @@ internal sealed partial class LocalMusicService
     private List<LocalTrackDto> _folderTracks = new();
     private List<string> _folderLyrics = new();
     private readonly List<LocalTrackDto> _downloadTracks = new();
+
+    /// <summary>
+    /// 主文件夹之外追加的曲库根目录。主目录的 Rel 不带前缀；附加目录统一加 `@libN/` 前缀，
+    /// 这样播放/封面/歌词/标签/删除都能靠前缀把请求路由回正确的根。
+    /// </summary>
+    private sealed class ExtraRoot
+    {
+        public string Path = string.Empty;
+        public string Prefix = string.Empty;
+        public List<LocalTrackDto> Tracks = new();
+        public List<string> Lyrics = new();
+    }
+
+    private readonly List<ExtraRoot> _extraRoots = new();
     private CoreWebView2? _attachedCore;
     private readonly Dictionary<string, (byte[] Bytes, string ContentType)> _coverCache =
         new(StringComparer.OrdinalIgnoreCase);
@@ -83,8 +97,27 @@ internal sealed partial class LocalMusicService
 
         try
         {
-            var fullPath = Path.GetFullPath(Path.Combine(_currentFolder, rel.Replace('/', Path.DirectorySeparatorChar)));
-            if (!fullPath.StartsWith(_currentFolder, StringComparison.OrdinalIgnoreCase) || !File.Exists(fullPath))
+            var root = _currentFolder;
+            var localRel = rel;
+            if (rel.StartsWith(DownloadRelPrefix, StringComparison.Ordinal))
+            {
+                EnsureDownloadFolder();
+                root = _downloadFolder;
+                localRel = rel[DownloadRelPrefix.Length..];
+            }
+            else if (TryMapExtraPath(rel, out var extraRoot, out var extraRelative))
+            {
+                root = extraRoot;
+                localRel = extraRelative;
+            }
+
+            if (root.Length == 0)
+            {
+                return null;
+            }
+
+            var fullPath = Path.GetFullPath(Path.Combine(root, localRel.Replace('/', Path.DirectorySeparatorChar)));
+            if (!fullPath.StartsWith(root, StringComparison.OrdinalIgnoreCase) || !File.Exists(fullPath))
             {
                 return null;
             }
@@ -174,6 +207,12 @@ internal sealed partial class LocalMusicService
 
         var relative = Uri.UnescapeDataString(uri.AbsolutePath).TrimStart('/');
         var folder = _currentFolder;
+        if (TryMapExtraPath(relative, out var extraRoot, out var extraRelative))
+        {
+            folder = extraRoot;
+            relative = extraRelative;
+        }
+
         if (relative.Length == 0 || folder.Length == 0)
         {
             Respond(e, core, 404, "Not Found", "text/plain", Array.Empty<byte>());
@@ -325,11 +364,16 @@ internal sealed partial class LocalMusicService
     {
         var rel = QueryValue(uri.Query, "rel");
         var folder = _currentFolder;
-        if (rel is not null && rel.StartsWith("@downloads/", StringComparison.Ordinal))
+        if (rel is not null && rel.StartsWith(DownloadRelPrefix, StringComparison.Ordinal))
         {
             // 下载目录里的文件同样支持内嵌封面，路径前缀与曲库 rel 一致。
             folder = _downloadFolder;
-            rel = rel["@downloads/".Length..];
+            rel = rel[DownloadRelPrefix.Length..];
+        }
+        else if (rel is not null && TryMapExtraPath(rel, out var extraRoot, out var extraRelative))
+        {
+            folder = extraRoot;
+            rel = extraRelative;
         }
 
         if (rel is null || folder.Length == 0)
@@ -491,6 +535,11 @@ internal sealed partial class LocalMusicService
             case "rescan":
                 EnsureDownloadFolder();
                 RescanDownloads();
+                if (_extraRoots.Count > 0)
+                {
+                    LoadExtras(ExtraRootFolders());
+                }
+
                 PostMergedTracks();
                 break;
 
@@ -506,6 +555,43 @@ internal sealed partial class LocalMusicService
                 }
 
                 Load(folder);
+                break;
+            }
+
+            case "restoreMany":
+            {
+                var folders = ReadFolders(root);
+                if (folders.Count == 0)
+                {
+                    PostError(null, "没有记录过本地歌曲文件夹");
+                    return;
+                }
+
+                Load(folders[0]);
+                if (folders.Count > 1)
+                {
+                    LoadExtras(folders.GetRange(1, folders.Count - 1));
+                    PostMergedTracks();
+                }
+                else
+                {
+                    LoadExtras(Array.Empty<string>());
+                    PostMergedTracks();
+                }
+
+                break;
+            }
+
+            case "pickAdd":
+            {
+                var picked = PickFolderPath();
+                if (picked is null)
+                {
+                    PostCancel();
+                    return;
+                }
+
+                PostResult("pickAdded", true, picked);
                 break;
             }
 
@@ -549,6 +635,10 @@ internal sealed partial class LocalMusicService
                 OpenLocalFolder();
                 break;
 
+            case "writeTags":
+                WriteTags(root);
+                break;
+
             default:
                 PostError(null, $"未知的本地歌曲指令：{action ?? "<missing>"}");
                 break;
@@ -573,6 +663,11 @@ internal sealed partial class LocalMusicService
         {
             root = _downloadFolder;
             relative = rel[DownloadRelPrefix.Length..];
+        }
+        else if (TryMapExtraPath(rel, out var extraRoot, out var extraRelative))
+        {
+            root = extraRoot;
+            relative = extraRelative;
         }
         else
         {
@@ -692,6 +787,98 @@ internal sealed partial class LocalMusicService
         }
     }
 
+    /// <summary>
+    /// 写标签：页面只传需要改的字段（文本传空串表示清空，未出现的字段不动；
+    /// track/year 未出现表示不动）。成功后会重读标签并重新推送曲库。
+    /// </summary>
+    private void WriteTags(JsonElement root)
+    {
+        var rel = root.TryGetProperty("rel", out var relElement) && relElement.ValueKind == JsonValueKind.String
+            ? relElement.GetString()
+            : null;
+        if (string.IsNullOrWhiteSpace(rel))
+        {
+            PostResult("writeTags", false, "缺少歌曲路径");
+            return;
+        }
+
+        if (!root.TryGetProperty("fields", out var fieldsElement) || fieldsElement.ValueKind != JsonValueKind.Object)
+        {
+            PostResult("writeTags", false, "没有要写入的标签");
+            return;
+        }
+
+        var fullPath = ResolveTrackPath(rel);
+        if (fullPath is null)
+        {
+            PostResult("writeTags", false, "找不到文件（可能已被移动）");
+            return;
+        }
+
+        // CUE 分轨共用一个镜像文件，写标签会把整张碟的标签改掉，直接拒绝。
+        var track = _folderTracks.FirstOrDefault((item) => string.Equals(item.Rel, rel, StringComparison.Ordinal))
+            ?? _downloadTracks.FirstOrDefault((item) => string.Equals(item.Rel, rel, StringComparison.Ordinal));
+        if (track is not null && track.Cue > 0)
+        {
+            PostResult("writeTags", false, "CUE 分轨不支持写标签");
+            return;
+        }
+
+        var textFields = new Dictionary<string, string?>(StringComparer.Ordinal);
+        foreach (var name in new[] { "title", "artist", "album", "albumArtist" })
+        {
+            if (fieldsElement.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String)
+            {
+                textFields[name] = value.GetString();
+            }
+        }
+
+        var numberFields = new Dictionary<string, uint?>(StringComparer.Ordinal);
+        foreach (var name in new[] { "track", "year" })
+        {
+            if (fieldsElement.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number)
+            {
+                numberFields[name] = value.TryGetUInt32(out var number) ? number : null;
+            }
+        }
+
+        if (textFields.Count == 0 && numberFields.Count == 0)
+        {
+            PostResult("writeTags", false, "没有要写入的标签");
+            return;
+        }
+
+        // 自己改的文件别让 watcher 再触发一轮增量扫描。
+        MarkHostWrite(fullPath);
+        var result = LocalTagWriter.Write(fullPath, textFields, numberFields);
+        if (!result.Ok)
+        {
+            PostResult("writeTags", false, result.Error ?? "写标签失败");
+            return;
+        }
+
+        if (track is not null)
+        {
+            var tags = LocalTagReader.TryRead(fullPath);
+            if (tags is not null)
+            {
+                if (!string.IsNullOrWhiteSpace(tags.Title))
+                {
+                    track.Title = tags.Title;
+                    track.Name = tags.Title!;
+                }
+
+                track.Artist = tags.Artist;
+            }
+
+            track.HasCover = LocalCover.Has(fullPath);
+        }
+
+        HostLog.Info($"[local] write tags {Path.GetFileName(fullPath)} ok");
+        PostMergedTracks();
+        PostResult("writeTags", true, "标签已更新");
+    }
+
     private void OpenLocalFolder()
     {
         if (_currentFolder.Length == 0)
@@ -738,6 +925,20 @@ internal sealed partial class LocalMusicService
 
     private void PickFolder()
     {
+        var folder = PickFolderPath();
+        if (folder is null)
+        {
+            HostLog.Info("[local] folder pick cancelled");
+            PostCancel();
+            return;
+        }
+
+        Load(folder);
+    }
+
+    /// <summary>弹一次文件夹选择框；取消返回 null。</summary>
+    private string? PickFolderPath()
+    {
         try
         {
             var dialog = new OpenFolderDialog
@@ -749,18 +950,34 @@ internal sealed partial class LocalMusicService
             var picked = owner is null ? dialog.ShowDialog() : dialog.ShowDialog(owner);
             if (picked != true || string.IsNullOrWhiteSpace(dialog.FolderName))
             {
-                HostLog.Info("[local] folder pick cancelled");
-                PostCancel();
-                return;
+                return null;
             }
 
-            Load(dialog.FolderName);
+            return dialog.FolderName;
         }
         catch (Exception exception)
         {
             HostLog.Error("[local] folder pick failed", exception);
             PostError(null, $"打开文件夹选择器失败：{exception.Message}");
+            return null;
         }
+    }
+
+    private static List<string> ReadFolders(JsonElement root)
+    {
+        var folders = new List<string>();
+        if (root.TryGetProperty("folders", out var array) && array.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in array.EnumerateArray())
+            {
+                if (item.ValueKind == JsonValueKind.String && item.GetString() is { Length: > 0 } folder)
+                {
+                    folders.Add(folder);
+                }
+            }
+        }
+
+        return folders;
     }
 
     private void Load(string folder)
@@ -830,6 +1047,106 @@ internal sealed partial class LocalMusicService
         _folderTracks = tracks;
         _folderLyrics = lyrics;
         PostMergedTracks();
+    }
+
+    /// <summary>加载附加曲库根目录（主目录之外）。附加目录的曲目 Rel 与歌词都加 `@libN/` 前缀。</summary>
+    private void LoadExtras(IReadOnlyList<string> folders)
+    {
+        _extraRoots.Clear();
+        var index = 1;
+        foreach (var raw in folders)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                continue;
+            }
+
+            string fullPath;
+            try
+            {
+                fullPath = Path.GetFullPath(raw);
+            }
+            catch (Exception exception)
+            {
+                HostLog.Warn($"[local] extra folder invalid {raw}: {exception.Message}");
+                continue;
+            }
+
+            if (!Directory.Exists(fullPath))
+            {
+                HostLog.Warn($"[local] extra folder missing {fullPath}");
+                continue;
+            }
+
+            if (string.Equals(fullPath, _currentFolder, StringComparison.OrdinalIgnoreCase)
+                || _extraRoots.Any((root) => string.Equals(root.Path, fullPath, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            var prefix = $"@lib{index}/";
+            var lyrics = new List<string>();
+            List<LocalTrackDto> tracks;
+            try
+            {
+                tracks = Scan(fullPath, lyrics);
+            }
+            catch (Exception exception)
+            {
+                HostLog.Warn($"[local] extra scan failed {fullPath}: {exception.Message}");
+                continue;
+            }
+
+            foreach (var track in tracks)
+            {
+                track.Rel = prefix + track.Rel;
+            }
+
+            for (var i = 0; i < lyrics.Count; i += 1)
+            {
+                lyrics[i] = prefix + lyrics[i];
+            }
+
+            _extraRoots.Add(new ExtraRoot
+            {
+                Path = fullPath,
+                Prefix = prefix,
+                Tracks = tracks,
+                Lyrics = lyrics,
+            });
+            index += 1;
+            HostLog.Info($"[local] extra root {fullPath} prefix={prefix} tracks={tracks.Count}");
+        }
+    }
+
+    /// <summary>把带 `@libN/` 前缀的 rel 映射回对应的附加根目录。</summary>
+    private bool TryMapExtraPath(string rel, out string root, out string relative)
+    {
+        foreach (var extra in _extraRoots)
+        {
+            if (rel.StartsWith(extra.Prefix, StringComparison.Ordinal))
+            {
+                root = extra.Path;
+                relative = rel[extra.Prefix.Length..];
+                return true;
+            }
+        }
+
+        root = string.Empty;
+        relative = string.Empty;
+        return false;
+    }
+
+    /// <summary>附加目录当前的根路径列表（重扫时复用）。</summary>
+    private List<string> ExtraRootFolders()
+    {
+        var folders = new List<string>();
+        foreach (var extra in _extraRoots)
+        {
+            folders.Add(extra.Path);
+        }
+
+        return folders;
     }
 
     private static List<LocalTrackDto> Scan(string folder, List<string> lyrics)
@@ -1315,7 +1632,19 @@ internal sealed partial class LocalMusicService
             if (seen.Add(full)) tracks.Add(track);
         }
 
-        PostTracks(_currentFolder, tracks, _folderLyrics, null);
+        var lyrics = new List<string>(_folderLyrics);
+        foreach (var root in _extraRoots)
+        {
+            foreach (var track in root.Tracks)
+            {
+                var full = CombinePath(root.Path, track.Rel[root.Prefix.Length..]);
+                if (seen.Add(full)) tracks.Add(track);
+            }
+
+            lyrics.AddRange(root.Lyrics);
+        }
+
+        PostTracks(_currentFolder, tracks, lyrics, null);
     }
 
     private static string CombinePath(string root, string relative)
@@ -1367,9 +1696,14 @@ internal sealed partial class LocalMusicService
 internal static class LocalCover
 {
     /// <summary>只定位是否存在封面（不读图数据，扫描时用）。</summary>
+    /// <summary>同目录封面文件名，按顺序兜底（缺内嵌封面时用）。</summary>
+    private static readonly string[] FolderArtNames = { "cover", "folder", "front", "albumart", "album", "artwork" };
+
+    private static readonly string[] FolderArtExtensions = { ".jpg", ".jpeg", ".png" };
+
     public static bool Has(string path)
     {
-        return Locate(path) is not null;
+        return Locate(path) is not null || FolderArtPath(path) is not null;
     }
 
     public static (byte[] Bytes, string ContentType)? Read(string path)
@@ -1377,7 +1711,8 @@ internal static class LocalCover
         var located = Locate(path);
         if (located is null)
         {
-            return null;
+            // 缺封面补全：专辑目录里常见的 cover.jpg / folder.png 之类直接用上。
+            return ReadFolderArt(path);
         }
 
         try
@@ -1399,7 +1734,7 @@ internal static class LocalCover
 
             if (read < 32)
             {
-                return null;
+                return ReadFolderArt(path);
             }
 
             if (read < bytes.Length)
@@ -1408,6 +1743,66 @@ internal static class LocalCover
             }
 
             return (bytes, Sniff(bytes) ?? located.Value.ContentType);
+        }
+        catch
+        {
+            return ReadFolderArt(path);
+        }
+    }
+
+    private static string? FolderArtPath(string path)
+    {
+        try
+        {
+            var directory = Path.GetDirectoryName(path);
+            if (string.IsNullOrEmpty(directory))
+            {
+                return null;
+            }
+
+            foreach (var name in FolderArtNames)
+            {
+                foreach (var extension in FolderArtExtensions)
+                {
+                    var candidate = Path.Combine(directory, name + extension);
+                    if (File.Exists(candidate))
+                    {
+                        return candidate;
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // 目录不可读时按没有封面处理。
+        }
+
+        return null;
+    }
+
+    private static (byte[] Bytes, string ContentType)? ReadFolderArt(string path)
+    {
+        var artPath = FolderArtPath(path);
+        if (artPath is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            var bytes = File.ReadAllBytes(artPath);
+            if (bytes.Length < 32)
+            {
+                return null;
+            }
+
+            var contentType = Path.GetExtension(artPath).ToLowerInvariant() switch
+            {
+                ".png" => "image/png",
+                ".webp" => "image/webp",
+                _ => "image/jpeg",
+            };
+            return (bytes, Sniff(bytes) ?? contentType);
         }
         catch
         {

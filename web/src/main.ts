@@ -143,9 +143,17 @@ async function main(): Promise<void> {
   // 全局快捷键
   window.addEventListener('keydown', (event) => {
     const target = event.target;
-    const inField =
-      target instanceof HTMLElement &&
-      (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
+    // 只有「会吞字符的输入控件」才拦截快捷键。之前把所有 INPUT 都算输入框，
+    // 结果焦点落在音量/进度条这类 range 滑块上时，空格、M、Shift+←/→ 全都失效。
+    const textEntry = (element: Element | null): boolean => {
+      if (!(element instanceof HTMLElement)) return false;
+      if (element.isContentEditable || element.tagName === 'TEXTAREA') return true;
+      if (element.tagName === 'SELECT') return true;
+      if (element.tagName !== 'INPUT') return false;
+      const type = (element as HTMLInputElement).type;
+      return type !== 'range' && type !== 'checkbox' && type !== 'radio' && type !== 'color';
+    };
+    const inField = textEntry(target as Element | null);
 
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
       event.preventDefault();
@@ -156,6 +164,8 @@ async function main(): Promise<void> {
       app.escapeTopLayer();
       return;
     }
+    // 输入法组词中不抢按键（尤其空格），否则中文输入会被打断。
+    if (event.isComposing) return;
     if (inField) return;
     if (event.code === 'Space') {
       event.preventDefault();
@@ -181,17 +191,32 @@ async function main(): Promise<void> {
       return;
     }
     // 数字 1–4：热 cue（空位记录 / 已记录则跳转）；Shift + 数字：清除
-    if (/^[1-4]$/.test(event.key) && !event.altKey && !event.ctrlKey && !event.metaKey) {
+    // 注意：按住 Shift 时 event.key 会变成 "!" "@" "#" "$"，所以要用 event.code 判定。
+    const cueDigit = /^(?:Digit|Numpad)([1-4])$/.exec(event.code);
+    if (cueDigit && !event.altKey && !event.ctrlKey && !event.metaKey) {
       event.preventDefault();
-      const slot = Number(event.key);
+      const slot = Number(cueDigit[1]);
       if (event.shiftKey) app.clearHotCue(slot);
       else app.hotCue(slot);
+      return;
+    }
+    // Shift + X：本次切歌不使用无缝过渡（一次性）
+    if (event.key.toLowerCase() === 'x' && event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
+      event.preventDefault();
+      app.suppressCrossfadeOnce();
       return;
     }
     // L：按当前小节循环（4 小节）
     if (event.key.toLowerCase() === 'l' && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
       event.preventDefault();
       app.toggleLoop();
+      return;
+    }
+    // T：跟拍校速（至少 4 下）；Shift + T：清除本曲跟拍速度
+    if (event.key.toLowerCase() === 't' && !event.altKey && !event.ctrlKey && !event.metaKey) {
+      event.preventDefault();
+      if (event.shiftKey) app.clearTempoOverride();
+      else app.tapTempo();
       return;
     }
     if (event.key === 'ArrowRight' && event.altKey) {

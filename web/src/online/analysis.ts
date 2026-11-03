@@ -29,6 +29,14 @@ export interface BeatAnalysis {
   beatIntervalMs: number;
   firstBeatMs: number;
   firstDownbeatMs: number;
+  /** p0-12 起：DP 跟踪出的真实拍点（ms，升序，最多 4000 个）；缺失时回退「首拍 + 恒定间隔」。 */
+  beatsMs?: number[];
+  /** p0-12 起：拍点间隔稳定度 0~1（1 = 完全稳定）；旧缓存缺失。 */
+  tempoStability?: number;
+  /** p0-13 起：速度曲线时间轴（窗口中心 ms，升序）；与 tempoCurveBpm 等长。 */
+  tempoCurveMs?: number[];
+  /** p0-13 起：速度曲线 BPM（逐窗估计，中位数平滑 + 倍速折叠）；用于局部小节时长与变速歌。 */
+  tempoCurveBpm?: number[];
   downbeats: number[];
   phraseStartsMs: number[];
   barCount: number;

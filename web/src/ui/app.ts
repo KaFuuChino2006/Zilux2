@@ -79,18 +79,23 @@ import {
   FADE_VOCAL_TAIL_MS,
   formatShortcutForDisplay,
   getSettings,
+  MINI_SIZE_DIMS,
+  MINI_SIZE_LABELS,
   normalizeShortcutBinding,
   onSettingsChange,
   patchSettings,
   SHORTCUT_ACTIONS,
   SHORTCUT_DEFAULTS,
   SHORTCUT_LABELS,
+  SLEEP_FADE_SECONDS_CHOICES,
+  SLEEP_TIMER_ACTIONS,
   shortcutBindingFromEvent,
   type EqPreset,
   type FadeCurve,
   type ShortcutAction,
+  type SleepTimerAction,
 } from '../core/settings';
-import { addLikedTrack, checkLikedMany, clearMvmp3Cache, fetchFeed, fetchHotPlaylists, fetchMvmp3Cache, fetchRecentMerged, onlineEndpoint, onlineReady, qualityForSource, removeLikedTrack, searchOnline, setQualityForSource } from '../online/client';
+import { addLikedTrack, checkLikedMany, clearMvmp3Cache, fetchFeed, fetchHotPlaylists, fetchMvmp3Cache, fetchRecentMerged, onlineEndpoint, onlineReady, qualityForSource, removeLikedTrack, searchOnline, setQualityForSource, setStreamQuality } from '../online/client';
 import type { OnlineSource, OnlineTrack, StreamQuality } from '../online/types';
 import { SOURCE_LABEL } from '../online/types';
 import {
@@ -106,7 +111,22 @@ import {
 import { onlineArtwork } from '../online/artwork';
 import { buildAnalysisSection } from './analysisSection';
 import { autoPlaySettings, listAutoPlayPlaylists, onAutoPlayChange, saveAutoPlaySettings, type AutoPlayPlaylistGroup, type AutoPlaySource } from './autoPlay';
-import { buildCrossfadeSection, readCrossfadeDebug, subscribeCrossfadeDebug } from './crossfadeDeck';
+import {
+  buildCrossfadeSection,
+  bpmOverrideOf,
+  captureCrossfadeOverride,
+  effectiveCrossfadeSettings,
+  overrideKeyOfTrack,
+  playlistOverrideOf,
+  readCrossfadeDebug,
+  setPlaylistOverride,
+  setTrackOverride,
+  trackOverrideOf,
+  readCrossfadeSettings,
+  setBpmOverride,
+  subscribeCrossfadeDebug,
+  suppressNextCrossfade,
+} from './crossfadeDeck';
 import { confirmDialog } from './confirmDialog';
 import { createEqCurve } from './eqCurve';
 import { localArtists, localTracks, type LocalArtist } from './localArtists';
@@ -123,17 +143,22 @@ import { startAudioTap, stopAudioTap } from '../core/audioTap';
 import { disposeMetronome } from '../core/metronome';
 import { createAirplayPanel, type AirplayPanelHandle } from './airplayPanel';
 import {
+  addLocalFolder,
   deleteLocalTracks,
   initLocalLibrary,
+  localFolders,
   localLibrary,
   onLocalLibraryChange,
   onLocalResult,
   openLocalFolder,
+  pickAdditionalLocalFolder,
   pickLocalFolder,
   rememberedFolder,
   relOf,
+  removeLocalFolder,
   revealLocalTrack,
   trackOf,
+  writeLocalTags,
 } from './local';
 import { isLocalLiked, likedLocalKeys, subscribe as subscribeLocalLikes, toggleLocalLike } from './localLikes';
 import {
@@ -147,19 +172,37 @@ import {
   trackKeyOfTrack,
   tracksOfKeys,
 } from './localPlaylists';
+import {
+  createSmartPlaylist,
+  deleteSmartPlaylist,
+  listSmartPlaylists,
+  subscribeSmartPlaylists,
+} from './smartPlaylists';
+import {
+  dailyListening,
+  formatListening,
+  readListeningStats,
+  recordListenStart,
+  recordListenTime,
+  resetListeningStats,
+  topListenedArtists,
+  topListenedTracks,
+} from './listeningStats';
 import { openTagEditor } from './tagEditor';
 import { buildEqPresetManager } from './eqPresets';
 import { buildSearchHistoryPanel, recordSearch, type SearchHistoryPanelHandle } from './searchHistory';
 import { openTrackMenu, type TrackMenuItem } from './trackMenu';
 import { buildSettingsIOActions } from './settingsIO';
-import { buildSleepTimerPanel, completeSleepTimer, getSleepTimerState } from './sleepTimer';
-import { currentLyricSource, lyricGrowMode, lyricMatchMinScore, lyricOffsetOf, LYRIC_UNSUNG_PRESETS, lyricsBackgroundMode, lyricsLumiereMode, lyricUnsungColor, LyricsView, primeLyrics, setLyricGrowMode, setLyricsBackgroundMode, setLyricsLumiereMode, setLyricMatchMinScore, setLyricOffset, setLyricUnsungColor, updateCurrentLyricLine, lyricMatchText } from './lyrics';
+import { buildSleepTimerPanel, completeSleepTimer, getSleepTimerState, subscribeSleepTimer } from './sleepTimer';
+import { currentLyricDisplay, currentLyricSource, lyricGrowMode, lyricMatchMinScore, lyricOffsetOf, LYRIC_UNSUNG_PRESETS, lyricsBackgroundMode, lyricsLumiereMode, lyricUnsungColor, LyricsView, primeLyrics, setLyricGrowMode, setLyricsBackgroundMode, setLyricsLumiereMode, setLyricMatchMinScore, setLyricOffset, setLyricUnsungColor, updateCurrentLyricLine, lyricMatchText } from './lyrics';
 import { LUMIERE_MODES } from './lumiere';
 import {
+  CHORUS_PREVIEW_MAX_CHOICES,
   CHORUS_PREVIEW_START_CHOICES,
   chorusPreviewDelayChoices,
   readChorusPreviewSettings,
   registerPreviewTrack,
+  stopChorusPreview,
   takePreviewElement,
   writeChorusPreviewSettings,
 } from './chorusPreview';
@@ -199,7 +242,7 @@ import {
   toggleLiked,
   type PlayerState,
 } from './player';
-import { host, hostAvailable, getShortcutsState, onMiniMode, onShortcutsState, type UpdateSnapshot } from '../core/bridge';
+import { host, hostAvailable, getShortcutsState, onMiniMode, onShortcutsState, updateDesktopLyrics, type UpdateSnapshot } from '../core/bridge';
 import { HomeView } from './home';
 import { DiscoverView } from './discover';
 import { fetchRadio, fetchRecommendedPlaylists } from '../online/discover';
@@ -239,7 +282,7 @@ import {
   updateSnapshot,
 } from './updates';
 
-type WallKind = 'liked' | 'local' | 'search' | 'feed' | 'playlist' | 'recent' | 'playlists' | 'recommend' | 'moods' | 'mood';
+type WallKind = 'liked' | 'local' | 'search' | 'feed' | 'playlist' | 'recent' | 'playlists' | 'recommend' | 'moods' | 'mood' | 'smart' | 'stats';
 
 interface WallData {
   kind: WallKind;
@@ -248,6 +291,10 @@ interface WallData {
   tracks: OnlineTrack[];
   /** 本地歌单墙关联的歌单 id（用于「添加歌曲」）。 */
   playlistId?: string;
+  /** 歌单级过渡记忆的键（`local:<id>` / `online:<source>:<id>`）。 */
+  playlistKey?: string;
+  /** 智能歌单墙关联的歌单 id（动态保存的场景/推荐快照）。 */
+  smartPlaylistId?: string;
 }
 
 interface WallPagerEntry {
@@ -281,6 +328,36 @@ function formatFadeSeconds(ms: number): string {
 }
 
 /** 倒计时文案：秒 / 分+秒（用于「将在 X 分 Y 秒后过渡至…」）。 */
+function crossfadeSummary(settings: ReturnType<typeof readCrossfadeSettings>): string {
+  const style =
+    settings.style === 'auto'
+      ? '自动风格'
+      : settings.style === 'am'
+        ? '交融'
+        : settings.style === 'equal'
+          ? '等功率'
+          : '快速切入';
+  const length =
+    settings.lengthMode === 'auto'
+      ? '自适应长度'
+      : settings.lengthMode === 'seconds'
+        ? `${settings.lengthValue} 秒`
+        : settings.lengthMode === 'beats'
+          ? `${settings.lengthValue} 拍`
+          : settings.lengthMode === 'bars'
+            ? `${settings.lengthValue} 小节`
+            : '1 乐句';
+  const cue =
+    settings.cueMode === 'auto'
+      ? '自动入场'
+      : settings.cueMode === 'drop'
+        ? '进 drop'
+        : settings.cueMode === 'chorus'
+          ? '进副歌'
+          : 'intro 后';
+  return `${style} · ${length} · ${cue}`;
+}
+
 function formatCountdownSpan(ms: number): string {
   const total = Math.max(0, Math.round(ms / 1000));
   if (total < 60) return `${total} 秒`;
@@ -376,6 +453,10 @@ export class App {
   private accountDispose: (() => void) | null = null;
   private accountIssueDispose: (() => void) | null = null;
   private settingsDispose: (() => void) | null = null;
+  /** 睡眠定时渐弱：当前渐弱到的音量（null 表示没有进行中的渐弱）。 */
+  private sleepFadeVolume: number | null = null;
+  /** 渐弱令牌：取消/重新触发时自增，用于中止上一次循环。 */
+  private sleepFadeToken = 0;
   /** 设置页「更新」分区的快照订阅（同一时间只保留一份）。 */
   private updatesDispose: (() => void) | null = null;
 
@@ -384,11 +465,15 @@ export class App {
   private pbMeta!: HTMLDivElement;
   private pbSource!: HTMLSpanElement;
   private pbTrackKey = '';
+  /** 收听统计的跨状态游标：曲目键 + 上次同步的墙上时间。 */
+  private listenKey = '';
+  private listenAt = 0;
   private pbTitle!: HTMLDivElement;
   private pbArtist!: HTMLDivElement;
   private pbPlayBtn!: HTMLButtonElement;
   private pbLikeBtn!: HTMLButtonElement;
   private pbModeBtn!: HTMLButtonElement;
+  private pbQueueBtn!: HTMLButtonElement;
   private pbFill!: HTMLDivElement;
   private pbMarks!: HTMLDivElement;
   private pbMergeMark!: HTMLDivElement;
@@ -456,6 +541,14 @@ export class App {
   private seamlessHintTimer = 0;
   /** 本轮提示的标识（曲目 + 淡化起点 + 下一首），同一轮准备只弹一次。 */
   private seamlessHintKey = '';
+  /** 过渡试放台：覆盖层 / 关闭回调 / 模拟播放的停止函数。 */
+  private crossfadeLab: HTMLDivElement | null = null;
+  private crossfadeLabDispose: (() => void) | null = null;
+  private crossfadeLabStop: (() => void) | null = null;
+  /** 待播队列小卡里的「过渡」行：说明这次怎么过渡，准备后显示实际秒数与起点。 */
+  private upnextTransition!: HTMLDivElement;
+  /** 上一次渲染的过渡说明，避免每次状态同步都重写 DOM。 */
+  private pbTransitionKey = '';
   private appBgMode: AppBgMode = readAppBgMode();
   private appBgImage = readAppBgImage();
   private appBgEl!: HTMLDivElement;
@@ -525,7 +618,16 @@ export class App {
     this.playerDispose = onPlayer((state) => this.syncPlayer(state));
     // 过渡计划变化（准备完成/取消）不一定伴随播放器状态变化（分析慢、暂停时），
     // 这里主动重绘进度条上的渐变与高潮标记，避免显示上一份计划的旧位置。
-    this.disposers.add(subscribeCrossfadeDebug(() => this.paintProgressMarks(playerState())));
+    this.disposers.add(
+      subscribeCrossfadeDebug(() => {
+        this.paintProgressMarks(playerState());
+        this.syncUpNextTransition(playerState());
+      }),
+    );
+    // 过渡设置变更（开启预告/改风格等）不一定伴随播放器状态变化，立即同步一次预告卡。
+    const onCrossfadeSettings = (): void => this.syncUpNextTransition(playerState());
+    window.addEventListener('zilux:crossfade', onCrossfadeSettings);
+    this.disposers.add(() => window.removeEventListener('zilux:crossfade', onCrossfadeSettings));
     this.localDispose = onLocalLibraryChange(() => {
       if (this.wall.kind === 'local') {
         if (localLibrary()) this.showLocal();
@@ -539,7 +641,20 @@ export class App {
         if (this.wall.kind === 'liked' && !this.wallHost.classList.contains('is-hidden')) void this.showLiked();
       }),
     );
-    onLocalResult((result) => toast(result.message, result.ok ? 'info' : 'error'));
+    onLocalResult((result) => {
+      if (result.action === 'pickAdded') {
+        if (result.ok && result.message) {
+          addLocalFolder(result.message);
+          toast('已添加文件夹，正在扫描曲库…');
+        } else {
+          toast('已取消添加文件夹');
+        }
+
+        return;
+      }
+
+      toast(result.message, result.ok ? 'info' : 'error');
+    });
     this.accountDispose = onAccountChange(() => this.syncAccount());
     // 登录状态检测（第四十六轮）：宿主后台发现掉登录时推 account 事件，这里弹提醒并刷新账号 UI。
     this.accountIssueDispose = onAccountIssue((issue) => {
@@ -548,13 +663,21 @@ export class App {
       this.syncAccount();
     });
     this.settingsDispose = onSettingsChange(() => this.syncSettingsUi());
-    // 睡眠定时：模块触发时统一在这里暂停（不依赖设置弹窗是否还开着）。
+    // 睡眠定时：模块触发时先渐弱、再暂停，最后按设置收尾（不依赖设置弹窗是否还开着）。
     const onSleepFired = () => {
-      if (playerState().playing) toggle();
-      toast('睡眠定时已到，已暂停播放');
+      void this.handleSleepTimerFired();
     };
     window.addEventListener('zilux:sleep-timer-fired', onSleepFired);
     this.disposers.add(() => window.removeEventListener('zilux:sleep-timer-fired', onSleepFired));
+    // 用户在渐弱过程中取消了定时：立刻恢复音量并停下渐弱。
+    this.disposers.add(
+      subscribeSleepTimer((timer) => {
+        if (timer.active || this.sleepFadeVolume === null) return;
+        this.sleepFadeToken += 1;
+        setVolume(this.sleepFadeVolume);
+        this.sleepFadeVolume = null;
+      }),
+    );
     // 「播完当前曲」：曲末前 300ms 触发；其余模式由睡眠定时模块自己计时。
     window.setInterval(() => {
       const timer = getSleepTimerState();
@@ -563,6 +686,10 @@ export class App {
       if (!state.playing || state.durationMs <= 0) return;
       if (state.positionMs >= state.durationMs - 300) completeSleepTimer();
     }, 500);
+    // 收听统计：按秒采样累计（onPlayer 只在播放状态变化时触发，不能靠它计时）。
+    window.setInterval(() => this.accumulateListening(playerState()), 1000);
+    // 桌面歌词：每秒读一次当前句；只有句/翻译变了才发给宿主，避免桥消息刷屏。
+    window.setInterval(() => this.pushDesktopLyrics(), 1000);
     initLocalLibrary();
     void this.bootData();
   }
@@ -813,6 +940,7 @@ export class App {
       { key: 'discover', label: '发现', iconName: 'compass', onClick: () => void this.showDiscover() },
       { key: 'playlists', label: '我的歌单', iconName: 'list', onClick: () => this.openPlaylistsPage() },
       { key: 'local', label: '本地曲库', iconName: 'folder', onClick: () => this.showLocal() },
+      { key: 'stats', label: '收听统计', iconName: 'chart', onClick: () => this.openStatsPage() },
       { key: 'airplay', label: '投送', iconName: 'airplay', onClick: () => this.toggleAirplayPop() },
     ];
     for (const item of items) {
@@ -1336,7 +1464,11 @@ export class App {
     this.wallHost.classList.remove('is-hidden');
     // 只有整页进入 / 换页时才播挂载动画；流式搜索每批 renderWall(true) 不再重放。
     this.wallHost.classList.toggle('is-fresh', !skipEnter);
-    if (!skipEnter) window.setTimeout(() => this.wallHost.classList.remove('is-fresh'), 620);
+    if (!skipEnter) {
+      // 换页时回到顶部，否则从别的长列表切过来会停在中间。
+      this.wallHost.scrollTop = 0;
+      window.setTimeout(() => this.wallHost.classList.remove('is-fresh'), 620);
+    }
     this.wallHost.textContent = '';
     if (this.wall.kind !== 'playlists') {
       this.playlistsScope?.dispose();
@@ -1427,11 +1559,58 @@ export class App {
         toast('正在重新扫描本地曲库…');
       });
       actions.push(refresh);
+      const foldersBtn = h('button', { class: 'pill', title: '管理本地曲库的多个文件夹' }, icon('list', 16), h('span', { text: '文件夹' }));
+      foldersBtn.addEventListener('click', () => this.openLocalFolderSheet());
+      actions.push(foldersBtn);
     }
     if (this.wall.kind === 'playlist' && this.wall.playlistId) {
       const addBtn = h('button', { class: 'pill', title: '从本地曲库挑选歌曲加入这个歌单' }, icon('plus', 16), h('span', { text: '添加歌曲' }));
       addBtn.addEventListener('click', () => this.openPlaylistAddSheet(this.wall.playlistId as string));
       actions.push(addBtn);
+    }
+    if (this.wall.kind === 'playlist' && this.wall.playlistKey) {
+      const key = this.wall.playlistKey;
+      const saved = playlistOverrideOf(key) !== null;
+      const memoryBtn = h(
+        'button',
+        { class: 'pill', title: saved ? '这个歌单已记住一套过渡设置；点开可更新或清除' : '把这个歌单的过渡设置记下来，播到这些歌时自动套用' },
+        icon('clock', 16),
+        h('span', { text: saved ? '过渡已记忆' : '记住过渡' }),
+      );
+      memoryBtn.addEventListener('click', (event) => {
+        const items: TrackMenuItem[] = [
+          {
+            label: saved ? '更新这个歌单的过渡记忆' : '记住这个歌单的过渡',
+            hint: '使用当前设置',
+            run: () => {
+              setPlaylistOverride(key, captureCrossfadeOverride(), this.wall.tracks.map(overrideKeyOfTrack));
+              toast(`已记住这个歌单的过渡：${crossfadeSummary(readCrossfadeSettings())}`);
+              this.renderWall(true);
+            },
+          },
+          {
+            label: '清除这个歌单的过渡记忆',
+            disabled: !saved,
+            run: () => {
+              setPlaylistOverride(key, null);
+              toast('已清除这个歌单的过渡记忆');
+              this.renderWall(true);
+            },
+          },
+        ];
+        openTrackMenu({ x: event.clientX, y: event.clientY, items });
+      });
+      actions.push(memoryBtn);
+    }
+    if (tracks.length > 0 && this.wall.kind !== 'playlist') {
+      const saveBtn = h(
+        'button',
+        { class: 'pill', title: '把当前列表里的歌曲存成一个本地歌单' },
+        icon('plus', 16),
+        h('span', { text: '存为歌单' }),
+      );
+      saveBtn.addEventListener('click', () => this.saveWallAsPlaylist());
+      actions.push(saveBtn);
     }
     if (tracks.length > 0) {
       const btn = h('button', { class: 'pill', title: '播放全部' }, icon('play', 16), h('span', { text: '播放全部' }));
@@ -1463,12 +1642,19 @@ export class App {
       return;
     }
 
+    // 「收听统计」整页：不渲染歌曲网格。
+    if (this.wall.kind === 'stats') {
+      this.wallHost.append(this.buildStatsPage());
+      return;
+    }
+
     // 「我的歌单」整页：本地歌单 + 各平台在线歌单。
     if (this.wall.kind === 'playlists') {
       const wrap = h('div', { class: 'playlists-page' });
       const localHost = h('div', { class: 'local-playlist-host' });
+      const smartHost = h('div', { class: 'smart-playlist-host' });
       const onlineHost = h('div', { class: 'online-playlist-host' });
-      wrap.append(localHost, onlineHost);
+      wrap.append(localHost, smartHost, onlineHost);
       this.wallHost.append(wrap);
       this.playlistsScope?.dispose();
       const scope = new Disposers();
@@ -1479,6 +1665,8 @@ export class App {
         }),
       );
       this.renderLocalPlaylists(localHost);
+      this.renderSmartPlaylists(smartHost);
+      scope.add(subscribeSmartPlaylists(() => this.renderSmartPlaylists(smartHost)));
       void this.renderOnlinePlaylists(onlineHost);
       return;
     }
@@ -1896,6 +2084,57 @@ export class App {
     this.renderWall();
   }
 
+  /** 本地曲库：管理多个曲库根目录（添加 / 移除，第一个为主目录）。 */
+  private openLocalFolderSheet(): void {
+    this.openSheet('本地音乐文件夹', (body) => {
+      const hint = h('div', {
+        class: 'field-hint',
+        text: '曲库会合并这里列出的所有目录。第一个是主目录；其余目录在后台用 @libN 前缀区分，播放、封面、歌词和标签编辑都照常工作。',
+      });
+      const list = h('div', { class: 'list' });
+      const add = h('button', { class: 'pill', type: 'button', title: '再选一个目录加入曲库' }, icon('plus', 16), h('span', { text: '添加文件夹' }));
+      const render = (): void => {
+        list.textContent = '';
+        const folders = localFolders();
+        if (folders.length === 0) {
+          list.append(h('div', { class: 'empty', text: '还没有添加任何文件夹' }));
+          return;
+        }
+
+        folders.forEach((folder, index) => {
+          const row = h(
+            'div',
+            { class: 'row', title: folder },
+            h('div', { class: 'row-cover' }, icon('folder', 20)),
+            h(
+              'div',
+              { class: 'row-meta' },
+              h('div', { class: 'row-name', text: folder }),
+              h('div', { class: 'row-artist', text: index === 0 ? '主目录' : '附加目录' }),
+            ),
+          );
+          const remove = h(
+            'button',
+            { class: 'icon-btn', type: 'button', title: '从这个曲库移除' },
+            icon('close', 15),
+          );
+          remove.addEventListener('click', (event) => {
+            event.stopPropagation();
+            removeLocalFolder(folder);
+            toast('已移除这个文件夹，正在重新扫描…');
+            render();
+          });
+          row.append(remove);
+          list.append(row);
+        });
+      };
+
+      add.addEventListener('click', () => pickAdditionalLocalFolder());
+      render();
+      body.append(hint, list, h('div', { class: 'field' }, add));
+    });
+  }
+
   /** 本地曲库当前是否展示「歌手」网格（总览态）。 */
   private isLocalArtistGrid(): boolean {
     return this.wall.kind === 'local' && this.localMode === 'artists' && this.localArtistFilter === null;
@@ -2003,6 +2242,86 @@ export class App {
       tracks: [],
     };
     this.renderWall();
+  }
+
+  /** 我的歌单页里的「智能歌单」区块（保存下来的场景 / 推荐快照）。 */
+  private renderSmartPlaylists(host: HTMLElement): void {
+    host.textContent = '';
+    const playlists = listSmartPlaylists();
+    host.append(h('h3', { class: 'section-title', text: `智能歌单 · ${playlists.length} 个` }));
+    if (playlists.length === 0) {
+      host.append(
+        h('div', {
+          class: 'empty',
+          text: '在场景 / 每日推荐 / 喜欢 / 最近播放页点「存为歌单」，就会把当次列表完整存到这里。',
+        }),
+      );
+      return;
+    }
+    const list = h('div', { class: 'list' });
+    playlists.forEach((playlist) => {
+      const first = playlist.tracks[0];
+      const row = h(
+        'div',
+        { class: 'row', title: playlist.name },
+        h(
+          'div',
+          { class: 'row-cover local-playlist-cover' },
+          first ? h('img', { src: onlineArtwork(first), loading: 'lazy' }) : icon('list', 20),
+        ),
+        h(
+          'div',
+          { class: 'row-meta' },
+          h('div', { class: 'row-name', text: playlist.name }),
+          h('div', { class: 'row-artist', text: `${playlist.tracks.length} 首 · 智能歌单` }),
+        ),
+      );
+      row.addEventListener('click', () => {
+        this.sheet?.close();
+        this.openSmartPlaylistWall(playlist.id);
+      });
+      const actions = h('div', { class: 'local-playlist-actions' });
+      const playBtn = h('button', { class: 'icon-btn', type: 'button', title: '播放这个歌单' }, icon('play', 16));
+      playBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (playlist.tracks.length === 0) {
+          toast('歌单还是空的');
+          return;
+        }
+        playQueue(playlist.tracks, 0, true);
+      });
+      const delBtn = h('button', { class: 'icon-btn', type: 'button', title: '删除这个智能歌单' }, icon('trash', 16));
+      delBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (!deleteSmartPlaylist(playlist.id)) {
+          toast('删除失败', 'error');
+          return;
+        }
+        toast(`已删除「${playlist.name}」`);
+      });
+      actions.append(playBtn, delBtn);
+      row.append(actions);
+      list.append(row);
+    });
+    host.append(list);
+  }
+
+  /** 打开智能歌单墙。 */
+  private openSmartPlaylistWall(id: string): void {
+    const playlist = listSmartPlaylists().find((item) => item.id === id);
+    if (!playlist) {
+      toast('这个智能歌单已不存在');
+      return;
+    }
+    this.wallPager = null;
+    this.wall = {
+      kind: 'smart',
+      smartPlaylistId: playlist.id,
+      title: playlist.name,
+      subtitle: `${playlist.tracks.length} 首 · 智能歌单 · 存于 ${new Date(playlist.createdAt).toLocaleDateString('zh-CN')}`,
+      tracks: playlist.tracks,
+    };
+    this.renderWall(true);
   }
 
   /** 我的歌单弹层里的「本地歌单」区块（新建 / 播放 / 重命名 / 删除）。 */
@@ -2212,6 +2531,7 @@ export class App {
       title: item.title,
       subtitle: `${SOURCE_LABEL[item.source]} · ${item.count} 首`,
       tracks: [],
+      playlistKey: `online:${item.source}:${item.id}`,
     };
     this.renderWall();
     const special = item.special === 'liked' ? 'liked' : undefined;
@@ -2336,6 +2656,30 @@ export class App {
         },
       },
       {
+        label: trackOverrideOf(track) ? '更新这首歌的过渡记忆' : '记住这首歌的过渡',
+        hint: '过渡',
+        run: () => {
+          setTrackOverride(track, captureCrossfadeOverride());
+          toast(`已记住这首歌的过渡：${crossfadeSummary(effectiveCrossfadeSettings(track))}`);
+        },
+      },
+      {
+        label: '清除这首歌的过渡记忆',
+        disabled: !trackOverrideOf(track),
+        run: () => {
+          setTrackOverride(track, null);
+          toast('已清除这首歌的过渡记忆');
+        },
+      },
+      ...(isLocal && relOf(track)
+        ? [
+            {
+              label: '编辑标签…',
+              run: () => this.openTagEditor(track),
+            },
+          ]
+        : []),
+      {
         label: isLocal
           ? liked
             ? '取消本地收藏'
@@ -2353,6 +2697,128 @@ export class App {
       },
     ];
     openTrackMenu({ x, y, items });
+  }
+
+  /** 本地曲目：编辑标签（只把用户填写的字段交给宿主，留空表示不改）。 */
+  private openTagEditor(track: OnlineTrack): void {
+    const fields: Array<{ key: string; label: string; value: string; placeholder: string; numeric?: boolean }> = [
+      { key: 'title', label: '标题', value: track.title, placeholder: '歌曲标题' },
+      { key: 'artist', label: '歌手', value: track.artist, placeholder: '歌手' },
+      { key: 'album', label: '专辑', value: '', placeholder: '留空不改' },
+      { key: 'albumArtist', label: '专辑歌手', value: '', placeholder: '留空不改' },
+      { key: 'track', label: '音轨号', value: '', placeholder: '留空不改', numeric: true },
+      { key: 'year', label: '年份', value: '', placeholder: '留空不改', numeric: true },
+    ];
+    const backdrop = h('div', { class: 'ui-confirm-backdrop tag-editor-backdrop' });
+    const card = h('div', { class: 'tag-editor' });
+    const head = h('div', { class: 'tag-editor-head' });
+    head.append(h('div', { class: 'tag-editor-title', text: '编辑标签' }));
+    head.append(h('div', { class: 'tag-editor-sub', text: track.title }));
+    const close = h('button', { class: 'tag-editor-close', type: 'button', 'aria-label': '关闭' });
+    close.append(icon('close', 16));
+    head.append(close);
+    card.append(head);
+
+    const inputs = new Map<string, HTMLInputElement>();
+    const body = h('div', { class: 'tag-editor-body' });
+    for (const field of fields) {
+      const input = h('input', {
+        class: 'tag-editor-input',
+        type: field.numeric ? 'number' : 'text',
+        placeholder: field.placeholder,
+        ...(field.numeric ? { min: '1', max: '9999' } : {}),
+      });
+      input.value = field.value;
+      inputs.set(field.key, input);
+      const row = h('label', { class: 'tag-editor-row' });
+      row.append(h('span', { class: 'tag-editor-label', text: field.label }));
+      row.append(input);
+      body.append(row);
+    }
+    card.append(body);
+
+    const hint = h('div', {
+      class: 'tag-editor-hint',
+      text: '留空的字段不会写入；写标签受文件格式支持情况影响（MP3/FLAC/M4A 通常可写）。',
+    });
+    card.append(hint);
+
+    const footer = h('div', { class: 'tag-editor-actions' });
+    const cancelBtn = h('button', { class: 'ui-confirm-btn', type: 'button', text: '取消' });
+    const saveBtn = h('button', { class: 'ui-confirm-btn is-primary', type: 'button', text: '保存标签' });
+    footer.append(cancelBtn, saveBtn);
+    card.append(footer);
+    backdrop.append(card);
+    document.body.append(backdrop);
+    requestAnimationFrame(() => backdrop.classList.add('is-in'));
+
+    let settled = false;
+    const finish = (): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      document.removeEventListener('keydown', onKey, true);
+      backdrop.classList.add('is-closing');
+      window.setTimeout(() => backdrop.remove(), 170);
+    };
+    const save = (): void => {
+      const payload: Record<string, string | number | null> = {};
+      for (const [key, input] of inputs) {
+        const raw = input.value.trim();
+        if (key === 'track' || key === 'year') {
+          if (!raw) {
+            continue;
+          }
+          const number = Number.parseInt(raw, 10);
+          if (Number.isFinite(number) && number > 0) {
+            payload[key] = number;
+          }
+          continue;
+        }
+        const original = fields.find((field) => field.key === key)?.value ?? '';
+        if (!raw && !original) {
+          continue;
+        }
+        if (key === 'title' || key === 'artist') {
+          if (!raw) {
+            continue;
+          }
+          if (raw !== original) {
+            payload[key] = raw;
+          }
+          continue;
+        }
+        payload[key] = raw;
+      }
+      if (Object.keys(payload).length === 0) {
+        toast('没有要写入的标签');
+        return;
+      }
+      if (!writeLocalTags(track, payload)) {
+        toast('找不到这首歌的本地文件', 'error');
+        return;
+      }
+      toast('正在写入标签…');
+      finish();
+    };
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        finish();
+      }
+    };
+    close.addEventListener('click', finish);
+    cancelBtn.addEventListener('click', finish);
+    saveBtn.addEventListener('click', save);
+    backdrop.addEventListener('pointerdown', (event) => {
+      if (event.target === backdrop) {
+        finish();
+      }
+    });
+    document.addEventListener('keydown', onKey, true);
+    inputs.get('title')?.focus({ preventScroll: true });
   }
 
   /** 右键菜单里的收藏动作：本地走 localStorage，在线走平台接口（乐观提示，失败回滚提示）。 */
@@ -3066,6 +3532,7 @@ export class App {
       subtitle: `本地歌单 · ${tracks.length} 首 · 拖动可排序`,
       tracks,
       playlistId: id,
+      playlistKey: `local:${id}`,
     };
     this.renderWall();
     if (tracks.length === 0) {
@@ -3339,6 +3806,49 @@ export class App {
             toast(value ? '已开启本地文件夹监控' : '已暂停本地文件夹监控');
           },
         ),
+        toggleField(
+          '系统媒体控制',
+          '在任务栏媒体弹窗、音量键旁显示当前歌曲与播放按钮，并支持系统媒体键；关闭后这些入口不再出现（应用内播放不受影响）',
+          settings.general.mediaSession,
+          (value) => {
+            patchSettings({ general: { mediaSession: value } });
+            toast(value ? '已开启系统媒体控制' : '已关闭系统媒体控制');
+          },
+        ),
+        toggleField(
+          '桌面歌词',
+          '在桌面上放一个无边框歌词窗口，逐句显示正在唱的歌词和翻译；窗口上右键可以调字号、锁定（鼠标穿透）、置顶或关闭',
+          settings.general.desktopLyrics,
+          (value) => {
+            patchSettings({ general: { desktopLyrics: value } });
+            toast(value ? '已打开桌面歌词' : '已关闭桌面歌词');
+          },
+        ),
+        segField(
+          '桌面歌词字号',
+          [
+            { value: '28', label: '小' },
+            { value: '40', label: '中' },
+            { value: '52', label: '大' },
+          ],
+          String(settings.general.desktopLyricsFontSize),
+          (value) => patchSettings({ general: { desktopLyricsFontSize: Number(value) } }),
+        ),
+        toggleField(
+          '桌面歌词锁定',
+          '锁定后歌词窗口不再响应鼠标（点击穿透到下面的窗口），避免挡住桌面操作；解锁回设置页关掉这一项即可',
+          settings.general.desktopLyricsLocked,
+          (value) => {
+            patchSettings({ general: { desktopLyricsLocked: value } });
+            toast(value ? '桌面歌词已锁定（鼠标穿透）' : '桌面歌词已解锁');
+          },
+        ),
+        toggleField(
+          '桌面歌词置顶',
+          '让歌词窗口始终显示在其他窗口之上',
+          settings.general.desktopLyricsTopmost,
+          (value) => patchSettings({ general: { desktopLyricsTopmost: value } }),
+        ),
       );
 
       // 外观
@@ -3378,6 +3888,19 @@ export class App {
           '打开后底部播放条不再依赖鼠标悬停，始终保持展开形态（显示进度、音量与完整控制）。',
           settings.appearance.playerBarExpanded,
           (value) => patchSettings({ appearance: { playerBarExpanded: value } }),
+        ),
+        segField(
+          '迷你播放器尺寸',
+          MINI_SIZE_LABELS.map(([value, label]) => ({ value, label })),
+          settings.appearance.miniSize,
+          (value) => patchSettings({ appearance: { miniSize: value } }),
+          '小 360×100、标准 420×120、宽 520×150；下次进迷你时生效，过渡动画会直接补间到对应大小。',
+        ),
+        toggleField(
+          '迷你播放器置顶',
+          '打开后迷你小窗始终浮在其它窗口上面；关闭则和普通窗口一样会被盖住（下次进迷你时生效）。',
+          settings.appearance.miniAlwaysOnTop,
+          (value) => patchSettings({ appearance: { miniAlwaysOnTop: value } }),
         ),
         this.buildAccentField(),
         this.buildPageBackgroundField(),
@@ -3436,7 +3959,7 @@ export class App {
         return [enabledField, sourceField, playlistField];
       };
 
-      // 播放
+      // 播放（基础）
       const playback = section(
         '播放',
         segField(
@@ -3466,6 +3989,60 @@ export class App {
           },
           '变速不变调（Web Audio preservesPitch）；无缝过渡的变速会与此倍速相乘。',
         ),
+        segField<StreamQuality>(
+          '在线音质偏好',
+          [
+            { value: 'standard', label: '标准' },
+            { value: 'high', label: '高品质' },
+            { value: 'lossless', label: '无损' },
+          ],
+          settings.playback.quality,
+          (value) => {
+            setStreamQuality(value);
+            patchSettings({ playback: { quality: value } });
+          },
+          '没有单独在快捷设置里选过音质的平台都用这个；平台/账号不支持时宿主自动降级。',
+        ),
+        ...autoPlayFields(),
+        sliderField('搜索结果条数', 10, 50, 5, settings.playback.searchLimit, (value) => {
+          patchSettings({ playback: { searchLimit: value } });
+        }, (value) => `${value} 条`),
+        (() => {
+          const panel = buildSleepTimerPanel();
+          this.sheetScope?.add(() => panel.dispose());
+          return h(
+            'div',
+            { class: 'field is-stacked' },
+            h('div', { class: 'field-label', text: '睡眠定时' }),
+            h('div', { class: 'field-hint', text: '到点自动暂停；「播完当前曲」会在当前歌曲结束后停止。' }),
+            panel.element,
+          );
+        })(),
+        segField<string>(
+          '到时渐弱',
+          SLEEP_FADE_SECONDS_CHOICES.map((seconds) => ({
+            value: String(seconds),
+            label: seconds === 0 ? '不渐弱' : `${seconds} 秒`,
+          })),
+          String(settings.playback.sleepFadeSeconds ?? 15),
+          (value) => {
+            patchSettings({ playback: { sleepFadeSeconds: Number(value) } });
+          },
+          '到点前把音量慢慢降下来，不会突然安静。',
+        ),
+        segField<SleepTimerAction>(
+          '到点后',
+          SLEEP_TIMER_ACTIONS.map((item) => ({ value: item.value, label: item.label })),
+          settings.playback.sleepAction ?? 'pause',
+          (value) => {
+            patchSettings({ playback: { sleepAction: value } });
+          },
+        ),
+      );
+
+      // 音效（渐变 / 响度）
+      const sound = section(
+        '音效',
         toggleField('播放/暂停渐变', '开启后暂停淡出、播放淡入；关闭则瞬时切换', settings.playback.fadeEnabled, (value) => {
           patchSettings({ playback: { fadeEnabled: value } });
         }),
@@ -3515,9 +4092,11 @@ export class App {
             this.applyLoudnessNow();
           },
         ),
-        sliderField('搜索结果条数', 10, 50, 5, settings.playback.searchLimit, (value) => {
-          patchSettings({ playback: { searchLimit: value } });
-        }, (value) => `${value} 条`),
+      );
+
+      // 试听（悬停试听 / 预听）
+      const preview = section(
+        '试听',
         segField(
           '悬停试听延迟',
           chorusPreviewDelayChoices(),
@@ -3536,21 +4115,56 @@ export class App {
           },
           '从曲首开始更接近「先听个开头」；从高潮开始会直接进副歌。点击播放都会从预听听到的位置继续。',
         ),
-        ...autoPlayFields(),
-        (() => {
-          const panel = buildSleepTimerPanel();
-          this.sheetScope?.add(() => panel.dispose());
-          return h(
-            'div',
-            { class: 'field is-stacked' },
-            h('div', { class: 'field-label', text: '睡眠定时' }),
-            h('div', { class: 'field-hint', text: '到点自动暂停；「播完当前曲」会在当前歌曲结束后停止。' }),
-            panel.element,
-          );
-        })(),
-        buildAnalysisSection(this.sheetScope),
-        buildCrossfadeSection(this.sheetScope),
+        sliderField(
+          '试听音量',
+          10,
+          100,
+          5,
+          Math.round(readChorusPreviewSettings().volume * 100),
+          (value) => {
+            writeChorusPreviewSettings({ volume: value / 100 });
+          },
+          (value) => `${value}%（相对正常播放）`,
+        ),
+        segField(
+          '最长试听时长',
+          CHORUS_PREVIEW_MAX_CHOICES,
+          String(readChorusPreviewSettings().maxMs),
+          (value) => {
+            writeChorusPreviewSettings({ maxMs: Number(value) });
+          },
+          '到点自动停止；移开鼠标或点别处会更早停。',
+        ),
+        toggleField(
+          '点击接管续播',
+          '开启时，点击正在试听的歌会从试听位置无缝接着播；关闭时点击只当普通播放，试听先停、从曲首开始。',
+          readChorusPreviewSettings().takeover,
+          (value) => {
+            writeChorusPreviewSettings({ takeover: value });
+          },
+        ),
       );
+
+      const transitionSection = buildCrossfadeSection(this.sheetScope);
+      const labButton = h('button', { class: 'btn', text: '打开试放台' });
+      labButton.addEventListener('click', () => this.openCrossfadeLab());
+      const labRow = h(
+        'div',
+        { class: 'field is-stacked' },
+        h(
+          'div',
+          {},
+          h('div', { class: 'field-label', text: '过渡试放台' }),
+          h('div', {
+            class: 'field-hint',
+            text: '把当前曲与下一首这次的过渡画成时间轴和两条增益曲线，并按真实时长模拟播放一遍（不出声），用来检查接点、时长与低频交接。',
+          }),
+        ),
+        labButton,
+      );
+      const transitionPage = h('div', { class: 'crossfade-page' }, transitionSection, labRow);
+      const analysisSection = buildAnalysisSection(this.sheetScope);
+
 
       // 账号
       const accountSection = h('div', { class: 'section' }, h('h3', { class: 'section-title', text: '账号' }));
@@ -3640,7 +4254,7 @@ export class App {
 
       // 刷新与本地库
       const tools = section(
-        '数据',
+        '存储',
         (() => {
           const btn = h('button', { class: 'btn', title: '刷新个人库' }, icon('refresh', 16), h('span', { text: '刷新个人库' }));
           btn.addEventListener('click', () => {
@@ -3788,6 +4402,15 @@ export class App {
           experimental.append(
             h('div', { class: 'field' }, h('div', {}, h('div', { class: 'field-label', text: '本地缓存' }), cacheHint), clearBtn),
           );
+        }
+      }
+
+      // 「数据」和「实验功能」合并成一页「存储」：实验来源的开关/风险说明并进同一页，
+      // 少一个左侧导航项，也避免用户在两处找缓存与导入导出。
+      if (hasExperimentalSources()) {
+        tools.append(h('h3', { class: 'section-title', text: '实验功能' }));
+        for (const child of Array.from(experimental.children)) {
+          if (!child.classList.contains('section-title')) tools.append(child);
         }
       }
 
@@ -3964,7 +4587,7 @@ export class App {
         ),
       );
 
-      const downloadsSection = this.buildDownloadsSection(section, segField);
+      const downloadsSection = this.buildDownloadsSection(section, segField, toggleField);
       const shortcutsSection = this.buildShortcutsSection(section);
       const updatesSection = this.buildUpdatesSection(section, toggleField, segField);
 
@@ -3974,14 +4597,17 @@ export class App {
         { key: 'general', label: '通用', node: general },
         { key: 'appearance', label: '外观', node: appearance },
         { key: 'playback', label: '播放', node: playback },
+        { key: 'sound', label: '音效', node: sound },
+        { key: 'preview', label: '试听', node: preview },
+        { key: 'transition', label: '过渡', node: transitionPage },
+        { key: 'analysis', label: '分析', node: analysisSection },
         { key: 'shortcuts', label: '快捷键', node: shortcutsSection },
         { key: 'eq', label: '均衡器', node: eqSection },
         { key: 'downloads', label: '下载', node: downloadsSection },
         { key: 'updates', label: '更新', node: updatesSection },
         { key: 'account', label: '账号', node: accountSection },
-        { key: 'data', label: '数据', node: tools },
+        { key: 'data', label: '存储', node: tools },
       ];
-      if (hasExperimentalSources()) entries.push({ key: 'experimental', label: '实验功能', node: experimental });
       const nav = h('div', { class: 'settings-nav' });
       const navThumb = h('div', { class: 'settings-nav-thumb' });
       nav.append(navThumb);
@@ -4091,6 +4717,7 @@ export class App {
       onChange: (next: T) => void,
       hint?: string,
     ) => HTMLDivElement,
+    toggleField: (label: string, hint: string, value: boolean, onChange: (next: boolean) => void) => HTMLDivElement,
   ): HTMLElement {
     const settings = getSettings();
     const directory = settings.downloads?.directory ?? '';
@@ -4132,10 +4759,73 @@ export class App {
       'div',
       { class: 'field-hint', text: '在线播放源会整首保存成音频文件；下载完成后会出现在「本地曲库」里。' },
     );
+    const concurrency = Math.round(settings.downloads?.maxConcurrent ?? 2);
+    const concurrencyField = segField<string>(
+      '下载并发',
+      [
+        { value: '1', label: '1 个' },
+        { value: '2', label: '2 个' },
+        { value: '3', label: '3 个' },
+        { value: '4', label: '4 个' },
+      ],
+      String(Math.min(4, Math.max(1, concurrency))),
+      (next) => {
+        patchSettings({ downloads: { maxConcurrent: Number(next) } });
+        toast(`同时下载：${next} 个`);
+      },
+      '同时进行的下载任务数，多出来的会排队。网络不稳时建议 1–2 个，避免几个任务互相抢带宽。',
+    );
+
+    // 文件名模板：失焦或回车保存；不合法（空/超长/不含占位符）时回退并提示。
+    const templateInput = h('input', {
+      class: 'updates-input',
+      type: 'text',
+      spellcheck: 'false',
+      placeholder: '{artist} - {title}',
+    });
+    templateInput.value = settings.downloads?.fileNameTemplate ?? '{artist} - {title}';
+    const saveTemplate = (): void => {
+      const next = templateInput.value.trim();
+      const saved = getSettings().downloads.fileNameTemplate;
+      if (next === saved) return;
+      if (next.length === 0 || next.length > 120 || !/\{(artist|title|id|quality)\}/.test(next)) {
+        templateInput.value = saved;
+        toast('模板不能为空，且要包含 {artist}、{title}、{id}、{quality} 中的至少一个', 'error');
+        return;
+      }
+      patchSettings({ downloads: { fileNameTemplate: next } });
+      toast('文件名模板已更新');
+    };
+    templateInput.addEventListener('change', saveTemplate);
+    templateInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        saveTemplate();
+        templateInput.blur();
+      }
+    });
+    const templateField = h(
+      'div',
+      { class: 'field is-stacked' },
+      h('div', {}, h('div', { class: 'field-label', text: '文件名模板' }), templateInput),
+      h('div', {
+        class: 'field-hint',
+        text: '支持 {artist}、{title}、{id}、{quality}；保存时会把非法字符替换成空格。留空不允许。',
+      }),
+    );
+    const openFolderField = toggleField(
+      '下载完成后打开文件夹',
+      '每首下完都在资源管理器里选中文件。批量下载时可能连续弹窗，建议只在偶尔下载时打开。',
+      settings.downloads?.openFolderWhenDone ?? false,
+      (value) => patchSettings({ downloads: { openFolderWhenDone: value } }),
+    );
     return section(
       '下载',
       h('div', { class: 'field' }, h('div', {}, h('div', { class: 'field-label', text: '下载目录' }), value), changeBtn, openBtn),
       qualityField,
+      concurrencyField,
+      templateField,
+      openFolderField,
       hint,
     );
   }
@@ -4610,6 +5300,14 @@ export class App {
         '自动安装：发现新版本后后台下载，重启时提示安装；仅提示：只提醒新版本，由你决定何时下载。',
       ),
       repoField,
+      toggleField(
+        '直连 GitHub',
+        '不经过系统代理检查更新/下载安装包。系统代理的出口 IP 被 GitHub 限流（403 rate limit）时打开；国内网络直连失败时再关掉。',
+        settings.updates.directConnection,
+        (value) => {
+          patchSettings({ updates: { directConnection: value } });
+        },
+      ),
       browserNote,
     );
 
@@ -5056,6 +5754,17 @@ export class App {
     );
 
     const downloadBtn = createDownloadEntryButton((anchor) => this.openPlaybarDownloadMenu(anchor));
+    // 待播队列入口：迷你小窗放不下队列面板，先退出迷你、等窗口长回去再展开。
+    this.pbQueueBtn = h(
+      'button',
+      { class: 'pb-btn pb-queue', title: '待播队列', 'data-qa': 'queue-toggle' },
+      icon('list', 15),
+    );
+    this.pbQueueBtn.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.openQueueFromPlaybar();
+    });
     // 迷你播放器入口：只发指令，窗口切换由宿主完成并回推事件。
     this.miniBtn = h(
       'button',
@@ -5073,8 +5782,8 @@ export class App {
       this.pbCoverWrap,
       this.pbMeta,
       h('div', { class: 'pb-controls' }, prevBtn, this.pbPlayBtn, nextBtn),
-      // 播放模式 / 收藏 / 下载队列常驻显示，不随播放条收起而隐藏
-      h('div', { class: 'pb-actions' }, this.pbModeBtn, this.pbLikeBtn, downloadBtn),
+      // 播放模式 / 收藏 / 下载 / 待播队列常驻显示，不随播放条收起而隐藏
+      h('div', { class: 'pb-actions' }, this.pbModeBtn, this.pbLikeBtn, downloadBtn, this.pbQueueBtn),
       h('div', { class: 'pb-progress' }, this.pbCur, track, this.pbDur),
       h('div', { class: 'pb-extra' }, lyricsBtn, volumeWrap, this.miniBtn),
     );
@@ -5103,8 +5812,217 @@ export class App {
   private toggleMiniMode(): void {
     if (this.miniTransition !== 'idle') return;
     const enabled = !this.miniMode;
+    const dims = MINI_SIZE_DIMS[getSettings().appearance.miniSize] ?? MINI_SIZE_DIMS.standard;
     this.beginMiniTransition(enabled);
-    host.setMiniMode(enabled);
+    host.setMiniMode(enabled, enabled ? dims.width : undefined, enabled ? dims.height : undefined);
+  }
+
+  /**
+   * 过渡试放台：把「当前曲 → 下一首」的过渡计划画成时间轴和两条增益曲线，并可按真实时长
+   * 模拟播放一遍（只跑视觉，不出声），用来检查接点、时长与低频交接是否合理。
+   */
+  private openCrossfadeLab(): void {
+    this.closeCrossfadeLab();
+    const state = playerState();
+    const debug = readCrossfadeDebug();
+    const next = state.queue[state.index + 1] ?? null;
+    const current = state.track;
+
+    const overlay = h('div', { class: 'lab-overlay', role: 'dialog', 'aria-label': '过渡试放台' });
+    const closeBtn = h('button', { class: 'lab-close', title: '关闭', text: '×' });
+    const close = (): void => this.closeCrossfadeLab();
+    closeBtn.addEventListener('click', close);
+    overlay.addEventListener('pointerdown', (event) => {
+      if (event.target === overlay) close();
+    });
+
+    const titleRow = h(
+      'div',
+      { class: 'lab-head' },
+      h('div', { class: 'lab-kicker', text: '过渡试放台' }),
+      closeBtn,
+    );
+    const titles = h(
+      'div',
+      { class: 'lab-titles' },
+      h('div', { class: 'lab-title', text: current ? current.title : '未在播放' }),
+      h('div', { class: 'lab-arrow', text: '→' }),
+      h('div', { class: 'lab-title', text: next ? next.title : '没有下一首' }),
+    );
+
+    const body: HTMLElement[] = [titleRow, titles];
+
+    if (!current || !next) {
+      body.push(
+        h('div', {
+          class: 'lab-empty',
+          text: current ? '队列里没有下一首，先有下一首才能试放过渡。' : '还没有在播放的歌曲。',
+        }),
+      );
+    } else if (debug.fadeMs <= 0 || debug.phase !== 'prepared') {
+      body.push(
+        h('div', {
+          class: 'lab-empty',
+          text: '过渡计划还没准备好：先让这首歌播一会儿（或等下一首分析完成），再打开试放台。',
+        }),
+      );
+    } else {
+      const fadeMs = debug.fadeMs;
+      const startMs = debug.fadeStartPosMs;
+      const width = 640;
+      const height = 150;
+      const padX = 8;
+      const topY = 34;
+      const bottomY = height - 26;
+      const spanX = width - padX * 2;
+      const x = (ratio: number): number => padX + spanX * Math.max(0, Math.min(1, ratio));
+      const style =
+        debug.styleResolved === 'cut' ? 'cut' : debug.styleResolved === 'equal' ? 'equal' : 'am';
+      const gainA = (t: number): number => (style === 'cut' ? (t < 0.02 ? 1 : 0) : style === 'equal' ? 1 - t : Math.cos((t * Math.PI) / 2));
+      const gainB = (t: number): number => (style === 'cut' ? (t < 0.02 ? 0 : 1) : style === 'equal' ? t : Math.sin((t * Math.PI) / 2));
+      const pathFor = (gain: (t: number) => number): string => {
+        const points: string[] = [];
+        for (let i = 0; i <= 40; i += 1) {
+          const t = i / 40;
+          points.push(`${i === 0 ? 'M' : 'L'}${x(t).toFixed(1)},${(bottomY - gain(t) * (bottomY - topY)).toFixed(1)}`);
+        }
+        return points.join(' ');
+      };
+      const svgNs = 'http://www.w3.org/2000/svg';
+      const svg = document.createElementNS(svgNs, 'svg');
+      svg.setAttribute('class', 'lab-curve');
+      svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+      svg.setAttribute('preserveAspectRatio', 'none');
+      const add = (tag: string, attrs: Record<string, string>, textNode?: string): SVGElement => {
+        const node = document.createElementNS(svgNs, tag);
+        for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
+        if (textNode !== undefined) node.textContent = textNode;
+        svg.appendChild(node);
+        return node;
+      };
+      add('line', { x1: `${padX}`, y1: `${bottomY}`, x2: `${width - padX}`, y2: `${bottomY}`, class: 'lab-axis' });
+      add('line', { x1: `${padX}`, y1: `${topY}`, x2: `${padX}`, y2: `${bottomY}`, class: 'lab-axis' });
+      add('rect', {
+        x: `${x(0)}`,
+        y: `${topY}`,
+        width: `${x(1) - x(0)}`,
+        height: `${bottomY - topY}`,
+        class: 'lab-overlap',
+      });
+      add('path', { d: pathFor(gainA), class: 'lab-gain lab-gain-a' });
+      add('path', { d: pathFor(gainB), class: 'lab-gain lab-gain-b' });
+      const bassT = Math.max(0, Math.min(1, debug.bassHandoffP));
+      if (bassT > 0) {
+        let bassX = x(bassT);
+        let bassLabelX = bassX;
+        add('line', { x1: `${bassX}`, y1: `${topY}`, x2: `${bassX}`, y2: `${bottomY}`, class: 'lab-bass' });
+        const bassText = add('text', { x: `${bassLabelX}`, y: '18', class: 'lab-note' }, '低频交接');
+        const bbox = (bassText as unknown as { getBBox?: () => { width: number } }).getBBox?.();
+        const bassW = bbox?.width ?? 52;
+        bassLabelX = Math.min(width - padX - bassW, Math.max(padX, bassX - bassW / 2));
+        bassText.setAttribute('x', `${bassLabelX}`);
+      }
+      const playhead = add('line', {
+        x1: `${padX}`,
+        y1: `${topY - 8}`,
+        x2: `${padX}`,
+        y2: `${bottomY + 8}`,
+        class: 'lab-playhead',
+      });
+      add('text', { x: `${padX}`, y: `${height - 6}`, class: 'lab-note' }, `${fmtTime(startMs)}`);
+      add('text', { x: `${width - padX}`, y: `${height - 6}`, 'text-anchor': 'end', class: 'lab-note' }, `${fmtTime(startMs + fadeMs)}`);
+
+      const stats = h(
+        'div',
+        { class: 'lab-stats' },
+        h('div', { class: 'lab-stat' }, h('span', { class: 'lab-stat-label', text: '风格' }), h('span', { class: 'lab-stat-value', text: debug.styleResolved === 'am' ? '交融' : debug.styleResolved === 'equal' ? '等功率' : '快速切入' })),
+        h('div', { class: 'lab-stat' }, h('span', { class: 'lab-stat-label', text: '淡化时长' }), h('span', { class: 'lab-stat-value', text: formatFadeSeconds(fadeMs) })),
+        h('div', { class: 'lab-stat' }, h('span', { class: 'lab-stat-label', text: 'A 起点' }), h('span', { class: 'lab-stat-value', text: fmtTime(startMs) })),
+        h('div', { class: 'lab-stat' }, h('span', { class: 'lab-stat-label', text: 'B 起播' }), h('span', { class: 'lab-stat-value', text: fmtTime(debug.bStartFileMs) })),
+        h('div', { class: 'lab-stat' }, h('span', { class: 'lab-stat-label', text: '变速比' }), h('span', { class: 'lab-stat-value', text: debug.tempoMatched ? `×${debug.tempoRate.toFixed(3)}` : '不变速' })),
+        h('div', { class: 'lab-stat' }, h('span', { class: 'lab-stat-label', text: '低频交接' }), h('span', { class: 'lab-stat-value', text: debug.bassHandoffP > 0 ? `第 ${Math.max(1, Math.round(debug.bassHandoffP * (debug.phraseBars || 2)))} 小节附近` : '不交接' })),
+        h('div', { class: 'lab-stat' }, h('span', { class: 'lab-stat-label', text: '响度补偿' }), h('span', { class: 'lab-stat-value', text: `${debug.gainTrimDb >= 0 ? '+' : ''}${debug.gainTrimDb.toFixed(1)} dB` })),
+        h('div', { class: 'lab-stat' }, h('span', { class: 'lab-stat-label', text: '混音方式' }), h('span', { class: 'lab-stat-value', text: debug.structureActive ? `结构混音 · ${debug.phraseBars} 小节` : debug.handoffActive ? '歌词衔接' : '普通淡化' })),
+      );
+
+      const playBtn = h('button', { class: 'btn', text: '模拟播放' });
+      const progressText = h('span', { class: 'lab-progress', text: `0.0 / ${formatFadeSeconds(fadeMs)}` });
+      let raf = 0;
+      let startAt = 0;
+      const stop = (): void => {
+        window.cancelAnimationFrame(raf);
+        raf = 0;
+        playBtn.textContent = '模拟播放';
+        playhead.setAttribute('x1', `${x(0)}`);
+        playhead.setAttribute('x2', `${x(0)}`);
+        progressText.textContent = `0.0 / ${formatFadeSeconds(fadeMs)}`;
+      };
+      const tick = (now: number): void => {
+        if (!startAt) startAt = now;
+        const elapsed = now - startAt;
+        const ratio = Math.min(1, elapsed / fadeMs);
+        const px = x(ratio);
+        playhead.setAttribute('x1', `${px}`);
+        playhead.setAttribute('x2', `${px}`);
+        progressText.textContent = `${(ratio * fadeMs / 1000).toFixed(1)} / ${formatFadeSeconds(fadeMs)}  ${ratio >= 1 ? '· 完成' : ''}`;
+        if (ratio < 1) raf = window.requestAnimationFrame(tick);
+        else {
+          raf = 0;
+          playBtn.textContent = '再看一遍';
+        }
+      };
+      playBtn.addEventListener('click', () => {
+        if (raf) {
+          stop();
+          return;
+        }
+        startAt = 0;
+        playBtn.textContent = '停止';
+        raf = window.requestAnimationFrame(tick);
+      });
+      this.crossfadeLabStop = stop;
+      body.push(h('div', { class: 'lab-stage' }, svg), stats, h('div', { class: 'lab-actions' }, playBtn, progressText));
+    }
+
+    const hint = h('div', {
+      class: 'lab-hint',
+      text: '这里只画计划与曲线、按真实时长走一遍播放头，不出声；实际听感以播放时的过渡为准。',
+    });
+    const card = h('div', { class: 'lab-card' }, ...body, hint);
+    overlay.append(card);
+    this.crossfadeLab = overlay;
+    // 挂到 body 上，避免被设置面板的层叠上下文压住。
+    document.body.append(overlay);
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        close();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    this.crossfadeLabDispose = () => window.removeEventListener('keydown', onKey);
+  }
+
+  private closeCrossfadeLab(): void {
+    this.crossfadeLabStop?.();
+    this.crossfadeLabStop = null;
+    this.crossfadeLabDispose?.();
+    this.crossfadeLabDispose = null;
+    this.crossfadeLab?.remove();
+    this.crossfadeLab = null;
+  }
+
+  /** 播放条「待播队列」：迷你态先退出迷你，等窗口长回去再展开队列。 */
+  private openQueueFromPlaybar(): void {
+    if (this.miniMode && this.miniTransition === 'idle') {
+      this.toggleMiniMode();
+      window.setTimeout(() => {
+        if (!this.miniMode && !this.upnextOpen) this.openUpNext();
+      }, 480);
+      return;
+    }
+    if (this.upnextOpen) this.closeUpNext();
+    else this.openUpNext();
   }
 
   /**
@@ -5190,12 +6108,13 @@ export class App {
     this.upnextCover = h('img', { class: 'upnext-cover', alt: '' });
     this.upnextTitle = h('div', { class: 'upnext-title', text: '' });
     this.upnextArtist = h('div', { class: 'upnext-artist', text: '' });
+    this.upnextTransition = h('div', { class: 'upnext-transition', 'data-qa': 'upnext-transition', text: '' });
     this.upnextSummary = h(
       'button',
       { class: 'upnext-summary', title: '待播队列（点击展开）' },
       kicker,
       this.upnextCover,
-      h('div', { class: 'upnext-meta' }, this.upnextTitle, this.upnextArtist),
+      h('div', { class: 'upnext-meta' }, this.upnextTitle, this.upnextArtist, this.upnextTransition),
       icon('chevron', 16),
     );
     this.upnextSummary.addEventListener('click', () => {
@@ -6755,11 +7674,13 @@ export class App {
     this.upnextRoot.classList.toggle('is-hidden', !visible);
     if (!visible || upcoming === null) {
       this.closeUpNext();
+      this.syncUpNextTransition(state);
       return;
     }
     this.upnextCover.src = onlineArtwork(upcoming, 120);
     this.upnextTitle.textContent = upcoming.title;
     this.upnextArtist.textContent = upcoming.artist || '未知歌手';
+    this.syncUpNextTransition(state);
     if (this.upnextOpen) this.renderUpNextList();
   }
 
@@ -6772,6 +7693,41 @@ export class App {
     setVolume(value);
     patchSettings({ playback: { volume: value } });
     this.paintVolumeIcon(percent);
+  }
+
+  /**
+   * 睡眠定时到点：先按设置做音量渐弱（不写入设置，结束恢复原音量），
+   * 再暂停，最后执行「暂停 / 最小化 / 退出」。
+   */
+  private async handleSleepTimerFired(): Promise<void> {
+    const settings = getSettings().playback;
+    const fadeSeconds = Math.max(0, Math.min(60, Math.round(settings.sleepFadeSeconds ?? 15)));
+    const action = settings.sleepAction ?? 'pause';
+    const wasPlaying = playerState().playing;
+    if (wasPlaying && fadeSeconds > 0) {
+      const from = playerState().volume;
+      this.sleepFadeVolume = from;
+      const token = ++this.sleepFadeToken;
+      const steps = Math.max(1, Math.round(fadeSeconds * 10));
+      for (let step = 1; step <= steps; step += 1) {
+        if (token !== this.sleepFadeToken) return;
+        setVolume(from * (1 - step / steps));
+        await new Promise((resolve) => window.setTimeout(resolve, (fadeSeconds * 1000) / steps));
+      }
+      if (token !== this.sleepFadeToken) return;
+      this.sleepFadeVolume = null;
+      setVolume(from);
+    }
+    if (playerState().playing) toggle();
+    if (action === 'minimize') {
+      host.minimize();
+      toast('睡眠定时已到，已暂停并最小化');
+    } else if (action === 'exit') {
+      toast('睡眠定时已到，正在退出');
+      window.setTimeout(() => host.close(), 400);
+    } else {
+      toast('睡眠定时已到，已暂停播放');
+    }
   }
 
   private paintVolumeIcon(percent: number): void {
@@ -6899,6 +7855,7 @@ export class App {
     this.syncUpNext(state);
     this.upNextToast?.update(state);
     this.syncSeamlessHint(state);
+    this.syncUpNextTransition(state);
   }
 
   /**
@@ -6969,6 +7926,42 @@ export class App {
   }
 
   /**
+   * 播放条上方的「下一首过渡预告」：说明下一首是谁、这次怎么过渡；进入准备阶段后
+   * 改成实际淡化时长与起点（来自 crossfadeDeck 的调试快照）。可在过渡设置里关闭。
+   */
+  /**
+   * 待播队列小卡里的「过渡」行：说明下一次过渡会怎么接；进入准备阶段后改成
+   * 实际淡化时长与起点（来自 crossfadeDeck 的调试快照）。可在过渡设置里关闭。
+   */
+  private syncUpNextTransition(state: PlayerState): void {
+    const el = this.upnextTransition;
+    if (!el) return;
+    // 这里反映「这首歌记忆的过渡」，而不是全局设置。
+    const settings = effectiveCrossfadeSettings(state.track);
+    const next = state.queue[state.index + 1] ?? null;
+    if (!next || !settings.enabled || !settings.showPreview) {
+      if (!el.classList.contains('is-hidden')) {
+        el.classList.add('is-hidden');
+        this.pbTransitionKey = '';
+      }
+      return;
+    }
+    const debug = readCrossfadeDebug();
+    const prepared = debug.phase === 'prepared' && debug.fadeMs > 0 && debug.nextTitle !== '';
+    const text = prepared
+      ? `过渡 ${formatFadeSeconds(debug.fadeMs)} · 从 ${fmtTime(debug.fadeStartPosMs)} 起`
+      : crossfadeSummary(settings);
+    if (text === this.pbTransitionKey) {
+      el.classList.remove('is-hidden');
+      return;
+    }
+    this.pbTransitionKey = text;
+    el.textContent = text;
+    el.classList.remove('is-hidden');
+  }
+
+
+  /**
    * 取当前曲目的高潮段，只用于进度条标记：优先用宿主 p0-7 给出的 8 小节窗口
    * （climaxStartMs/climaxEndMs），旧宿主/旧缓存回退到 label === 'climax' 的 section。
    * 分析失败/没有高潮段时静默不画；换歌后旧结果按 pbClimaxKey 丢弃。
@@ -7028,6 +8021,211 @@ export class App {
       tracks: match.tracks,
     };
     this.renderWall(true);
+  }
+
+  /** 把当前墙里的歌曲存成一个本地歌单（场景 / 每日推荐 / 喜欢 / 最近播放都能用）。 */
+  private saveWallAsPlaylist(): void {
+    const tracks = this.wall.tracks;
+    if (tracks.length === 0) {
+      toast('这个列表里还没有歌曲');
+      return;
+    }
+    const base = this.wall.title.replace(/^场景 · /, '').replace(/^[「」]/g, '').trim() || '智能歌单';
+    const stamp = new Date().toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' });
+    const playlist = createSmartPlaylist(`${base} · ${stamp}`, tracks);
+    toast(`已存为智能歌单「${playlist.name}」· ${playlist.tracks.length} 首`);
+  }
+
+  /** 按「实际经过的墙上时间」累计收听时长；换歌时记一次开播。 */
+  private accumulateListening(state: PlayerState): void {
+    const track = state.track;
+    if (!track) {
+      this.listenKey = '';
+      this.listenAt = 0;
+      return;
+    }
+    const key = `${track.source}:${track.id}`;
+    const now = Date.now();
+    if (key !== this.listenKey) {
+      this.listenKey = key;
+      this.listenAt = now;
+      recordListenStart(track);
+      return;
+    }
+    if (!state.playing || !this.listenAt) {
+      this.listenAt = now;
+      return;
+    }
+    const delta = now - this.listenAt;
+    // 大于 5s 视作暂停/休眠期间，不计入；避免开着页面不播还算时长。
+    if (delta > 0 && delta < 5000) recordListenTime(track, delta);
+    this.listenAt = now;
+  }
+
+  private desktopLyricNow: string | null = null;
+  private desktopLyricTranslation: string | null = null;
+  private desktopLyricKey = '';
+
+  /** 桌面歌词：把当前句推给宿主窗口（换歌或句/翻译变化时才发送）。 */
+  private pushDesktopLyrics(): void {
+    const settings = getSettings();
+    if (!settings.general.desktopLyrics) {
+      this.desktopLyricNow = null;
+      this.desktopLyricTranslation = null;
+      this.desktopLyricKey = '';
+      return;
+    }
+    const state = playerState();
+    const track = state.track;
+    if (!track) return;
+    const key = `${track.source}:${track.id}`;
+    if (key !== this.desktopLyricKey) {
+      this.desktopLyricKey = key;
+      this.desktopLyricNow = null;
+      this.desktopLyricTranslation = null;
+    }
+    // 桌面歌词要在没打开歌词页时也能用：先把歌词拉下来（内部去重）。
+    primeLyrics(track);
+    const { now, translation } = currentLyricDisplay();
+    if (now === this.desktopLyricNow && translation === this.desktopLyricTranslation) return;
+    this.desktopLyricNow = now;
+    this.desktopLyricTranslation = translation;
+    // 没有歌词的曲目也给一个占位，别让窗口一直停在初始文案。
+    updateDesktopLyrics(now || '♪', translation);
+  }
+
+  /** 收听统计整页：总览卡片、近 14 天时长柱、最爱歌曲与歌手。 */
+  private buildStatsPage(): HTMLElement {
+    const stats = readListeningStats();
+    const page = h('div', { class: 'stats-page' });
+    const days = dailyListening(14);
+    const activeDays = days.filter((day) => day.ms > 0).length;
+    const recentMs = days.reduce((sum, day) => sum + day.ms, 0);
+    const card = (label: string, value: string, hint: string): HTMLElement =>
+      h(
+        'div',
+        { class: 'stats-card' },
+        h('div', { class: 'stats-card-label', text: label }),
+        h('div', { class: 'stats-card-value', text: value }),
+        h('div', { class: 'stats-card-hint', text: hint }),
+      );
+
+    const year = new Date().getFullYear();
+    const topTracks = topListenedTracks(10);
+    const topArtists = topListenedArtists(8);
+    if (stats.totalMs > 0) {
+      page.append(
+        h(
+          'div',
+          { class: 'stats-year-banner' },
+          h('div', { class: 'stats-year-title', text: `${year} 听歌小结` }),
+          h(
+            'div',
+            { class: 'stats-year-line' },
+            h('span', { text: `这 ${Math.max(1, activeDays)} 天里，最多的是 ` }),
+            h('strong', { text: topArtists[0]?.name ?? '未知歌手' }),
+            h('span', { text: topArtists[0] ? `（${formatListening(topArtists[0].ms)}）` : '' }),
+          ),
+          h(
+            'div',
+            { class: 'stats-year-line' },
+            h('span', { text: '循环最多的一首是 ' }),
+            h('strong', { text: topTracks[0]?.title ?? '还没开始' }),
+            h('span', { text: topTracks[0] ? `，共 ${formatListening(topTracks[0].ms)}` : '' }),
+          ),
+        ),
+      );
+    }
+
+    page.append(h('div', { class: 'section-title', text: '总览' }), h('div', { class: 'stats-cards' },
+      card('总收听时长', formatListening(stats.totalMs), `${stats.plays} 次开播`),
+      card('最近 14 天', formatListening(recentMs), activeDays > 0 ? `${activeDays} 天有播放` : '还没有播放记录'),
+      card('单曲最多', topTracks[0] ? formatListening(topTracks[0].ms) : '—', topTracks[0]?.title ?? '还没有数据'),
+    ));
+
+    const max = Math.max(1, ...days.map((day) => day.ms));
+    const chart = h('div', { class: 'stats-chart' });
+    for (const day of days) {
+      const bar = h(
+        'div',
+        { class: 'stats-bar', title: `${day.day} · ${formatListening(day.ms)}` },
+        h('div', { class: 'stats-bar-fill', style: `height:${day.ms > 0 ? Math.max(4, Math.round((day.ms / max) * 100)) : 0}%` }),
+      );
+      chart.append(
+        h(
+          'div',
+          { class: 'stats-bar-col' },
+          h('div', { class: 'stats-bar-slot' }, bar),
+          h('span', { class: 'stats-bar-label', text: day.day.slice(5) }),
+        ),
+      );
+    }
+    page.append(h('div', { class: 'section-title', text: '最近 14 天' }), chart);
+
+    if (topTracks.length > 0) {
+      page.append(h('div', { class: 'section-title', text: '播放最多的歌曲' }));
+      const list = h('div', { class: 'stats-list' });
+      topTracks.forEach((row, index) => {
+        const bar = h('div', { class: 'stats-share' }, h('div', { class: 'stats-share-fill', style: `width:${Math.max(2, Math.round(row.share * 100))}%` }));
+        list.append(
+          h(
+            'div',
+            { class: 'stats-row' },
+            h('span', { class: 'stats-rank', text: String(index + 1) }),
+            h('div', { class: 'stats-meta' }, h('div', { class: 'stats-name', text: row.title }), h('div', { class: 'stats-artist', text: row.artist || '未知歌手' }), bar),
+            h('div', { class: 'stats-value' }, h('div', { text: formatListening(row.ms) }), h('div', { class: 'stats-sub', text: `${row.plays} 次 · ${Math.round(row.share * 100)}%` })),
+          ),
+        );
+      });
+      page.append(list);
+    }
+
+    if (topArtists.length > 0) {
+      page.append(h('div', { class: 'section-title', text: '播放最多的歌手' }));
+      const chips = h('div', { class: 'stats-artists' });
+      for (const artist of topArtists) {
+        chips.append(
+          h(
+            'div',
+            { class: 'stats-artist-chip', title: `${artist.name} · ${formatListening(artist.ms)}` },
+            h('span', { class: 'stats-artist-name', text: artist.name }),
+            h('span', { class: 'stats-artist-time', text: formatListening(artist.ms) }),
+          ),
+        );
+      }
+      page.append(chips);
+    }
+
+    if (stats.totalMs === 0) {
+      page.append(h('div', { class: 'empty', text: '还没有播放记录。播几首歌再回来看看。' }));
+    }
+
+    const resetBtn = h('button', { class: 'pill', title: '清空本机收听统计' }, icon('trash', 16), h('span', { text: '清除统计' }));
+    resetBtn.addEventListener('click', () => {
+      void confirmDialog({
+        title: '清除收听统计',
+        message: '清空这台设备上的收听统计？',
+        detail: '只会删除本地统计，不会影响歌单、收藏或云上数据。',
+        confirmText: '清除',
+        tone: 'danger',
+        iconName: 'trash',
+      }).then((ok) => {
+        if (!ok) return;
+        resetListeningStats();
+        toast('已清除收听统计');
+        this.renderWall(true);
+      });
+    });
+    page.append(h('div', { class: 'stats-actions' }, resetBtn));
+    return page;
+  }
+
+  /** 收听统计页（总览 / 最近 14 天 / 最爱歌曲与歌手）。 */
+  private openStatsPage(): void {
+    this.wallPager = null;
+    this.setRailActive('stats');
+    this.wall = { kind: 'stats', title: '收听统计', subtitle: '只统计这台设备上的实际播放时长', tracks: [] };
+    this.renderWall();
   }
 
   private async collectMoodPool(): Promise<OnlineTrack[]> {
@@ -7401,7 +8599,10 @@ export class App {
    */
   private playWithPreviewHandoff(queue: OnlineTrack[], index: number): void {
     const track = queue[index];
-    const element = track ? takePreviewElement(track) : null;
+    // 「接管续播」关掉时，试听只作为试听：点击后停掉试听、从头正常播放。
+    const takeover = readChorusPreviewSettings().takeover;
+    if (!takeover) stopChorusPreview();
+    const element = takeover && track ? takePreviewElement(track) : null;
     if (element && track) {
       if (adoptPlayingElement(element, track, queue, index)) return;
       try {
@@ -7511,7 +8712,8 @@ export class App {
 
   /** 数字键 1–4：空位记热 cue，已记过就跳过去。 */
   hotCue(slot: number): void {
-    const result = toggleHotCue(slot);
+    // 对外用 1–4 编号，内部存储与进度条刻度用 0–3 下标。
+    const result = toggleHotCue(slot - 1);
     if (result.action === 'none') {
       toast('先播放一首歌，再按数字键记热 cue');
       return;
@@ -7522,7 +8724,68 @@ export class App {
 
   /** Shift + 数字键：清除热 cue。 */
   clearHotCue(slot: number): void {
-    toast(clearHotCue(slot) ? `已清除热 cue ${slot}` : `热 cue ${slot} 本来就是空的`);
+    toast(clearHotCue(slot - 1) ? `已清除热 cue ${slot}` : `热 cue ${slot} 本来就是空的`);
+  }
+
+  /** T：跟拍校速（至少 4 下），覆盖当前曲目用于过渡的小节对齐。 */
+  private tempoTaps: number[] = [];
+
+  tapTempo(): void {
+    const state = playerState();
+    const track = state.track;
+    if (!track) {
+      toast('先播放一首歌，再按 T 跟拍');
+      return;
+    }
+
+    const now = performance.now();
+    this.tempoTaps = this.tempoTaps.filter((value) => now - value <= 2_500);
+    this.tempoTaps.push(now);
+    if (this.tempoTaps.length < 4) {
+      toast(`跟拍：再按 ${4 - this.tempoTaps.length} 下`, 'info');
+      return;
+    }
+
+    const intervals: number[] = [];
+    for (let index = 1; index < this.tempoTaps.length; index += 1) {
+      intervals.push(this.tempoTaps[index] - this.tempoTaps[index - 1]);
+    }
+    intervals.sort((a, b) => a - b);
+    const median = intervals[Math.floor(intervals.length / 2)];
+    this.tempoTaps = [];
+    if (!(median > 0)) {
+      toast('跟拍节奏太乱，再试一次', 'error');
+      return;
+    }
+
+    let bpm = 60_000 / median;
+    while (bpm < 60) bpm *= 2;
+    while (bpm > 200) bpm /= 2;
+    bpm = Math.round(bpm * 10) / 10;
+    setBpmOverride(track, bpm);
+    toast(`已跟拍 ${bpm} BPM，本曲过渡按这个速度对齐小节`);
+  }
+
+  /** Shift + T：清除当前曲目的跟拍速度。 */
+  clearTempoOverride(): void {
+    const track = playerState().track;
+    if (!track) {
+      toast('先播放一首歌', 'error');
+      return;
+    }
+    const current = bpmOverrideOf(track);
+    if (current === null) {
+      toast('当前曲目没有跟拍速度');
+      return;
+    }
+    setBpmOverride(track, null);
+    toast(`已清除跟拍速度（${current} BPM）`);
+  }
+
+  /** Shift + X：本次切歌跳过无缝过渡（只影响下一次，不改设置）。 */
+  suppressCrossfadeOnce(): void {
+    suppressNextCrossfade();
+    toast('本次切歌不使用无缝过渡');
   }
 
   /** L：按当前小节循环（4 小节），再按取消。 */

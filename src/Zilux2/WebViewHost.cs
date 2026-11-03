@@ -588,6 +588,13 @@ internal sealed class WebViewHost : IDisposable
                     _localMusic.Handle(root);
                     break;
 
+                case "lyrics":
+                    // 桌面歌词只推「当前句 + 翻译」，窗口的开关/字号/锁定/置顶由设置驱动。
+                    _window.UpdateDesktopLyrics(
+                        ReadString(root, "now") ?? string.Empty,
+                        ReadString(root, "translation") ?? string.Empty);
+                    break;
+
                 case "update":
                     _updates?.Handle(root);
                     break;
@@ -699,6 +706,33 @@ internal sealed class WebViewHost : IDisposable
         catch (Exception exception)
         {
             HostLog.Error("[settings] watchLocalFolder apply failed", exception);
+        }
+
+        // 系统媒体控制开关：即时挂上/摘下 SMTC，不用重启应用。
+        try
+        {
+            if (settings.MediaSessionEnabled)
+            {
+                _media?.Enable(_window.Handle);
+            }
+            else
+            {
+                _media?.Disable();
+            }
+        }
+        catch (Exception exception)
+        {
+            HostLog.Error("[settings] mediaSession apply failed", exception);
+        }
+
+        // 桌面歌词窗口：开关/字号/锁定/置顶改动即时应用。
+        try
+        {
+            _window.ApplyDesktopLyricsSettings();
+        }
+        catch (Exception exception)
+        {
+            HostLog.Error("[settings] desktopLyrics apply failed", exception);
         }
     }
 
@@ -1056,6 +1090,12 @@ internal sealed class WebViewHost : IDisposable
     {
         // SMTC is created lazily: the window handle exists once the page is running, and a WinRT
         // failure only costs the Now Playing integration, never the app.
+        if (_settings?.MediaSessionEnabled == false)
+        {
+            _media?.Disable();
+            return;
+        }
+
         _media?.Enable(_window.Handle);
     }
 

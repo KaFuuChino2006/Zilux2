@@ -9,6 +9,20 @@ export type Theme = 'frost';
 export const STREAM_QUALITIES = ['standard', 'high', 'lossless'] as const;
 export type LyricsSize = 'small' | 'medium' | 'large';
 export type WindowAnimation = 'custom' | 'native';
+/** 迷你播放器尺寸预设：compact=360×100、standard=420×120、wide=520×150。 */
+export type MiniSize = 'compact' | 'standard' | 'wide';
+export const MINI_SIZES: readonly MiniSize[] = ['compact', 'standard', 'wide'];
+export const MINI_SIZE_LABELS: ReadonlyArray<readonly [MiniSize, string]> = [
+  ['compact', '小'],
+  ['standard', '标准'],
+  ['wide', '宽'],
+];
+/** 迷你窗口的像素尺寸（与宿主 MainWindow 的预设保持一致）。 */
+export const MINI_SIZE_DIMS: Record<MiniSize, { width: number; height: number }> = {
+  compact: { width: 360, height: 100 },
+  standard: { width: 420, height: 120 },
+  wide: { width: 520, height: 150 },
+};
 export type OnlineSourceId = 'netease' | 'qq' | (string & {});
 
 /** 均衡器预设；gains 单位 dB，顺序同 EQ_BAND_FREQS。 */
@@ -44,6 +58,19 @@ export const FADE_VOCAL_TAIL_MS = { min: 0, max: 3000, step: 100, fallback: 600 
 
 /** 渐变曲线；exponential 在尾段下降更快，听感上更晚才「没声」。 */
 export type FadeCurve = 'smooth' | 'linear' | 'exponential';
+
+/** 睡眠定时到点前的渐弱时长（秒）可选档位；0 表示不渐弱。 */
+export const SLEEP_FADE_SECONDS_CHOICES: readonly number[] = [0, 5, 10, 15, 30];
+
+/** 睡眠定时到点后的动作。 */
+export type SleepTimerAction = 'pause' | 'minimize' | 'exit';
+export const SLEEP_TIMER_ACTIONS: readonly { value: SleepTimerAction; label: string }[] = [
+  { value: 'pause', label: '暂停' },
+  { value: 'minimize', label: '暂停并最小化' },
+  { value: 'exit', label: '退出应用' },
+];
+const SLEEP_TIMER_ACTION_IDS = SLEEP_TIMER_ACTIONS.map((item) => item.value);
+
 export const FADE_CURVES: readonly { value: FadeCurve; label: string }[] = [
   { value: 'smooth', label: '平滑' },
   { value: 'linear', label: '线性' },
@@ -230,6 +257,15 @@ export interface Settings {
     autoStartHidden: boolean;
     /** 监控本地曲库文件夹（新增/删除实时同步）；关闭后需手动重新扫描。 */
     watchLocalFolder: boolean;
+    /** Windows 系统媒体控制（任务栏媒体弹窗/音量键旁卡片）。 */
+    mediaSession: boolean;
+    /** 桌面歌词独立窗口（无边框、置顶、可拖动）。 */
+    desktopLyrics: boolean;
+    /** 锁定后鼠标穿透；解锁后可拖动。 */
+    desktopLyricsLocked: boolean;
+    /** 主行字号，28..64（默认 40）。 */
+    desktopLyricsFontSize: number;
+    desktopLyricsTopmost: boolean;
   };
   appearance: {
     theme: Theme;
@@ -241,6 +277,10 @@ export interface Settings {
     windowAnimation: WindowAnimation;
     /** 底部播放条常驻展开：开着时不再依赖鼠标悬停，播放条始终保持展开形态。 */
     playerBarExpanded: boolean;
+    /** 迷你播放器尺寸预设。 */
+    miniSize: MiniSize;
+    /** 迷你播放器是否置顶。 */
+    miniAlwaysOnTop: boolean;
   };
   playback: {
     defaultSource: OnlineSourceId;
@@ -272,6 +312,10 @@ export interface Settings {
     fadeVocal: boolean;
     /** 人声保留尾音（毫秒，0..3000）；淡出总时长 = fadeOutMs + 该值。 */
     fadeVocalTailMs: number;
+    /** 睡眠定时到点前的音量渐弱时长（秒，0..60；0 表示不渐弱）。 */
+    sleepFadeSeconds: number;
+    /** 睡眠定时到点后的动作：pause 暂停 / minimize 暂停并最小化 / exit 退出应用。 */
+    sleepAction: SleepTimerAction;
   };
   shortcuts: ShortcutsSettings;
   downloads: {
@@ -279,6 +323,12 @@ export interface Settings {
     directory: string;
     /** 下载音质：standard=128k、high=320k、lossless=无损（平台/会员不支持时宿主自动降级）。 */
     quality: StreamQuality;
+    /** 同时下载的任务数（1–4）；超出的任务会排队。 */
+    maxConcurrent: number;
+    /** 文件名模板：支持 {artist} {title} {id} {quality}。 */
+    fileNameTemplate: string;
+    /** 下载完成后自动打开文件所在文件夹。 */
+    openFolderWhenDone: boolean;
   };
   updates: {
     /** 启动时自动检查 + 每 4 小时轮询 */
@@ -287,6 +337,8 @@ export interface Settings {
     mode: UpdateMode;
     /** 更新源 owner/repo；空字符串用编译期默认值 */
     repo: string;
+    /** 检查更新/下载时直连 GitHub（绕过系统代理）；代理出口 IP 被限流时打开 */
+    directConnection: boolean;
   };
 }
 
@@ -301,7 +353,7 @@ export type SettingsPatch = {
 
 export const DEFAULT_SETTINGS: Settings = {
   version: 1,
-  general: { splash: true, startMaximized: false, autoLaunch: false, autoStartHidden: true, watchLocalFolder: true },
+  general: { splash: true, startMaximized: false, autoLaunch: false, autoStartHidden: true, watchLocalFolder: true, mediaSession: true, desktopLyrics: false, desktopLyricsLocked: false, desktopLyricsFontSize: 40, desktopLyricsTopmost: true },
   appearance: {
     theme: 'frost',
     reduceMotion: false,
@@ -310,6 +362,8 @@ export const DEFAULT_SETTINGS: Settings = {
     lyricsSize: 'medium',
     windowAnimation: 'custom',
     playerBarExpanded: false,
+    miniSize: 'standard',
+    miniAlwaysOnTop: true,
   },
   playback: {
     defaultSource: 'netease',
@@ -329,10 +383,12 @@ export const DEFAULT_SETTINGS: Settings = {
     fadeCurve: 'smooth',
     fadeVocal: false,
     fadeVocalTailMs: FADE_VOCAL_TAIL_MS.fallback,
+    sleepFadeSeconds: 15,
+    sleepAction: 'pause',
   },
   shortcuts: { ...SHORTCUT_DEFAULTS },
-  downloads: { directory: '', quality: 'high' },
-  updates: { autoCheck: true, mode: 'auto', repo: '' },
+  downloads: { directory: '', quality: 'high', maxConcurrent: 2, fileNameTemplate: '{artist} - {title}', openFolderWhenDone: false },
+  updates: { autoCheck: true, mode: 'auto', repo: '', directConnection: false },
 };
 
 const STORAGE_KEY = 'zilux2.settings';
@@ -382,6 +438,11 @@ function asLimit(value: unknown): number {
 function asVolume(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_SETTINGS.playback.volume;
   return Math.round(Math.min(1, Math.max(0, value)) * 100) / 100;
+}
+
+function asFontSize(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_SETTINGS.general.desktopLyricsFontSize;
+  return Math.round(Math.min(64, Math.max(28, value)));
 }
 
 function asEqGains(value: unknown): number[] {
@@ -437,6 +498,11 @@ export function normalizeSettings(raw: unknown): Settings {
       autoLaunch: asBool(general.autoLaunch, DEFAULT_SETTINGS.general.autoLaunch),
       autoStartHidden: asBool(general.autoStartHidden, DEFAULT_SETTINGS.general.autoStartHidden),
       watchLocalFolder: asBool(general.watchLocalFolder, DEFAULT_SETTINGS.general.watchLocalFolder),
+      mediaSession: asBool(general.mediaSession, DEFAULT_SETTINGS.general.mediaSession),
+      desktopLyrics: asBool(general.desktopLyrics, DEFAULT_SETTINGS.general.desktopLyrics),
+      desktopLyricsLocked: asBool(general.desktopLyricsLocked, DEFAULT_SETTINGS.general.desktopLyricsLocked),
+      desktopLyricsFontSize: asFontSize(general.desktopLyricsFontSize),
+      desktopLyricsTopmost: asBool(general.desktopLyricsTopmost, DEFAULT_SETTINGS.general.desktopLyricsTopmost),
     },
     appearance: {
       theme: asEnum(appearance.theme, THEMES, DEFAULT_SETTINGS.appearance.theme),
@@ -446,6 +512,8 @@ export function normalizeSettings(raw: unknown): Settings {
       lyricsSize: asEnum(appearance.lyricsSize, LYRICS_SIZES, DEFAULT_SETTINGS.appearance.lyricsSize),
       windowAnimation: asEnum(appearance.windowAnimation, WINDOW_ANIMATIONS, DEFAULT_SETTINGS.appearance.windowAnimation),
       playerBarExpanded: asBool(appearance.playerBarExpanded, DEFAULT_SETTINGS.appearance.playerBarExpanded),
+      miniSize: asEnum(appearance.miniSize, MINI_SIZES, DEFAULT_SETTINGS.appearance.miniSize),
+      miniAlwaysOnTop: asBool(appearance.miniAlwaysOnTop, DEFAULT_SETTINGS.appearance.miniAlwaysOnTop),
     },
     playback: {
       defaultSource:
@@ -469,16 +537,31 @@ export function normalizeSettings(raw: unknown): Settings {
       fadeCurve: asEnum(playback.fadeCurve, FADE_CURVE_IDS, DEFAULT_SETTINGS.playback.fadeCurve),
       fadeVocal: asBool(playback.fadeVocal, DEFAULT_SETTINGS.playback.fadeVocal),
       fadeVocalTailMs: asMs(playback.fadeVocalTailMs, FADE_VOCAL_TAIL_MS),
+      sleepFadeSeconds: SLEEP_FADE_SECONDS_CHOICES.includes(Math.round(Number(playback.sleepFadeSeconds)))
+        ? Math.round(Number(playback.sleepFadeSeconds))
+        : DEFAULT_SETTINGS.playback.sleepFadeSeconds,
+      sleepAction: asEnum(playback.sleepAction, SLEEP_TIMER_ACTION_IDS, DEFAULT_SETTINGS.playback.sleepAction),
     },
     shortcuts: asShortcuts(shortcuts),
     downloads: {
       directory: typeof downloads.directory === 'string' ? downloads.directory.trim() : '',
       quality: asEnum(downloads.quality, STREAM_QUALITIES, DEFAULT_SETTINGS.downloads.quality),
+      maxConcurrent:
+        typeof downloads.maxConcurrent === 'number' && downloads.maxConcurrent >= 1 && downloads.maxConcurrent <= 4
+          ? Math.round(downloads.maxConcurrent)
+          : DEFAULT_SETTINGS.downloads.maxConcurrent,
+      fileNameTemplate: (() => {
+        const template = typeof downloads.fileNameTemplate === 'string' ? downloads.fileNameTemplate.trim() : '';
+        const hasToken = /\{(artist|title|id|quality)\}/.test(template);
+        return template && template.length <= 120 && hasToken ? template : DEFAULT_SETTINGS.downloads.fileNameTemplate;
+      })(),
+      openFolderWhenDone: asBool(downloads.openFolderWhenDone, DEFAULT_SETTINGS.downloads.openFolderWhenDone),
     },
     updates: {
       autoCheck: asBool(updates.autoCheck, DEFAULT_SETTINGS.updates.autoCheck),
       mode: asEnum(updates.mode, UPDATE_MODES, DEFAULT_SETTINGS.updates.mode),
       repo: typeof updates.repo === 'string' ? updates.repo.trim() : '',
+      directConnection: asBool(updates.directConnection, DEFAULT_SETTINGS.updates.directConnection),
     },
   };
 }

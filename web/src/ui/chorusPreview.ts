@@ -15,7 +15,6 @@ import { attachDeckToGraph, audioTapGraphActive, setDeckGraphGain } from '../cor
 import { playerState, setPreviewDuck } from './player';
 
 const DEFAULT_HOVER_DELAY_MS = 1000;
-const PREVIEW_MS = 15_000;
 const FADE_IN_MS = 800;
 const FADE_OUT_MS = 520;
 const DUCK_FADE_MS = 600;
@@ -27,7 +26,24 @@ export interface ChorusPreviewSettings {
   delayMs: number;
   /** 试听起点：intro = 从曲首开始；chorus = 从高潮/副歌窗口开始。 */
   startAt: 'intro' | 'chorus';
+  /** 试听音量（相对正常播放），0.1–1；点击接管后会回到正常音量。 */
+  volume: number;
+  /** 单次试听最长时长（毫秒），到点自动停。 */
+  maxMs: number;
+  /** 点击正在试听的歌时，是否把试听接着交给正式播放。 */
+  takeover: boolean;
 }
+
+const DEFAULT_VOLUME = 0.7;
+const DEFAULT_MAX_MS = 15_000;
+
+export const CHORUS_PREVIEW_MAX_CHOICES: { value: string; label: string }[] = [
+  { value: '5000', label: '5 秒' },
+  { value: '10000', label: '10 秒' },
+  { value: '15000', label: '15 秒' },
+  { value: '30000', label: '30 秒' },
+  { value: '60000', label: '60 秒' },
+];
 
 const DELAY_CHOICES: { value: string; label: string }[] = [
   { value: '0', label: '关闭' },
@@ -50,23 +66,40 @@ export function readChorusPreviewSettings(): ChorusPreviewSettings {
   try {
     const raw = localStorage.getItem(PREVIEW_SETTINGS_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw) as { delayMs?: unknown; startAt?: unknown };
+      const parsed = JSON.parse(raw) as {
+        delayMs?: unknown;
+        startAt?: unknown;
+        volume?: unknown;
+        maxMs?: unknown;
+        takeover?: unknown;
+      };
       const delayMs =
         typeof parsed.delayMs === 'number' && Number.isFinite(parsed.delayMs)
           ? Math.max(0, Math.min(4000, Math.round(parsed.delayMs)))
           : DEFAULT_HOVER_DELAY_MS;
       const startAt = parsed.startAt === 'chorus' ? 'chorus' : 'intro';
-      return { delayMs, startAt };
+      const volume =
+        typeof parsed.volume === 'number' && Number.isFinite(parsed.volume)
+          ? Math.max(0.1, Math.min(1, parsed.volume))
+          : DEFAULT_VOLUME;
+      const maxMs =
+        typeof parsed.maxMs === 'number' && Number.isFinite(parsed.maxMs)
+          ? Math.max(5000, Math.min(60000, Math.round(parsed.maxMs)))
+          : DEFAULT_MAX_MS;
+      const takeover = parsed.takeover !== false;
+      return { delayMs, startAt, volume, maxMs, takeover };
     }
   } catch {
     /* 坏存档按默认处理 */
   }
-  return { delayMs: DEFAULT_HOVER_DELAY_MS, startAt: 'intro' };
+  return { delayMs: DEFAULT_HOVER_DELAY_MS, startAt: 'intro', volume: DEFAULT_VOLUME, maxMs: DEFAULT_MAX_MS, takeover: true };
 }
 
 export function writeChorusPreviewSettings(patch: Partial<ChorusPreviewSettings>): ChorusPreviewSettings {
   const next: ChorusPreviewSettings = { ...readChorusPreviewSettings(), ...patch };
   next.delayMs = Math.max(0, Math.min(4000, Math.round(next.delayMs)));
+  next.volume = Math.max(0.1, Math.min(1, next.volume));
+  next.maxMs = Math.max(5000, Math.min(60000, Math.round(next.maxMs)));
   try {
     localStorage.setItem(PREVIEW_SETTINGS_KEY, JSON.stringify(next));
   } catch {
@@ -292,9 +325,13 @@ async function startPreview(target: HTMLElement, track: OnlineTrack): Promise<vo
   if (state.playing) setPreviewDuck(DUCK_LEVEL, DUCK_FADE_MS);
   // 已接进图时 deck 增益 1 就等于「播放器当前音量」（主 gain 已按用户音量设置）；
   // 元素音量路径用播放器音量作为目标，点击接手时不会先掉音量。
-  ramp(attached ? 1 : Math.max(0.05, Math.min(1, state.volume)), FADE_IN_MS);
+  // 试听音量是相对正常播放的比例，接管后由播放器自己恢复到 1。
+  const previewLevel = attached
+    ? settings.volume
+    : Math.max(0.02, Math.min(1, state.volume * settings.volume));
+  ramp(previewLevel, FADE_IN_MS);
   window.clearTimeout(stopTimer);
-  stopTimer = window.setTimeout(() => stopChorusPreview(), PREVIEW_MS);
+  stopTimer = window.setTimeout(() => stopChorusPreview(), settings.maxMs);
 }
 
 export function installChorusPreview(root: HTMLElement): void {

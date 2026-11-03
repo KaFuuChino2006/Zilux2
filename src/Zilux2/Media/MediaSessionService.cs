@@ -133,6 +133,52 @@ internal sealed class MediaSessionService : IDisposable
         }
     }
 
+    /// <summary>
+    /// 关闭 SMTC（设置里关掉「系统媒体控制」时）：断开事件并清掉外壳里的 Now Playing，
+    /// 之后可以再次 <see cref="Enable"/> 重新挂上。
+    /// </summary>
+    public void Disable()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        SystemMediaTransportControls? controls;
+        lock (_gate)
+        {
+            controls = _controls;
+            _controls = null;
+            _pending = null;
+            _coalesceScheduled = false;
+        }
+
+        _coverCts?.Cancel();
+        _coverCts?.Dispose();
+        _coverCts = null;
+        _coverSource = null;
+
+        if (controls is null)
+        {
+            return;
+        }
+
+        try
+        {
+            controls.ButtonPressed -= OnButtonPressed;
+            controls.PlaybackPositionChangeRequested -= OnPositionChangeRequested;
+            controls.PlaybackStatus = MediaPlaybackStatus.Closed;
+            controls.DisplayUpdater.ClearAll();
+            controls.DisplayUpdater.Update();
+            controls.IsEnabled = false;
+            HostLog.Info("[smtc] disabled by setting");
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[smtc] disable failed: {Describe(exception)}");
+        }
+    }
+
     // 会话管理器只用来回答一个问题：Windows 现在的「当前媒体会话」是不是本机。媒体键被别的
     // 程序抢注时，系统不会再路由 ButtonPressed，只能靠底层键盘钩子兜底；钩子是否放行由
     // shortcuts.alwaysHandleMediaKeys 决定（默认 true 时不再看这里的结果，见 MainWindow）。
