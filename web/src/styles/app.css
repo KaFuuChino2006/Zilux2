@@ -6791,6 +6791,11 @@ html.is-pb-expanded .playerbar.is-hidden {
 
 /* ===== 场景歌单卡片 ===== */
 .mood-tile{text-align:left}
-.mood-cover{display:flex;align-items:center;justify-content:center;background:linear-gradient(150deg,rgb(var(--overlay-rgb)/.22),rgb(var(--overlay-rgb)/.06))}
-.mood-cover .mood-glow{position:absolute;inset:0;background:radial-gradient(60% 60% at 30% 20%,var(--accent),transparent 72%);opacity:.6}
-.mood-cover svg{position:relative;opacity:.92}
+.mood-cover{position:relative;display:grid;place-items:center;background:linear-gradient(150deg,color-mix(in srgb,var(--mood-tint) 32%,var(--bg-soft)),color-mix(in srgb,var(--mood-tint) 9%,var(--bg-soft)));border-color:color-mix(in srgb,var(--mood-tint) 26%,var(--line))}
+.mood-cover .mood-glow{position:absolute;inset:-10%;background:radial-gradient(58% 58% at 28% 22%,var(--mood-tint),transparent 70%);opacity:.52;filter:blur(4px)}
+.mood-cover svg{position:relative;color:color-mix(in srgb,var(--mood-tint) 70%,var(--text));opacity:.96;filter:drop-shadow(0 8px 20px color-mix(in srgb,var(--mood-tint) 40%,transparent))}
+.mood-cover-tag{position:absolute;left:10px;bottom:9px;padding:3px 8px;border-radius:999px;background:rgb(var(--overlay-rgb)/.18);backdrop-filter:blur(8px);color:var(--text);font-size:10px;font-weight:600;letter-spacing:.05em}
+.mood-cover[data-mood=midnight]{--mood-tint:#5b7bd5}
+.mood-cover[data-mood=commute]{--mood-tint:#e0893c}
+.mood-cover[data-mood=focus]{--mood-tint:#4f9d6b}
+.mood-cover[data-mood=burst]{--mood-tint:#d8567a}

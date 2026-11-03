@@ -103,6 +103,8 @@ const ICONS: Record<string, string> = {
     '<path d="M5 17H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-1M12 15l5 6H7l5-6z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>',
   compass:
     '<circle cx="12" cy="12" r="7.6" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M15.2 8.8l-2 4.4-4.4 2 2-4.4z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>',
+  mood:
+    '<circle cx="12" cy="12" r="7.6" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M8.8 14.1a4.2 4.2 0 0 0 6.4 0" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="9.5" cy="10.1" r="1.05" fill="currentColor"/><circle cx="14.5" cy="10.1" r="1.05" fill="currentColor"/>',
   download: '<path d="M12 4.2v9.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M8.1 9.6 12 13.5l3.9-3.9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M5.2 17.4h13.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
   info: '<circle cx="12" cy="12" r="7.6" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 10.7v5.1" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="12" cy="7.9" r="1.05" fill="currentColor"/>',
   trash:

@@ -201,10 +201,14 @@ internal sealed class WebViewHost : IDisposable
     private readonly AirPlayService? _airplay;
     private readonly LocalMusicService _localMusic;
     private readonly UpdateService? _updates;
+    private const int OnlineRetryIntervalMs = 500;
+    private const int OnlineRetryLimit = 40;
     private bool _disposed;
     private bool _pageReady;
     private bool _recoverAttempted;
     private int _audioPostPending;
+    private DispatcherTimer? _onlineRetryTimer;
+    private int _onlineRetryAttempts;
 
     public WebViewHost(
         MainWindow window,
@@ -422,6 +426,7 @@ internal sealed class WebViewHost : IDisposable
         }
 
         _disposed = true;
+        StopOnlineRetry();
         if (_settings is not null)
         {
             _settings.GeneralChanged -= OnGeneralSettingsChanged;
@@ -820,6 +825,7 @@ internal sealed class WebViewHost : IDisposable
         // legitimately arrive before NavigationCompleted fires, and resetting afterwards
         // would silently mute every later windowState push.
         _pageReady = false;
+        StopOnlineRetry();
         DetachAudio();
         HostLog.Info($"navigation starting: {e.Uri}");
         if (!IsAllowedNavigation(e.Uri))
@@ -893,12 +899,18 @@ internal sealed class WebViewHost : IDisposable
             var online = App.Online;
             if (online?.Endpoint is null)
             {
-                HostLog.Warn(
-                    "[online] endpoint unavailable, page gets no online sources" +
-                    (string.IsNullOrEmpty(online?.FailureMessage) ? string.Empty : $": {online.FailureMessage}"));
+                if (_onlineRetryAttempts == 0)
+                {
+                    HostLog.Warn(
+                        "[online] endpoint unavailable, page gets no online sources" +
+                        (string.IsNullOrEmpty(online?.FailureMessage) ? string.Empty : $": {online.FailureMessage}"));
+                }
+
+                StartOnlineRetry();
                 return;
             }
 
+            StopOnlineRetry();
             var message = new HostOnlineMessage { Payload = online.BuildEventPayload() };
             PostJson(JsonSerializer.Serialize(message, OnlineJsonContext.Default.HostOnlineMessage));
             HostLog.Info(
@@ -909,6 +921,57 @@ internal sealed class WebViewHost : IDisposable
         {
             HostLog.Error("[online] endpoint push failed", exception);
         }
+    }
+
+    /// <summary>
+    /// 启动早期在线源端点可能还没就绪；页面只会收到一次 online 推送，错过就会一直 not-ready，
+    /// 所以在页面 ready 后按固定间隔重试，端点就绪即补推，超时后放弃并记一条日志。
+    /// </summary>
+    private void StartOnlineRetry()
+    {
+        if (_disposed || _onlineRetryTimer is not null || _onlineRetryAttempts >= OnlineRetryLimit)
+        {
+            return;
+        }
+
+        var timer = new DispatcherTimer(DispatcherPriority.Background, _webView.Dispatcher)
+        {
+            Interval = TimeSpan.FromMilliseconds(OnlineRetryIntervalMs),
+        };
+        timer.Tick += OnOnlineRetryTick;
+        _onlineRetryTimer = timer;
+        timer.Start();
+    }
+
+    private void OnOnlineRetryTick(object? sender, EventArgs e)
+    {
+        _onlineRetryAttempts++;
+        if (App.Online?.Endpoint is not null)
+        {
+            StopOnlineRetry();
+            PostOnlineInfo();
+            return;
+        }
+
+        if (_onlineRetryAttempts >= OnlineRetryLimit)
+        {
+            StopOnlineRetry();
+            HostLog.Warn("[online] endpoint still unavailable after retry window");
+        }
+    }
+
+    private void StopOnlineRetry()
+    {
+        if (_onlineRetryTimer is null)
+        {
+            _onlineRetryAttempts = 0;
+            return;
+        }
+
+        _onlineRetryTimer.Stop();
+        _onlineRetryTimer.Tick -= OnOnlineRetryTick;
+        _onlineRetryTimer = null;
+        _onlineRetryAttempts = 0;
     }
 
     private void HandleSettingsMessage(JsonElement root)

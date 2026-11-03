@@ -34,7 +34,7 @@ GET http://127.0.0.1:<port>/api/analysis?source=local&rel=<rel>&token=<token>
 - 结果缓存：`%LOCALAPPDATA%\Zilux2\analysis\`（音频缓存 + JSON），键为 `source:id:analyzerVersion`；
   命中缓存时 `cached=true` 且 `elapsedMs` 很小。缓存上限 300 MB，超限按 mtime 淘汰。
 - 同曲并发请求合并（单飞），不重复下载/分析。
-- 失败返回 `ok:false` + `code`（`not-found`/`not-playable`/`upstream-failed`/`decode-failed`/`timeout`/`internal-error`）。
+- 失败返回 `ok:false` + `code`（`not-found`/`not-cached`/`not-playable`/`upstream-failed`/`decode-failed`/`timeout`/`internal-error`）；`not-cached` 表示 cacheOnly=1 且该曲尚未分析（HTTP 404）。
 
 ### 2.1 成功响应（camelCase JSON）
 

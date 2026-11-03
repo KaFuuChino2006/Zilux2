@@ -43,6 +43,15 @@ export const MOOD_DEFS: MoodDef[] = [
   },
 ];
 
+/** 把 BPM 折进 70–140（八度等价的常用听感区间），避免半拍/双拍误判影响分桶。 */
+function foldBpm(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  let bpm = value;
+  while (bpm >= 140) bpm /= 2;
+  while (bpm > 0 && bpm < 70) bpm *= 2;
+  return bpm;
+}
+
 function toMoodAnalysis(analysis: {
   bpm?: number;
   energy?: number;
@@ -51,7 +60,8 @@ function toMoodAnalysis(analysis: {
   climaxEndMs?: number;
 } | null | undefined): MoodAnalysis | null {
   if (!analysis) return null;
-  const bpm = typeof analysis.bpm === 'number' ? analysis.bpm : 0;
+  // 节拍检测常把四拍切成两拍（或反向），把 BPM 折进 70–140 的常用区间后再分桶。
+  const bpm = foldBpm(typeof analysis.bpm === 'number' ? analysis.bpm : 0);
   const energy = typeof analysis.energy === 'number' ? analysis.energy : 0;
   if (!bpm && !energy) return null;
   const start = analysis.climaxStartMs ?? 0;

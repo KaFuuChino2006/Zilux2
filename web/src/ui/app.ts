@@ -809,7 +809,7 @@ export class App {
       { key: 'liked', label: '我喜欢的音乐', iconName: 'heart', onClick: () => void this.showLiked() },
       { key: 'recent', label: '最近播放', iconName: 'clock', onClick: () => void this.showRecentWall() },
       { key: 'recommend', label: '推荐', iconName: 'sparkle', onClick: () => void this.openRecommendPage() },
-      { key: 'moods', label: '场景', iconName: 'sparkle', onClick: () => void this.openMoodsPage() },
+      { key: 'moods', label: '场景', iconName: 'mood', onClick: () => void this.openMoodsPage() },
       { key: 'discover', label: '发现', iconName: 'compass', onClick: () => void this.showDiscover() },
       { key: 'playlists', label: '我的歌单', iconName: 'list', onClick: () => this.openPlaylistsPage() },
       { key: 'local', label: '本地曲库', iconName: 'folder', onClick: () => this.showLocal() },
@@ -6989,7 +6989,13 @@ export class App {
   private buildMoodGrid(): HTMLElement {
     const grid = h('div', { class: 'disc-grid' });
     for (const def of MOOD_DEFS) {
-      const cover = h('div', { class: 'mood-cover' }, h('div', { class: 'mood-glow' }), icon('sparkle', 30));
+      const cover = h(
+        'div',
+        { class: 'ui-tile-cover mood-cover', 'data-mood': def.id },
+        h('div', { class: 'mood-glow' }),
+        icon('mood', 34),
+        h('span', { class: 'mood-cover-tag', text: '生成歌单' }),
+      );
       const tile = h(
         'button',
         { class: 'ui-tile mood-tile', title: def.hint },
@@ -7013,7 +7019,12 @@ export class App {
     this.wall = {
       kind: 'mood',
       title: `场景 · ${def.label}`,
-      subtitle: match.tracks.length > 0 ? `${def.hint} · ${match.tracks.length} 首（已分析 ${match.analyzed} 首）` : `${def.hint} · 还没有可用的分析结果，先播放几首歌再试`,
+      subtitle:
+        match.tracks.length > 0
+          ? `${def.hint} · ${match.tracks.length} 首（已分析 ${match.analyzed} 首）`
+          : match.analyzed > 0
+            ? `${def.hint} · 暂时没有匹配的歌曲（已分析 ${match.analyzed} 首，多播放几首后结果会更全）`
+            : `${def.hint} · 还没有可用的分析结果，先播放几首歌再试`,
       tracks: match.tracks,
     };
     this.renderWall(true);
@@ -7025,6 +7036,7 @@ export class App {
       if (account.loggedIn) sources.push(account.source as OnlineSource);
     }
     const lists = await Promise.all([
+      Promise.resolve(localTracks()),
       ...sources.map((source) => this.fetchLikedTracks(source)),
       fetchRecentMerged(200).catch(() => [] as OnlineTrack[]),
     ]);
