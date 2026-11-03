@@ -115,6 +115,9 @@ public partial class App : Application
         Online.DownloadDirectoryProvider = () => Settings?.DownloadDirectory ?? string.Empty;
         // 下载音质同样跟随设置（standard/high/lossless），下载服务按平台能力自动降级。
         Online.DownloadQualityProvider = () => Settings?.DownloadQuality ?? Zilux2.Settings.DownloadSettings.QualityHigh;
+        Online.DownloadConcurrencyProvider = () => Settings?.DownloadMaxConcurrent ?? 2;
+        Online.DownloadTemplateProvider = () => Settings?.DownloadFileNameTemplate ?? "{artist} - {title}";
+        Online.DownloadOpenFolderProvider = () => Settings?.DownloadOpenFolderWhenDone ?? false;
         Zilux2.Online.Mvmp3Cache.DirectoryProvider = () =>
         {
             var configured = Settings?.DownloadDirectory;

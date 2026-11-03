@@ -87,6 +87,31 @@ internal sealed class SettingsService : IDisposable
         }
     }
 
+    /// <summary>Windows 系统媒体控制开关（关掉后不再向任务栏/音量弹窗暴露 Now Playing）。</summary>
+    internal bool MediaSessionEnabled
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _state.General.MediaSession;
+            }
+        }
+    }
+
+    /// <summary>桌面歌词窗口的显示状态与样式（窗口由 MainWindow 懒创建）。</summary>
+    internal (bool Enabled, bool Locked, int FontSize, bool Topmost) DesktopLyricsOptions
+    {
+        get
+        {
+            lock (_gate)
+            {
+                var general = _state.General;
+                return (general.DesktopLyrics, general.DesktopLyricsLocked, general.DesktopLyricsFontSize, general.DesktopLyricsTopmost);
+            }
+        }
+    }
+
     // Read by the audio feature service on its capture thread, so it must stay cheap and locked.
     internal bool AudioReactive
     {
@@ -106,6 +131,30 @@ internal sealed class SettingsService : IDisposable
             lock (_gate)
             {
                 return _state.Appearance.WindowAnimation;
+            }
+        }
+    }
+
+    /// <summary>迷你播放器尺寸预设（compact/standard/wide）。</summary>
+    internal string MiniSize
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _state.Appearance.MiniSize;
+            }
+        }
+    }
+
+    /// <summary>迷你播放器是否置顶。</summary>
+    internal bool MiniAlwaysOnTop
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _state.Appearance.MiniAlwaysOnTop;
             }
         }
     }
@@ -134,6 +183,42 @@ internal sealed class SettingsService : IDisposable
         }
     }
 
+    /// <summary>同时下载的任务数（1–4）。</summary>
+    internal int DownloadMaxConcurrent
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _state.Downloads.MaxConcurrent;
+            }
+        }
+    }
+
+    /// <summary>下载文件名模板。</summary>
+    internal string DownloadFileNameTemplate
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _state.Downloads.FileNameTemplate;
+            }
+        }
+    }
+
+    /// <summary>下载完成后自动打开所在文件夹。</summary>
+    internal bool DownloadOpenFolderWhenDone
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _state.Downloads.OpenFolderWhenDone;
+            }
+        }
+    }
+
     /// <summary>启动后是否自动检查更新。</summary>
     internal bool UpdateAutoCheck
     {
@@ -154,6 +239,18 @@ internal sealed class SettingsService : IDisposable
             lock (_gate)
             {
                 return _state.Updates.Mode;
+            }
+        }
+    }
+
+    /// <summary>更新检查/下载是否直连 GitHub（绕过系统代理）。</summary>
+    internal bool UpdateDirectConnection
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _state.Updates.DirectConnection;
             }
         }
     }
@@ -444,12 +541,15 @@ internal sealed class SettingsService : IDisposable
 
     private static bool IsKnownField(string section, string name) => section switch
     {
-        "general" => name is "splash" or "startMaximized" or "autoLaunch" or "autoStartHidden" or "watchLocalFolder",
-        "appearance" => name is "theme" or "reduceMotion" or "glow" or "heroAutoRotate" or "lyricsSize",
+        "general" => name is "splash" or "startMaximized" or "autoLaunch" or "autoStartHidden" or "watchLocalFolder"
+            or "mediaSession" or "desktopLyrics" or "desktopLyricsLocked" or "desktopLyricsFontSize" or "desktopLyricsTopmost",
+        "appearance" => name is "theme" or "reduceMotion" or "glow" or "heroAutoRotate" or "lyricsSize"
+            or "windowAnimation" or "playerBarExpanded" or "miniSize" or "miniAlwaysOnTop",
         "playback" => name is "defaultSource" or "searchLimit" or "lyricsAutoOpen" or "volume" or "audioReactive"
             or "eqEnabled" or "eqPreset" or "eqGains" or "fadeEnabled" or "fadeMs"
-            or "fadeOutMs" or "fadeInMs" or "fadeCurve" or "fadeVocal" or "fadeVocalTailMs",
-        "downloads" => name is "directory" or "quality",
+            or "fadeOutMs" or "fadeInMs" or "fadeCurve" or "fadeVocal" or "fadeVocalTailMs"
+            or "sleepFadeSeconds" or "sleepAction",
+        "downloads" => name is "directory" or "quality" or "maxConcurrent" or "fileNameTemplate" or "openFolderWhenDone",
         "updates" => name is "autoCheck" or "mode" or "repo",
         "shortcuts" => name is "enabled" or "playPause" or "prev" or "next" or "toggleWindow",
         _ => false,
@@ -533,6 +633,17 @@ internal sealed class SettingsService : IDisposable
                 general, "autoStartHidden", state.General.AutoStartHidden, "general.autoStartHidden", keys);
             state.General.WatchLocalFolder = ReadBool(
                 general, "watchLocalFolder", state.General.WatchLocalFolder, "general.watchLocalFolder", keys);
+            state.General.MediaSession = ReadBool(
+                general, "mediaSession", state.General.MediaSession, "general.mediaSession", keys);
+            state.General.DesktopLyrics = ReadBool(
+                general, "desktopLyrics", state.General.DesktopLyrics, "general.desktopLyrics", keys);
+            state.General.DesktopLyricsLocked = ReadBool(
+                general, "desktopLyricsLocked", state.General.DesktopLyricsLocked, "general.desktopLyricsLocked", keys);
+            state.General.DesktopLyricsFontSize = ReadIntInRange(
+                general, "desktopLyricsFontSize", 28, 64,
+                state.General.DesktopLyricsFontSize, "general.desktopLyricsFontSize", keys);
+            state.General.DesktopLyricsTopmost = ReadBool(
+                general, "desktopLyricsTopmost", state.General.DesktopLyricsTopmost, "general.desktopLyricsTopmost", keys);
         }
 
         if (TryGetObject(document, "appearance", out var appearance))
@@ -552,6 +663,10 @@ internal sealed class SettingsService : IDisposable
                 keys);
             state.Appearance.PlayerBarExpanded = ReadBool(
                 appearance, "playerBarExpanded", state.Appearance.PlayerBarExpanded, "appearance.playerBarExpanded", keys);
+            state.Appearance.MiniSize = ReadEnum(
+                appearance, "miniSize", AppearanceSettings.MiniSizes, state.Appearance.MiniSize, "appearance.miniSize", keys);
+            state.Appearance.MiniAlwaysOnTop = ReadBool(
+                appearance, "miniAlwaysOnTop", state.Appearance.MiniAlwaysOnTop, "appearance.miniAlwaysOnTop", keys);
         }
 
         if (TryGetObject(document, "playback", out var playback))
@@ -602,6 +717,10 @@ internal sealed class SettingsService : IDisposable
             state.Playback.FadeVocal = ReadBool(playback, "fadeVocal", state.Playback.FadeVocal, "playback.fadeVocal", keys);
             state.Playback.FadeVocalTailMs = ReadIntInRange(
                 playback, "fadeVocalTailMs", 0, 3000, state.Playback.FadeVocalTailMs, "playback.fadeVocalTailMs", keys);
+            state.Playback.SleepFadeSeconds = ReadIntInRange(
+                playback, "sleepFadeSeconds", 0, 60, state.Playback.SleepFadeSeconds, "playback.sleepFadeSeconds", keys);
+            state.Playback.SleepAction = ReadEnum(
+                playback, "sleepAction", PlaybackSettings.SleepActions, state.Playback.SleepAction, "playback.sleepAction", keys);
         }
 
         if (TryGetObject(document, "downloads", out var downloads))
@@ -613,6 +732,12 @@ internal sealed class SettingsService : IDisposable
 
             state.Downloads.Quality = ReadEnum(
                 downloads, "quality", DownloadSettings.Qualities, state.Downloads.Quality, "downloads.quality", keys);
+            state.Downloads.MaxConcurrent = ReadIntInRange(
+                downloads, "maxConcurrent", 1, 4, state.Downloads.MaxConcurrent, "downloads.maxConcurrent", keys);
+            state.Downloads.FileNameTemplate = ReadTemplate(
+                downloads, "fileNameTemplate", 120, state.Downloads.FileNameTemplate, "downloads.fileNameTemplate", keys);
+            state.Downloads.OpenFolderWhenDone = ReadBool(
+                downloads, "openFolderWhenDone", state.Downloads.OpenFolderWhenDone, "downloads.openFolderWhenDone", keys);
         }
 
         if (TryGetObject(document, "updates", out var updates))
@@ -620,6 +745,8 @@ internal sealed class SettingsService : IDisposable
             state.Updates.AutoCheck = ReadBool(updates, "autoCheck", state.Updates.AutoCheck, "updates.autoCheck", keys);
             state.Updates.Mode = ReadEnum(
                 updates, "mode", UpdateSettings.Modes, state.Updates.Mode, "updates.mode", keys);
+            state.Updates.DirectConnection = ReadBool(
+                updates, "directConnection", state.Updates.DirectConnection, "updates.directConnection", keys);
             if (updates.TryGetProperty("repo", out _))
             {
                 state.Updates.Repo = ReadRepo(updates, "repo", "updates.repo", keys);
@@ -880,6 +1007,44 @@ internal sealed class SettingsService : IDisposable
 
         HostLog.Warn($"[settings] invalid key={key} expected=\"owner/repo\" fallback=<builtin> value={text}");
         return string.Empty;
+    }
+
+    /// <summary>
+    /// 下载文件名模板：非空字符串、≤maxLength、至少含一个 {artist}/{title}/{id}/{quality} 占位符，
+    /// 否则回退默认模板（避免用户只写死一个名字导致所有下载互相覆盖）。
+    /// </summary>
+    private static string ReadTemplate(
+        JsonElement parent,
+        string name,
+        int maxLength,
+        string fallback,
+        string key,
+        List<string> keys)
+    {
+        if (!parent.TryGetProperty(name, out var value))
+        {
+            return fallback;
+        }
+
+        keys.Add(key);
+        if (value.ValueKind != JsonValueKind.String)
+        {
+            HostLog.Warn($"[settings] invalid key={key} expected=string fallback={fallback}");
+            return fallback;
+        }
+
+        var text = (value.GetString() ?? string.Empty).Trim();
+        var hasToken = text.Contains("{artist}", StringComparison.Ordinal)
+            || text.Contains("{title}", StringComparison.Ordinal)
+            || text.Contains("{id}", StringComparison.Ordinal)
+            || text.Contains("{quality}", StringComparison.Ordinal);
+        if (text.Length == 0 || text.Length > maxLength || !hasToken)
+        {
+            HostLog.Warn($"[settings] invalid key={key} expected=template-with-token fallback={fallback} value={text}");
+            return fallback;
+        }
+
+        return text;
     }
 
     // GitHub owner/repo: exactly one slash, each side non-empty and made of safe slug characters.

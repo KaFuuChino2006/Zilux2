@@ -174,9 +174,17 @@ export const host = {
   /**
    * 迷你播放器：请求宿主切换紧凑置顶小窗。
    * 宿主负责保存/还原窗口 Bounds 与 Topmost，切换完成后回推 window/miniMode 事件。
+   * width/height（DIP）可选：给了就用（夹到宿主允许的范围），没给则按设置里的尺寸预设。
    */
-  setMiniMode(enabled: boolean): void {
-    post({ v: 1, type: 'window', action: 'miniMode', enabled });
+  setMiniMode(enabled: boolean, width?: number, height?: number): void {
+    post({
+      v: 1,
+      type: 'window',
+      action: 'miniMode',
+      enabled,
+      ...(width && width > 0 ? { width } : {}),
+      ...(height && height > 0 ? { height } : {}),
+    });
   },
   log(level: 'info' | 'warn' | 'error', message: string): void {
     post({ v: 1, type: 'log', level, message });
@@ -198,6 +206,14 @@ export const host = {
   restoreLocalMusic(folder: string): void {
     post({ v: 1, type: 'local', action: 'restore', folder });
   },
+  /** 一次性恢复多个曲库根目录（第一个是主目录，其余为 @libN/ 附加目录） */
+  restoreLocalLibraries(folders: string[]): void {
+    post({ v: 1, type: 'local', action: 'restoreMany', folders });
+  },
+  /** 只弹文件夹选择器、不立刻扫描；选中的路径通过 localResult（action=pickAdded）回传 */
+  pickAdditionalLocalMusic(): void {
+    post({ v: 1, type: 'local', action: 'pickAdd' });
+  },
   /** 重新扫描本地/下载目录（结果走 localLibrary 事件） */
   rescanLocalMusic(): void {
     post({ v: 1, type: 'local', action: 'rescan' });
@@ -217,6 +233,10 @@ export const host = {
   /** 打开当前本地歌曲文件夹 */
   openLocalFolder(): void {
     post({ v: 1, type: 'local', action: 'openFolder' });
+  },
+  /** 写本地歌曲标签（只传要改的字段；结果走 localResult 事件，成功后宿主会重推曲库） */
+  writeLocalTags(rel: string, fields: Record<string, string | number | null>): void {
+    post({ v: 1, type: 'local', action: 'writeTags', rel, fields });
   },
   patchSettings(patch: Record<string, unknown>): void {
     post({ v: 1, type: 'settings', action: 'patch', patch });
@@ -338,6 +358,11 @@ export function reportMedia(state: MediaState): void {
   if (state.album) payload.album = state.album;
   if (state.coverUrl) payload.coverUrl = state.coverUrl;
   post({ v: 1, type: 'media', payload });
+}
+
+/** 桌面歌词：把「正在唱的一句 + 翻译」推给宿主窗口（开关/字号/锁定由设置驱动）。 */
+export function updateDesktopLyrics(now: string, translation: string): void {
+  post({ v: 1, type: 'lyrics', event: 'line', now, translation });
 }
 
 /**

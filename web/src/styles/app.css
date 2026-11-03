@@ -6186,6 +6186,12 @@ html.is-pb-expanded .playerbar.is-hidden {
   }
 }
 
+/* ===== 「下一首」小卡里的过渡说明（融合自原浮动预告卡） ===== */
+.upnext-summary .upnext-transition{margin-top:1px;font-size:10px;line-height:1.3;color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px}
+.upnext-summary .upnext-transition.is-hidden{display:none}
+.upnext-summary .upnext-meta{display:flex;flex-direction:column;gap:1px;min-width:0}
+.upnext-summary:has(.upnext-transition:not(.is-hidden)){height:auto;min-height:44px;padding-top:5px;padding-bottom:5px}
+
 /* ===== 歌词页可读性（语义令牌）：深色主题浅字、浅色主题深字 ===== */
 .lyrics-view .lyric-line {
   color: var(--lyric-dim);
@@ -6799,3 +6805,220 @@ html.is-pb-expanded .playerbar.is-hidden {
 .mood-cover[data-mood=commute]{--mood-tint:#e0893c}
 .mood-cover[data-mood=focus]{--mood-tint:#4f9d6b}
 .mood-cover[data-mood=burst]{--mood-tint:#d8567a}
+
+
+/* ===== 过渡试放台 ===== */
+.lab-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(0 0 0 / 34%);
+  backdrop-filter: blur(6px);
+}
+.lab-card {
+  width: min(720px, calc(100vw - 48px));
+  max-height: calc(100vh - 60px);
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px 20px 16px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: var(--shadow-2);
+  color: var(--text);
+}
+.lab-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.lab-kicker {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+.lab-close {
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.lab-close:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+.lab-titles {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 15px;
+  font-weight: 600;
+  min-width: 0;
+}
+.lab-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lab-arrow {
+  flex: none;
+  color: var(--accent);
+}
+.lab-stage {
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--bg-soft);
+  padding: 4px 6px;
+}
+.lab-curve {
+  display: block;
+  width: 100%;
+  height: 150px;
+}
+.lab-axis {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+.lab-overlap {
+  fill: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.lab-gain {
+  fill: none;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+.lab-gain-a {
+  stroke: var(--accent);
+}
+.lab-gain-b {
+  stroke: color-mix(in srgb, var(--accent) 45%, var(--text));
+  stroke-dasharray: 4 3;
+}
+.lab-bass {
+  stroke: var(--text-dim);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+}
+.lab-note {
+  fill: var(--text-dim);
+  font-size: 10px;
+}
+.lab-playhead {
+  stroke: var(--text);
+  stroke-width: 1.5;
+  opacity: 0.85;
+}
+.lab-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px 14px;
+}
+.lab-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.lab-stat-label {
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+.lab-stat-value {
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lab-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.lab-progress {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.lab-empty {
+  padding: 26px 16px;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  border-radius: 12px;
+  border: 1px dashed var(--line);
+}
+.lab-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+@media (max-width: 640px) {
+  .lab-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* 收听统计页：总览卡片 / 14 天柱状 / 最爱歌曲与歌手 */
+.stats-page{display:flex;flex-direction:column;gap:14px;padding:18px 18px 40px;border-radius:22px;background:color-mix(in srgb,var(--bg) 68%,transparent);border:1px solid color-mix(in srgb,var(--line) 70%,transparent)}
+.stats-page .section-title{color:var(--text)}
+.stats-year-banner{display:flex;flex-direction:column;gap:6px;padding:18px 22px;border-radius:18px;background:linear-gradient(135deg,color-mix(in srgb,var(--accent) 20%,var(--panel)),var(--panel));border:1px solid var(--line)}
+.stats-year-title{font-size:20px;font-weight:650;color:var(--text)}
+.stats-year-line{font-size:13px;color:var(--text-soft)}
+.stats-year-line strong{color:var(--text);font-weight:600}
+.stats-cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.stats-card{padding:14px 16px;border-radius:14px;background:var(--panel);border:1px solid var(--line)}
+.stats-card-label{font-size:12px;color:var(--muted)}
+.stats-card-value{margin-top:6px;font-size:20px;font-weight:650;color:var(--text)}
+.stats-card-hint{margin-top:4px;font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.stats-chart{display:flex;align-items:flex-end;gap:6px;padding:14px 16px 8px;border-radius:14px;background:var(--panel);border:1px solid var(--line);height:150px}
+.stats-bar-col{flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;min-width:0;height:100%}
+.stats-bar-slot{flex:1;width:100%;display:flex;align-items:flex-end;justify-content:center}
+.stats-bar{width:100%;max-width:26px;height:100%;display:flex;align-items:flex-end}
+.stats-bar-fill{width:100%;border-radius:6px 6px 2px 2px;background:linear-gradient(180deg,var(--accent),color-mix(in srgb,var(--accent) 45%,transparent))}
+.stats-bar-label{font-size:10px;color:var(--muted);white-space:nowrap}
+.stats-list{display:flex;flex-direction:column;gap:2px}
+.stats-row{display:flex;align-items:center;gap:12px;padding:8px 10px;border-radius:12px}
+.stats-row:hover{background:var(--surface-hover)}
+.stats-rank{width:22px;text-align:center;font-size:12px;color:var(--muted)}
+.stats-cover{width:42px;height:42px;border-radius:10px;object-fit:cover;flex:none;background:var(--surface-hover)}
+.stats-cover-empty{display:grid;place-items:center;color:var(--muted)}
+.stats-meta{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.stats-name{font-size:14px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.stats-artist{font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.stats-share{height:3px;border-radius:2px;background:rgb(var(--overlay-rgb)/.10);overflow:hidden}
+.stats-share-fill{height:100%;border-radius:2px;background:var(--accent)}
+.stats-value{text-align:right;font-size:12px;color:var(--text-soft);flex:none;min-width:96px}
+.stats-sub{font-size:11px;color:var(--muted);margin-top:2px}
+.stats-artists{display:flex;flex-wrap:wrap;gap:8px}
+.stats-artist-chip{display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:999px;background:var(--panel);border:1px solid var(--line);font-size:12px}
+.stats-artist-name{color:var(--text)}
+.stats-artist-time{color:var(--muted)}
+.stats-actions{display:flex;justify-content:flex-end;padding-top:6px}
+
+/* 本地曲目标签编辑弹层 */
+.tag-editor-backdrop{z-index:520}
+.tag-editor{width:min(560px,calc(100vw - 48px));max-height:calc(100vh - 80px);overflow:auto;display:flex;flex-direction:column;gap:14px;padding:22px 24px 20px;border-radius:22px;background:var(--panel);border:1px solid var(--line);box-shadow:var(--shadow-3)}
+.tag-editor-head{display:flex;align-items:flex-start;gap:12px}
+.tag-editor-title{font-size:18px;font-weight:650;color:var(--text)}
+.tag-editor-sub{font-size:12px;color:var(--muted);margin-top:3px;max-width:380px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tag-editor-close{margin-left:auto;width:30px;height:30px;display:grid;place-items:center;border-radius:999px;border:1px solid var(--line);background:transparent;color:var(--muted);cursor:pointer}
+.tag-editor-close:hover{background:var(--surface-hover);color:var(--text)}
+.tag-editor-body{display:flex;flex-direction:column;gap:10px}
+.tag-editor-row{display:flex;align-items:center;gap:12px}
+.tag-editor-label{width:72px;flex:none;font-size:12px;color:var(--muted)}
+.tag-editor-input{flex:1;min-width:0;height:38px;padding:0 12px;border-radius:11px;border:1px solid var(--line);background:var(--bg-soft);color:var(--text);font-size:13px;outline:none}
+.tag-editor-input:focus{border-color:color-mix(in srgb,var(--accent) 60%,var(--line))}
+.tag-editor-hint{font-size:11px;color:var(--muted);line-height:1.6}
+.tag-editor-actions{display:flex;justify-content:flex-end;gap:10px;padding-top:2px}

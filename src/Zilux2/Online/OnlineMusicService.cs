@@ -48,6 +48,15 @@ internal sealed class OnlineMusicService : IDisposable
     /// <summary>下载音质（由 App 指向设置里的 downloads.quality；空表示默认高品质）。</summary>
     internal Func<string?>? DownloadQualityProvider { get; set; }
 
+    /// <summary>同时下载任务数（由 App 指向设置里的 downloads.maxConcurrent；空表示 2）。</summary>
+    internal Func<int>? DownloadConcurrencyProvider { get; set; }
+
+    /// <summary>下载文件名模板（由 App 指向设置里的 downloads.fileNameTemplate）。</summary>
+    internal Func<string?>? DownloadTemplateProvider { get; set; }
+
+    /// <summary>下载完成后自动在资源管理器里打开文件所在目录。</summary>
+    internal Func<bool>? DownloadOpenFolderProvider { get; set; }
+
     /// <summary>下载完成回调（宿主用它刷新本地曲库）。</summary>
     internal Action<string>? FileDownloaded { get; set; }
 
@@ -85,7 +94,10 @@ internal sealed class OnlineMusicService : IDisposable
             _download = new DownloadService(
                 () => DownloadDirectoryProvider?.Invoke(),
                 () => DownloadQualityProvider?.Invoke(),
-                path => FileDownloaded?.Invoke(path));
+                path => FileDownloaded?.Invoke(path),
+                () => DownloadConcurrencyProvider?.Invoke() ?? 2,
+                () => DownloadTemplateProvider?.Invoke(),
+                () => DownloadOpenFolderProvider?.Invoke() ?? false);
             // 离线节拍分析：音质缺省跟随下载设置；本地 rel 解析回调由 WebViewHost 接入。
             _analysis = new TrackAnalysisService(
                 _providers,

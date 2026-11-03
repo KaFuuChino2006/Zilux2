@@ -90,20 +90,31 @@ internal sealed class DownloadService : IDisposable
 
     private readonly Func<string?>? _directoryProvider;
     private readonly Func<string?>? _qualityProvider;
+    private readonly Func<int>? _maxConcurrentProvider;
+    private readonly Func<string?>? _templateProvider;
+    private readonly Func<bool>? _openFolderProvider;
     private readonly Action<string>? _fileReady;
     private readonly CancellationTokenSource _shutdown = new();
     private readonly ConcurrentDictionary<string, DownloadJob> _jobs = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, DownloadControl> _controls = new(StringComparer.Ordinal);
+    private readonly object _slotsGate = new();
+    private int _activeDownloads;
     private int _disposed;
 
     public DownloadService(
         Func<string?>? directoryProvider,
         Func<string?>? qualityProvider = null,
-        Action<string>? fileReady = null)
+        Action<string>? fileReady = null,
+        Func<int>? maxConcurrentProvider = null,
+        Func<string?>? templateProvider = null,
+        Func<bool>? openFolderProvider = null)
     {
         _directoryProvider = directoryProvider;
         _qualityProvider = qualityProvider;
         _fileReady = fileReady;
+        _maxConcurrentProvider = maxConcurrentProvider;
+        _templateProvider = templateProvider;
+        _openFolderProvider = openFolderProvider;
     }
 
     /// <summary>Windows 的「音乐」目录；极端情况下退回到本机数据目录。</summary>
@@ -353,9 +364,13 @@ internal sealed class DownloadService : IDisposable
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token, control.Cancellation.Token);
         var token = linked.Token;
         var partPath = string.Empty;
+        var slotHeld = false;
         try
         {
             await control.WaitWhilePausedAsync(token).ConfigureAwait(false);
+            // 并发闸门放在解析地址之前：排队中的任务不占网络，也不浪费一次 URL 解析。
+            await WaitForSlotAsync(token).ConfigureAwait(false);
+            slotHeld = true;
             var resolution = await provider.ResolveStreamAsync(trackId, quality, token).ConfigureAwait(false);
             if (!resolution.IsPlayable || string.IsNullOrWhiteSpace(resolution.Url))
             {
@@ -368,7 +383,7 @@ internal sealed class DownloadService : IDisposable
             var directory = Directory;
             System.IO.Directory.CreateDirectory(directory);
             var extension = GuessExtension(resolution.Url, resolution.Format);
-            var fileName = BuildFileName(job.Artist, job.Title, trackId, extension);
+            var fileName = BuildFileName(job, quality, extension);
             var targetPath = System.IO.Path.Combine(directory, fileName);
             partPath = targetPath + ".part";
             job.FileName = fileName;
@@ -423,6 +438,11 @@ internal sealed class DownloadService : IDisposable
             {
                 OnlineHttp.Warn($"[download] file callback failed: {callbackError.Message}");
             }
+
+            if (_openFolderProvider?.Invoke() == true)
+            {
+                RevealInExplorer(targetPath);
+            }
         }
         catch (OperationCanceledException)
         {
@@ -438,6 +458,11 @@ internal sealed class DownloadService : IDisposable
         }
         finally
         {
+            if (slotHeld)
+            {
+                ReleaseSlot();
+            }
+
             control.MarkCompleted();
             if (partPath.Length > 0)
             {
@@ -456,12 +481,81 @@ internal sealed class DownloadService : IDisposable
         }
     }
 
-    private static string BuildFileName(string artist, string title, string trackId, string extension)
+    /// <summary>
+    /// 并发闸门：同时进行的下载不超过设置里的上限（1–4）。这里用轮询而不是固定容量的
+    /// SemaphoreSlim，是因为设置页改并发后要立刻生效，而 SemaphoreSlim 的容量创建后就固定了。
+    /// </summary>
+    private async Task WaitForSlotAsync(CancellationToken token)
     {
+        while (true)
+        {
+            var limit = Math.Clamp(_maxConcurrentProvider?.Invoke() ?? 2, 1, 4);
+            lock (_slotsGate)
+            {
+                if (_activeDownloads < limit)
+                {
+                    _activeDownloads += 1;
+                    OnlineHttp.Info($"[download] slot acquired active={_activeDownloads} limit={limit}");
+                    return;
+                }
+            }
+
+            await Task.Delay(120, token).ConfigureAwait(false);
+        }
+    }
+
+    private void ReleaseSlot()
+    {
+        lock (_slotsGate)
+        {
+            _activeDownloads = Math.Max(0, _activeDownloads - 1);
+        }
+    }
+
+    /// <summary>在资源管理器里选中刚下好的文件；任何失败都只记日志。</summary>
+    private static void RevealInExplorer(string path)
+    {
+        try
+        {
+            var startInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"/select,\"{path}\"",
+                UseShellExecute = true,
+            };
+            System.Diagnostics.Process.Start(startInfo)?.Dispose();
+        }
+        catch (Exception exception)
+        {
+            OnlineHttp.Warn($"[download] reveal failed: {exception.Message}");
+        }
+    }
+
+    private string BuildFileName(DownloadJob job, string quality, string extension)
+    {
+        var trackId = job.TrackId;
+        var artist = job.Artist;
+        var title = job.Title;
         var namePart = string.IsNullOrWhiteSpace(title) ? trackId : title;
         var safeArtist = Clean(artist);
         var safeTitle = Clean(namePart);
-        var stem = safeArtist.Length > 0 ? $"{safeArtist} - {safeTitle}" : safeTitle;
+        var template = (_templateProvider?.Invoke() ?? string.Empty).Trim();
+        string stem;
+        if (template.Length == 0)
+        {
+            stem = safeArtist.Length > 0 ? $"{safeArtist} - {safeTitle}" : safeTitle;
+        }
+        else
+        {
+            stem = template
+                .Replace("{artist}", safeArtist, StringComparison.Ordinal)
+                .Replace("{title}", safeTitle, StringComparison.Ordinal)
+                .Replace("{id}", Clean(trackId), StringComparison.Ordinal)
+                .Replace("{quality}", Clean(quality), StringComparison.Ordinal);
+            // 模板里可能留下分隔符（例如没有歌手时的 " - 歌名"），再清洗一遍首尾与连续空格。
+            stem = Clean(stem);
+        }
+
         if (stem.Length == 0)
         {
             stem = "track-" + trackId;

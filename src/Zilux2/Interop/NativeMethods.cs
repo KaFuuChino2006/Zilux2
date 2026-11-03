@@ -44,6 +44,26 @@ internal static class NativeMethods
     public const uint VkMediaStop = 0xB2;
     public const uint VkMediaPlayPause = 0xB3;
 
+    // 热键钩子线程：独立消息循环 + 结束信号
+    public const int WmQuit = 0x0012;
+    public const int VkShift = 0x10;
+    public const int VkControl = 0x11;
+    public const int VkMenu = 0x12;
+    public const int VkLWin = 0x5B;
+    public const int VkRWin = 0x5C;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct Msg
+    {
+        public IntPtr Hwnd;
+        public uint Message;
+        public IntPtr WParam;
+        public IntPtr LParam;
+        public uint Time;
+        public int PointX;
+        public int PointY;
+    }
+
     // WM_APPCOMMAND（0x0319）：部分键盘驱动 / OEM 热键服务按下「系统切换音乐」键时不发
     // VK_MEDIA_* 按键，而是直接往前台窗口投一条 APPCOMMAND 消息。底层键盘钩子看不到这条路径，
     // 只能在窗口消息里兜接；lParam 高 16 位的低 12 位是命令号。
@@ -182,6 +202,13 @@ internal static class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool GetWindowRect(IntPtr hWnd, out Rect rect);
 
+    // 桌面歌词锁定/解锁：读写 GWL_EXSTYLE（WS_EX_TRANSPARENT 让鼠标穿透）。
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongW")]
+    public static extern int GetWindowLong(IntPtr hWnd, int index);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongW")]
+    public static extern int SetWindowLong(IntPtr hWnd, int index, int value);
+
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool SetWindowPos(
@@ -269,6 +296,26 @@ internal static class NativeMethods
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     public static extern IntPtr GetModuleHandle(string? moduleName);
+
+    [DllImport("user32.dll")]
+    public static extern int GetMessage(out Msg msg, IntPtr hWnd, uint messageFilterMin, uint messageFilterMax);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool TranslateMessage(ref Msg msg);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr DispatchMessage(ref Msg msg);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool PostThreadMessage(uint threadId, int message, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("kernel32.dll")]
+    public static extern uint GetCurrentThreadId();
+
+    [DllImport("user32.dll")]
+    public static extern short GetKeyState(int virtualKey);
 
     /// <summary>
     /// Keep the window's restore rect at <paramref name="normal"/> while it is minimized, so the

@@ -183,17 +183,22 @@ export function initLocalLibrary(): () => void {
     // 用户取消选择：保持现状
   });
   // 上次选过的文件夹在启动时自动恢复（宿主会立即回推 localLibrary）。
-  const folder = rememberedFolder();
-  if (folder) restoreLocalFolder(folder);
+  const folders = localFolders();
+  if (folders.length > 0) restoreLocalFolders(folders);
   return () => {
     off();
     offCancel();
   };
 }
 
-/** 让宿主弹出文件夹选择器。 */
+/** 让宿主弹出文件夹选择器（单选，选中后直接作为主目录扫描）。 */
 export function pickLocalFolder(): void {
   host.pickLocalMusic();
+}
+
+/** 让宿主弹出文件夹选择器，只回传路径（用于「添加文件夹」到多目录列表）。 */
+export function pickAdditionalLocalFolder(): void {
+  host.pickAdditionalLocalMusic();
 }
 
 /** 按上次记录的文件夹恢复（宿主无异常时立即推 localLibrary）。 */
@@ -201,7 +206,14 @@ export function restoreLocalFolder(folder: string): void {
   host.restoreLocalMusic(folder);
 }
 
+/** 按多目录列表恢复：第一个是主目录，其余用 @libN/ 前缀。 */
+export function restoreLocalFolders(folders: string[]): void {
+  if (folders.length === 0) return;
+  host.restoreLocalLibraries(folders);
+}
+
 const RESTORE_KEY = 'zilux2.localFolder';
+const FOLDERS_KEY = 'zilux2.localFolders';
 
 export function rememberedFolder(): string {
   try {
@@ -214,9 +226,71 @@ export function rememberedFolder(): string {
 export function rememberFolder(folder: string): void {
   try {
     window.localStorage.setItem(RESTORE_KEY, folder);
+    const list = localFolders();
+    if (list[0] !== folder) {
+      list[0] = folder;
+      window.localStorage.setItem(FOLDERS_KEY, JSON.stringify(list));
+    }
   } catch {
     /* 忽略 */
   }
+}
+
+/** 已保存的曲库根目录列表（第一个是主目录；兼容旧的单目录记录）。 */
+export function localFolders(): string[] {
+  try {
+    const raw = window.localStorage.getItem(FOLDERS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        const list = parsed.filter((item): item is string => typeof item === 'string' && item.length > 0);
+        if (list.length > 0) return list;
+      }
+    }
+
+    const legacy = window.localStorage.getItem(RESTORE_KEY);
+    if (legacy) {
+      window.localStorage.setItem(FOLDERS_KEY, JSON.stringify([legacy]));
+      return [legacy];
+    }
+  } catch {
+    /* 忽略 */
+  }
+
+  return [];
+}
+
+function saveLocalFolders(folders: string[]): void {
+  try {
+    window.localStorage.setItem(FOLDERS_KEY, JSON.stringify(folders));
+  } catch {
+    /* 忽略 */
+  }
+}
+
+/** 把一个目录追加进曲库根列表并立即重载全部根。 */
+export function addLocalFolder(folder: string): void {
+  const list = localFolders();
+  if (list.includes(folder)) return;
+  list.push(folder);
+  saveLocalFolders(list);
+  restoreLocalFolders(list);
+}
+
+/** 从曲库根列表移除一个目录（主目录被移除时由下一个目录接手）。 */
+export function removeLocalFolder(folder: string): void {
+  const list = localFolders().filter((item) => item !== folder);
+  saveLocalFolders(list);
+  if (list.length === 0) {
+    try {
+      window.localStorage.removeItem(RESTORE_KEY);
+    } catch {
+      /* 忽略 */
+    }
+    return;
+  }
+
+  restoreLocalFolders(list);
 }
 
 /** 把本地/下载曲目移进回收站（宿主推送 localResult 回执）。 */
@@ -233,6 +307,14 @@ export function revealLocalTrack(track: OnlineTrack): void {
 /** 打开当前本地歌曲文件夹。 */
 export function openLocalFolder(): void {
   host.openLocalFolder();
+}
+
+/** 写一首本地曲目的标签（只传要改的字段；结果走 localResult 回执，成功后宿主播新曲库）。 */
+export function writeLocalTags(track: OnlineTrack, fields: Record<string, string | number | null>): boolean {
+  const rel = relOf(track);
+  if (!rel) return false;
+  host.writeLocalTags(rel, fields);
+  return true;
 }
 
 /** 订阅删除/定位等本地曲库操作的回执。 */

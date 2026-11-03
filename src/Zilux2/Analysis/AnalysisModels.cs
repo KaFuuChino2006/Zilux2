@@ -53,6 +53,18 @@ internal sealed class BeatAnalysisPayload
 
     public double FirstDownbeatMs { get; set; }
 
+    /// <summary>DP 跟踪出的真实拍点（ms，相对文件起点，最多 4000 个）；拍点不足时为空数组。</summary>
+    public double[] BeatsMs { get; set; } = Array.Empty<double>();
+
+    /// <summary>拍点间隔稳定度（1 = 完全稳定，0 = 漂移严重）；p0-12 起提供，旧缓存为 0。</summary>
+    public double TempoStability { get; set; }
+
+    /// <summary>速度曲线时间轴（ms，窗口中心，升序）；p0-12 起提供，与 <see cref="TempoCurveBpm"/> 等长。</summary>
+    public double[] TempoCurveMs { get; set; } = Array.Empty<double>();
+
+    /// <summary>速度曲线 BPM（中位数平滑后的逐窗估计）；用于局部小节时长与变速歌。</summary>
+    public double[] TempoCurveBpm { get; set; } = Array.Empty<double>();
+
     public double[] Downbeats { get; set; } = Array.Empty<double>();
 
     public double[] PhraseStartsMs { get; set; } = Array.Empty<double>();

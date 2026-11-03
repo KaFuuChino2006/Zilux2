@@ -2,15 +2,20 @@ namespace Zilux2.Analysis;
 
 /// <summary>
 /// Offline beat analysis (contract docs/zilux2-beat-analysis-contract.md §4):
-/// spectral-flux onsets over a 1024/512 Hann STFT → autocorrelation + comb BPM estimate →
-/// dynamic-programming beat tracking (Ellis style) → 4/3 downbeat phase selection from
-/// low-band accents → bar-level novelty for phrase boundaries.
-/// P0 assumes a constant tempo; drifting tracks get a "tempo-drift" warning but still return
-/// the average grid. Runs on the caller's thread (the analysis service keeps it off the UI).
+/// SuperFlux spectral-flux onsets over a 1024/512 Hann STFT (whole-band + low/mid/high bands) →
+/// per-band onset envelopes → sliding-window autocorrelation with harmonic comb voting →
+/// octave disambiguation from band evidence → Ellis-style dynamic-programming beat tracking
+/// (the beat grid is now the primary output; tempo drift is measured from it) →
+/// 4/3 downbeat phase selection from low-band accents → bar-level novelty for phrase boundaries.
+/// p0-13 also emits a per-window tempo curve (`tempoCurveMs` / `tempoCurveBpm`, median-smoothed
+/// and folded toward the track BPM) so consumers can size bars locally on tempo-changing tracks.
+/// Tempo is still reported as one number, but `beatsMs` carries the tracked grid so drifting
+/// tracks can be consumed at their real beat positions. Runs on the caller's thread (the
+/// analysis service keeps it off the UI).
 /// </summary>
 internal static class BeatAnalyzer
 {
-    internal const string AnalyzerVersion = "p0-11";
+    internal const string AnalyzerVersion = "p0-13";
 
     private const int WindowSize = 1024;
     private const int HopSize = 512;
@@ -79,13 +84,24 @@ internal static class BeatAnalyzer
         }
 
         var flux = new float[frameCount];
+        var lowFlux = new float[frameCount];
+        var midFlux = new float[frameCount];
+        var highFlux = new float[frameCount];
         var lowEnergy = new float[frameCount];
         var midEnergy = new float[frameCount];
         var highEnergy = new float[frameCount];
-        ComputeOnsets(samples, frameCount, sampleRate, flux, lowEnergy, midEnergy, highEnergy, out var chromaFrames);
+        ComputeOnsets(samples, frameCount, sampleRate, flux, lowFlux, midFlux, highFlux,
+            lowEnergy, midEnergy, highEnergy, out var chromaFrames);
 
         var onset = NormalizeOnsets(flux);
-        var (bpm, bpmConfidence) = EstimateTempo(onset, fps, out _);
+        var lowOnset = NormalizeOnsets(lowFlux);
+        var midOnset = NormalizeOnsets(midFlux);
+        // Tempo 判据以底鼓（低频）为主、军鼓（中频）为辅；高频踩镲不参与 tempo 主判据，
+        // 避免八分音符镲片把自相关锁到 2 倍速。
+        var tempoOnset = MixOnsets((lowOnset, 0.55), (midOnset, 0.30), (onset, 0.15));
+
+        var (bpm, bpmConfidence, tempoCurveMs, tempoCurveBpm) = EstimateTempo(tempoOnset, lowOnset, fps);
+        var acfBpm = bpm;
         if (bpm <= 0)
         {
             bpm = 120.0;
@@ -95,50 +111,91 @@ internal static class BeatAnalyzer
         var intervalFrames = 60.0 * fps / bpm;
         var beatIntervalMs = 60000.0 / bpm;
 
-        // Phase fit: where does the beat grid start? Sub-hop accuracy keeps firstDownbeatMs tight
-        // even though the onset envelope itself is quantized to 512-sample hops.
-        var phase = FitBeatPhase(onset, intervalFrames);
-        var firstBeatMs = phase * 1000.0 * HopSize / sampleRate;
-        var beatCount = (int)Math.Floor((durationMs - firstBeatMs) / beatIntervalMs) + 1;
-        if (beatCount < 1)
+        // 拍点跟踪是主输出：DP 网格给出真实拍点，并用其自身中位间隔测漂移。
+        // ACF 与 DP 的中位速度一致（±8%）时用 DP 的值回写 BPM——DP 的整曲积分误差更小。
+        var beats = TrackBeats(tempoOnset, intervalFrames, fps, durationMs, out var tempoStability);
+
+        double firstBeatMs;
+        double firstDownbeatMs;
+        int meter;
+        int meterPhase;
+        double meterConfidence;
+        double[] downbeats;
+        int barCount;
+        double[] beatTimesMs;
+        var dpSlopeBpm = 0.0;
+        var dpMedian = 0.0;
+        if (beats.Count >= 10)
         {
-            beatCount = 1;
+            // DP 网格的最小二乘斜率比中位间隔更细：±0.5 帧的量化误差被整曲几十拍平均掉。
+            dpSlopeBpm = BeatSlopeBpm(beats);
+            if (dpSlopeBpm >= MinBpm && dpSlopeBpm <= MaxBpm && Math.Abs(dpSlopeBpm - bpm) <= bpm * 0.03)
+            {
+                bpm = dpSlopeBpm;
+            }
+            else
+            {
+                dpMedian = MedianInterval(beats);
+                if (dpMedian > 0)
+                {
+                    var medianBpm = 60000.0 / dpMedian;
+                    if (medianBpm >= MinBpm && medianBpm <= MaxBpm && Math.Abs(medianBpm - bpm) <= bpm * 0.06 && tempoStability >= 0.6)
+                    {
+                        bpm = medianBpm;
+                    }
+                }
+            }
+
+            beatIntervalMs = 60000.0 / bpm;
+            intervalFrames = 60.0 * fps / bpm;
+            firstBeatMs = beats[0];
+            (meter, meterPhase, meterConfidence) = DetectMeter(beats, lowEnergy, midEnergy, frameCount, fps);
+            downbeats = BuildDownbeatsFromBeats(beats, meter, meterPhase, out barCount);
+            firstDownbeatMs = downbeats.Length > 0 ? downbeats[0] : firstBeatMs;
+            beatTimesMs = beats.ToArray();
+            if (beatTimesMs.Length > 4000)
+            {
+                beatTimesMs = beatTimesMs[..4000];
+            }
+        }
+        else
+        {
+            // 兜底：DP 拍点不足（极短/极静）时退回「首拍 + 常数间隔」。
+            var phase = FitBeatPhase(onset, intervalFrames);
+            firstBeatMs = phase * 1000.0 * HopSize / sampleRate;
+            (meter, meterPhase, meterConfidence) = DetectMeterConstant(
+                lowEnergy,
+                frameCount,
+                firstBeatMs,
+                beatIntervalMs,
+                (int)Math.Max(1, (durationMs - firstBeatMs) / beatIntervalMs + 1),
+                fps);
+            firstDownbeatMs = firstBeatMs + meterPhase * beatIntervalMs;
+            if (firstDownbeatMs > durationMs + beatIntervalMs)
+            {
+                firstDownbeatMs = firstBeatMs;
+                meterPhase = 0;
+            }
+
+            downbeats = BuildDownbeats(firstDownbeatMs, beatIntervalMs, meter, durationMs, out barCount);
+            beatTimesMs = BuildConstantBeatTimes(firstBeatMs, beatIntervalMs, durationMs);
+            tempoStability = 0;
         }
 
-        var (meter, meterPhase, meterConfidence) = DetectMeter(
-            lowEnergy, frameCount, firstBeatMs, beatIntervalMs, beatCount, fps);
-        var firstDownbeatMs = firstBeatMs + meterPhase * beatIntervalMs;
-        if (firstDownbeatMs > durationMs + beatIntervalMs)
-        {
-            firstDownbeatMs = firstBeatMs;
-            meterPhase = 0;
-        }
-
-        var downbeats = BuildDownbeats(firstDownbeatMs, beatIntervalMs, meter, durationMs, out var barCount);
         var phraseStarts = DetectPhrases(
             downbeats, lowEnergy, midEnergy, highEnergy, chromaFrames, frameCount, fps, out var barFeatures, out var barChroma, durationMs);
         var sections = BuildSections(
             phraseStarts, downbeats, barFeatures, barChroma, durationMs,
             out var climaxStartMs, out var climaxEndMs, out var cueInMs, out var cueOutMs);
 
-        // Beat tracking pass: used for drift diagnostics only (the output grid is constant tempo).
-        var trackedBeats = TrackBeats(onset, intervalFrames);
-        if (trackedBeats.Count >= 8)
-        {
-            var median = MedianInterval(trackedBeats);
-            if (median > 0)
-            {
-                var deviation = IntervalDeviation(trackedBeats, median);
-                if (deviation > 0.04)
-                {
-                    warnings.Add("tempo-drift");
-                }
-            }
-        }
-
         if (bpmConfidence < 0.35)
         {
             warnings.Add("low-confidence");
+        }
+
+        if (beats.Count >= 16 && tempoStability < 0.6)
+        {
+            warnings.Add("tempo-drift");
         }
 
         payload.Bpm = Math.Round(bpm, 2);
@@ -148,6 +205,10 @@ internal static class BeatAnalyzer
         payload.BeatIntervalMs = Math.Round(beatIntervalMs, 2);
         payload.FirstBeatMs = Math.Round(firstBeatMs, 1);
         payload.FirstDownbeatMs = Math.Round(firstDownbeatMs, 1);
+        payload.BeatsMs = beatTimesMs;
+        payload.TempoStability = Math.Round(tempoStability, 3);
+        payload.TempoCurveMs = tempoCurveMs;
+        payload.TempoCurveBpm = tempoCurveBpm;
         payload.Downbeats = downbeats;
         payload.PhraseStartsMs = phraseStarts;
         payload.BarCount = barCount;
@@ -308,11 +369,19 @@ internal static class BeatAnalyzer
         return window;
     }
 
+    /// <summary>
+    /// p0-12 onset 前端：谱幅值先做频率向 max 滤波（SuperFlux，抑制颤音/滑音谐波峰在时间差分里
+    /// 产生的假通量），再取对数压缩后做时间差分；同时按频段（&lt;160Hz / &lt;2000Hz / 其余）累加
+    /// 分频段通量，供 tempo 判据与倍速消歧使用。频段能量仍用原始幅值，避免 max 滤波抹平滑低频包络。
+    /// </summary>
     private static void ComputeOnsets(
         float[] samples,
         int frameCount,
         int sampleRate,
         float[] flux,
+        float[] lowFlux,
+        float[] midFlux,
+        float[] highFlux,
         float[] lowEnergy,
         float[] midEnergy,
         float[] highEnergy,
@@ -321,9 +390,12 @@ internal static class BeatAnalyzer
         chromaFrames = new float[frameCount * ChromaBins];
         var real = new float[WindowSize];
         var imag = new float[WindowSize];
-        var previous = new float[WindowSize / 2 + 1];
+        var magnitudes = new float[WindowSize / 2 + 1];
+        var previousPeak = new float[WindowSize / 2 + 1];
         var binHz = sampleRate / (double)WindowSize;
         var pitchBins = BuildChromaBins(binHz);
+        // 22.05kHz 下 bin 间距约 21.5Hz，±1 bin ≈ ±21Hz；高采样率时按比例放宽。
+        var maxRadius = sampleRate <= 24000 ? 1 : 2;
         for (var frame = 0; frame < frameCount; frame++)
         {
             var offset = frame * HopSize;
@@ -335,24 +407,56 @@ internal static class BeatAnalyzer
 
             Fft(real, imag);
 
+            for (var bin = 1; bin <= WindowSize / 2; bin++)
+            {
+                magnitudes[bin] = (float)(Math.Sqrt(real[bin] * real[bin] + imag[bin] * imag[bin]) / WindowSize);
+            }
+
             double fluxSum = 0;
+            double lowFluxSum = 0;
+            double midFluxSum = 0;
+            double highFluxSum = 0;
             double low = 0;
             double mid = 0;
             double high = 0;
             var chromaOffset = frame * ChromaBins;
             for (var bin = 1; bin <= WindowSize / 2; bin++)
             {
-                var magnitude = Math.Sqrt(real[bin] * real[bin] + imag[bin] * imag[bin]) / WindowSize;
-                // Log compression keeps quiet percussive attacks visible next to loud bass.
-                var compressed = Math.Log(1.0 + 20.0 * magnitude);
-                var diff = compressed - previous[bin];
-                if (diff > 0)
+                var peak = 0f;
+                var fromBin = Math.Max(1, bin - maxRadius);
+                var toBin = Math.Min(WindowSize / 2, bin + maxRadius);
+                for (var other = fromBin; other <= toBin; other++)
                 {
-                    fluxSum += diff;
+                    if (magnitudes[other] > peak)
+                    {
+                        peak = magnitudes[other];
+                    }
                 }
 
-                previous[bin] = (float)compressed;
+                // Log compression keeps quiet percussive attacks visible next to loud bass.
+                var compressed = Math.Log(1.0 + 20.0 * peak);
+                var diff = compressed - previousPeak[bin];
+                if (diff > 0)
+                {
+                    var frequencyForFlux = bin * binHz;
+                    fluxSum += diff;
+                    if (frequencyForFlux < 160)
+                    {
+                        lowFluxSum += diff;
+                    }
+                    else if (frequencyForFlux < 2000)
+                    {
+                        midFluxSum += diff;
+                    }
+                    else if (frequencyForFlux < 8000)
+                    {
+                        highFluxSum += diff;
+                    }
+                }
 
+                previousPeak[bin] = (float)compressed;
+
+                var magnitude = magnitudes[bin];
                 var frequency = bin * binHz;
                 if (frequency < 160)
                 {
@@ -370,11 +474,15 @@ internal static class BeatAnalyzer
                 var pitch = pitchBins[bin];
                 if (pitch >= 0)
                 {
-                    chromaFrames[chromaOffset + pitch] += (float)magnitude;
+                    chromaFrames[chromaOffset + pitch] += magnitude;
                 }
             }
 
-            flux[frame] = (float)(fluxSum / (WindowSize / 2.0));
+            var norm = WindowSize / 2.0;
+            flux[frame] = (float)(fluxSum / norm);
+            lowFlux[frame] = (float)(lowFluxSum / norm);
+            midFlux[frame] = (float)(midFluxSum / norm);
+            highFlux[frame] = (float)(highFluxSum / norm);
             lowEnergy[frame] = (float)low;
             midEnergy[frame] = (float)mid;
             highEnergy[frame] = (float)high;
@@ -450,63 +558,394 @@ internal static class BeatAnalyzer
         return result;
     }
 
-    private static (double Bpm, double Confidence) EstimateTempo(float[] onset, double fps, out double driftScore)
+    /// <summary>把多路 onset 包络按权重混成一路（用于 tempo 判据的分频段加权）。</summary>
+    private static float[] MixOnsets(params (float[] Values, double Weight)[] parts)
     {
-        driftScore = 0;
-        var count = onset.Length;
-        var lagMin = Math.Max(2, (int)Math.Floor(60.0 * fps / MaxBpm));
-        var lagMax = (int)Math.Ceiling(60.0 * fps / MinBpm);
-        var ac = new double[lagMax + 2];
-        for (var lag = 1; lag <= lagMax + 1; lag++)
+        if (parts.Length == 0)
         {
-            if (lag >= count)
-            {
-                break;
-            }
-
-            var sum = 0.0;
-            var terms = count - lag;
-            for (var i = 0; i < terms; i++)
-            {
-                sum += onset[i] * onset[i + lag];
-            }
-
-            ac[lag] = sum / terms;
+            return Array.Empty<float>();
         }
 
-        var scores = new double[lagMax + 2];
-        var bestLag = -1;
-        var bestScore = 0.0;
-        var scoreSum = 0.0;
-        var scoreCount = 0;
+        var count = parts[0].Values.Length;
+        var totalWeight = 0.0;
+        foreach (var part in parts)
+        {
+            totalWeight += part.Weight;
+        }
+
+        var result = new float[count];
+        if (totalWeight <= 0)
+        {
+            return result;
+        }
+
+        for (var i = 0; i < count; i++)
+        {
+            var sum = 0.0;
+            foreach (var part in parts)
+            {
+                sum += part.Values[i] * part.Weight;
+            }
+
+            result[i] = (float)(sum / totalWeight);
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// p0-12 tempo 估计：滑窗自相关 + 谐波梳状投票。
+    /// - 8 秒窗 / 1 秒跳；逐窗按自身峰值归一后累加，静音前奏/尾奏不会稀释整曲平均；
+    /// - 倍速消歧改用「隔拍能量差」与「半拍位置底鼓/军鼓能量」两条频段证据；
+    /// - 置信度 = 峰值 margin（0.55）+ 窗口一致度（0.45）。
+    /// </summary>
+    private static (double Bpm, double Confidence, double[] CurveMs, double[] CurveBpm) EstimateTempo(
+        float[] tempoOnset, float[] lowOnset, double fps)
+    {
+        var count = tempoOnset.Length;
+        var lagMin = Math.Max(2, (int)Math.Floor(60.0 * fps / MaxBpm));
+        var lagMax = Math.Min(count - 2, (int)Math.Ceiling(60.0 * fps / MinBpm));
+        if (lagMax <= lagMin + 2)
+        {
+            return (0, 0, Array.Empty<double>(), Array.Empty<double>());
+        }
+
+        var windowFrames = Math.Min(count, Math.Max(lagMax * 3, (int)Math.Round(8.0 * fps)));
+        var hopFrames = Math.Max(1, Math.Min(windowFrames / 4, (int)Math.Round(1.0 * fps)));
+        var aggregate = new double[lagMax + 2];
+        // 原始 ACF 的聚合副本：抛物线细化在它上面做，避免梳状谱的多延迟叠加把峰顶抹平。
+        var acfAggregate = new double[lagMax + 2];
+        var votes = new List<double>(64);
+        var windowCount = 0;
+        var curveMs = new List<double>(64);
+        var curveBpm = new List<double>(64);
+        var gridBpms = new List<double>(128);
+        for (var value = MinBpm; value <= MaxBpm + 0.001; value += 2.0)
+        {
+            gridBpms.Add(value);
+        }
+
+        var gridCos = new double[gridBpms.Count];
+        var gridSin = new double[gridBpms.Count];
+        for (var index = 0; index < gridBpms.Count; index++)
+        {
+            var omega = 2.0 * Math.PI * gridBpms[index] / 60.0 / fps;
+            gridCos[index] = Math.Cos(omega);
+            gridSin[index] = Math.Sin(omega);
+        }
+
+        for (var start = 0; start + windowFrames <= count; start += hopFrames)
+        {
+            var energy = 0.0;
+            for (var i = start; i < start + windowFrames; i++)
+            {
+                energy += tempoOnset[i];
+            }
+
+            if (energy <= windowFrames * 1e-3)
+            {
+                continue;
+            }
+
+            var mean = energy / windowFrames;
+            var bestTempoScore = 0.0;
+            var bestTempoIndex = -1;
+            var tempoScores = new double[gridBpms.Count];
+            for (var index = 0; index < gridBpms.Count; index++)
+            {
+                var re = 0.0;
+                var im = 0.0;
+                var cos = 1.0;
+                var sin = 0.0;
+                var cosStep = gridCos[index];
+                var sinStep = gridSin[index];
+                for (var i = start; i < start + windowFrames; i++)
+                {
+                    var value = tempoOnset[i] - mean;
+                    re += value * cos;
+                    im += value * sin;
+                    var nextCos = (cos * cosStep) - (sin * sinStep);
+                    sin = (sin * cosStep) + (cos * sinStep);
+                    cos = nextCos;
+                }
+
+                var tempoScore = Math.Sqrt((re * re) + (im * im)) / windowFrames * PreferenceWeight(gridBpms[index]);
+                tempoScores[index] = tempoScore;
+                if (tempoScore > bestTempoScore)
+                {
+                    bestTempoScore = tempoScore;
+                    bestTempoIndex = index;
+                }
+            }
+
+            if (bestTempoIndex >= 0 && bestTempoScore > 1e-9)
+            {
+                var bpmAtPeak = gridBpms[bestTempoIndex];
+                if (bestTempoIndex > 0 && bestTempoIndex < gridBpms.Count - 1)
+                {
+                    var left = tempoScores[bestTempoIndex - 1];
+                    var center = tempoScores[bestTempoIndex];
+                    var right = tempoScores[bestTempoIndex + 1];
+                    var denominator = left - (2 * center) + right;
+                    if (Math.Abs(denominator) > 1e-12)
+                    {
+                        var offset = 0.5 * (left - right) / denominator;
+                        if (Math.Abs(offset) <= 1)
+                        {
+                            bpmAtPeak += offset * 2.0;
+                        }
+                    }
+                }
+
+                curveMs.Add((start + (windowFrames / 2.0)) / fps * 1000.0);
+                curveBpm.Add(bpmAtPeak);
+            }
+            var local = new double[lagMax + 2];
+            for (var lag = 1; lag <= lagMax; lag++)
+            {
+                var sum = 0.0;
+                var terms = windowFrames - lag;
+                for (var i = start; i + lag < start + windowFrames; i++)
+                {
+                    sum += (tempoOnset[i] - mean) * (tempoOnset[i + lag] - mean);
+                }
+
+                local[lag] = terms > 0 ? sum / terms : 0;
+            }
+
+            var localMax = 0.0;
+            var bestLag = lagMin;
+            var raw = new double[lagMax + 2];
+            Array.Copy(local, raw, lagMax + 1);
+            for (var lag = lagMin; lag <= lagMax; lag++)
+            {
+                var score = CombScore(local, lag) * PreferenceWeight(60.0 * fps / lag);
+                local[lag] = score;
+                if (score > localMax)
+                {
+                    localMax = score;
+                }
+
+                if (score > local[bestLag])
+                {
+                    bestLag = lag;
+                }
+            }
+
+            if (localMax <= 1e-9)
+            {
+                continue;
+            }
+
+            for (var lag = lagMin; lag <= lagMax; lag++)
+            {
+                aggregate[lag] += local[lag] / localMax;
+                acfAggregate[lag] += raw[lag] / localMax;
+            }
+
+            votes.Add(60.0 * fps / bestLag);
+            windowCount++;
+        }
+
+        if (windowCount == 0)
+        {
+            return (0, 0, Array.Empty<double>(), Array.Empty<double>());
+        }
+
+        var best = lagMin;
         for (var lag = lagMin; lag <= lagMax; lag++)
         {
-            var score = CombScore(ac, lag) * PreferenceWeight(60.0 * fps / lag);
-            scores[lag] = score;
-            scoreSum += score;
-            scoreCount++;
-            if (score > bestScore)
+            if (aggregate[lag] > aggregate[best])
             {
-                bestScore = score;
-                bestLag = lag;
+                best = lag;
             }
         }
 
-        if (bestLag < 0)
+        var second = -1;
+        var separation = Math.Max(2, (int)Math.Round(best * 0.06));
+        for (var lag = lagMin; lag <= lagMax; lag++)
         {
-            return (0, 0);
+            if (Math.Abs(lag - best) <= separation)
+            {
+                continue;
+            }
+
+            if (second < 0 || aggregate[lag] > aggregate[second])
+            {
+                second = lag;
+            }
         }
 
-        var refinedLag = ParabolicPeak(ac, bestLag);
+        var margin = second > 0 && aggregate[best] > 1e-9
+            ? Math.Clamp((aggregate[best] - aggregate[second]) / aggregate[best], 0, 1)
+            : 0.0;
+
+        // 用原始 ACF 在梳状峰附近做亚帧细化，避免 43Hz 帧率下 BPM 被量化成整数延迟（如 143.5 = lag18）。
+        var refineLag = best;
+        var fromLag = Math.Max(lagMin, best - 1);
+        var toLag = Math.Min(lagMax, best + 1);
+        for (var lag = fromLag; lag <= toLag; lag++)
+        {
+            if (acfAggregate[lag] > acfAggregate[refineLag])
+            {
+                refineLag = lag;
+            }
+        }
+
+        var refinedLag = ParabolicPeak(acfAggregate, refineLag);
         if (refinedLag <= 0)
         {
-            refinedLag = bestLag;
+            refinedLag = best;
         }
 
         var bpm = 60.0 * fps / refinedLag;
-        // Fold half/double tempo into the preferred range using the comb evidence.
-        var bestFolded = bpm;
-        var bestFoldedScore = CombScoreAtBpm(ac, fps, bpm) * PreferenceWeight(bpm);
+        bpm = FoldOctaves(bpm, aggregate, fps);
+        bpm = CorrectOctaveWithBandEvidence(bpm, tempoOnset, lowOnset, fps);
+        bpm = Math.Clamp(bpm, MinBpm, MaxBpm);
+        // 置信度低说明「哪个梳状峰才是拍」本身有歧义：这时再用 onset 网格命中率
+        // 在倍速 / 三连音候选里挑解释力明显更强的那个（1.06 的余量防止来回抖）。
+        var initialAgreement = AgreementRatio(votes, bpm);
+        if (0.55 * margin + 0.45 * initialAgreement < 0.50)
+        {
+            bpm = RefineWithGridEvidence(bpm, tempoOnset, fps);
+        }
+
+        var agreementRatio = AgreementRatio(votes, bpm);
+        var confidence = Math.Clamp(0.55 * margin + 0.45 * agreementRatio, 0, 1);
+
+        // 速度曲线做 5 点中位数平滑，抑制个别窗口的倍速跳动。
+        var smoothedBpm = new double[curveBpm.Count];
+        for (var index = 0; index < curveBpm.Count; index++)
+        {
+            var from = Math.Max(0, index - 2);
+            var to = Math.Min(curveBpm.Count - 1, index + 2);
+            var slice = new double[to - from + 1];
+            for (var neighbour = from; neighbour <= to; neighbour++)
+            {
+                slice[neighbour - from] = curveBpm[neighbour];
+            }
+
+            Array.Sort(slice);
+            smoothedBpm[index] = slice[slice.Length / 2];
+        }
+
+        // 曲线里仍可能整段跳到 2× / 0.5×（典型：一半窗 114、一半窗 228）。
+        // 以整曲 BPM 为锚把每个点折叠到最近的倍速档位，避免过渡小节长被曲线里的错拍带偏。
+        if (bpm >= 40 && bpm <= 240)
+        {
+            for (var index = 0; index < smoothedBpm.Length; index++)
+            {
+                var value = smoothedBpm[index];
+                if (!(value >= 8) || !double.IsFinite(value))
+                {
+                    continue;
+                }
+
+                while (value > bpm * 1.5)
+                {
+                    value /= 2;
+                }
+
+                while (value < bpm / 1.5)
+                {
+                    value *= 2;
+                }
+
+                smoothedBpm[index] = Math.Round(value, 1);
+            }
+        }
+
+        return (bpm, confidence, curveMs.ToArray(), smoothedBpm);
+    }
+
+    /// <summary>窗口投票与最终 BPM 的一致率（同速 ±3%、倍速 ±6%）。</summary>
+    private static double AgreementRatio(List<double> votes, double bpm)
+    {
+        if (votes.Count == 0 || bpm <= 0)
+        {
+            return 0;
+        }
+
+        var agreement = 0;
+        foreach (var vote in votes)
+        {
+            var ratio = vote / bpm;
+            if (Math.Abs(ratio - 1.0) <= 0.03 || Math.Abs(ratio - 2.0) <= 0.06 || Math.Abs(ratio - 0.5) <= 0.03)
+            {
+                agreement++;
+            }
+        }
+
+        return agreement / (double)votes.Count;
+    }
+
+    /// <summary>候选速度在 onset 上的网格命中率（每拍平均 onset 强度，取 4 个相位里最好的）。</summary>
+    private static double GridScore(float[] onset, double fps, double bpm)
+    {
+        if (bpm <= 0)
+        {
+            return 0;
+        }
+
+        var interval = 60.0 * fps / bpm;
+        if (interval < 2)
+        {
+            return 0;
+        }
+
+        var best = 0.0;
+        for (var step = 0; step < 4; step++)
+        {
+            var phase = interval * step / 4.0;
+            var sum = 0.0;
+            var count = 0;
+            for (var position = phase; position < onset.Length - 1; position += interval)
+            {
+                sum += SampleOnset(onset, position);
+                count++;
+            }
+
+            if (count >= 8)
+            {
+                var score = sum / count;
+                if (score > best)
+                {
+                    best = score;
+                }
+            }
+        }
+
+        return best;
+    }
+
+    /// <summary>低置信时在倍速 / 三连音候选里挑网格解释力明显更强的速度。</summary>
+    private static double RefineWithGridEvidence(double bpm, float[] onset, double fps)
+    {
+        var best = bpm;
+        var bestScore = GridScore(onset, fps, bpm) * PreferenceWeight(bpm);
+        foreach (var candidate in new[] { bpm * 2.0, bpm * 0.5, bpm * 2.0 / 3.0, bpm * 1.5 })
+        {
+            if (candidate < MinBpm || candidate > MaxBpm)
+            {
+                continue;
+            }
+
+            var score = GridScore(onset, fps, candidate) * PreferenceWeight(candidate);
+            if (score > bestScore * 1.06)
+            {
+                best = candidate;
+                bestScore = score;
+            }
+        }
+
+        return best;
+    }
+
+    /// <summary>按聚合梳状谱把 b/2、b、2b 里解释能量更高的候选挑出来（保留 5% 偏好余量）。</summary>
+    private static double FoldOctaves(double bpm, double[] aggregate, double fps)
+    {
+        var best = bpm;
+        var bestScore = ScoreAtBpm(aggregate, fps, bpm) * PreferenceWeight(bpm);
         foreach (var candidate in new[] { bpm * 0.5, bpm * 2.0 })
         {
             if (candidate < MinBpm || candidate > MaxBpm)
@@ -514,40 +953,151 @@ internal static class BeatAnalyzer
                 continue;
             }
 
-            var score = CombScoreAtBpm(ac, fps, candidate) * PreferenceWeight(candidate);
-            if (score > bestFoldedScore * 1.05)
+            var score = ScoreAtBpm(aggregate, fps, candidate) * PreferenceWeight(candidate);
+            if (score > bestScore * 1.05)
             {
-                bestFolded = candidate;
-                bestFoldedScore = score;
+                best = candidate;
+                bestScore = score;
             }
         }
 
-        bpm = bestFolded;
-        // Zilux2 修正（2026-10-25）：梳状谱在倍速处天然并列（bpm 与 2·bpm 的三次泛音和几乎相等），
-        // 快歌因此常被判成一半速度（节拍器 click 只剩 80 BPM 而实际是 160+）。折叠后补一次
-        // 「半拍位置是否也有明显 onset」校验：若 beatLag/2 处的自相关仍有主拍足够比例强度，说明
-        // 网格漏掉了隔拍的能量，把速度翻倍回真实拍。100~120 BPM 的倍速（200~240 BPM）用更严格的
-        // 比例判定，避免把真正 100~120 BPM 的歌误翻倍。
-        if (bpm > 0 && bpm < 120.0 && bpm * 2.0 <= MaxBpm)
+        return best;
+    }
+
+    private static double ScoreAtBpm(double[] aggregate, double fps, double bpm)
+    {
+        var lag = 60.0 * fps / bpm;
+        if (lag >= aggregate.Length - 1)
         {
-            var beatLag2 = 60.0 * fps / bpm;
-            var acBeat2 = Interpolate(ac, beatLag2);
-            var acHalf2 = Interpolate(ac, beatLag2 / 2.0);
-            var threshold = bpm < 100.0 ? 0.55 : 0.78;
-            if (acBeat2 > 1e-9 && acHalf2 >= acBeat2 * threshold)
+            return aggregate[^1];
+        }
+
+        return Interpolate(aggregate, lag);
+    }
+
+    /// <summary>
+    /// 倍速消歧（p0-12）：
+    /// 1) 高速候选（&gt;195）检查隔拍能量——EDM 的八分踩镲会让梳状谱锁到 2×，若奇偶拍能量差
+    ///    很大，说明真实拍是它的一半；
+    /// 2) 低速候选（&lt;125）检查半拍位置是否还有底鼓/军鼓——有则说明网格漏掉了隔拍，速度应加倍。
+    /// </summary>
+    private static double CorrectOctaveWithBandEvidence(double bpm, float[] tempoOnset, float[] lowOnset, double fps)
+    {
+        if (bpm > 195.0 && bpm * 0.5 >= MinBpm)
+        {
+            if (BeatAlternation(tempoOnset, bpm, fps) < 0.55)
+            {
+                bpm *= 0.5;
+            }
+        }
+
+        if (bpm < 125.0 && bpm * 2.0 <= MaxBpm)
+        {
+            var midpoint = MidpointRatio(tempoOnset, bpm, fps);
+            var lowMidpoint = MidpointRatio(lowOnset, bpm, fps);
+            if (midpoint >= 0.78 && lowMidpoint >= 0.55)
             {
                 bpm *= 2.0;
             }
         }
-        var mean = scoreCount > 0 ? scoreSum / scoreCount : 0;
-        var confidence = bestScore <= 1e-12
-            ? 0
-            : Math.Clamp((bestScore - mean) / bestScore, 0, 1);
-        // The comb prefers the true beat period, but the prior can hide weak evidence; keep the
-        // synthetic click tracks above the low-confidence threshold while staying honest on noise.
-        confidence = Math.Clamp(confidence * 1.15, 0, 1);
-        driftScore = 0;
-        return (bpm, confidence);
+
+        return bpm;
+    }
+
+    /// <summary>奇偶拍的能量比（1 = 两拍同等强；越小说明一强一弱，候选速度其实是真实拍的两倍）。</summary>
+    private static double BeatAlternation(float[] onset, double bpm, double fps)
+    {
+        var period = 60.0 * fps / bpm;
+        var phase = BestGridPhase(onset, period);
+        var even = 0.0;
+        var odd = 0.0;
+        var evenCount = 0;
+        var oddCount = 0;
+        var index = 0;
+        for (var position = phase; position < onset.Length - 1; position += period)
+        {
+            var value = SampleOnset(onset, position);
+            if ((index++ & 1) == 0)
+            {
+                even += value;
+                evenCount++;
+            }
+            else
+            {
+                odd += value;
+                oddCount++;
+            }
+        }
+
+        if (evenCount == 0 || oddCount == 0)
+        {
+            return 1.0;
+        }
+
+        var maximum = Math.Max(even / evenCount, odd / oddCount);
+        var minimum = Math.Min(even / evenCount, odd / oddCount);
+        return maximum <= 1e-9 ? 1.0 : minimum / maximum;
+    }
+
+    /// <summary>半拍位置的 onset 能量 / 拍点位置能量；接近 1 说明这个候选漏掉了隔拍。</summary>
+    private static double MidpointRatio(float[] onset, double bpm, double fps)
+    {
+        var period = 60.0 * fps / bpm;
+        var phase = BestGridPhase(onset, period);
+        var onBeat = 0.0;
+        var onCount = 0;
+        var midpoint = 0.0;
+        var midpointCount = 0;
+        for (var position = phase; position < onset.Length - 1; position += period)
+        {
+            onBeat += SampleOnset(onset, position);
+            onCount++;
+        }
+
+        for (var position = phase + period / 2.0; position < onset.Length - 1; position += period)
+        {
+            midpoint += SampleOnset(onset, position);
+            midpointCount++;
+        }
+
+        if (onCount == 0 || midpointCount == 0 || onBeat <= 1e-9)
+        {
+            return 0;
+        }
+
+        return (midpoint / midpointCount) / (onBeat / onCount);
+    }
+
+    /// <summary>在 [0, period) 内找让拍点位置平均 onset 最大的相位。</summary>
+    private static double BestGridPhase(float[] onset, double period)
+    {
+        var bestPhase = 0.0;
+        var bestScore = -1.0;
+        var step = Math.Max(0.25, period / 24.0);
+        for (var phase = 0.0; phase < period; phase += step)
+        {
+            var sum = 0.0;
+            var count = 0;
+            for (var position = phase; position < onset.Length - 1; position += period)
+            {
+                sum += SampleOnset(onset, position);
+                count++;
+            }
+
+            if (count == 0)
+            {
+                continue;
+            }
+
+            var score = sum / count;
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestPhase = phase;
+            }
+        }
+
+        return bestPhase;
     }
 
     private static double CombScore(double[] ac, int lag)
@@ -714,7 +1264,38 @@ internal static class BeatAnalyzer
         return fineBest;
     }
 
+    /// <summary>用 DP 拍点取低频/中频重音：中频参与拍号判断，低频决定小节相位。</summary>
     private static (int Meter, int Phase, double Confidence) DetectMeter(
+        IReadOnlyList<double> beats,
+        float[] lowEnergy,
+        float[] midEnergy,
+        int frameCount,
+        double fps)
+    {
+        if (beats.Count < 10)
+        {
+            return (4, 0, 0.2);
+        }
+
+        var lowAccents = new double[beats.Count];
+        var combinedAccents = new double[beats.Count];
+        for (var beat = 0; beat < beats.Count; beat++)
+        {
+            var frame = (int)Math.Round(beats[beat] / 1000.0 * fps);
+            var low = AverageAt(lowEnergy, frameCount, frame, 1);
+            var mid = AverageAt(midEnergy, frameCount, frame, 1);
+            lowAccents[beat] = low;
+            // 拍号看「底鼓 + 军鼓」的整体重音，否则只有底鼓的段落会退化成随机拍号。
+            combinedAccents[beat] = low + 0.5 * mid;
+        }
+
+        var (meter, _, confidence) = DetectMeterFromAccents(combinedAccents);
+        var phase = PickDownbeatPhase(lowAccents, meter);
+        return (meter, phase, confidence);
+    }
+
+    /// <summary>常数间隔网格（DP 拍点不足时的兜底），行为与 p0-11 一致。</summary>
+    private static (int Meter, int Phase, double Confidence) DetectMeterConstant(
         float[] lowEnergy,
         int frameCount,
         double firstBeatMs,
@@ -734,62 +1315,127 @@ internal static class BeatAnalyzer
             accents[beat] = AverageAt(lowEnergy, frameCount, frame, 1);
         }
 
-        var overall = accents.Average();
-        var bestMeter = 4;
-        var bestPhase = 0;
-        var bestContrast = double.NegativeInfinity;
-        foreach (var meter in new[] { 4, 3 })
-        {
-            if (beatCount < meter * 2 + 2)
-            {
-                continue;
-            }
+        return DetectMeterFromAccents(accents);
+    }
 
-            for (var phase = 0; phase < meter; phase++)
-            {
-                var downSum = 0.0;
-                var downCount = 0;
-                var otherSum = 0.0;
-                var otherCount = 0;
-                for (var beat = phase; beat < beatCount; beat += meter)
-                {
-                    downSum += accents[beat];
-                    downCount++;
-                }
-
-                for (var beat = 0; beat < beatCount; beat++)
-                {
-                    if ((beat - phase) % meter == 0)
-                    {
-                        continue;
-                    }
-
-                    otherSum += accents[beat];
-                    otherCount++;
-                }
-
-                if (downCount == 0 || otherCount == 0)
-                {
-                    continue;
-                }
-
-                var contrast = (downSum / downCount - otherSum / otherCount) / (overall + 1e-9);
-                if (contrast > bestContrast)
-                {
-                    bestContrast = contrast;
-                    bestMeter = meter;
-                    bestPhase = phase;
-                }
-            }
-        }
-
-        if (double.IsNegativeInfinity(bestContrast))
+    /// <summary>
+    /// 从每拍重音里挑 4/3 拍：4/4 是绝对主流，3 拍只有在解释力明显更好时才采用；
+    /// 相位另由 <see cref="PickDownbeatPhase"/> 用低频（底鼓）决定。
+    /// </summary>
+    private static (int Meter, int Phase, double Confidence) DetectMeterFromAccents(double[] accents)
+    {
+        var (phase4, contrast4) = ContrastForMeter(accents, 4);
+        var (phase3, contrast3) = ContrastForMeter(accents, 3);
+        if (double.IsNegativeInfinity(contrast4) && double.IsNegativeInfinity(contrast3))
         {
             return (4, 0, 0.2);
         }
 
-        var confidence = Math.Clamp(bestContrast, 0, 1);
-        return (bestMeter, bestPhase, confidence);
+        if (contrast3 > contrast4 + 0.12)
+        {
+            return (3, phase3, Math.Clamp(contrast3, 0, 1));
+        }
+
+        return (4, phase4, Math.Clamp(contrast4, 0, 1));
+    }
+
+    /// <summary>某个拍号下「强拍重音均值 - 其余拍重音均值」的归一化对比度，并给出相位。</summary>
+    private static (int Phase, double Contrast) ContrastForMeter(double[] accents, int meter)
+    {
+        var beatCount = accents.Length;
+        if (beatCount < meter * 2 + 2)
+        {
+            return (0, double.NegativeInfinity);
+        }
+
+        var overall = accents.Average();
+        var bestPhase = 0;
+        var bestContrast = double.NegativeInfinity;
+        for (var phase = 0; phase < meter; phase++)
+        {
+            var downSum = 0.0;
+            var downCount = 0;
+            var otherSum = 0.0;
+            var otherCount = 0;
+            for (var beat = 0; beat < beatCount; beat++)
+            {
+                if ((beat - phase) % meter == 0)
+                {
+                    downSum += accents[beat];
+                    downCount++;
+                }
+                else
+                {
+                    otherSum += accents[beat];
+                    otherCount++;
+                }
+            }
+
+            if (downCount == 0 || otherCount == 0)
+            {
+                continue;
+            }
+
+            var contrast = (downSum / downCount - otherSum / otherCount) / (overall + 1e-9);
+            if (contrast > bestContrast)
+            {
+                bestContrast = contrast;
+                bestPhase = phase;
+            }
+        }
+
+        return (bestPhase, bestContrast);
+    }
+
+    /// <summary>底鼓（低频重音）最强的那一拍是小节第一拍；重音几乎持平（如四踩）时视为第 0 拍。</summary>
+    private static int PickDownbeatPhase(double[] lowAccents, int meter)
+    {
+        if (meter <= 0 || lowAccents.Length < meter * 2)
+        {
+            return 0;
+        }
+
+        var mean = lowAccents.Average();
+        var spread = lowAccents.Max() - lowAccents.Min();
+        // 四踩底鼓 / 纯 click 这类没有低频重音差的素材，相位不可辨，默认落在第 0 拍。
+        if (mean <= 1e-6 || spread <= 0.08 * mean)
+        {
+            return 0;
+        }
+
+        var bestPhase = 0;
+        var bestScore = double.NegativeInfinity;
+        for (var phase = 0; phase < meter; phase++)
+        {
+            var sum = 0.0;
+            var count = 0;
+            for (var beat = phase; beat < lowAccents.Length; beat += meter)
+            {
+                sum += lowAccents[beat];
+                count++;
+            }
+
+            if (count == 0)
+            {
+                continue;
+            }
+
+            var score = sum / count;
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestPhase = phase;
+            }
+        }
+
+        // 强拍重音至少要高出平均 12% 才有资格当小节第一拍：四踩底鼓、clap 漏低频这类
+        // 轻微差异不该把相位推到第 1/2 拍，否则小节线整体错位。
+        if (!double.IsNegativeInfinity(bestScore) && bestScore < mean * 1.12)
+        {
+            return 0;
+        }
+
+        return bestPhase;
     }
 
     private static double AverageAt(float[] values, int count, int center, int radius)
@@ -837,7 +1483,45 @@ internal static class BeatAnalyzer
         return result.ToArray();
     }
 
-    private static List<double> TrackBeats(float[] onset, double intervalFrames)
+    /// <summary>
+    /// p0-12 拍点跟踪：Ellis 式动态规划给出拍点网格，并用网格自身的中位拍间隔测漂移。
+    /// DP 只在有能量的区域跟踪，首尾静音段由 <see cref="ExtendBeats"/> 按中位间隔补齐。
+    /// </summary>
+    private static List<double> TrackBeats(float[] onset, double intervalFrames, double fps, double durationMs, out double stability)
+    {
+        stability = 0;
+        var beats = RunBeatDp(onset, intervalFrames, fps);
+        if (beats.Count < 8)
+        {
+            return beats;
+        }
+
+        var median = MedianInterval(beats);
+        if (median > 0)
+        {
+            // ACF 的峰值偏差会累计成整曲漂移：中位间隔差 1% 以上就按它再跟踪一次。
+            if (Math.Abs(median * fps / 1000.0 - intervalFrames) / intervalFrames > 0.01)
+            {
+                var retry = RunBeatDp(onset, median * fps / 1000.0, fps);
+                if (retry.Count >= beats.Count / 2)
+                {
+                    beats = retry;
+                    median = MedianInterval(beats);
+                }
+            }
+
+            if (median > 0)
+            {
+                var deviation = IntervalDeviation(beats, median);
+                stability = Math.Clamp(1.0 - deviation / 0.08, 0, 1);
+            }
+        }
+
+        return ExtendBeats(beats, fps, durationMs);
+    }
+
+    /// <summary>Ellis 式动态规划拍点跟踪（原 TrackBeats 主体，抽出来便于用不同间隔重跑）。</summary>
+    private static List<double> RunBeatDp(float[] onset, double intervalFrames, double fps)
     {
         var count = onset.Length;
         var maximum = 0f;
@@ -849,7 +1533,7 @@ internal static class BeatAnalyzer
             }
         }
 
-        if (maximum <= 0)
+        if (maximum <= 0 || intervalFrames < 2)
         {
             return new List<double>();
         }
@@ -896,7 +1580,134 @@ internal static class BeatAnalyzer
         }
 
         frames.Reverse();
-        return frames.Select(frame => frame * 1000.0 * HopSize / 22050.0).ToList();
+        return frames.Select(frame => frame * 1000.0 / fps).ToList();
+    }
+
+    /// <summary>把拍点按中位间隔补到 0 与歌曲结尾，避免长前奏/尾奏没有拍点。</summary>
+    private static List<double> ExtendBeats(List<double> beats, double fps, double durationMs)
+    {
+        if (beats.Count < 2)
+        {
+            return beats;
+        }
+
+        var median = MedianInterval(beats);
+        if (median <= 0)
+        {
+            return beats;
+        }
+
+        var times = new List<double>(beats);
+        var first = times[0];
+        var guard = 0;
+        while (first - median >= median * 0.25 && guard++ < 6000)
+        {
+            first -= median;
+            times.Insert(0, Math.Max(0, first));
+        }
+
+        var last = times[^1];
+        guard = 0;
+        while (last + median <= durationMs - median * 0.25 && guard++ < 6000)
+        {
+            last += median;
+            times.Add(last);
+        }
+
+        // 去掉越界/重复项（DP 偶尔会在同一拍附近给两个点）。
+        var cleaned = new List<double>(times.Count);
+        foreach (var time in times)
+        {
+            if (time < 0 || time > durationMs)
+            {
+                continue;
+            }
+
+            if (cleaned.Count > 0 && time - cleaned[^1] < median * 0.25)
+            {
+                continue;
+            }
+
+            cleaned.Add(Math.Round(time, 1));
+        }
+
+        return cleaned;
+    }
+
+    /// <summary>按拍点和小节相位直接取强拍位置（p0-12 主路径）。</summary>
+    private static double[] BuildDownbeatsFromBeats(IReadOnlyList<double> beats, int meter, int phase, out int barCount)
+    {
+        meter = meter <= 0 ? 4 : meter;
+        var result = new List<double>();
+        for (var beat = ((phase % meter) + meter) % meter; beat < beats.Count; beat += meter)
+        {
+            result.Add(Math.Round(beats[beat], 1));
+            if (result.Count >= MaxDownbeats)
+            {
+                break;
+            }
+        }
+
+        barCount = result.Count;
+        return result.ToArray();
+    }
+
+    /// <summary>常数间隔拍点（兜底路径），最多 4000 个。</summary>
+    private static double[] BuildConstantBeatTimes(double firstBeatMs, double beatIntervalMs, double durationMs)
+    {
+        var count = (int)Math.Floor((durationMs - firstBeatMs) / beatIntervalMs) + 1;
+        if (count < 1)
+        {
+            count = 1;
+        }
+
+        if (count > 4000)
+        {
+            count = 4000;
+        }
+
+        var beats = new double[count];
+        for (var i = 0; i < count; i++)
+        {
+            beats[i] = Math.Round(firstBeatMs + i * beatIntervalMs, 1);
+        }
+
+        return beats;
+    }
+
+    /// <summary>拍点序列对拍号索引做最小二乘拟合，返回 BPM（ms/拍 的倒数）；漂移曲目会偏高/偏低由 stability 标示。</summary>
+    private static double BeatSlopeBpm(List<double> beats)
+    {
+        var count = beats.Count;
+        if (count < 2 || beats[^1] <= beats[0])
+        {
+            return 0;
+        }
+
+        var meanIndex = (count - 1) / 2.0;
+        var meanTime = 0.0;
+        foreach (var beat in beats)
+        {
+            meanTime += beat;
+        }
+
+        meanTime /= count;
+        var numerator = 0.0;
+        var denominator = 0.0;
+        for (var i = 0; i < count; i++)
+        {
+            var dx = i - meanIndex;
+            numerator += dx * (beats[i] - meanTime);
+            denominator += dx * dx;
+        }
+
+        if (denominator <= 0)
+        {
+            return 0;
+        }
+
+        var slopeMs = numerator / denominator;
+        return slopeMs > 0 ? 60000.0 / slopeMs : 0;
     }
 
     private static double MedianInterval(List<double> beats)

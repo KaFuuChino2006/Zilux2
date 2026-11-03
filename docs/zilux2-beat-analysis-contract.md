@@ -52,7 +52,7 @@ GET http://127.0.0.1:<port>/api/analysis?source=local&rel=<rel>&token=<token>
   "tailSilenceMs": 6100,
   "cached": false,
   "elapsedMs": 1834,
-  "analyzer": "p0-11",
+  "analyzer": "p0-13",
   "analysis": {
     "bpm": 128.0,
     "bpmConfidence": 0.87,
@@ -61,6 +61,10 @@ GET http://127.0.0.1:<port>/api/analysis?source=local&rel=<rel>&token=<token>
     "beatIntervalMs": 468.75,
     "firstBeatMs": 125,
     "firstDownbeatMs": 125,
+    "beatsMs": [125, 593.75, 1062.5, 1531.25],
+    "tempoStability": 0.96,
+    "tempoCurveMs": [4000, 12000],
+    "tempoCurveBpm": [128, 129.5],
     "downbeats": [125, 2000, 3875],
     "phraseStartsMs": [125, 15125, 30125],
     "barCount": 112,
@@ -93,6 +97,10 @@ GET http://127.0.0.1:<port>/api/analysis?source=local&rel=<rel>&token=<token>
 | `beatIntervalMs` | 平均拍间隔（毫秒，浮点）；P0 假设全曲恒定速度 |
 | `firstBeatMs` | 第一拍的时间（相对音频文件起点） |
 | `firstDownbeatMs` | 第一小节强拍时间，`(firstDownbeatMs-firstBeatMs)/beatIntervalMs` 是整数相位 |
+| `beatsMs` | **p0-12 起**。DP 跟踪出的真实拍点（ms，升序，最多 4000 个）；拍点太少时为空数组，消费方回退到「`firstBeatMs` + `beatIntervalMs`」 |
+| `tempoStability` | **p0-12 起**。拍点间隔稳定度 0~1（1 = 完全稳定，0 = 漂移严重）；`< 0.6` 时附 `tempo-drift` 警告。旧缓存的值为 0 |
+| `tempoCurveMs` | **p0-13 起**。逐窗速度估计的时间轴（窗口中心 ms，升序，与 `tempoCurveBpm` 等长）；不足两个窗口时为空数组。供过渡按局部速度换算小节长 |
+| `tempoCurveBpm` | **p0-13 起**。逐窗速度曲线的 BPM（8 s 窗 / 1 s 跳的 tempogram 峰值，5 点中位平滑后按整曲 BPM 折叠到最近的倍速档位） |
 | `downbeats` | 强拍时间列表（毫秒，升序，最多返回 ~400 个，超出截断） |
 | `phraseStartsMs` | 检测到的乐句/段落边界时间（每 8/16 小节级别） |
 | `sections` | 段落列表（按 `phraseStartsMs` 切分）。`label` 取值（`p0-11` 起）：`intro`、`build`、`verse`、`chorus`、`drop`、`breakdown`、`outro` 或空串（算法见 §2.1.3），`confidence` 0.3–0.55 |
@@ -178,6 +186,39 @@ GET http://127.0.0.1:<port>/api/analysis?source=local&rel=<rel>&token=<token>
   调性/BPM 冲突（`camelot` 相隔 >2 或 BPM 差 >12%）时改用 1–2 小节快速切入；
 - 分析数据缺失（旧缓存 / 未分析 / 手动切歌 / 单曲循环）时页面回退旧淡化逻辑；
 - `p0-11` 升版会让旧 JSON 缓存失效并重算，音频缓存保留。
+
+### 2.1.4 拍点网格、速度曲线与 BPM 鲁棒性（analyzer `p0-12` 起，`p0-13` 增补速度曲线）
+
+`p0-12` 把「BPM + 常数拍点」升级为「DP 跟踪的真实拍点网格」，并重写 tempo 前端与倍速消歧；
+`p0-13` 在此基础上增加逐窗速度曲线（`tempoCurveMs` / `tempoCurveBpm`）。
+
+- onset 前端：谱幅值先做频率向 max 滤波（SuperFlux，±1 bin），再对数压缩后做时间差分，
+  抑制颤音/滑音谐波峰造成的假通量；同时按 `<160 Hz`（low）/ `<2000 Hz`（mid）/ 其余（high）
+  累加分频段通量。频段能量仍用原始幅值。
+- tempo 判据：`tempoOnset = 0.55×lowOnset + 0.30×midOnset + 0.15×全带 onset`——底鼓主导、
+  军鼓辅助，高频踩镲不参与主判据，避免八分音符镲片把自相关锁到 2 倍速。
+- tempo 估计：8 s 窗 / 1 s 跳的窗内去均值自相关 + 3 次谐波梳状 × 70–180 先验；逐窗按峰值
+  归一后累加，静音前奏/尾奏不参与平均；置信度 = 0.55×最优/次优峰 margin + 0.45×窗口一致度
+  （各窗峰值折算到 ±3% 内）。梳状峰附近再用原始自相关的抛物线插值做亚帧细化，消除 43 Hz 帧率的整数延迟量化。
+- 低置信兜底：`0.55×margin + 0.45×一致度 < 0.5` 时，用 onset 网格命中率（间隔内 4 个相位取
+  每拍平均 onset 最好）在 `{b, 2b, b/2, 2b/3, 3b/2}` 里重挑速度，须比原候选高 6% 才替换；
+  用来纠正「窗内自相关锁错梳状峰」的情况。
+- 倍速消歧（替代旧的 `acHalf2 ≥ acBeat2×0.55/0.78` 启发式）：`bpm > 195` 时若奇偶拍能量比
+  `< 0.55`（一强一弱说明候选其实是 2×）减半；`bpm < 125` 时若半拍位置的 onset 能量 ≥ 拍点
+  0.78 且低频 ≥ 0.55，说明漏掉了隔拍，速度加倍。
+- 拍点跟踪：Ellis 式 DP 成为主输出；若 DP 中位拍间隔与 ACF 间隔差 >1%，用中位间隔再跟踪一次；
+  拍点按中位间隔向前/向后补到曲首与曲尾。`bpm` 优先改用 DP 网格的最小二乘斜率
+  （`60000/slope`，与 ACF 差 ≤3% 时采用）；否则若中位间隔与 ACF 差 ≤6% 且
+  `tempoStability ≥ 0.6` 才用 `60000 / median(IBI)`；`beatsMs` 即 DP 网格，强拍由网格上的低频重音相位选出。
+- `tempoStability = clamp(1 - 拍间隔平均偏离/0.08, 0, 1)`；DP 拍点 <10 个时回退旧常数网格
+  （`beatsMs` 由 `firstBeatMs + i×beatIntervalMs` 生成，`tempoStability = 0`）。
+- 速度曲线（`p0-13`）：每个 8 s 窗额外算 tempogram（40–240 BPM、步长 2，对去均值 onset 做
+  Goertzel 复数递推），峰值经 BPM 域抛物线细化后记入 `tempoCurveMs` / `tempoCurveBpm`；曲线做
+  5 点中位平滑，再按整曲 BPM 折叠掉整段 2× / 0.5× 跳变，避免过渡小节长被错拍带偏。
+- 下游 `crossfadeDeck.ts` 规划小节长时优先用「跟拍覆盖」（页面 `localStorage` 的
+  `zilux2.bpmOverride`，按 `source:id` 记）→ 曲线就近点 → `beatIntervalMs × meter`；`beatsMs`
+  仍只透出契约字段，后续版本用于变速时按真实拍点对齐。
+- `p0-13` 升版会让旧 JSON 缓存失效并重算，音频缓存保留。
 
 ### 2.2 失败响应
 
