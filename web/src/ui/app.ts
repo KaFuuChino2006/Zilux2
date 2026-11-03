@@ -11,6 +11,44 @@ import QRCode from 'qrcode';
 
 /** 迷你播放器状态记忆键：刷新/崩溃恢复后用来向宿主复核窗口态。 */
 const MINI_MODE_KEY = 'zilux2.miniMode';
+
+/**
+ * 海报封面兜底：只有「缺封面」的海报才去联网补图，而且等它真正滚进视口附近再查。
+ * 喜欢墙一次能挂几百张海报，逐张触发 searchOnline 会瞬间打出几百个搜索请求。
+ */
+const posterCoverTargets = new WeakMap<Element, { img: HTMLImageElement; track: OnlineTrack }>();
+let posterCoverObserver: IntersectionObserver | null = null;
+
+async function resolvePosterCover(img: HTMLImageElement, track: OnlineTrack): Promise<void> {
+  if (track.cover) return;
+  const found = await lookupCover(track);
+  if (!found || !img.isConnected) return;
+  track.cover = found;
+  img.src = onlineArtwork(track, 300);
+}
+
+function observePosterCover(img: HTMLImageElement, track: OnlineTrack): void {
+  if (typeof IntersectionObserver === 'undefined') {
+    void resolvePosterCover(img, track);
+    return;
+  }
+  if (!posterCoverObserver) {
+    posterCoverObserver = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const target = posterCoverTargets.get(entry.target);
+          posterCoverObserver?.unobserve(entry.target);
+          posterCoverTargets.delete(entry.target);
+          if (target) void resolvePosterCover(target.img, target.track);
+        }
+      },
+      { rootMargin: '600px 0px' },
+    );
+  }
+  posterCoverTargets.set(img, { img, track });
+  posterCoverObserver.observe(img);
+}
 import {
   accountOf,
   getAccounts,
@@ -68,7 +106,7 @@ import {
 import { onlineArtwork } from '../online/artwork';
 import { buildAnalysisSection } from './analysisSection';
 import { autoPlaySettings, listAutoPlayPlaylists, onAutoPlayChange, saveAutoPlaySettings, type AutoPlayPlaylistGroup, type AutoPlaySource } from './autoPlay';
-import { buildCrossfadeSection, readCrossfadeDebug } from './crossfadeDeck';
+import { buildCrossfadeSection, readCrossfadeDebug, subscribeCrossfadeDebug } from './crossfadeDeck';
 import { confirmDialog } from './confirmDialog';
 import { createEqCurve } from './eqCurve';
 import { localArtists, localTracks, type LocalArtist } from './localArtists';
@@ -112,13 +150,30 @@ import {
 import { openTagEditor } from './tagEditor';
 import { buildEqPresetManager } from './eqPresets';
 import { buildSearchHistoryPanel, recordSearch, type SearchHistoryPanelHandle } from './searchHistory';
+import { openTrackMenu, type TrackMenuItem } from './trackMenu';
 import { buildSettingsIOActions } from './settingsIO';
 import { buildSleepTimerPanel, completeSleepTimer, getSleepTimerState } from './sleepTimer';
-import { currentLyricSnapshot, currentLyricSource, lyricGrowMode, lyricMatchMinScore, lyricOffsetOf, LYRIC_UNSUNG_PRESETS, lyricsBackgroundMode, lyricsLumiereMode, lyricUnsungColor, LyricsView, primeLyrics, setLyricGrowMode, setLyricsBackgroundMode, setLyricsLumiereMode, setLyricMatchMinScore, setLyricOffset, setLyricUnsungColor, updateCurrentLyricLine, lyricMatchText } from './lyrics';
+import { currentLyricSource, lyricGrowMode, lyricMatchMinScore, lyricOffsetOf, LYRIC_UNSUNG_PRESETS, lyricsBackgroundMode, lyricsLumiereMode, lyricUnsungColor, LyricsView, primeLyrics, setLyricGrowMode, setLyricsBackgroundMode, setLyricsLumiereMode, setLyricMatchMinScore, setLyricOffset, setLyricUnsungColor, updateCurrentLyricLine, lyricMatchText } from './lyrics';
 import { LUMIERE_MODES } from './lumiere';
+import {
+  CHORUS_PREVIEW_START_CHOICES,
+  chorusPreviewDelayChoices,
+  readChorusPreviewSettings,
+  registerPreviewTrack,
+  takePreviewElement,
+  writeChorusPreviewSettings,
+} from './chorusPreview';
+import { loudnessEnabled, nightModeEnabled, setLoudnessEnabled, setNightModeEnabled } from './loudness';
+import { MOOD_DEFS, matchMood, type MoodDef } from './moods';
+import { orderUpcomingByMix } from './automix';
+import { installStagePulse } from './stagePulse';
 import { LYRIC_STYLES, lyricStyle, setLyricStyle } from './lyricStyle';
 import {
+  analysisForTrack,
+  clearHotCue,
   cycleMode,
+  getBarLoop,
+  getHotCues,
   getPlaybackSpeed,
   moveQueueItem,
   next,
@@ -127,27 +182,27 @@ import {
   playQueue,
   playerState,
   prev,
+  queueAppend,
+  queueNext,
   removeQueueItem,
   refreshCurrentLiked,
+  refreshLoudness,
+  adoptPlayingElement,
   replaceQueue,
   seek,
   setPlaybackSpeed,
+  setQueueRefill,
   setVolume,
   toggle,
+  toggleBarLoop,
+  toggleHotCue,
   toggleLiked,
   type PlayerState,
 } from './player';
 import { host, hostAvailable, getShortcutsState, onMiniMode, onShortcutsState, type UpdateSnapshot } from '../core/bridge';
-import { MgPlaneView } from './mgplane/mgplane';
-import { fromHomeData, type MgListKind } from './mgplane/model';
 import { HomeView } from './home';
-import {
-  readInterfaceMode,
-  saveInterfaceMode,
-  INTERFACE_MODE_OPTIONS,
-  type InterfaceMode,
-} from './interfaceMode';
 import { DiscoverView } from './discover';
+import { fetchRadio, fetchRecommendedPlaylists } from '../online/discover';
 import { openSongInfo, setSongInfoView, songInfoView } from './songInfo';
 import { createUpNextToast, type UpNextToastHandle } from './upNextToast';
 import {
@@ -169,7 +224,7 @@ import { openTextSettingsSheet } from './textSettingsPanel';
 import { openRoomSettingsSheet } from './roomSettingsPanel';
 import { openVinylSettingsSheet } from './vinylSettingsPanel';
 import { readPosterLayout, writePosterLayout, type PosterLayout } from './posterLayout';
-import { ACCENT_PRESETS, applyAccentColor, readAccentColor, writeAccentColor } from './theme';
+import { ACCENT_PRESETS, applyAccentColor, readAccentColor, ui, writeAccentColor } from './theme';
 import { APP_BG_BLUR, APP_BG_POSITIONS, applyAppBgStyle, pickBackgroundImageFile, readAppBgBlur, readAppBgImage, readAppBgMode, readAppBgPosition, writeAppBgBlur, writeAppBgImage, writeAppBgMode, writeAppBgPosition, type AppBgMode } from './appBackground';
 import {
   UPDATE_STATE_TEXT,
@@ -184,7 +239,7 @@ import {
   updateSnapshot,
 } from './updates';
 
-type WallKind = 'liked' | 'local' | 'search' | 'feed' | 'playlist' | 'recent';
+type WallKind = 'liked' | 'local' | 'search' | 'feed' | 'playlist' | 'recent' | 'playlists' | 'recommend' | 'moods' | 'mood';
 
 interface WallData {
   kind: WallKind;
@@ -251,12 +306,8 @@ export class App {
   private homeHost!: HTMLDivElement;
   /** 经典首页（默认模式）。 */
   private classicHome: HomeView | null = null;
-  /** 平面世界 MG 画布（第二使用方式，首次切换时才创建）。 */
-  private mgHome: MgPlaneView | null = null;
-  /** 当前首页模式：经典 / 平面世界。 */
-  private interfaceMode: InterfaceMode = readInterfaceMode();
-  /** 平面世界「加载更多曲目」的整表缓存（按分类缓存一次，滚动分页时切片）。 */
-  private mgMoreCache = new Map<MgListKind, OnlineTrack[]>();
+  /** 档案终端（3D 玻璃场景，首次切换时才创建）。 */
+  /** 当前首页模式：经典 / 档案终端。 */
   private homeData: HomeData | null = null;
   private feedRailKey: string | null = null;
   private wallHost: HTMLDivElement;
@@ -297,6 +348,8 @@ export class App {
   private searchTimer = 0;
   /** 搜索历史面板（顶部搜索弹层里）。 */
   private searchHistory: SearchHistoryPanelHandle | null = null;
+  /** 快捷键静音前的音量（M 键切换用）。 */
+  private muteRestore = 0.4;
 
   /** 当前墙面 */
   private wall: WallData = { kind: 'liked', title: '我喜欢的音乐', subtitle: '', tracks: [] };
@@ -313,6 +366,10 @@ export class App {
   private sheet: SheetHandle | null = null;
   /** 设置弹窗内的订阅集合（换面板 / 关闭弹窗时统一清理）。 */
   private sheetScope: Disposers | null = null;
+  /** 「推荐」整页的热门歌单缓存（重渲染时同步使用）。 */
+  private recommendItems: LibraryPlaylist[] = [];
+  /** 「我的歌单」整页里本地歌单的订阅（离开页面时清理）。 */
+  private playlistsScope: Disposers | null = null;
   private loginOverlay: HTMLDivElement | null = null;
   private playerDispose: (() => void) | null = null;
   private localDispose: (() => void) | null = null;
@@ -333,8 +390,21 @@ export class App {
   private pbLikeBtn!: HTMLButtonElement;
   private pbModeBtn!: HTMLButtonElement;
   private pbFill!: HTMLDivElement;
+  private pbMarks!: HTMLDivElement;
+  private pbMergeMark!: HTMLDivElement;
+  private pbClimaxBand!: HTMLDivElement;
+  private pbClimaxMark!: HTMLDivElement;
+  private pbLoopBand!: HTMLDivElement;
+  private pbCueMarks!: HTMLDivElement[];
+  /** 进度条高潮标记对应的曲目（换歌后旧分析结果不再画到新曲上）。 */
+  private pbClimaxKey = '';
+  private pbClimaxRange: { from: number; to: number } | null = null;
   private pbCur!: HTMLSpanElement;
   private pbDur!: HTMLSpanElement;
+  /** 迷你态第三行：进度时间 + 下一首（普通窗口隐藏）。 */
+  private pbMiniTime!: HTMLSpanElement;
+  private pbMiniNext!: HTMLSpanElement;
+  private pbMiniLine!: HTMLDivElement;
   private volumeInput!: HTMLInputElement;
   private volumeIcon!: HTMLSpanElement;
 
@@ -378,6 +448,8 @@ export class App {
   /** 迷你态切换过渡：宿主补间窗口期间页面先切「悬浮小卡」，等 window/miniMode 回推再落最终布局。 */
   private miniTransition: 'idle' | 'entering' | 'exiting' = 'idle';
   private miniFallbackTimer = 0;
+  /** 退出迷你后 200ms 的界面淡入定时器（抹平「纯色幕布 → 整页」的硬切）。 */
+  private miniRestoreTimer = 0;
   /** 无缝衔接准备就绪后，播放条上方短暂弹出的「将在 X 分 Y 秒后过渡至 xxx」提示。 */
   private seamlessHint!: HTMLDivElement;
   /** 倒计时弹窗的自动消失定时器。 */
@@ -410,6 +482,7 @@ export class App {
     });
     this.appBgEl.append(...this.appBgLayers);
     this.root.append(this.appBgEl);
+    installStagePulse(this.root);
     this.stage = h('div', { class: 'stage' });
     this.wallHost = h('div', { class: 'wall' });
     this.wallHost.addEventListener('scroll', () => this.maybeLoadMoreWall(), { passive: true });
@@ -429,6 +502,8 @@ export class App {
 
   mount(container: HTMLElement): void {
     container.append(this.root);
+    // 墙面歌曲行（.track-row）统一走右键菜单：行上带 data-track-key，曲目从当前 wall 里回查。
+    this.root.addEventListener('contextmenu', (event) => this.onWallTrackContextMenu(event));
     this.watchSegments();
     // 调试/自动化用：暴露只读播放状态，便于真机验证。
     (window as unknown as { __ziluxPlayer?: typeof playerState }).__ziluxPlayer = playerState;
@@ -448,6 +523,9 @@ export class App {
     this.disposers.add(() => window.removeEventListener('keydown', onMiniKey));
     this.disposers.add(() => this.clearMiniFallback());
     this.playerDispose = onPlayer((state) => this.syncPlayer(state));
+    // 过渡计划变化（准备完成/取消）不一定伴随播放器状态变化（分析慢、暂停时），
+    // 这里主动重绘进度条上的渐变与高潮标记，避免显示上一份计划的旧位置。
+    this.disposers.add(subscribeCrossfadeDebug(() => this.paintProgressMarks(playerState())));
     this.localDispose = onLocalLibraryChange(() => {
       if (this.wall.kind === 'local') {
         if (localLibrary()) this.showLocal();
@@ -664,7 +742,7 @@ export class App {
       if (event.clientY > 84) return;
       if (
         target.closest(
-          'button, input, textarea, select, .win-btns, .pill, .rail, .sheet, .lyrics-view, .playerbar, .upnext, .quick, .account-wrap, .search-wrap, .search-dock, .search-pop, .mgplane button, .mg-cover, .mg-now-art, .mg-hud, .mg-debug, .mg-mini, .mg-expand, .mg-selbar, .mg-radial, .mg-theater',
+          'button, input, textarea, select, .win-btns, .pill, .rail, .sheet, .lyrics-view, .playerbar, .upnext, .quick, .account-wrap, .search-wrap, .search-dock, .search-pop',
         )
       ) {
         return;
@@ -730,9 +808,10 @@ export class App {
       { key: 'home', label: '首页', iconName: 'home', onClick: () => void this.showHome() },
       { key: 'liked', label: '我喜欢的音乐', iconName: 'heart', onClick: () => void this.showLiked() },
       { key: 'recent', label: '最近播放', iconName: 'clock', onClick: () => void this.showRecentWall() },
-      { key: 'recommend', label: '推荐', iconName: 'sparkle', onClick: () => void this.openRecommendSheet() },
+      { key: 'recommend', label: '推荐', iconName: 'sparkle', onClick: () => void this.openRecommendPage() },
+      { key: 'moods', label: '场景', iconName: 'sparkle', onClick: () => void this.openMoodsPage() },
       { key: 'discover', label: '发现', iconName: 'compass', onClick: () => void this.showDiscover() },
-      { key: 'playlists', label: '我的歌单', iconName: 'list', onClick: () => void this.openPlaylistSheet() },
+      { key: 'playlists', label: '我的歌单', iconName: 'list', onClick: () => this.openPlaylistsPage() },
       { key: 'local', label: '本地曲库', iconName: 'folder', onClick: () => this.showLocal() },
       { key: 'airplay', label: '投送', iconName: 'airplay', onClick: () => this.toggleAirplayPop() },
     ];
@@ -764,13 +843,13 @@ export class App {
     rail.append(settingsBtn);
 
     this.homeHost = h('div', { class: 'home-host' });
-    // 经典首页始终创建：它是默认模式，也是「平面世界」的兜底。
+    // 经典首页始终创建：它是默认模式，也是切回时的兜底。
     this.classicHome = new HomeView({
       onLogin: () => this.openLogin(),
       onLiked: (source) => void this.showLiked(source),
       onPlayLiked: (source) => void this.playLikedAll(source),
       onRecent: () => void this.showRecentWall(),
-      onRecommend: () => this.openRecommendSheet(),
+      onRecommend: () => void this.openRecommendPage(),
       onDaily: () => void this.showDailyWall(),
       onDaily30: () => void this.showDailyWall(true),
       onRadar: () => void this.showRadarWall(),
@@ -782,90 +861,8 @@ export class App {
     const main = h('div', { class: 'main' }, rail, this.stage);
     this.stage.append(this.homeHost, this.wallHost);
     this.root.append(main);
-    this.applyInterfaceMode();
   }
 
-  /* ------------------------------------------------------------------ */
-  /* 首页模式（经典首页 / 平面世界）                                      */
-  /* ------------------------------------------------------------------ */
-
-  /** 懒创建 MG 画布：只有真正切到「平面世界」时才建 DOM 和事件。 */
-  /**
-   * 平面世界列表滚动到底部时按需加载更多曲目。
-   * 首次按分类整体拉取并缓存，之后按 offset/limit 切片返回（空数组表示已经到底）。
-   */
-  private async mgLoadMoreTracks(kind: MgListKind, offset: number, limit: number): Promise<OnlineTrack[]> {
-    let all = this.mgMoreCache.get(kind);
-    if (!all) {
-      try {
-        if (kind === 'daily') {
-          all = (await this.fetchDailyMerged(80)).tracks;
-        } else if (kind === 'recent') {
-          all = await fetchRecentMerged(300);
-        } else if (kind === 'liked') {
-          const sources: OnlineSource[] =
-            this.likedMode === 'all'
-              ? sourceIds().filter((source) => sourceSupportsLikedWrite(source))
-              : [this.likedMode];
-          const lists = await Promise.all(
-            sources.map((source) => this.fetchLikedTracks(source).catch(() => null)),
-          );
-          all = lists.flatMap((list) => list ?? []);
-        } else if (kind === 'radar') {
-          const source = this.preferredSource();
-          all = source ? (await fetchFeed(source, 'radar', 60)).tracks : [];
-        } else {
-          all = localTracks();
-        }
-      } catch (error) {
-        console.warn('[mgplane] 加载更多曲目失败', kind, error);
-        all = [];
-      }
-      this.mgMoreCache.set(kind, all);
-    }
-    return all.slice(offset, offset + limit);
-  }
-
-  private ensureMgHome(): MgPlaneView {
-    if (this.mgHome) return this.mgHome;
-    const view = new MgPlaneView({
-      play: (tracks, index, scope) => {
-        // 本地曲库直接开播；daily/recent/liked/radar 交给首页逻辑异步补全整队列。
-        if (scope === 'local') playQueue(tracks, index, true);
-        else this.playFromHome(tracks, index, scope);
-      },
-      openList: (kind) => {
-        if (kind === 'liked') void this.showLiked();
-        else if (kind === 'recent') void this.showRecentWall();
-        else if (kind === 'daily') void this.showDailyWall();
-        else if (kind === 'radar') void this.showRadarWall();
-        else this.showLocal();
-      },
-      search: () => this.focusSearch(),
-      login: () => this.openLogin(),
-      discover: () => void this.showDiscover(),
-      myPlaylists: () => this.openPlaylistSheet(),
-      settings: () => this.openSettingsSheet(),
-      account: () => this.openAccountPanel(),
-      lyrics: () => this.openLyrics(),
-      lyric: () => currentLyricSnapshot(),
-      moreTracks: (kind, offset, limit) => this.mgLoadMoreTracks(kind, offset, limit),
-    });
-    this.mgHome = view;
-    this.homeHost.append(view.root);
-    if (this.homeData) view.update(fromHomeData(this.homeData));
-    return view;
-  }
-
-  /** 按当前模式显示对应首页，并让全窗口样式跟着切换。 */
-  private applyInterfaceMode(): void {
-    const mgMode = this.interfaceMode === 'mgplane';
-    this.root.classList.toggle('is-mg-mode', mgMode);
-    this.homeHost.classList.toggle('is-mg', mgMode);
-    if (mgMode) this.ensureMgHome();
-    this.classicHome?.root.classList.toggle('is-hidden', mgMode);
-    if (this.mgHome) this.mgHome.root.classList.toggle('is-hidden', !mgMode);
-  }
 
   private setRailActive(
     kind: WallKind | 'settings' | 'home' | 'discover' | 'daily' | 'daily30' | null,
@@ -906,7 +903,6 @@ export class App {
     this.homeHost.classList.remove('is-hidden');
     this.wallHost.classList.add('is-hidden');
     this.setRailActive('home');
-    this.applyInterfaceMode();
     await this.loadHomeData();
   }
 
@@ -924,6 +920,7 @@ export class App {
     if (!this.discover) {
       this.discover = new DiscoverView(this.wallHost, {
         play: (tracks, index) => playQueue(tracks, index, true),
+        playRadio: (tracks) => this.playRadio(tracks),
         openPlaylist: (item) => void this.showPlaylist(item),
         openSheet: (title, build) => this.openSheet(title, build),
         search: (query) => void this.runDiscoverSearch(query),
@@ -1010,6 +1007,31 @@ export class App {
     } catch (err) {
       console.warn('[app] netease hot playlists failed', err);
     }
+    // 每日推荐歌单：双平台各取一页，按顺序交错合并，一排里两个平台都有。
+    const recommendPlaylists: LibraryPlaylist[] = [];
+    try {
+      const [neteaseRecommend, qqRecommend] = await Promise.all([
+        fetchRecommendedPlaylists('netease', 0, 10).catch(() => null),
+        fetchRecommendedPlaylists('qq', 0, 10).catch(() => null),
+      ]);
+      const max = Math.max(neteaseRecommend?.playlists.length ?? 0, qqRecommend?.playlists.length ?? 0);
+      for (let index = 0; index < max; index += 1) {
+        for (const list of [neteaseRecommend, qqRecommend]) {
+          const item = list?.playlists[index];
+          if (!item) continue;
+          recommendPlaylists.push({
+            source: item.source as OnlineSource,
+            id: item.id,
+            title: item.title,
+            cover: item.cover,
+            count: item.count,
+            creator: item.creator,
+          });
+        }
+      }
+    } catch (err) {
+      console.warn('[app] recommend playlists failed', err);
+    }
     let recent: OnlineTrack[] = [];
     try {
       recent = (await fetchRecentMerged(160)).slice(0, 160);
@@ -1026,7 +1048,7 @@ export class App {
     let daily: OnlineTrack[] = [];
     let dailyLabel = preferred ? SOURCE_LABEL[preferred] : '';
     try {
-      const merged = await this.fetchDailyMerged(12);
+      const merged = await this.fetchDailyMerged(60);
       if (merged.tracks.length > 0) {
         daily = merged.tracks;
         dailyLabel = merged.label;
@@ -1045,7 +1067,7 @@ export class App {
     }
     if (radarAvailable) {
       try {
-        radar = (await fetchFeed('netease', 'radar', 12)).tracks;
+        radar = (await fetchFeed('netease', 'radar', 120)).tracks;
       } catch (err) {
         console.warn('[app] private radar failed', err);
       }
@@ -1067,10 +1089,10 @@ export class App {
       recent,
       playlists: playlists.slice(0, 14),
       neteasePlaylists: neteasePlaylists.slice(0, 14),
+      recommendPlaylists: recommendPlaylists.slice(0, 14),
     };
     this.homeData = data;
     this.classicHome?.update(data);
-    this.mgHome?.update(fromHomeData(data));
   }
 
   /** 首页「最近播放」即时更新：刚播的歌放到最前（回到首页时再以宿主记录为准）。 */
@@ -1083,7 +1105,6 @@ export class App {
     this.homeData = next;
     if (!this.homeHost.classList.contains('is-hidden')) {
       this.classicHome?.update(next);
-      this.mgHome?.update(fromHomeData(next));
     }
   }
 
@@ -1258,60 +1279,51 @@ export class App {
     }
   }
 
-  private async openRecommendSheet(): Promise<void> {
-    const ref: { body: HTMLDivElement | null } = { body: null };
-    this.openSheet('热门歌单', (body) => {
-      ref.body = body;
-      body.append(h('div', { class: 'empty', text: '加载 QQ 音乐热门歌单…' }));
-    });
+  /** 「推荐」整页：QQ 音乐音乐馆热门歌单，卡片网格，点开进歌单详情。 */
+  private async openRecommendPage(): Promise<void> {
+    this.wallPager = null;
+    this.setRailActive('recommend');
+    this.recommendItems = [];
+    this.wall = { kind: 'recommend', title: '推荐歌单', subtitle: 'QQ 音乐 · 音乐馆热门歌单 · 加载中…', tracks: [] };
+    this.renderWall();
     try {
-      const hot = await fetchHotPlaylists('qq', 40);
-      const body = ref.body;
-      if (!body) return;
-      body.textContent = '';
-      if (hot.length === 0) {
-        body.append(h('div', { class: 'empty', text: '暂时拿不到热门歌单，稍后重试' }));
-        return;
-      }
-      body.append(h('h3', { class: 'section-title', text: `QQ 音乐 · 音乐馆热门歌单 · ${hot.length} 个` }));
-      const list = h('div', { class: 'list' });
-      hot.forEach((item) => {
-        const cover =
-          item.cover ||
-          onlineArtwork({ id: item.id, title: item.title, artist: item.creator ?? '', album: '', cover: '' });
-        const row = h(
-          'div',
-          { class: 'row', title: item.title },
-          h('div', { class: 'row-cover' }, h('img', { src: cover, loading: 'lazy', alt: '' })),
-          h(
-            'div',
-            { class: 'row-meta' },
-            h('div', { class: 'row-name', text: item.title }),
-            h('div', { class: 'row-artist', text: `${item.creator ? item.creator + ' · ' : ''}${formatPlays(item.count)}` }),
-          ),
-        );
-        row.addEventListener('click', () => {
-          this.sheet?.close();
-          void this.showPlaylist({
-            source: item.source,
-            id: item.id,
-            title: item.title,
-            cover: item.cover,
-            count: item.count,
-            creator: item.creator,
-          });
-        });
-        list.append(row);
-      });
-      body.append(list);
+      this.recommendItems = await fetchHotPlaylists('qq', 40);
     } catch (err) {
       console.warn('[app] recommend failed', err);
-      const body = ref.body;
-      if (body) {
-        body.textContent = '';
-        body.append(h('div', { class: 'empty', text: '热门歌单读取失败，稍后重试' }));
-      }
+      toast('热门歌单读取失败，稍后重试', 'error');
     }
+    this.wall = {
+      kind: 'recommend',
+      title: '推荐歌单',
+      subtitle:
+        this.recommendItems.length > 0
+          ? `QQ 音乐 · 音乐馆热门歌单 · ${this.recommendItems.length} 个`
+          : 'QQ 音乐 · 音乐馆热门歌单',
+      tracks: [],
+    };
+    this.renderWall(true);
+  }
+
+  private buildRecommendGrid(): HTMLElement {
+    if (this.recommendItems.length === 0) {
+      return h('div', { class: 'wall-empty', text: '暂时拿不到热门歌单，稍后重试' });
+    }
+    const grid = h('div', { class: 'disc-grid' });
+    this.recommendItems.forEach((item) => {
+      const cover =
+        item.cover ??
+        onlineArtwork({ id: item.id, title: item.title, artist: item.creator ?? '', album: '', cover: '' });
+      const tile = h(
+        'button',
+        { class: ui.tile(), title: item.title },
+        h('span', { class: ui.tileCover() }, h('img', { src: cover, loading: 'lazy', alt: '' })),
+        h('span', { class: ui.tileName(), text: item.title }),
+        h('span', { class: ui.tileMeta(), text: `${SOURCE_LABEL[item.source] ?? ''} · ${formatPlays(item.count)}` }),
+      );
+      tile.addEventListener('click', () => void this.showPlaylist(item));
+      grid.append(tile);
+    });
+    return grid;
   }
 
   /* ------------------------------------------------------------------ */
@@ -1326,6 +1338,10 @@ export class App {
     this.wallHost.classList.toggle('is-fresh', !skipEnter);
     if (!skipEnter) window.setTimeout(() => this.wallHost.classList.remove('is-fresh'), 620);
     this.wallHost.textContent = '';
+    if (this.wall.kind !== 'playlists') {
+      this.playlistsScope?.dispose();
+      this.playlistsScope = null;
+    }
     const { title, subtitle, tracks } = this.wall;
     const actions: HTMLElement[] = [];
     if (this.wall.kind !== 'search' && tracks.length > 0 && !this.isLocalArtistGrid()) {
@@ -1435,6 +1451,38 @@ export class App {
     );
     this.wallHost.append(head);
 
+    // 「推荐」整页：热门歌单卡片网格。
+    if (this.wall.kind === 'recommend') {
+      this.wallHost.append(this.buildRecommendGrid());
+      return;
+    }
+
+    // 「场景」整页：按节拍/能量/调性分桶的智能歌单。
+    if (this.wall.kind === 'moods') {
+      this.wallHost.append(this.buildMoodGrid());
+      return;
+    }
+
+    // 「我的歌单」整页：本地歌单 + 各平台在线歌单。
+    if (this.wall.kind === 'playlists') {
+      const wrap = h('div', { class: 'playlists-page' });
+      const localHost = h('div', { class: 'local-playlist-host' });
+      const onlineHost = h('div', { class: 'online-playlist-host' });
+      wrap.append(localHost, onlineHost);
+      this.wallHost.append(wrap);
+      this.playlistsScope?.dispose();
+      const scope = new Disposers();
+      this.playlistsScope = scope;
+      scope.add(
+        subscribeLocalPlaylists(() => {
+          this.renderLocalPlaylists(localHost);
+        }),
+      );
+      this.renderLocalPlaylists(localHost);
+      void this.renderOnlinePlaylists(onlineHost);
+      return;
+    }
+
     // 本地曲库「歌手」视图：圆形头像网格，点进去看该歌手的本地歌曲。
     if (this.wall.kind === 'local' && this.isLocalArtistGrid()) {
       this.wallHost.append(this.buildLocalArtistGrid(skipEnter));
@@ -1475,24 +1523,31 @@ export class App {
     }
 
     const grid = h('div', { class: `wall-grid${skipEnter ? '' : ' is-reveal'}` });
-    this.appendPosters(grid, tracks, 0, tracks);
     this.wallHost.append(grid);
+    this.appendPosters(grid, tracks, 0, tracks);
   }
 
   /** 生成一张封面海报（首次渲染与分页追加共用）。 */
   private posterNode(track: OnlineTrack, index: number, queue: OnlineTrack[]): HTMLElement {
-    const coverImg = h('img', { src: onlineArtwork(track), loading: 'eager' });
-    if (!track.cover) {
-      void lookupCover(track).then((found) => {
-        if (!found) return;
-        track.cover = found;
-        coverImg.src = onlineArtwork(track);
-      });
-    }
+    registerPreviewTrack(track);
+    // 首屏封面立刻加载，其余交给浏览器懒加载：喜欢墙/本地库动辄几百张封面，
+    // 全部 eager 会在滚到底时一次性解码几百张图，主线程直接被拖死。
+    const eagerCover = index < 18;
+    const coverImg = h('img', {
+      src: onlineArtwork(track, 300),
+      loading: eagerCover ? 'eager' : 'lazy',
+      decoding: 'async',
+      draggable: 'false',
+    });
+    if (!track.cover) observePosterCover(coverImg, track);
     const current = playerState().track;
     const poster = h(
       'div',
-      { class: `poster${current && current.id === track.id ? ' is-playing' : ''}`, title: `${track.title} — ${track.artist}` },
+      {
+        class: `poster${current && current.id === track.id ? ' is-playing' : ''}`,
+        title: `${track.title} — ${track.artist}`,
+        'data-track-key': `${track.source}:${track.id}`,
+      },
       coverImg,
       h('div', { class: 'poster-badge', text: String(index + 1).padStart(2, '0') }),
       this.wall.kind === 'search' || (this.wall.kind === 'liked' && this.likedMode === 'all')
@@ -1507,7 +1562,7 @@ export class App {
     const playBtn = h('button', { class: 'poster-play', title: '播放' }, icon('play', 18));
     playBtn.addEventListener('click', (event) => {
       event.stopPropagation();
-      playQueue(queue, index, true);
+      this.playWithPreviewHandoff(queue, index);
     });
     poster.append(playBtn);
     if (this.wall.kind === 'local' || track.source === 'local') {
@@ -1533,14 +1588,28 @@ export class App {
       actions.append(reveal, more, del);
       poster.append(actions);
     }
-    poster.addEventListener('click', () => playQueue(queue, index, true));
+    poster.addEventListener('click', () => this.playWithPreviewHandoff(queue, index));
+    poster.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.openTrackContextMenu(event.clientX, event.clientY, track, queue, index);
+    });
     return poster;
   }
 
   private appendPosters(grid: HTMLElement, tracks: OnlineTrack[], startIndex: number, queue: OnlineTrack[]): void {
-    tracks.forEach((track, offset) => {
-      grid.append(this.posterNode(track, startIndex + offset, queue));
-    });
+    // 分帧追加：一次 loadMore 会带回来 200 首，整批同步建节点会卡出一个长任务；
+    // 按帧切成小批，滚动时分摊到多帧里完成。
+    let cursor = 0;
+    const step = (): void => {
+      if (!grid.isConnected) return;
+      const end = Math.min(tracks.length, cursor + 24);
+      for (; cursor < end; cursor += 1) {
+        grid.append(this.posterNode(tracks[cursor]!, startIndex + cursor, queue));
+      }
+      if (cursor < tracks.length) requestAnimationFrame(step);
+    };
+    step();
   }
 
   /** 墙面滚动接近底部时自动拉下一页。 */
@@ -1923,19 +1992,17 @@ export class App {
   /* 歌单                                                                */
   /* ------------------------------------------------------------------ */
 
-  private async openPlaylistSheet(): Promise<void> {
-    this.openSheet('我的歌单', (body) => {
-      const localHost = h('div', { class: 'local-playlist-host' });
-      const onlineHost = h('div', { class: 'online-playlist-host' });
-      body.append(localHost, onlineHost);
-      this.renderLocalPlaylists(localHost);
-      this.sheetScope?.add(
-        subscribeLocalPlaylists(() => {
-          this.renderLocalPlaylists(localHost);
-        }),
-      );
-      void this.renderOnlinePlaylists(onlineHost);
-    });
+  /** 「我的歌单」整页：本地歌单（新建 / 重命名 / 删除）+ 各平台在线歌单。 */
+  private openPlaylistsPage(): void {
+    this.wallPager = null;
+    this.setRailActive('playlists');
+    this.wall = {
+      kind: 'playlists',
+      title: '我的歌单',
+      subtitle: '本地歌单与各平台收藏 · 点开即可查看',
+      tracks: [],
+    };
+    this.renderWall();
   }
 
   /** 我的歌单弹层里的「本地歌单」区块（新建 / 播放 / 重命名 / 删除）。 */
@@ -2102,7 +2169,7 @@ export class App {
         if (items.length === 0) continue;
         any = true;
         host.append(h('h3', { class: 'section-title', text: `${SOURCE_LABEL[state.source]} · ${items.length} 个歌单` }));
-        const list = h('div', { class: 'list' });
+        const grid = h('div', { class: 'disc-grid' });
         items.forEach((item) => {
           const cover =
             item.cover ??
@@ -2113,28 +2180,21 @@ export class App {
               album: '',
               cover: '',
             });
-          const row = h(
-            'div',
-            { class: 'row', title: item.title },
-            h('div', { class: 'row-cover' }, h('img', { src: cover, loading: 'lazy' })),
-            h(
-              'div',
-              { class: 'row-meta' },
-              h('div', { class: 'row-name', text: item.title }),
-              h('div', {
-                class: 'row-artist',
-                text: `${item.creator ? item.creator + ' · ' : ''}${item.count} 首`,
-              }),
-            ),
-            h('div', { class: 'row-dur', text: item.special === 'liked' ? '喜欢' : '' }),
+          const meta =
+            item.special === 'liked'
+              ? `喜欢 · ${item.count} 首`
+              : `${item.creator ? item.creator + ' · ' : ''}${item.count} 首`;
+          const tile = h(
+            'button',
+            { class: ui.tile(), title: item.title },
+            h('span', { class: ui.tileCover() }, h('img', { src: cover, loading: 'lazy', alt: '' })),
+            h('span', { class: ui.tileName(), text: item.title }),
+            h('span', { class: ui.tileMeta(), text: meta }),
           );
-          row.addEventListener('click', () => {
-            this.sheet?.close();
-            void this.showPlaylist(item);
-          });
-          list.append(row);
+          tile.addEventListener('click', () => void this.showPlaylist(item));
+          grid.append(tile);
         });
-        host.append(list);
+        host.append(grid);
       }
       if (!any) host.append(h('div', { class: 'empty', text: '这两个平台暂时没有歌单' }));
     } catch (err) {
@@ -2177,12 +2237,13 @@ export class App {
     index: number,
     options?: { badge?: boolean; onPlay?: () => void },
   ): HTMLDivElement {
-    const coverImg = h('img', { src: onlineArtwork(track), loading: 'lazy' });
+    registerPreviewTrack(track);
+    const coverImg = h('img', { src: onlineArtwork(track, 120), loading: 'lazy' });
     if (!track.cover) {
       void lookupCover(track).then((found) => {
         if (!found) return;
         track.cover = found;
-        coverImg.src = onlineArtwork(track);
+        coverImg.src = onlineArtwork(track, 120);
       });
     }
     const row = h(
@@ -2203,6 +2264,11 @@ export class App {
       if (options?.onPlay) options.onPlay();
       else this.sheet?.close();
     });
+    row.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.openTrackContextMenu(event.clientX, event.clientY, track, queue, index);
+    });
     return row;
   }
 
@@ -2214,6 +2280,121 @@ export class App {
       style: `--src-accent:${meta.accent}`,
       text: meta.short || meta.label,
     });
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 歌曲右键菜单                                                        */
+  /* ------------------------------------------------------------------ */
+
+  /** 墙面 .track-row 的右键入口：从 data-track-key 回查当前 wall 的曲目对象。 */
+  private onWallTrackContextMenu(event: MouseEvent): void {
+    const target = event.target instanceof Element ? event.target : null;
+    const row = target?.closest('.track-row');
+    if (!(row instanceof HTMLElement)) return;
+    const key = row.dataset.trackKey ?? '';
+    if (!key) return;
+    const tracks = this.wall.tracks;
+    const index = tracks.findIndex((item) => `${item.source}:${item.id}` === key);
+    if (index < 0) return;
+    event.preventDefault();
+    this.openTrackContextMenu(event.clientX, event.clientY, tracks[index]!, tracks, index);
+  }
+
+  /** 歌曲通用操作菜单：播放、下一首播放、加入队列、收藏、复制信息。 */
+  private openTrackContextMenu(
+    x: number,
+    y: number,
+    track: OnlineTrack,
+    queue: OnlineTrack[],
+    index: number,
+  ): void {
+    const current = playerState().track;
+    const isCurrent = !!current && current.source === track.source && current.id === track.id;
+    const isLocal = track.source === 'local';
+    const liked = isLocal ? isLocalLiked(track) : this.searchLiked.get(`${track.source}:${track.id}`) === true;
+    const items: TrackMenuItem[] = [
+      {
+        label: '立即播放',
+        hint: 'Enter',
+        run: () => {
+          const list = queue.length > 0 ? queue : [track];
+          playQueue(list, queue.length > 0 ? Math.max(0, Math.min(index, list.length - 1)) : 0, true);
+        },
+      },
+      {
+        label: '下一首播放',
+        disabled: isCurrent,
+        run: () => {
+          queueNext(track);
+          toast(`已设为下一首播放：${track.title}`);
+        },
+      },
+      {
+        label: '加入播放队列',
+        run: () => {
+          toast(queueAppend(track) ? '已加入播放队列' : '已在播放队列中');
+        },
+      },
+      {
+        label: isLocal
+          ? liked
+            ? '取消本地收藏'
+            : '收藏到本地「我喜欢的音乐」'
+          : liked
+            ? '取消收藏'
+            : '收藏到「我喜欢的音乐」',
+        run: () => {
+          void this.applyTrackLiked(track, !liked);
+        },
+      },
+      {
+        label: '复制歌曲信息',
+        run: () => this.copyTrackInfo(track),
+      },
+    ];
+    openTrackMenu({ x, y, items });
+  }
+
+  /** 右键菜单里的收藏动作：本地走 localStorage，在线走平台接口（乐观提示，失败回滚提示）。 */
+  private async applyTrackLiked(track: OnlineTrack, liked: boolean): Promise<void> {
+    if (track.source === 'local') {
+      const now = toggleLocalLike(track);
+      toast(now ? '已收藏到本地「我喜欢的音乐」' : '已取消本地收藏');
+      return;
+    }
+    try {
+      if (liked) await addLikedTrack(track.source, track.id);
+      else await removeLikedTrack(track.source, track.id);
+      this.searchLiked.set(`${track.source}:${track.id}`, liked);
+      this.likedCache.clear();
+      toast(liked ? '已收藏到「我喜欢的音乐」' : '已取消收藏');
+      // 正停在喜欢墙且取消收藏：就地移除这一行，避免还留在列表里。
+      if (!liked && this.wall.kind === 'liked' && !this.wallHost.classList.contains('is-hidden')) {
+        const tracks = this.wall.tracks.filter((item) => !(item.source === track.source && item.id === track.id));
+        this.wall = {
+          ...this.wall,
+          tracks,
+          subtitle: this.wall.subtitle.replace(/\d[\d,]* 首/, `${tracks.length} 首`),
+        };
+        this.renderWall(true);
+      }
+    } catch (err) {
+      console.warn('[app] track menu like failed', err);
+      toast(err instanceof Error ? err.message : '收藏状态更新失败', 'error');
+    }
+  }
+
+  /** 复制「歌名 - 歌手」，方便贴到别处。 */
+  private copyTrackInfo(track: OnlineTrack): void {
+    const text = track.artist ? `${track.title} - ${track.artist}` : track.title;
+    if (!navigator.clipboard?.writeText) {
+      toast('当前环境不支持剪贴板', 'error');
+      return;
+    }
+    void navigator.clipboard
+      .writeText(text)
+      .then(() => toast('已复制歌曲信息'))
+      .catch(() => toast('复制失败', 'error'));
   }
 
   /* ------------------------------------------------------------------ */
@@ -2650,12 +2831,12 @@ export class App {
       });
       // 封面：与海报网格同一套补图逻辑——没有内嵌封面时先去线上找一张，
       // 找到后再回填，避免横条视图停在程序化渐变占位图上（网格会补、横条不补的 bug）。
-      const coverImg = h('img', { src: onlineArtwork(track), loading: 'lazy' });
+      const coverImg = h('img', { src: onlineArtwork(track, 120), loading: 'lazy' });
       if (!track.cover) {
         void lookupCover(track).then((found) => {
           if (!found) return;
           track.cover = found;
-          coverImg.src = onlineArtwork(track);
+          coverImg.src = onlineArtwork(track, 120);
         });
       }
 
@@ -2688,7 +2869,7 @@ export class App {
         localRow ? likeBtn : downloadBtn,
         localRow ? moreBtn : likeBtn,
       );
-      row.addEventListener('click', () => playQueue(tracks, index, true));
+      row.addEventListener('click', () => this.playWithPreviewHandoff(tracks, index));
       if (localRow) {
         const artistEl = row.querySelector<HTMLElement>('.track-artist');
         if (artistEl) {
@@ -2933,7 +3114,7 @@ export class App {
           const row = h(
             'button',
             { class: 'row', type: 'button', title: `把「${track.title}」加入歌单` },
-            h('div', { class: 'row-cover' }, h('img', { src: onlineArtwork(track), loading: 'lazy' })),
+            h('div', { class: 'row-cover' }, h('img', { src: onlineArtwork(track, 120), loading: 'lazy' })),
             h(
               'div',
               { class: 'row-meta' },
@@ -3141,6 +3322,15 @@ export class App {
           },
         ),
         toggleField(
+          '自启动时不显示窗口',
+          '开机自启后只驻留托盘，不弹出主界面；手动打开仍正常显示',
+          settings.general.autoStartHidden,
+          (value) => {
+            patchSettings({ general: { autoStartHidden: value } });
+            toast(value ? '自启动后将静默驻留托盘' : '自启动后将显示主界面');
+          },
+        ),
+        toggleField(
           '监控本地文件夹',
           '本地曲库文件夹里的新增/删除歌曲会实时同步；关闭后需要手动重新扫描',
           settings.general.watchLocalFolder,
@@ -3148,20 +3338,6 @@ export class App {
             patchSettings({ general: { watchLocalFolder: value } });
             toast(value ? '已开启本地文件夹监控' : '已暂停本地文件夹监控');
           },
-        ),
-        segField<InterfaceMode>(
-          '首页模式',
-          [...INTERFACE_MODE_OPTIONS],
-          this.interfaceMode,
-          (value) => {
-            if (value === this.interfaceMode) return;
-            this.interfaceMode = value;
-            saveInterfaceMode(value);
-            this.applyInterfaceMode();
-            void this.showHome();
-            toast(value === 'mgplane' ? '已切换到平面世界' : '已切换到经典首页');
-          },
-          '经典首页保持原来的左栏 + 信息流；平面世界是第二种使用方式：整块画布可自由拖动缩放、封面原地展开、不跳页。两种模式互不影响，随时可切回。',
         ),
       );
 
@@ -3321,9 +3497,45 @@ export class App {
           (value) => patchSettings({ playback: { fadeVocalTailMs: value } }),
           (value) => (value === 0 ? '关闭' : `${value} ms`),
         ),
+        toggleField(
+          '响度均衡',
+          '按每首歌的整体响度自动补偿音量（目标约 -14 LUFS），QQ / 网易云 / 本地混播不再忽大忽小；需要该曲已分析。',
+          loudnessEnabled(),
+          (value) => {
+            setLoudnessEnabled(value);
+            this.applyLoudnessNow();
+          },
+        ),
+        toggleField(
+          '夜间模式',
+          '压低峰值、抬高低处，小音量下更耐听；依赖响度均衡的分析数据。',
+          nightModeEnabled(),
+          (value) => {
+            setNightModeEnabled(value);
+            this.applyLoudnessNow();
+          },
+        ),
         sliderField('搜索结果条数', 10, 50, 5, settings.playback.searchLimit, (value) => {
           patchSettings({ playback: { searchLimit: value } });
         }, (value) => `${value} 条`),
+        segField(
+          '悬停试听延迟',
+          chorusPreviewDelayChoices(),
+          String(readChorusPreviewSettings().delayMs),
+          (value) => {
+            writeChorusPreviewSettings({ delayMs: Number(value) });
+          },
+          '鼠标在封面或歌曲行上停留多久开始试听；关闭后不再自动试听。试听中点击这首歌会从试听位置接着播。',
+        ),
+        segField<'intro' | 'chorus'>(
+          '预听起点',
+          CHORUS_PREVIEW_START_CHOICES,
+          readChorusPreviewSettings().startAt,
+          (value) => {
+            writeChorusPreviewSettings({ startAt: value });
+          },
+          '从曲首开始更接近「先听个开头」；从高潮开始会直接进副歌。点击播放都会从预听听到的位置继续。',
+        ),
         ...autoPlayFields(),
         (() => {
           const panel = buildSleepTimerPanel();
@@ -3954,6 +4166,12 @@ export class App {
       paint();
     }
 
+    function applyMediaKeys(value: boolean): void {
+      patchSettings({ shortcuts: { alwaysHandleMediaKeys: value } });
+      toast(value ? '媒体键将始终控制 Zilux2' : '媒体键已改回跟随系统当前播放器');
+      paint();
+    }
+
     const toggles = this.pillSwitch(getSettings().shortcuts.enabled, applyEnabled);
     const enabledField = h(
       'div',
@@ -3971,6 +4189,27 @@ export class App {
       const target = event.target;
       if (target instanceof Element && target.closest('.pill-switch')) return;
       applyEnabled(!getSettings().shortcuts.enabled);
+    });
+
+    const mediaKeyToggles = this.pillSwitch(getSettings().shortcuts.alwaysHandleMediaKeys, applyMediaKeys);
+    const mediaKeysField = h(
+      'div',
+      { class: 'field', 'data-qa': 'shortcuts-media-keys' },
+      h(
+        'div',
+        {},
+        h('div', { class: 'field-label', text: '媒体键始终控制 Zilux2' }),
+        h('div', {
+          class: 'field-hint',
+          text: '键盘上的播放/暂停、上一首、下一首（以及键盘驱动映射成这些媒体键的自定义键）始终切 Zilux2 的歌，即使正在用别的窗口或别的播放器；关闭后跟随系统当前播放器。',
+        }),
+      ),
+      mediaKeyToggles.root,
+    );
+    mediaKeysField.addEventListener('click', (event) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest('.pill-switch')) return;
+      applyMediaKeys(!getSettings().shortcuts.alwaysHandleMediaKeys);
     });
 
     function patchShortcut(action: ShortcutAction, binding: string): void {
@@ -4008,6 +4247,8 @@ export class App {
       const current = getSettings();
       toggles.setValue(current.shortcuts.enabled);
       enabledField.dataset.enabled = String(current.shortcuts.enabled);
+      mediaKeyToggles.setValue(current.shortcuts.alwaysHandleMediaKeys);
+      mediaKeysField.dataset.enabled = String(current.shortcuts.alwaysHandleMediaKeys);
       for (const [action, refs] of rows) {
         const display = formatShortcutForDisplay(current.shortcuts[action]);
         refs.key.textContent = display || '未设置';
@@ -4144,6 +4385,7 @@ export class App {
     const wrapper = section(
       '快捷键',
       enabledField,
+      mediaKeysField,
       list,
       h(
         'div',
@@ -4169,7 +4411,15 @@ export class App {
         { class: 'field' },
         h('div', {
           class: 'shortcut-tip',
-          text: '系统媒体键（键盘上的播放 / 暂停、上一首、下一首）：Zilux2 是当前播放器时由 Zilux2 接管，即使系统媒体键已被 QQ 音乐等程序抢占也能用；其它程序在放歌时仍交给它们，保持系统原生「媒体键跟着当前播放器走」的习惯。',
+          text: '系统媒体键（键盘上的播放 / 暂停、上一首、下一首）：默认始终由 Zilux2 接管——键盘驱动把自定义键映射成这些媒体键时，切到别的窗口也照样切歌；关闭上面的开关后，媒体键交还给系统当前播放器，保持原生「媒体键跟着当前播放器走」的习惯。',
+        }),
+      ),
+      h(
+        'div',
+        { class: 'field' },
+        h('div', {
+          class: 'shortcut-tip',
+          text: '窗口内快捷操作：空格播放 / 暂停，M 静音，Shift + ← / → 后退 / 前进 5 秒，Alt + ← / → 上一首 / 下一首，数字 1–4 记 / 跳热 cue（Shift + 数字清除），L 循环当前 4 小节，/ 或 Ctrl + F 打开搜索，Esc 关闭当前面板。',
         }),
       ),
     );
@@ -4636,6 +4886,9 @@ export class App {
       this.openLocalArtist(current.artist || '未知歌手');
     });
     this.pbSource = h('span', { class: 'pb-source', text: '' });
+    this.pbMiniTime = h('span', { class: 'pb-mini-time', text: '0:00 / 0:00' });
+    this.pbMiniNext = h('span', { class: 'pb-mini-next is-empty', text: '' });
+    this.pbMiniLine = h('div', { class: 'pb-mini-line' }, this.pbMiniTime, this.pbMiniNext);
 
     this.pbCoverWrap = h(
       'div',
@@ -4644,6 +4897,11 @@ export class App {
     );
     // 播放条封面：没进歌词就进，已经在歌词页就退出（同一个按钮来回切）。
     const openLyricsFromCover = () => {
+      // 迷你窗只有 420×120，歌词页是整窗覆盖层，先退出迷你再进歌词。
+      if (this.miniMode) {
+        this.toggleMiniMode();
+        return;
+      }
       if (this.lyrics) this.closeLyrics();
       else this.openLyrics();
     };
@@ -4659,17 +4917,26 @@ export class App {
       { class: 'pb-meta is-clickable', role: 'button', tabindex: '0', title: '查看歌词' },
       h('div', { class: 'pb-title-line' }, this.pbTitle, this.pbSource),
       this.pbArtist,
+      this.pbMiniLine,
     );
     // 歌名/歌手这一块也能进出歌词；用 pointerdown 避免播放条展开位移吞掉 click
     this.pbMeta.addEventListener('pointerdown', (event) => {
       event.preventDefault();
       event.stopPropagation();
+      if (this.miniMode) {
+        this.toggleMiniMode();
+        return;
+      }
       if (this.lyrics) this.closeLyrics();
       else this.openLyrics();
     });
     this.pbMeta.addEventListener('keydown', (event) => {
       if (event.key !== 'Enter' && event.key !== ' ') return;
       event.preventDefault();
+      if (this.miniMode) {
+        this.toggleMiniMode();
+        return;
+      }
       if (this.lyrics) this.closeLyrics();
       else this.openLyrics();
     });
@@ -4698,7 +4965,25 @@ export class App {
     this.pbDur = h('span', { class: 'pb-time', text: '0:00' });
     this.pbFill = h('div', { class: 'track-fill' });
     const rail = h('div', { class: 'track-rail' }, this.pbFill);
-    const track = h('div', { class: 'track', title: '点击或拖动跳转' }, rail);
+    // 进度条上的标记：暖色带 = 无缝过渡区间，淡带 + 短竖线 = 能量最高的高潮段；
+    // 虚线带 = 小节循环区间，数字刻度 = 热 cue（1–4）。
+    this.pbMergeMark = h('div', { class: 'track-mark track-mark-merge is-off' });
+    this.pbClimaxBand = h('div', { class: 'track-mark track-mark-climax-band is-off' });
+    this.pbClimaxMark = h('div', { class: 'track-mark track-mark-climax is-off' });
+    this.pbLoopBand = h('div', { class: 'track-mark track-mark-loop is-off' });
+    this.pbCueMarks = [0, 1, 2, 3].map((slot) =>
+      h('div', { class: `track-mark track-mark-cue is-off track-mark-cue-${slot + 1}` }),
+    );
+    this.pbMarks = h(
+      'div',
+      { class: 'track-marks' },
+      this.pbLoopBand,
+      this.pbClimaxBand,
+      this.pbMergeMark,
+      this.pbClimaxMark,
+      ...this.pbCueMarks,
+    );
+    const track = h('div', { class: 'track', title: '点击或拖动跳转' }, rail, this.pbMarks);
     const seekTo = (clientX: number): void => {
       const rect = track.getBoundingClientRect();
       const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
@@ -4854,6 +5139,7 @@ export class App {
 
   /** 应用迷你态：只改页面布局；窗口尺寸/置顶由宿主负责。 */
   private applyMiniMode(enabled: boolean): void {
+    const wasMini = this.miniMode;
     this.endMiniTransition();
     this.miniMode = enabled;
     this.root.classList.toggle('is-mini', enabled);
@@ -4868,8 +5154,25 @@ export class App {
       this.closeSearchDock();
       if (this.lyrics) this.closeLyrics();
       closeDownloadPanel();
+    } else if (wasMini) {
+      this.beginMiniRestore();
     }
     this.paintMiniBtn();
+  }
+
+  /**
+   * 退出迷你的收尾：窗口已经长回原尺寸，过渡期被隐藏的界面此时一次性出现，
+   * 给顶层节点补一段很短的淡入，避免「纯色幕布 → 整页」的硬切。
+   */
+  private beginMiniRestore(): void {
+    if (this.miniRestoreTimer) window.clearTimeout(this.miniRestoreTimer);
+    this.root.classList.remove('is-mini-restored');
+    void this.root.offsetWidth;
+    this.root.classList.add('is-mini-restored');
+    this.miniRestoreTimer = window.setTimeout(() => {
+      this.miniRestoreTimer = 0;
+      this.root.classList.remove('is-mini-restored');
+    }, 280);
   }
 
   private paintMiniBtn(): void {
@@ -4921,10 +5224,14 @@ export class App {
       event.preventDefault();
       this.commitUpnextDrop(playerState().queue.length);
     });
+    const mixBtn = h('button', { class: 'btn upnext-mix', title: '按调性（Camelot）与 BPM 重排待播队列', text: '智能接歌' });
+    mixBtn.addEventListener('click', () => {
+      void this.runAutoMix();
+    });
     this.upnextPanel = h(
       'div',
       { class: 'upnext-panel' },
-      h('div', { class: 'upnext-head' }, h('div', { class: 'upnext-head-title', text: '待播队列' }), skip),
+      h('div', { class: 'upnext-head' }, h('div', { class: 'upnext-head-title', text: '待播队列' }), mixBtn, skip),
       this.upnextList,
       h('div', { class: 'upnext-hint', text: '拖动或 ↑↓ 调整顺序 · 双击播放 · 垃圾桶移出队列' }),
     );
@@ -5249,12 +5556,12 @@ export class App {
     if (this.quickTab === 'cover') {
       const track = playerState().track;
       const cover = h('img', { class: 'quick-cover', alt: '' });
-      if (track) cover.src = onlineArtwork(track);
+      if (track) cover.src = onlineArtwork(track, 300);
       if (track && !track.cover) {
         void lookupCover(track).then((found) => {
           if (!found) return;
           track.cover = found;
-          cover.src = onlineArtwork(track);
+          cover.src = onlineArtwork(track, 300);
         });
       }
       const like = h('button', { class: 'quick-like', title: '收藏', 'aria-label': '收藏' }, icon('heart', 16));
@@ -5996,7 +6303,7 @@ export class App {
       return;
     }
     // 跟随封面时必须先有正在播放的歌；自定义图片则随时可以铺。
-    const source = mode === 'image' ? this.appBgImage : track ? onlineArtwork(track) : '';
+    const source = mode === 'image' ? this.appBgImage : track ? onlineArtwork(track, 300) : '';
     if (!source) {
       this.root.classList.remove('is-app-bg');
       return;
@@ -6363,7 +6670,7 @@ export class App {
       const row = h(
         'li',
         { class: 'upnext-row' },
-        h('img', { class: 'upnext-cover', src: onlineArtwork(track), alt: '' }),
+        h('img', { class: 'upnext-cover', src: onlineArtwork(track, 120), alt: '' }),
         h(
           'div',
           { class: 'upnext-row-meta' },
@@ -6450,7 +6757,7 @@ export class App {
       this.closeUpNext();
       return;
     }
-    this.upnextCover.src = onlineArtwork(upcoming);
+    this.upnextCover.src = onlineArtwork(upcoming, 120);
     this.upnextTitle.textContent = upcoming.title;
     this.upnextArtist.textContent = upcoming.artist || '未知歌手';
     if (this.upnextOpen) this.renderUpNextList();
@@ -6501,6 +6808,12 @@ export class App {
       this.pbFill.style.width = '0%';
       this.pbCur.textContent = '00:00';
       this.pbDur.textContent = '00:00';
+      this.pbMiniTime.textContent = '0:00 / 0:00';
+      this.pbMiniNext.textContent = '';
+      this.pbMiniNext.classList.add('is-empty');
+      this.pbClimaxKey = '';
+      this.pbClimaxRange = null;
+      this.paintProgressMarks(null);
       this.pbLikeBtn.textContent = '';
       this.pbLikeBtn.append(icon('heart'));
       this.pbLikeBtn.classList.remove('is-liked');
@@ -6524,7 +6837,7 @@ export class App {
       // 只在换歌时改封面，并清掉上一首的兜底/重试标记。
       // 若每次状态同步都重设 src，失败的封面会不断重试、表现为疯狂闪烁。
       delete this.pbCover.dataset.coverFallback;
-      this.pbCover.src = onlineArtwork(track);
+      this.pbCover.src = onlineArtwork(track, 300);
       this.paintAppBg(track);
       if (!track.cover) {
         // 本地曲目常没有内嵌封面：去线上按歌名/歌手找一张
@@ -6533,17 +6846,19 @@ export class App {
           track.cover = found;
           const now = playerState().track;
           if (!now || `${now.source}:${now.id}` !== trackKey) return;
-          this.pbCover.src = onlineArtwork(track);
+          this.pbCover.src = onlineArtwork(track, 300);
           if (this.appBgMode !== 'none') this.paintAppBg(track);
           if (this.upnextCover && this.upnextTitle && this.upnextTitle.textContent) {
             const next = playerState().queue[playerState().index + 1];
-            if (next && `${next.source}:${next.id}` === trackKey) this.upnextCover.src = onlineArtwork(next);
+            if (next && `${next.source}:${next.id}` === trackKey) this.upnextCover.src = onlineArtwork(next, 120);
           }
           if (this.quickTab === 'cover') this.renderQuickBody();
         });
       }
       // 换歌即预载当前平台歌词，并在后台匹配其它平台的逐字歌词。
       void primeLyrics(track);
+      this.loadClimax(track);
+      refreshLoudness(track);
     }
     this.pbTitle.textContent = track.title;
     this.pbArtist.textContent = track.artist || '未知歌手';
@@ -6555,8 +6870,10 @@ export class App {
     this.pbPlayBtn.append(icon(state.playing ? 'pause' : 'play', 20));
     const ratio = state.durationMs > 0 ? Math.min(1, state.positionMs / state.durationMs) : 0;
     this.pbFill.style.width = `${(ratio * 100).toFixed(2)}%`;
+    this.paintProgressMarks(state);
     this.pbCur.textContent = fmtTime(state.positionMs);
     this.pbDur.textContent = fmtTime(state.durationMs);
+    this.paintMiniMeta(state);
     this.pbLikeBtn.textContent = '';
     this.pbLikeBtn.append(icon(state.liked ? 'heartFill' : 'heart'));
     this.pbLikeBtn.classList.toggle('is-liked', state.liked);
@@ -6582,6 +6899,27 @@ export class App {
     this.syncUpNext(state);
     this.upNextToast?.update(state);
     this.syncSeamlessHint(state);
+  }
+
+  /**
+   * 迷你态第三行（时间 / 下一首）：只在文本真的变化时写 DOM，避免播放器每秒同步时反复触发布局。
+   * 普通窗口里这一行由 `.pb-mini-line{display:none}` 隐藏。
+   */
+  private paintMiniMeta(state: PlayerState): void {
+    if (!this.pbMiniTime || !this.pbMiniNext) return;
+    const time = `${fmtTime(state.positionMs)} / ${fmtTime(state.durationMs)}`;
+    if (this.pbMiniTime.textContent !== time) this.pbMiniTime.textContent = time;
+    const upcoming = state.queue[state.index + 1];
+    const label = upcoming
+      ? `下一首 · ${upcoming.title}`
+      : state.queue.length > 1
+        ? '已是队列最后一首'
+        : '';
+    if (this.pbMiniNext.textContent !== label) this.pbMiniNext.textContent = label;
+    this.pbMiniNext.classList.toggle('is-empty', label === '');
+    this.pbMiniNext.title = upcoming
+      ? `${upcoming.title}${upcoming.artist ? ` · ${upcoming.artist}` : ''}`
+      : '';
   }
 
   /**
@@ -6628,6 +6966,187 @@ export class App {
     window.clearTimeout(this.seamlessHintTimer);
     this.seamlessHintTimer = 0;
     if (this.seamlessHint) this.seamlessHint.classList.remove('is-visible');
+  }
+
+  /**
+   * 取当前曲目的高潮段，只用于进度条标记：优先用宿主 p0-7 给出的 8 小节窗口
+   * （climaxStartMs/climaxEndMs），旧宿主/旧缓存回退到 label === 'climax' 的 section。
+   * 分析失败/没有高潮段时静默不画；换歌后旧结果按 pbClimaxKey 丢弃。
+   */
+  /** 「场景」页：4 张按分析结果分桶的智能歌单。 */
+  private openMoodsPage(): void {
+    this.wallPager = null;
+    this.setRailActive('moods');
+    this.wall = {
+      kind: 'moods',
+      title: '场景歌单',
+      subtitle: '用节拍、能量与调性自动分桶 · 点开生成并可直接播放',
+      tracks: [],
+    };
+    this.renderWall();
+  }
+
+  private buildMoodGrid(): HTMLElement {
+    const grid = h('div', { class: 'disc-grid' });
+    for (const def of MOOD_DEFS) {
+      const cover = h('div', { class: 'mood-cover' }, h('div', { class: 'mood-glow' }), icon('sparkle', 30));
+      const tile = h(
+        'button',
+        { class: 'ui-tile mood-tile', title: def.hint },
+        cover,
+        h('span', { class: 'ui-tile-name', text: def.label }),
+        h('span', { class: 'ui-tile-meta', text: def.hint }),
+      );
+      tile.addEventListener('click', () => void this.openMood(def));
+      grid.append(tile);
+    }
+    return grid;
+  }
+
+  private async openMood(def: MoodDef): Promise<void> {
+    this.setRailActive('moods');
+    this.wall = { kind: 'mood', title: `场景 · ${def.label}`, subtitle: `${def.hint} · 正在分析…`, tracks: [] };
+    this.renderWall();
+    const pool = await this.collectMoodPool();
+    const match = await matchMood(def, pool);
+    if (this.wall.kind !== 'mood' || this.wall.title !== `场景 · ${def.label}`) return;
+    this.wall = {
+      kind: 'mood',
+      title: `场景 · ${def.label}`,
+      subtitle: match.tracks.length > 0 ? `${def.hint} · ${match.tracks.length} 首（已分析 ${match.analyzed} 首）` : `${def.hint} · 还没有可用的分析结果，先播放几首歌再试`,
+      tracks: match.tracks,
+    };
+    this.renderWall(true);
+  }
+
+  private async collectMoodPool(): Promise<OnlineTrack[]> {
+    const sources: OnlineSource[] = [];
+    for (const account of getAccounts()) {
+      if (account.loggedIn) sources.push(account.source as OnlineSource);
+    }
+    const lists = await Promise.all([
+      ...sources.map((source) => this.fetchLikedTracks(source)),
+      fetchRecentMerged(200).catch(() => [] as OnlineTrack[]),
+    ]);
+    const seen = new Set<string>();
+    const pool: OnlineTrack[] = [];
+    for (const list of lists) {
+      for (const track of list ?? []) {
+        const key = `${track.source}:${track.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        pool.push(track);
+        if (pool.length >= 160) return pool;
+      }
+    }
+    return pool;
+  }
+
+  /** 智能接歌：按调性与 BPM 重排待播队列（AutoMix）。 */
+  private async runAutoMix(): Promise<void> {
+    const before = playerState();
+    const beforeNext = before.queue[before.index + 1];
+    const result = await orderUpcomingByMix();
+    if (!result) {
+      toast('待播队列不足，先加几首歌再试');
+      return;
+    }
+    this.renderUpNextList(true);
+    const after = playerState();
+    const afterNext = after.queue[after.index + 1];
+    const sameNext =
+      !!beforeNext &&
+      !!afterNext &&
+      beforeNext.source === afterNext.source &&
+      beforeNext.id === afterNext.id;
+    const coverage = result.analyzed >= 8 ? '' : '；多播放几首、分析变多后排序会更准';
+    const nextNote = afterNext
+      ? sameNext
+        ? `；下一首仍是「${afterNext.title}」${result.analyzed < 8 ? '（分析数据不足时排序可能不变）' : ''}`
+        : `；下一首换成「${afterNext.title}」`
+      : '';
+    toast(`已按调性 / BPM 重排 ${result.total} 首${coverage}${nextNote}`);
+    // 重排后计划会重建；这里补一次重绘，暂停状态下也能立刻看到新的渐变位置。
+    this.paintProgressMarks(playerState());
+  }
+
+  /** 设置页改了响度均衡 / 夜间模式后立即对当前曲目重算补偿。 */
+  private applyLoudnessNow(): void {
+    refreshLoudness(playerState().track);
+  }
+
+  private loadClimax(track: OnlineTrack): void {
+    const key = `${track.source}:${track.id}`;
+    this.pbClimaxKey = key;
+    this.pbClimaxRange = null;
+    void analysisForTrack(track).then(
+      (result) => {
+        if (this.pbClimaxKey !== key) return;
+        const analysis = result.analysis;
+        const windowStart = analysis?.climaxStartMs ?? 0;
+        const windowEnd = analysis?.climaxEndMs ?? 0;
+        if (windowStart > 0 && windowEnd > windowStart) {
+          this.pbClimaxRange = { from: windowStart, to: windowEnd };
+        } else {
+          const section = analysis?.sections?.find((item) => item.label === 'climax');
+          if (!section || section.endMs <= section.startMs) return;
+          this.pbClimaxRange = { from: section.startMs, to: section.endMs };
+        }
+        this.paintProgressMarks(playerState());
+      },
+      () => {
+        /* 分析失败只是少一个标记，不影响播放 */
+      },
+    );
+  }
+
+  /** 进度条标记：暖色带 = 无缝过渡区间，淡带 + 短竖线 = 能量最高的高潮段。 */
+  private paintProgressMarks(state: PlayerState | null): void {
+    if (!this.pbMarks) return;
+    const duration = state?.durationMs ?? 0;
+    const ready = Boolean(state?.track) && duration > 0;
+    const debug = readCrossfadeDebug();
+    const mergeable =
+      ready &&
+      debug.enabled &&
+      debug.phase === 'prepared' &&
+      debug.fadeStartPosMs > 0 &&
+      debug.fadeMs > 0 &&
+      debug.fadeStartPosMs < duration;
+    this.pbMergeMark.classList.toggle('is-off', !mergeable);
+    if (mergeable) {
+      const from = debug.fadeStartPosMs / duration;
+      const to = Math.min(1, (debug.fadeStartPosMs + debug.fadeMs) / duration);
+      this.pbMergeMark.style.left = `${(from * 100).toFixed(2)}%`;
+      this.pbMergeMark.style.width = `${Math.max(0.5, (to - from) * 100).toFixed(2)}%`;
+    }
+    const climax = ready ? this.pbClimaxRange : null;
+    const showClimax = Boolean(climax) && climax!.from >= 0 && climax!.from < duration;
+    this.pbClimaxBand.classList.toggle('is-off', !showClimax);
+    this.pbClimaxMark.classList.toggle('is-off', !showClimax);
+    if (showClimax && climax) {
+      const from = climax.from / duration;
+      const to = Math.min(1, climax.to / duration);
+      this.pbClimaxBand.style.left = `${(from * 100).toFixed(2)}%`;
+      this.pbClimaxBand.style.width = `${Math.max(0.6, (to - from) * 100).toFixed(2)}%`;
+      this.pbClimaxMark.style.left = `${(from * 100).toFixed(2)}%`;
+    }
+    const loop = ready ? getBarLoop() : null;
+    const showLoop = Boolean(loop) && loop!.endMs > loop!.startMs;
+    this.pbLoopBand.classList.toggle('is-off', !showLoop);
+    if (showLoop && loop) {
+      const from = loop.startMs / duration;
+      const to = Math.min(1, loop.endMs / duration);
+      this.pbLoopBand.style.left = `${(from * 100).toFixed(2)}%`;
+      this.pbLoopBand.style.width = `${Math.max(0.6, (to - from) * 100).toFixed(2)}%`;
+    }
+    const cues = ready ? getHotCues() : [];
+    this.pbCueMarks.forEach((mark, slot) => {
+      const ms = cues[slot] ?? -1;
+      const show = ready && ms >= 0 && ms < duration;
+      mark.classList.toggle('is-off', !show);
+      if (show) mark.style.left = `${Math.max(0, Math.min(99.8, (ms / duration) * 100)).toFixed(2)}%`;
+    });
   }
 
   /** 切歌前把当前封面/文字复制一份留着做「滑出」动画。 */
@@ -6807,7 +7326,6 @@ export class App {
     this.sheet?.close();
     this.closeLogin();
     this.classicHome?.dispose();
-    this.mgHome?.dispose();
     this.root.remove();
   }
 
@@ -6852,9 +7370,39 @@ export class App {
   }
 
   /**
+   * 私人漫游：先播当前这一批（网易云一次只回 3 首左右），再注册续接器；
+   * 播到最后一首时由播放器自动拉下一批追加进队列，不再循环回这一批的第一首。
+   */
+  private playRadio(tracks: OnlineTrack[]): void {
+    if (tracks.length === 0) return;
+    playQueue(tracks, 0, true);
+    setQueueRefill(async () => fetchRadio(12));
+  }
+
+  /**
    * 首页点播放：先用卡片里的预览列表立即开播，再异步补全整张列表，
    * 避免列表循环很快绕回第一首。
    */
+  /**
+   * 列表/海报点击播放：如果这首歌正在悬停试听，就把试听元素直接交给播放器继续放，
+   * 不重载、不 seek、不打断声音；否则按正常流程播放。
+   */
+  private playWithPreviewHandoff(queue: OnlineTrack[], index: number): void {
+    const track = queue[index];
+    const element = track ? takePreviewElement(track) : null;
+    if (element && track) {
+      if (adoptPlayingElement(element, track, queue, index)) return;
+      try {
+        element.pause();
+        element.removeAttribute('src');
+        element.load();
+      } catch {
+        /* 元素已失效 */
+      }
+    }
+    playQueue(queue, index);
+  }
+
   private playFromHome(tracks: OnlineTrack[], index: number, scope: PlayScope): void {
     const safeIndex = Math.max(0, Math.min(index, Math.max(0, tracks.length - 1)));
     const start = tracks[safeIndex];
@@ -6921,6 +7469,67 @@ export class App {
 
   nextTrack(): void {
     next();
+  }
+
+  /** M：静音 / 恢复音量。只改本次会话音量，不回写设置，重启后仍是设置里的音量。 */
+  toggleMute(): void {
+    const state = playerState();
+    if (state.volume > 0) {
+      this.muteRestore = state.volume;
+      setVolume(0);
+      this.volumeInput.value = '0';
+      this.paintVolumeIcon(0);
+      toast('已静音 · 再按 M 恢复');
+      return;
+    }
+    const restore = this.muteRestore > 0 ? this.muteRestore : 0.4;
+    setVolume(restore);
+    const percent = Math.round(restore * 100);
+    this.volumeInput.value = String(percent);
+    this.paintVolumeIcon(percent);
+    toast('已恢复音量');
+  }
+
+  /** Shift + ←/→：快退 / 快进 5 秒。 */
+  seekBy(deltaMs: number): void {
+    const state = playerState();
+    if (!state.track || state.durationMs <= 0) return;
+    seek(Math.max(0, Math.min(state.durationMs, state.positionMs + deltaMs)));
+  }
+
+  /** 数字键 1–4：空位记热 cue，已记过就跳过去。 */
+  hotCue(slot: number): void {
+    const result = toggleHotCue(slot);
+    if (result.action === 'none') {
+      toast('先播放一首歌，再按数字键记热 cue');
+      return;
+    }
+    const label = this.cueLabel(result.ms);
+    toast(result.action === 'set' ? `已记下热 cue ${slot} · ${label}` : `跳到热 cue ${slot} · ${label}`);
+  }
+
+  /** Shift + 数字键：清除热 cue。 */
+  clearHotCue(slot: number): void {
+    toast(clearHotCue(slot) ? `已清除热 cue ${slot}` : `热 cue ${slot} 本来就是空的`);
+  }
+
+  /** L：按当前小节循环（4 小节），再按取消。 */
+  toggleLoop(): void {
+    const result = toggleBarLoop(4);
+    if (!result.ok) {
+      toast('还没分析出小节，先播放一下再试');
+      return;
+    }
+    if (!result.loop) {
+      toast('小节循环已关闭');
+      return;
+    }
+    toast(`4 小节循环 · ${this.cueLabel(result.loop.startMs)} – ${this.cueLabel(result.loop.endMs)}`);
+  }
+
+  private cueLabel(ms: number): string {
+    const total = Math.max(0, Math.round(ms / 1000));
+    return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
   }
 
   prevTrack(): void {

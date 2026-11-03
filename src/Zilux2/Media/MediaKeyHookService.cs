@@ -7,8 +7,9 @@ namespace Zilux2.Media;
 /// 系统媒体键接管。Windows 的媒体键（播放/暂停、上一首、下一首）会被别的程序用
 /// RegisterHotKey 抢注（例如 QQ 音乐），一旦被抢注，本机 SMTC 就永远收不到 ButtonPressed，
 /// 媒体键会一直控制那个程序。底层键盘钩子（WH_KEYBOARD_LL）在注册争抢之外仍能看到这些按键，
-/// 所以这里在「Zilux2 是当前媒体会话」时把媒体键吞下、走自家命令链，其余情况原样放行——
-/// 尽量贴近系统「媒体键跟着当前播放器走」的原生行为（Windows 会把媒体键优先交给当前媒体会话）。
+/// 所以这里在 shouldHandle() 为 true 时把媒体键吞下、走自家命令链，否则原样放行。
+/// 判据由调用方决定（MainWindow.InstallMediaKeyHook）：默认「媒体键始终控制 Zilux2」，
+/// 关闭 shortcuts.alwaysHandleMediaKeys 后退回「媒体键跟着当前播放器走」的原生行为。
 /// </summary>
 internal sealed class MediaKeyHookService : IDisposable
 {

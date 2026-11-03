@@ -10,7 +10,7 @@ namespace Zilux2.Analysis;
 /// </summary>
 internal static class BeatAnalyzer
 {
-    internal const string AnalyzerVersion = "p0-5";
+    internal const string AnalyzerVersion = "p0-11";
 
     private const int WindowSize = 1024;
     private const int HopSize = 512;
@@ -23,6 +23,35 @@ internal static class BeatAnalyzer
     private const int MaxDownbeats = 400;
     private const int MaxPhraseStarts = 64;
     private const int MinPhraseBars = 8;
+    /// <summary>标高潮段所需的最少小节数（约 15~20 秒）。</summary>
+    private const int MinClimaxBars = 8;
+    /// <summary>高潮标记最多覆盖的小节数（副歌通常 16 小节；超出的部分不标，避免占掉半条进度条）。</summary>
+    private const int MaxClimaxBars = 16;
+    /// <summary>高潮标记最多占整曲时长的比例（短歌里 16 小节也可能太长）。</summary>
+    private const double MaxClimaxWidthRatio = 0.12;
+    /// <summary>高潮标记最后用的小窗：没有重复副歌时，只标能量最高的 8 小节。</summary>
+    private const int FallbackClimaxBars = 8;
+    /// <summary>两个段落被认定为「同一段副歌」的音色+能量轮廓余弦相似度下限。</summary>
+    private const double MinChorusSimilarity = 0.88;
+    /// <summary>比较段落轮廓时的重采样点数（按段落长度归一，16 小节和 12 小节也能对齐）。</summary>
+    private const int SimilarityPoints = 12;
+    private const double MinClimaxEnergyRatio = 1.08;
+    private const int ChromaBins = 12;
+    /// <summary>音级能量只统计主旋律/人声范围内的频率。</summary>
+    private const double MinChromaHz = 65.0;
+    private const double MaxChromaHz = 2000.0;
+
+    /// <summary>Krumhansl 大调调性轮廓（相对主音的音级稳定度）。</summary>
+    private static readonly double[] MajorProfile = { 6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88 };
+
+    /// <summary>Krumhansl 小调调性轮廓。</summary>
+    private static readonly double[] MinorProfile = { 6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17 };
+
+    /// <summary>Camelot 轮盘：大调音级 → 编号（1~12），B 面。</summary>
+    private static readonly int[] CamelotMajor = { 8, 3, 10, 5, 12, 7, 2, 9, 4, 11, 6, 1 };
+
+    /// <summary>Camelot 轮盘：小调音级 → 编号（1~12），A 面。</summary>
+    private static readonly int[] CamelotMinor = { 5, 12, 7, 2, 9, 4, 11, 6, 1, 8, 3, 10 };
 
     private static readonly float[] Hann = CreateHann();
 
@@ -53,7 +82,7 @@ internal static class BeatAnalyzer
         var lowEnergy = new float[frameCount];
         var midEnergy = new float[frameCount];
         var highEnergy = new float[frameCount];
-        ComputeOnsets(samples, frameCount, sampleRate, flux, lowEnergy, midEnergy, highEnergy);
+        ComputeOnsets(samples, frameCount, sampleRate, flux, lowEnergy, midEnergy, highEnergy, out var chromaFrames);
 
         var onset = NormalizeOnsets(flux);
         var (bpm, bpmConfidence) = EstimateTempo(onset, fps, out _);
@@ -87,8 +116,10 @@ internal static class BeatAnalyzer
 
         var downbeats = BuildDownbeats(firstDownbeatMs, beatIntervalMs, meter, durationMs, out var barCount);
         var phraseStarts = DetectPhrases(
-            downbeats, lowEnergy, midEnergy, highEnergy, frameCount, fps, out var barFeatures, durationMs);
-        var sections = BuildSections(phraseStarts, barFeatures, durationMs);
+            downbeats, lowEnergy, midEnergy, highEnergy, chromaFrames, frameCount, fps, out var barFeatures, out var barChroma, durationMs);
+        var sections = BuildSections(
+            phraseStarts, downbeats, barFeatures, barChroma, durationMs,
+            out var climaxStartMs, out var climaxEndMs, out var cueInMs, out var cueOutMs);
 
         // Beat tracking pass: used for drift diagnostics only (the output grid is constant tempo).
         var trackedBeats = TrackBeats(onset, intervalFrames);
@@ -120,9 +151,150 @@ internal static class BeatAnalyzer
         payload.Downbeats = downbeats;
         payload.PhraseStartsMs = phraseStarts;
         payload.BarCount = barCount;
+        payload.ClimaxStartMs = Math.Round(climaxStartMs, 1);
+        payload.ClimaxEndMs = Math.Round(climaxEndMs, 1);
+        payload.CueInMs = Math.Round(cueInMs, 1);
+        payload.CueOutMs = Math.Round(cueOutMs, 1);
+        var (key, keyMode) = DetectKey(chromaFrames, frameCount);
+        payload.Key = key;
+        payload.KeyMode = keyMode;
+        payload.Camelot = key >= 0 ? CamelotOf(key, keyMode) : string.Empty;
+        var (lufs, peakDb) = MeasureLoudness(samples);
+        payload.Energy = Math.Round(ComputeEnergy(lowEnergy, midEnergy, highEnergy, frameCount, lufs), 3);
+        payload.LoudnessLufs = Math.Round(lufs, 1);
+        payload.PeakDb = Math.Round(peakDb, 1);
         payload.Sections = sections;
         payload.Warnings = warnings.Distinct(StringComparer.Ordinal).ToArray();
         return payload;
+    }
+
+    /// <summary>按 Krumhansl 轮廓做调性识别：返回主音音级（0~11）与调式；识别不出返回 (-1, "")。</summary>
+    private static (int Key, string Mode) DetectKey(float[] chromaFrames, int frameCount)
+    {
+        var chroma = new double[12];
+        for (var frame = 0; frame < frameCount; frame++)
+        {
+            for (var bin = 0; bin < ChromaBins; bin++)
+            {
+                chroma[bin] += chromaFrames[frame * ChromaBins + bin];
+            }
+        }
+
+        var total = 0.0;
+        for (var bin = 0; bin < ChromaBins; bin++)
+        {
+            total += chroma[bin];
+        }
+
+        if (total <= 0)
+        {
+            return (-1, string.Empty);
+        }
+
+        var bestScore = double.NegativeInfinity;
+        var bestKey = -1;
+        var bestMode = string.Empty;
+        for (var tonic = 0; tonic < 12; tonic++)
+        {
+            var major = Correlate(chroma, MajorProfile, tonic);
+            if (major > bestScore)
+            {
+                bestScore = major;
+                bestKey = tonic;
+                bestMode = "major";
+            }
+
+            var minor = Correlate(chroma, MinorProfile, tonic);
+            if (minor > bestScore)
+            {
+                bestScore = minor;
+                bestKey = tonic;
+                bestMode = "minor";
+            }
+        }
+
+        return (bestKey, bestMode);
+    }
+
+    /// <summary>音级能量与调性轮廓的皮尔逊相关（轮廓相对主音旋转）。</summary>
+    private static double Correlate(double[] chroma, double[] profile, int tonic)
+    {
+        double meanChroma = 0;
+        double meanProfile = 0;
+        for (var index = 0; index < 12; index++)
+        {
+            meanChroma += chroma[index];
+            meanProfile += profile[index];
+        }
+
+        meanChroma /= 12;
+        meanProfile /= 12;
+
+        double cov = 0;
+        double varChroma = 0;
+        double varProfile = 0;
+        for (var index = 0; index < 12; index++)
+        {
+            var value = chroma[(tonic + index) % 12] - meanChroma;
+            var reference = profile[index] - meanProfile;
+            cov += value * reference;
+            varChroma += value * value;
+            varProfile += reference * reference;
+        }
+
+        var denominator = Math.Sqrt(varChroma * varProfile);
+        return denominator > 1e-9 ? cov / denominator : 0;
+    }
+
+    private static string CamelotOf(int key, string mode) =>
+        mode == "minor" ? $"{CamelotMinor[key]}A" : $"{CamelotMajor[key]}B";
+
+    /// <summary>0~1 的听感能量：以整体响度为主，叠一点高频占比（亮而炸的曲子偏高）。</summary>
+    private static double ComputeEnergy(float[] low, float[] mid, float[] high, int frameCount, double lufs)
+    {
+        if (frameCount <= 0)
+        {
+            return 0;
+        }
+
+        var total = 0.0;
+        var highSum = 0.0;
+        for (var i = 0; i < frameCount; i++)
+        {
+            total += low[i] + mid[i] + high[i];
+            highSum += high[i];
+        }
+
+        var brightness = total > 0 ? highSum / total : 0;
+        var loudness = Math.Clamp((lufs + 22.0) / 16.0, 0.0, 1.0);
+        var bright = Math.Clamp((brightness - 0.10) / 0.30, 0.0, 1.0);
+        return Math.Clamp(0.72 * loudness + 0.28 * bright, 0.0, 1.0);
+    }
+
+    /// <summary>整曲响度近似（LUFS 口径）与峰值电平（dBFS）；用于页面响度均衡。</summary>
+    private static (double Lufs, double PeakDb) MeasureLoudness(float[] samples)
+    {
+        if (samples.Length == 0)
+        {
+            return (-70, -70);
+        }
+
+        double sumSquares = 0;
+        double peak = 0;
+        foreach (var sample in samples)
+        {
+            sumSquares += sample * sample;
+            var magnitude = Math.Abs((double)sample);
+            if (magnitude > peak)
+            {
+                peak = magnitude;
+            }
+        }
+
+        var meanSquare = sumSquares / samples.Length;
+        var lufs = meanSquare > 1e-12 ? -0.691 + 10 * Math.Log10(meanSquare) : -70;
+        var peakDb = peak > 1e-6 ? 20 * Math.Log10(peak) : -70;
+        return (lufs, peakDb);
     }
 
     private static float[] CreateHann()
@@ -143,12 +315,15 @@ internal static class BeatAnalyzer
         float[] flux,
         float[] lowEnergy,
         float[] midEnergy,
-        float[] highEnergy)
+        float[] highEnergy,
+        out float[] chromaFrames)
     {
+        chromaFrames = new float[frameCount * ChromaBins];
         var real = new float[WindowSize];
         var imag = new float[WindowSize];
         var previous = new float[WindowSize / 2 + 1];
         var binHz = sampleRate / (double)WindowSize;
+        var pitchBins = BuildChromaBins(binHz);
         for (var frame = 0; frame < frameCount; frame++)
         {
             var offset = frame * HopSize;
@@ -164,6 +339,7 @@ internal static class BeatAnalyzer
             double low = 0;
             double mid = 0;
             double high = 0;
+            var chromaOffset = frame * ChromaBins;
             for (var bin = 1; bin <= WindowSize / 2; bin++)
             {
                 var magnitude = Math.Sqrt(real[bin] * real[bin] + imag[bin] * imag[bin]) / WindowSize;
@@ -190,6 +366,12 @@ internal static class BeatAnalyzer
                 {
                     high += magnitude;
                 }
+
+                var pitch = pitchBins[bin];
+                if (pitch >= 0)
+                {
+                    chromaFrames[chromaOffset + pitch] += (float)magnitude;
+                }
             }
 
             flux[frame] = (float)(fluxSum / (WindowSize / 2.0));
@@ -197,6 +379,26 @@ internal static class BeatAnalyzer
             midEnergy[frame] = (float)mid;
             highEnergy[frame] = (float)high;
         }
+    }
+
+    /// <summary>把每个 FFT bin 映射到 12 个音级（-1 = 不参与，超出人声/主旋律频段）。</summary>
+    private static int[] BuildChromaBins(double binHz)
+    {
+        var bins = new int[WindowSize / 2 + 1];
+        for (var bin = 0; bin < bins.Length; bin++)
+        {
+            var frequency = bin * binHz;
+            if (frequency < MinChromaHz || frequency > MaxChromaHz)
+            {
+                bins[bin] = -1;
+                continue;
+            }
+
+            var midi = 69.0 + 12.0 * Math.Log2(frequency / 440.0);
+            bins[bin] = ((int)Math.Round(midi) % ChromaBins + ChromaBins) % ChromaBins;
+        }
+
+        return bins;
     }
 
     /// <summary>Remove the local mean, half-wave rectify, scale to unit std and smooth slightly.</summary>
@@ -741,12 +943,15 @@ internal static class BeatAnalyzer
         float[] lowEnergy,
         float[] midEnergy,
         float[] highEnergy,
+        float[] chroma,
         int frameCount,
         double fps,
         out double[][] barFeatures,
+        out double[][] barChroma,
         double durationMs)
     {
         barFeatures = Array.Empty<double[]>();
+        barChroma = Array.Empty<double[]>();
         if (downbeats.Length < MinPhraseBars + 1)
         {
             return Array.Empty<double>();
@@ -754,6 +959,7 @@ internal static class BeatAnalyzer
 
         var barCount = downbeats.Length;
         var features = new double[barCount][];
+        var chromaBars = new double[barCount][];
         for (var bar = 0; bar < barCount; bar++)
         {
             var startFrame = (int)Math.Round(downbeats[bar] / 1000.0 * fps);
@@ -768,6 +974,7 @@ internal static class BeatAnalyzer
                 AverageRange(midEnergy, startFrame, endFrame),
                 AverageRange(highEnergy, startFrame, endFrame),
             };
+            chromaBars[bar] = AverageChroma(chroma, startFrame, endFrame);
         }
 
         // Normalize each band across bars so novelty is comparable across the whole track.
@@ -787,6 +994,7 @@ internal static class BeatAnalyzer
         }
 
         barFeatures = features;
+        barChroma = chromaBars;
         var novelty = new double[barCount];
         for (var bar = 1; bar < barCount; bar++)
         {
@@ -850,11 +1058,59 @@ internal static class BeatAnalyzer
         return sum / (to - from);
     }
 
+    /// <summary>小节内 12 音级能量均值，L2 归一化后只保留音色分布（与音量无关）。</summary>
+    private static double[] AverageChroma(float[] chroma, int from, int to)
+    {
+        var result = new double[ChromaBins];
+        if (to <= from)
+        {
+            return result;
+        }
+
+        for (var frame = from; frame < to; frame++)
+        {
+            var offset = frame * ChromaBins;
+            for (var bin = 0; bin < ChromaBins; bin++)
+            {
+                result[bin] += chroma[offset + bin];
+            }
+        }
+
+        var norm = 0.0;
+        for (var bin = 0; bin < ChromaBins; bin++)
+        {
+            norm += result[bin] * result[bin];
+        }
+
+        norm = Math.Sqrt(norm);
+        if (norm < 1e-9)
+        {
+            return result;
+        }
+
+        for (var bin = 0; bin < ChromaBins; bin++)
+        {
+            result[bin] /= norm;
+        }
+
+        return result;
+    }
+
     private static AnalysisSectionPayload[] BuildSections(
         double[] phraseStarts,
+        double[] downbeats,
         double[][] barFeatures,
-        double durationMs)
+        double[][] barChroma,
+        double durationMs,
+        out double climaxStartMs,
+        out double climaxEndMs,
+        out double cueInMs,
+        out double cueOutMs)
     {
+        climaxStartMs = 0;
+        climaxEndMs = 0;
+        cueInMs = 0;
+        cueOutMs = 0;
         var boundaries = new List<double> { 0 };
         foreach (var start in phraseStarts)
         {
@@ -879,25 +1135,12 @@ internal static class BeatAnalyzer
                 continue;
             }
 
-            var label = string.Empty;
-            var confidence = 0.3;
-            if (boundaries.Count >= 4 && i == 0 && end - start < durationMs * 0.3)
-            {
-                label = "intro";
-                confidence = 0.5;
-            }
-            else if (boundaries.Count >= 4 && i == boundaries.Count - 2 && end - start < durationMs * 0.3)
-            {
-                label = "outro";
-                confidence = 0.5;
-            }
-
             sections.Add(new AnalysisSectionPayload
             {
                 StartMs = Math.Round(start, 1),
                 EndMs = Math.Round(end, 1),
-                Label = label,
-                Confidence = confidence,
+                Label = string.Empty,
+                Confidence = 0.3,
             });
         }
 
@@ -912,7 +1155,525 @@ internal static class BeatAnalyzer
             });
         }
 
+        MarkClimax(sections, downbeats, barFeatures, barChroma, durationMs, out climaxStartMs, out climaxEndMs);
+        LabelSections(sections, downbeats, barFeatures, durationMs, out cueInMs, out cueOutMs);
+
         return sections.ToArray();
+    }
+
+    /// <summary>
+    /// 结构标注（p0-11）：在小节能量/低频占比/段落内走势上给每段打 intro / build / verse /
+    /// chorus / drop / breakdown / outro，并给出两个混音 cue：
+    /// <list type="bullet">
+    /// <item>cueIn：下一首进场点——首个 drop（没有则首个副歌，再没有则 intro 结束），对齐 8 小节乐句；</item>
+    /// <item>cueOut：这一首让位点——尾奏起点（没有则末段起点），对齐 8 小节乐句。</item>
+    /// </list>
+    /// 这是按小节统计的近似分段，不保证和人工标注一致；识别不到时 cue 为 0，调用方回退旧逻辑。
+    /// </summary>
+    private static void LabelSections(
+        List<AnalysisSectionPayload> sections,
+        double[] downbeats,
+        double[][] barFeatures,
+        double durationMs,
+        out double cueInMs,
+        out double cueOutMs)
+    {
+        cueInMs = 0;
+        cueOutMs = 0;
+        if (sections.Count == 0 || barFeatures.Length == 0 || downbeats.Length < 2)
+        {
+            return;
+        }
+
+        var barCount = barFeatures.Length;
+        var barEnergy = new double[barCount];
+        var barLow = new double[barCount];
+        for (var bar = 0; bar < barCount; bar++)
+        {
+            var feature = barFeatures[bar];
+            if (feature is null || feature.Length < 3)
+            {
+                continue;
+            }
+
+            barEnergy[bar] = (feature[0] * 0.45 + feature[1] * 0.30 + feature[2] * 0.45) / 1.2;
+            barLow[bar] = feature[0];
+        }
+
+        var total = 0.0;
+        for (var bar = 0; bar < barCount; bar++)
+        {
+            total += barEnergy[bar];
+        }
+
+        var average = Math.Max(total / barCount, 1e-9);
+        var stats = new List<(int FromBar, int ToBar, double Mean, double Low, double Rise, int Bars)>();
+        for (var index = 0; index < sections.Count; index++)
+        {
+            var fromBar = FirstBarAtOrAfter(downbeats, sections[index].StartMs);
+            var toBar = FirstBarAtOrAfter(downbeats, sections[index].EndMs);
+            fromBar = Math.Clamp(fromBar, 0, barCount);
+            toBar = Math.Clamp(toBar, fromBar, barCount);
+            var bars = toBar - fromBar;
+            var sum = 0.0;
+            var lowSum = 0.0;
+            for (var bar = fromBar; bar < toBar; bar++)
+            {
+                sum += barEnergy[bar];
+                lowSum += barLow[bar];
+            }
+
+            var mean = bars > 0 ? sum / bars : 0;
+            var low = bars > 0 ? lowSum / bars : 0;
+            var rise = 0.0;
+            if (bars >= 4)
+            {
+                var headSum = 0.0;
+                var tailSum = 0.0;
+                var headCount = 0;
+                var tailCount = 0;
+                for (var bar = fromBar; bar < toBar; bar++)
+                {
+                    var quarter = Math.Max(1, bars / 4);
+                    if (bar < fromBar + quarter)
+                    {
+                        headSum += barEnergy[bar];
+                        headCount++;
+                    }
+                    else if (bar >= toBar - quarter)
+                    {
+                        tailSum += barEnergy[bar];
+                        tailCount++;
+                    }
+                }
+
+                var head = headCount > 0 ? headSum / headCount : 0;
+                var tail = tailCount > 0 ? tailSum / tailCount : 0;
+                rise = head > 1e-9 ? tail / head - 1 : 0;
+            }
+
+            stats.Add((fromBar, toBar, mean, low, rise, bars));
+        }
+
+        // 先给每段一个结构标签；首段/末段的 intro/outro 判定优先，避免被 drop 规则抢走。
+        for (var index = 0; index < sections.Count; index++)
+        {
+            var stat = stats[index];
+            var last = index == sections.Count - 1;
+            var label = "verse";
+            var confidence = 0.3;
+            if (index == 0 && sections.Count >= 3 && (stat.Mean <= average * 0.95 || sections[index].EndMs - sections[index].StartMs < durationMs * 0.25))
+            {
+                label = "intro";
+                confidence = 0.5;
+            }
+            else if (last && sections.Count >= 3 && (stat.Mean <= average * 0.95 || sections[index].EndMs - sections[index].StartMs < durationMs * 0.3))
+            {
+                label = "outro";
+                confidence = 0.5;
+            }
+            else if (stat.Mean < average * 0.55 && stat.Bars >= MinClimaxBars)
+            {
+                label = "breakdown";
+                confidence = 0.45;
+            }
+            else if (stat.Mean >= average * 1.18 && stat.Low >= 1.12 && stat.Bars >= MinClimaxBars / 2 && index > 0)
+            {
+                label = "drop";
+                confidence = 0.55;
+            }
+            else if (stat.Mean >= average * 1.04)
+            {
+                label = "chorus";
+                confidence = 0.5;
+            }
+            else if (stat.Rise >= 0.12 && stat.Mean >= average * 0.7)
+            {
+                label = "build";
+                confidence = 0.4;
+            }
+
+            sections[index].Label = label;
+            sections[index].Confidence = confidence;
+        }
+
+        // cueIn：首个 drop → 首个副歌 → intro 之后的第一段；都对齐 8 小节乐句。
+        var phraseBars = 8;
+        var firstInMs = 0.0;
+        var cueInSection = -1;
+        for (var index = 0; index < sections.Count; index++)
+        {
+            if (sections[index].Label is "drop" or "chorus")
+            {
+                firstInMs = sections[index].StartMs;
+                cueInSection = index;
+                break;
+            }
+        }
+
+        if (cueInSection < 0)
+        {
+            for (var index = 0; index < sections.Count; index++)
+            {
+                if (sections[index].Label != "intro")
+                {
+                    firstInMs = sections[index].StartMs;
+                    cueInSection = index;
+                    break;
+                }
+            }
+        }
+
+        if (cueInSection >= 0)
+        {
+            // 不论 drop 还是副歌，入点都落在 8 小节乐句线上。
+            firstInMs = PhraseAtOrAfter(downbeats, firstInMs, phraseBars);
+            cueInMs = Math.Min(firstInMs, Math.Max(0, durationMs - 1000));
+        }
+
+        // cueOut：尾奏起点；没有尾奏时取最后一段的起点；再没有就按曲长留 8 小节。
+        var lastOutro = -1;
+        for (var index = sections.Count - 1; index >= 0; index--)
+        {
+            if (sections[index].Label == "outro")
+            {
+                lastOutro = index;
+                break;
+            }
+        }
+
+        var barMs = downbeats.Length >= 2
+            ? Math.Max((downbeats[^1] - downbeats[0]) / (downbeats.Length - 1), 1.0)
+            : Math.Max(durationMs / Math.Max(downbeats.Length, 1), 1.0);
+        var fallbackOut = Math.Max(0, durationMs - barMs * phraseBars);
+        var outMs = lastOutro >= 0 ? sections[lastOutro].StartMs : fallbackOut;
+        cueOutMs = PhraseAtOrBefore(downbeats, outMs, phraseBars);
+        if (cueOutMs < 0 || cueOutMs > durationMs)
+        {
+            cueOutMs = 0;
+        }
+
+        if (cueInMs > 0 && cueOutMs > 0 && cueOutMs <= cueInMs)
+        {
+            cueOutMs = 0;
+        }
+    }
+
+    /// <summary>向上取到最近的 8 小节乐句边界（ms）；越界返回最后一个乐句边界。</summary>
+    private static double PhraseAtOrAfter(double[] downbeats, double timeMs, int phraseBars)
+    {
+        if (downbeats.Length == 0 || phraseBars <= 0)
+        {
+            return timeMs;
+        }
+
+        var bar = FirstBarAtOrAfter(downbeats, timeMs);
+        var aligned = (int)Math.Ceiling(bar / (double)phraseBars) * phraseBars;
+        if (aligned >= downbeats.Length)
+        {
+            aligned = Math.Max(0, (downbeats.Length - 1) / phraseBars * phraseBars);
+        }
+
+        return aligned < downbeats.Length ? downbeats[aligned] : timeMs;
+    }
+
+    /// <summary>向下取到最近的 8 小节乐句边界（ms）；越界返回 0。</summary>
+    private static double PhraseAtOrBefore(double[] downbeats, double timeMs, int phraseBars)
+    {
+        if (downbeats.Length == 0 || phraseBars <= 0)
+        {
+            return Math.Max(0, timeMs);
+        }
+
+        var bar = FirstBarAtOrAfter(downbeats, timeMs);
+        if (bar >= downbeats.Length)
+        {
+            bar = downbeats.Length - 1;
+        }
+
+        var aligned = bar / phraseBars * phraseBars;
+        return aligned >= 0 && aligned < downbeats.Length ? downbeats[aligned] : 0;
+    }
+
+    /// <summary>
+    /// 给「高潮段」打标并给出进度条标记窗口。副歌通常重复 2~3 次，所以先在内部段落里找
+    /// 音色+能量轮廓相似（<see cref="MinChorusSimilarity"/>）且足够响的一对段，标其中
+    /// <b>第一次出现</b>的位置，截到 <see cref="MaxClimaxBars"/> 小节；找不到重复段时回退到
+    /// 能量最高的 <see cref="FallbackClimaxBars"/> 小节窗口。这是结构近似，不等于人工标注。
+    /// </summary>
+    private static void MarkClimax(
+        List<AnalysisSectionPayload> sections,
+        double[] downbeats,
+        double[][] barFeatures,
+        double[][] barChroma,
+        double durationMs,
+        out double climaxStartMs,
+        out double climaxEndMs)
+    {
+        climaxStartMs = 0;
+        climaxEndMs = 0;
+        if (sections.Count < 3 ||
+            barFeatures.Length < MinClimaxBars ||
+            barChroma.Length != barFeatures.Length ||
+            downbeats.Length < MinClimaxBars)
+        {
+            return;
+        }
+
+        // 每小节能量：低频和高频更能代表「响」，中频权重略低；barFeatures 已按频段均值归一化，
+        // 加权后全曲均值约等于 1，阈值可以直接按倍数判断。
+        var barEnergy = new double[barFeatures.Length];
+        for (var bar = 0; bar < barFeatures.Length; bar++)
+        {
+            var feature = barFeatures[bar];
+            if (feature is null || feature.Length < 3)
+            {
+                continue;
+            }
+
+            barEnergy[bar] = (feature[0] * 0.45 + feature[1] * 0.30 + feature[2] * 0.45) / 1.2;
+        }
+
+        // 3 小节滑动平均，压掉单小节的鼓点抖动。
+        var smooth = new double[barEnergy.Length];
+        for (var bar = 0; bar < barEnergy.Length; bar++)
+        {
+            var from = Math.Max(0, bar - 1);
+            var to = Math.Min(barEnergy.Length, bar + 2);
+            var sum = 0.0;
+            for (var i = from; i < to; i++)
+            {
+                sum += barEnergy[i];
+            }
+
+            smooth[bar] = sum / (to - from);
+        }
+
+        var total = 0.0;
+        for (var bar = 0; bar < smooth.Length; bar++)
+        {
+            total += smooth[bar];
+        }
+
+        var average = Math.Max(total / smooth.Length, 1e-9);
+
+        var candidates = new List<(int Index, int FromBar, int ToBar, double Mean)>();
+        for (var index = 1; index + 1 < sections.Count; index++)
+        {
+            var section = sections[index];
+            if (!string.IsNullOrEmpty(section.Label))
+            {
+                continue;
+            }
+
+            var fromBar = FirstBarAtOrAfter(downbeats, section.StartMs);
+            var toBar = FirstBarAtOrAfter(downbeats, section.EndMs);
+            var bars = toBar - fromBar;
+            if (bars < MinClimaxBars)
+            {
+                continue;
+            }
+
+            var sum = 0.0;
+            for (var bar = fromBar; bar < toBar; bar++)
+            {
+                sum += smooth[bar];
+            }
+
+            candidates.Add((index, fromBar, toBar, sum / bars));
+        }
+
+        if (candidates.Count == 0)
+        {
+            return;
+        }
+
+        // 先找「重复出现的副歌」：两段轮廓足够像、且都比平均响，取能量最高的一对，
+        // 标记第一次出现的位置——这才是听众心里的「高潮起点」。
+        var profiles = new double[candidates.Count][];
+        for (var i = 0; i < candidates.Count; i++)
+        {
+            profiles[i] = BuildSectionProfile(candidates[i].FromBar, candidates[i].ToBar, smooth, barChroma);
+        }
+
+        var chorusA = -1;
+        var chorusB = -1;
+        var chorusScore = double.MinValue;
+        for (var i = 0; i < candidates.Count; i++)
+        {
+            for (var j = i + 1; j < candidates.Count; j++)
+            {
+                if (candidates[i].Mean < average * 0.95 || candidates[j].Mean < average * 0.95)
+                {
+                    continue;
+                }
+
+                var similarity = CosineProfile(profiles[i], profiles[j]);
+                if (similarity < MinChorusSimilarity)
+                {
+                    continue;
+                }
+
+                // 两段都够响、又足够像：能量下限越高越可能是副歌，相似度做微弱加权。
+                var score = Math.Min(candidates[i].Mean, candidates[j].Mean) * (1.0 + 0.05 * similarity);
+                if (score <= chorusScore)
+                {
+                    continue;
+                }
+
+                chorusScore = score;
+                chorusA = i;
+                chorusB = j;
+            }
+        }
+
+        if (chorusA >= 0 && chorusB >= 0)
+        {
+            var first = candidates[chorusA].FromBar <= candidates[chorusB].FromBar ? chorusA : chorusB;
+            var chosen = candidates[first];
+            var bars = Math.Min(chosen.ToBar - chosen.FromBar, MaxClimaxBars);
+            // 短歌里 16 小节可能占掉三成进度条，再按曲长收一次（至少保留 8 小节）。
+            var barMs = downbeats.Length >= 2
+                ? Math.Max((downbeats[^1] - downbeats[0]) / (downbeats.Length - 1), 1.0)
+                : Math.Max(durationMs / Math.Max(downbeats.Length, 1), 1.0);
+            var maxBarsByDuration = (int)Math.Floor(durationMs * MaxClimaxWidthRatio / barMs);
+            bars = Math.Min(bars, Math.Max(maxBarsByDuration, MinClimaxBars));
+            climaxStartMs = downbeats[chosen.FromBar];
+            var endBar = chosen.FromBar + bars;
+            climaxEndMs = endBar < downbeats.Length ? downbeats[endBar] : durationMs;
+            return;
+        }
+
+        // 没有重复副歌：退回「能量最高段落 + 段落内最优 8 小节」。
+        var bestIndex = -1;
+        var bestScoreValue = 0.0;
+        for (var i = 0; i < candidates.Count; i++)
+        {
+            var bars = candidates[i].ToBar - candidates[i].FromBar;
+            // 略偏爱长一点的段落，避免只挑到一两拍的鼓点爆点。
+            var score = candidates[i].Mean * (1.0 + 0.05 * Math.Min(1.0, (bars - MinClimaxBars) / 16.0));
+            if (score <= bestScoreValue)
+            {
+                continue;
+            }
+
+            bestScoreValue = score;
+            bestIndex = candidates[i].Index;
+        }
+
+        if (bestIndex < 0 || bestScoreValue < average * MinClimaxEnergyRatio)
+        {
+            return;
+        }
+
+        var sectionStartBar = FirstBarAtOrAfter(downbeats, sections[bestIndex].StartMs);
+        var sectionEndBar = FirstBarAtOrAfter(downbeats, sections[bestIndex].EndMs);
+        if (sectionEndBar - sectionStartBar < MinClimaxBars)
+        {
+            return;
+        }
+
+        var windowStart = sectionStartBar;
+        var windowMean = double.MinValue;
+        for (var start = sectionStartBar; start + FallbackClimaxBars <= sectionEndBar; start++)
+        {
+            var sum = 0.0;
+            for (var bar = start; bar < start + FallbackClimaxBars; bar++)
+            {
+                sum += smooth[bar];
+            }
+
+            var mean = sum / FallbackClimaxBars;
+            if (mean <= windowMean)
+            {
+                continue;
+            }
+
+            windowMean = mean;
+            windowStart = start;
+        }
+
+        climaxStartMs = downbeats[windowStart];
+        var windowEndBar = windowStart + FallbackClimaxBars;
+        climaxEndMs = windowEndBar < downbeats.Length ? downbeats[windowEndBar] : durationMs;
+    }
+
+    /// <summary>
+    /// 把段落重采样成 <see cref="SimilarityPoints"/> 个点，每点 = 12 音级 chroma 均值 +
+    /// 0.7×平滑能量；副歌重复时两者的音色与能量走向会高度一致，即使小节数不同也能对齐比较。
+    /// </summary>
+    private static double[] BuildSectionProfile(int fromBar, int toBar, double[] smooth, double[][] barChroma)
+    {
+        var bars = Math.Max(toBar - fromBar, 1);
+        var stride = ChromaBins + 1;
+        var profile = new double[SimilarityPoints * stride];
+        for (var point = 0; point < SimilarityPoints; point++)
+        {
+            var start = fromBar + (int)Math.Floor(bars * (double)point / SimilarityPoints);
+            var end = fromBar + (int)Math.Floor(bars * (double)(point + 1) / SimilarityPoints);
+            end = Math.Clamp(end, start + 1, toBar);
+            start = Math.Clamp(start, fromBar, toBar - 1);
+            var offset = point * stride;
+            for (var bin = 0; bin < ChromaBins; bin++)
+            {
+                var sum = 0.0;
+                for (var bar = start; bar < end; bar++)
+                {
+                    sum += barChroma[bar][bin];
+                }
+
+                profile[offset + bin] = sum / (end - start);
+            }
+
+            var energy = 0.0;
+            for (var bar = start; bar < end; bar++)
+            {
+                energy += smooth[bar];
+            }
+
+            profile[offset + ChromaBins] = 0.7 * energy / (end - start);
+        }
+
+        return profile;
+    }
+
+    /// <summary>两个段落轮廓的余弦相似度（0~1）；任一范数为 0 视为不相似。</summary>
+    private static double CosineProfile(double[] a, double[] b)
+    {
+        var dot = 0.0;
+        var normA = 0.0;
+        var normB = 0.0;
+        var length = Math.Min(a.Length, b.Length);
+        for (var i = 0; i < length; i++)
+        {
+            dot += a[i] * b[i];
+            normA += a[i] * a[i];
+            normB += b[i] * b[i];
+        }
+
+        var scale = Math.Sqrt(normA) * Math.Sqrt(normB);
+        return scale < 1e-9 ? 0.0 : dot / scale;
+    }
+
+    /// <summary>升序时间数组里第一个 ≥ 目标时间的小节下标；越界返回数组长度。</summary>
+    private static int FirstBarAtOrAfter(double[] downbeats, double timeMs)
+    {
+        var low = 0;
+        var high = downbeats.Length;
+        while (low < high)
+        {
+            var mid = (low + high) / 2;
+            if (downbeats[mid] < timeMs)
+            {
+                low = mid + 1;
+            }
+            else
+            {
+                high = mid;
+            }
+        }
+
+        return low;
     }
 
     /// <summary>In-place radix-2 FFT, same butterfly layout as AudioFeatures.AudioAnalyzer.</summary>

@@ -26,6 +26,7 @@ GET http://127.0.0.1:<port>/api/analysis?source=local&rel=<rel>&token=<token>
 | `rel` | 本地曲库相对路径（`@downloads/...` 或普通 rel），`source=local` 时必填 |
 | `quality` | 可选，在线曲目拉取音质（standard/high/lossless，缺省用下载设置） |
 | `force` | 可选，`1` 表示忽略缓存重新分析 |
+| `cacheOnly` | 可选，`1`/`true`：只读缓存，未分析过时立即返回 `ok:false, code:"not-cached"`（不下载、不解码），供页面批量查询已有分析结果（`p0-9` 起） |
 | `token` | 必填，与其他 `/api/*` 相同的 loopback token |
 
 语义：
@@ -51,7 +52,7 @@ GET http://127.0.0.1:<port>/api/analysis?source=local&rel=<rel>&token=<token>
   "tailSilenceMs": 6100,
   "cached": false,
   "elapsedMs": 1834,
-  "analyzer": "p0-4",
+  "analyzer": "p0-11",
   "analysis": {
     "bpm": 128.0,
     "bpmConfidence": 0.87,
@@ -63,9 +64,22 @@ GET http://127.0.0.1:<port>/api/analysis?source=local&rel=<rel>&token=<token>
     "downbeats": [125, 2000, 3875],
     "phraseStartsMs": [125, 15125, 30125],
     "barCount": 112,
+    "key": 9,
+    "keyMode": "minor",
+    "camelot": "8A",
+    "energy": 0.676,
+    "loudnessLufs": -10.6,
+    "peakDb": -0.2,
+    "climaxStartMs": 186000,
+    "climaxEndMs": 201000,
+    "cueInMs": 186000,
+    "cueOutMs": 240000,
     "sections": [
       { "startMs": 0, "endMs": 30000, "label": "intro", "confidence": 0.6 },
-      { "startMs": 30000, "endMs": 180000, "label": "", "confidence": 0.3 }
+      { "startMs": 30000, "endMs": 90000, "label": "verse", "confidence": 0.4 },
+      { "startMs": 90000, "endMs": 180000, "label": "chorus", "confidence": 0.5 },
+      { "startMs": 180000, "endMs": 240000, "label": "drop", "confidence": 0.55 },
+      { "startMs": 240000, "endMs": 261000, "label": "outro", "confidence": 0.5 }
     ],
     "warnings": []
   }
@@ -81,7 +95,18 @@ GET http://127.0.0.1:<port>/api/analysis?source=local&rel=<rel>&token=<token>
 | `firstDownbeatMs` | 第一小节强拍时间，`(firstDownbeatMs-firstBeatMs)/beatIntervalMs` 是整数相位 |
 | `downbeats` | 强拍时间列表（毫秒，升序，最多返回 ~400 个，超出截断） |
 | `phraseStartsMs` | 检测到的乐句/段落边界时间（每 8/16 小节级别） |
+| `sections` | 段落列表（按 `phraseStartsMs` 切分）。`label` 取值（`p0-11` 起）：`intro`、`build`、`verse`、`chorus`、`drop`、`breakdown`、`outro` 或空串（算法见 §2.1.3），`confidence` 0.3–0.55 |
 | `barCount` | 估计小节数 |
+| `key` | **p0-9 起**。调性主音音级：`0`=C … `11`=B，识别不出为 `-1` |
+| `keyMode` | **p0-9 起**。`major` / `minor`，识别不出为空串 |
+| `camelot` | **p0-9 起**。Camelot 编码（如 `8A` / `7B`），供 AutoMix 选调性相邻的下一首；识别不出为空串 |
+| `energy` | **p0-9 起**。0~1 听感能量：`p0-10` 起以整体响度为主（`(lufs+22)/16`），叠加高频占比（65–2000 Hz 段），供场景歌单分桶与 AutoMix 排序 |
+| `loudnessLufs` | **p0-9 起**。整曲响度近似（LUFS 口径，`-0.691 + 10·log10(meanSquare)`），供响度均衡补偿 |
+| `peakDb` | **p0-9 起**。样本峰值电平（dBFS） |
+| `climaxStartMs` | **p0-7 起**。进度条高潮标记窗口起点（ms）：`p0-8` 起为重复副歌第一次出现的起点（无重复副歌时为能量最高段落内 8 小节窗口的起点）；未命中为 `0` |
+| `climaxEndMs` | **p0-7 起**。高潮标记窗口终点（ms）：`p0-8` 起最多延伸 16 小节（首次副歌）；未命中为 `0` |
+| `cueInMs` | **p0-11 起**。推荐混音入点（ms）：首个 `drop` 起点，没有 drop 时取首个 `chorus` 起点，并对齐 8 小节乐句；未识别为 `0` |
+| `cueOutMs` | **p0-11 起**。推荐混音让位点（ms）：最后一个 `outro` 段落起点，对齐乐句；没有 outro 时取「可听结尾前 8 小节」附近并向下对齐；未识别为 `0` |
 | `meter` | 拍号估计：4 或 3（P0 仅这两类） |
 | `warnings` | 例如 `["tempo-drift"]`、`["low-confidence"]`、`["mono-mix"]`，无则空数组 |
 
@@ -97,6 +122,62 @@ GET http://127.0.0.1:<port>/api/analysis?source=local&rel=<rel>&token=<token>
 - 无有效尾部静音/渐弱收尾时 `audibleEndMs = durationMs`、`tailSilenceMs = 0`；
 - 全静音音频按「至少保留 10%」返回 `audibleEndMs ≈ durationMs*10%`；
 - 字段放在响应顶层（与 `durationMs` 同级），不改动 `analysis` 子对象已有字段语义。
+
+### 2.1.1 高潮段（`climax`，analyzer `p0-6` 起；重复副歌检测 `p0-8` 起）
+
+`sections` 里会把命中的内部段落标成 `label: "climax"`，并在 `analysis` 顶层给出
+`climaxStartMs` / `climaxEndMs`，供播放进度条画高潮位置；`p0-8` 起优先标「重复副歌」的
+**第一次出现**，而不是全曲最响的那一段：
+
+- 小节能量：归一化后的 low/mid/high 三档能量加权 `0.45 / 0.30 / 0.45`，再按 3 小节滑动平均压掉鼓点抖动；
+- 音级能量（chroma）：对 1024 点 Hann STFT 的幅度谱，把 65–2000 Hz 的 bin 按 12 平均律映射到 12 个音级，按小节取均值后做 L2 归一化；
+- 只在**内部段落**里找（跳过首段、末段，以及已有 `intro`/`outro` 标签的段落）；段落须 ≥8 小节；
+- 每个候选段落按长度归一重采样成 12 个点，每点 = 12 维 chroma + `0.7 ×` 平滑能量（13 维），得到段落轮廓；
+- 两两计算轮廓的余弦相似度：`≥0.88` 且两段平均能量都 `≥ 全曲均值 × 0.95` 视为同一段副歌（副歌通常重复 2–3 次）；取「两段中较低能量更高」的一对；
+- 命中时标**先出现**的那一段：`climaxStartMs` 取该段首小节强拍，`climaxEndMs` 最多延伸 `16` 小节（副歌常见长度；超出截断，避免占掉半条进度条），`label = "climax"`、`confidence = 0.5`；
+- 找不到重复副歌时回退到旧规则：能量最高内部段落（平均能量 ≥ 全曲均值 ×1.08）内能量最高的 8 小节窗口，`confidence = 0.45`；
+- 没有明显峰值（平坦 / 安静 / 纯音乐）时**不标**，`climaxStartMs = climaxEndMs = 0`；
+- 它仍是结构近似（chroma 相似度 ≠ 人工标注副歌），只用于进度条位置提示，不参与无缝衔接调度；
+- `p0-8` 起 `analyzer` 变化会让旧缓存失效并重算（缓存键含 analyzer 版本）；旧缓存 / 旧宿主没有这两个字段时，页面回退到 `sections` 里 `label = "climax"` 的整段。
+
+### 2.1.2 调性 / 能量 / 响度（analyzer `p0-9` 起，`energy` 口径 `p0-10` 起）
+
+`p0-9` 起页面侧新增三个用途：场景歌单分桶、AutoMix 选歌、响度均衡。对应字段：
+
+- `key` / `keyMode` / `camelot`：把全曲 chroma（12 音级能量，65–2000 Hz）与 Krumhansl
+  major/minor 轮廓做 12 个主音的皮尔逊相关，取最高的一组得到主音与调式；`camelot` 按
+  Camelot 轮盘映射（major → `xB`，minor → `xA`），主音为 C major = `8B`、A minor = `8A`。
+  识别不出（全静音/无音高内容）时 `key = -1`、`keyMode`/`camelot` 为空串。
+- `loudnessLufs`：全曲均方能量的 LUFS 近似 `-0.691 + 10·log10(meanSquare)`（未做 K 加权/
+  gating，用于响度均衡的粗补偿）；`peakDb` 为样本峰值 dBFS。
+- `energy`（0~1）：`p0-10` 起改为「听感能量」——`0.72 × clamp((lufs+22)/16) + 0.28 ×
+  clamp((brightness-0.10)/0.30)`，其中 `brightness` 是 65–2000 Hz 以上的高频能量占全频段比例。
+  早先 `p0-9` 用的「小节三档能量均值」因 `barFeatures` 已按频段归一化会恒等于 1，不可用于分桶。
+- 这些字段只在成功响应里出现；`cacheOnly` 查询（§2 参数表）不会触发下载/解码，页面用
+  `peekAnalysis` 批量取缓存结果做场景分桶与 AutoMix 排序。
+- `analyzer` 版本变化（如 `p0-10`）会让旧 JSON 缓存失效并重算，音频缓存保留。
+
+### 2.1.3 结构分段与混音 cue（analyzer `p0-11` 起）
+
+`p0-11` 把 `sections` 从「只标首尾 + climax」升级为结构分段，并新增 `cueInMs` / `cueOutMs`，
+给无缝衔接做「cue 对 cue」的 DJ 式过渡：
+
+- 小节特征：每小节归一化 low/mid/high 能量加权 `(low×0.45 + mid×0.30 + high×0.45) / 1.2`，
+  段的平均能量记为 `mean`；全曲均值记 `avg`；
+- 标签规则（按段落顺序，命中即停）：首段且（`mean ≤ avg×0.95` 或时长 <25%）→ `intro`；
+  末段且（`mean ≤ avg×0.95` 或时长 <30%）→ `outro`；`mean < avg×0.55` 且 ≥8 小节 → `breakdown`；
+  `mean ≥ avg×1.18` 且低频均值 ≥1.12 且 ≥4 小节 → `drop`；`mean ≥ avg×1.04` → `chorus`；
+  段内能量涨幅 ≥0.12 且 `mean ≥ avg×0.7` → `build`；其余 `verse`；
+- `cueInMs`：首个 `drop` 起点（没有则首个 `chorus` 起点），再用 `PhraseAtOrAfter` 向上对齐到
+  8 小节乐句边界；没有 drop/chorus 时取首个非 intro 段落起点对齐；
+- `cueOutMs`：最后一个 `outro` 段落的起点，用 `PhraseAtOrBefore` 向下对齐；没有 outro 时取
+  「可听结尾前 8 小节」附近向下对齐；`cueInMs ≥ cueOutMs` 时 `cueOutMs = 0`；
+- 页面侧（`web/src/ui/crossfadeDeck.ts`）：A 在 `cueOutMs` 开始让位、B 从 `cueInMs` 进场，
+  过渡长度 = 设置里的乐句数（默认按场景预设 4 / 8 小节）；低频交接按 B 的小节线换算进度；
+  两首按 `loudnessLufs` 预调 B 的增益（±6 dB）；BPM 差在设置范围内用 WSOLA 变速对齐；
+  调性/BPM 冲突（`camelot` 相隔 >2 或 BPM 差 >12%）时改用 1–2 小节快速切入；
+- 分析数据缺失（旧缓存 / 未分析 / 手动切歌 / 单曲循环）时页面回退旧淡化逻辑；
+- `p0-11` 升版会让旧 JSON 缓存失效并重算，音频缓存保留。
 
 ### 2.2 失败响应
 

@@ -107,6 +107,20 @@ QQ 暂返回 501 `{ "error": "unsupported", "message": "QQ 评论暂未接入" }
 
 QQ 侧：`kind=playlist` 返回收藏歌单卡片（`PlaylistCard`）。
 
+### 11. 每日推荐歌单 `GET /api/discover/recommend-playlists?source=netease|qq&offset=0&limit=12`
+
+首页「每日推荐歌单」一排（双平台各取一页后交错合并）。响应与第 4 节同形：
+
+```json
+{ "source": "netease", "cat": "每日推荐", "hasMore": false,
+  "playlists": [ { "source": "netease", "id": "2116417781", "title": "开口沉醉 · 慵懒迷幻的欧美女声",
+                   "cover": "http://127.0.0.1:<port>/api/cover?token=...", "count": 32659368, "creator": "" } ] }
+```
+
+- 网易云：`/api/personalized/playlist?limit=&total=true&n=1000`（公开、匿名可拉、按天轮换）。个人化的 `/api/v1/discovery/recommend/resource` 已下线（301），不要再用；该接口 `playCount` 是指数形式（`3.2659368E7`），后端已按 double 兜底解析。
+- QQ：musicu `GET ?format=json&data={"comm":{"ct":24,"cv":0},"req_1":{"module":"music.playlist.PlaylistSquare","method":"GetRecommendFeed","param":{"From":offset,"Size":limit}}}`，取 `req_1.data.List[].Playlist.basic`（`tid/title/creator.nick/cover.medium_url/song_cnt/play_cnt`），`HasMore` 透传。
+- 未登录时也返回内容（两个平台都是公开推荐流），前端失败时静默隐藏该排。
+
 ## 探测依据（2026-10-22 实测，详见 research/online-capabilities.md）
 
 - 网易云可用：`/api/toplist`、`/api/v6/playlist/detail`、`/api/playlist/catalogue`、`/api/playlist/list`、`/api/v1/radio/get`、`/api/v1/artist/{id}`、`/api/artist/top/song`、`/api/artist/albums/{id}`、`/api/album/{id}`、`/api/v1/resource/comments/R_SO_4_{id}`、`/api/personalized/djprogram`、`/api/artist/sublist`、`/api/album/sublist`、`/api/mv/sublist`。

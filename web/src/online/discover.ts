@@ -1,8 +1,8 @@
 /**
  * 「发现」API 客户端（Discover API v1）。
  *
- * 宿主已实现的 10 个只读接口：charts / chart / cats / playlists / radio /
- * artist / album / comments / podcasts / collections。
+ * 宿主已实现的 11 个只读接口：charts / chart / cats / playlists / recommend-playlists /
+ * radio / artist / album / comments / podcasts / collections。
  * 全部走 GET + ?token=，回环 http 请求（页面是 https 虚拟域，不能直接 fetch，
  * 但宿主的 fetch 代理只在 https 侧拦——这里和 core/library.ts 一样，先取
  * onlineInfo() 再直连 127.0.0.1，WebView2 允许）。
@@ -284,6 +284,27 @@ function sourceOf(value: unknown, fallback: DiscoverSource = 'netease'): string 
   return text || fallback;
 }
 
+/** 歌单列表响应 → DiscoverPlaylists（歌单广场与推荐歌单共用同一份字段）。 */
+function playlistsOf(body: Rec | null, fallbackSource: DiscoverSource, fallbackCat: string): DiscoverPlaylists {
+  return {
+    source: sourceOf(body?.source, fallbackSource),
+    cat: str(body?.cat, fallbackCat),
+    playlists: recList(body?.playlists, (item) => {
+      const id = str(item.id);
+      if (!id) return null;
+      return {
+        source: sourceOf(item.source, fallbackSource),
+        id,
+        title: str(item.title, '未命名歌单'),
+        cover: str(item.cover) || undefined,
+        count: num(item.count),
+        creator: str(item.creator),
+      } satisfies DiscoverPlaylist;
+    }),
+    hasMore: bool(body?.hasMore),
+  } satisfies DiscoverPlaylists;
+}
+
 /** 回环封面补 token：绝对 http 127 地址补 token，相对路径拼宿主地址。 */
 export function discoverCover(url: string | undefined | null): string {
   if (!url) return '';
@@ -389,23 +410,23 @@ export async function fetchPlaylists(
   const key = `playlists:${source}:${cat}:${order}:${offset}:${limit}`;
   return cached(key, async () => {
     const body = rec(await request('/api/discover/playlists', { source, cat, order, offset, limit }));
-    return {
-      source: sourceOf(body?.source, source),
-      cat: str(body?.cat, cat),
-      playlists: recList(body?.playlists, (item) => {
-        const id = str(item.id);
-        if (!id) return null;
-        return {
-          source: sourceOf(item.source, source),
-          id,
-          title: str(item.title, '未命名歌单'),
-          cover: str(item.cover) || undefined,
-          count: num(item.count),
-          creator: str(item.creator),
-        } satisfies DiscoverPlaylist;
-      }),
-      hasMore: bool(body?.hasMore),
-    } satisfies DiscoverPlaylists;
+    return playlistsOf(body, source, cat);
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* 4.5 每日推荐歌单（首页一排，双平台各取一页后交错合并）              */
+/* ------------------------------------------------------------------ */
+
+export async function fetchRecommendedPlaylists(
+  source: DiscoverSource,
+  offset = 0,
+  limit = 10,
+): Promise<DiscoverPlaylists> {
+  const key = `recommend-playlists:${source}:${offset}:${limit}`;
+  return cached(key, async () => {
+    const body = rec(await request('/api/discover/recommend-playlists', { source, offset, limit }));
+    return playlistsOf(body, source, '每日推荐');
   });
 }
 

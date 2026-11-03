@@ -152,6 +152,11 @@ internal sealed class TrackAnalysisService : IDisposable
                     return localCached!;
                 }
 
+                if (request.CacheOnly)
+                {
+                    return AnalysisOutcome.Failure("not-cached", "该曲目尚未分析");
+                }
+
                 try
                 {
                     var tags = LocalTagReader.TryRead(audioPath);
@@ -176,6 +181,11 @@ internal sealed class TrackAnalysisService : IDisposable
                 if (!request.Force && TryReadCached(cacheKey, stopwatch, out var onlineCached))
                 {
                     return onlineCached!;
+                }
+
+                if (request.CacheOnly)
+                {
+                    return AnalysisOutcome.Failure("not-cached", "该曲目尚未分析");
                 }
 
                 audioPath = Path.Combine(AudioCacheDirectory, HashFileName($"{source}:{trackId}") + ".audio");

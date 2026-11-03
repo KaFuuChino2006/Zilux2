@@ -95,6 +95,8 @@ interface DeckGraphNodes {
   high: BiquadFilterNode;
   /** 1.8 kHz 临场感（峰形 EQ）：歌词衔接时抬高，让人声更靠前。 */
   presence: BiquadFilterNode;
+  /** 单个 deck 的响度补偿（线性增益）：每首曲子独立对齐 LUFS，随 deck 切换各带各的补偿。 */
+  trim: GainNode;
   gain: GainNode;
 }
 
@@ -126,6 +128,8 @@ let eqGains: number[] = EQ_FREQS.map(() => 0);
 // 人声保留淡出：暂停时压低低频/高频，让中频人声多留一会儿。
 let vocalLow: BiquadFilterNode | null = null;
 let vocalHigh: BiquadFilterNode | null = null;
+let loudnessGain: GainNode | null = null;
+let nightCompressor: DynamicsCompressorNode | null = null;
 /** 0=正常，1=最大程度压低伴奏；由 player.ts 在淡出时推动。 */
 let vocalFadeAmount = 0;
 /** 低频/高频最大衰减量（dB），只压伴奏不碰中频人声。 */
@@ -165,6 +169,7 @@ function buildDeckChain(
     low: BiquadFilterNode;
     high: BiquadFilterNode;
     presence: BiquadFilterNode;
+    trim: GainNode;
     gain: GainNode;
   };
 } | null {
@@ -194,6 +199,8 @@ function buildDeckChain(
     presence.frequency.value = 1800;
     presence.Q.value = 0.9;
     presence.gain.value = 0;
+    const trim = ctx.createGain();
+    trim.gain.value = 1;
     const gain = ctx.createGain();
     gain.gain.value = 1;
     source.connect(lowpass);
@@ -202,8 +209,9 @@ function buildDeckChain(
     bass.connect(low);
     low.connect(high);
     high.connect(presence);
-    presence.connect(gain);
-    return { chain: { lowpass, highpass, bass, low, high, presence, gain } };
+    presence.connect(trim);
+    trim.connect(gain);
+    return { chain: { lowpass, highpass, bass, low, high, presence, trim, gain } };
   } catch (err) {
     console.warn('[audioTap] buildDeckChain failed', err);
     return null;
@@ -283,23 +291,62 @@ export function deckGraphConnected(element: HTMLAudioElement): boolean {
   return deckNodes.has(element);
 }
 
-/** 设置 deck 在图里的增益（0~1）；未接入图时静默忽略。 */
-export function setDeckGraphGain(element: HTMLAudioElement, value: number): void {
+/** 设置 deck 在图里的增益（0~1）；未接入图时静默忽略。rampMs>0 时线性过渡。 */
+export function setDeckGraphGain(element: HTMLAudioElement, value: number, rampMs = 0): void {
   const node = deckNodes.get(element);
   if (!node) return;
   const target = Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
+  const param = node.gain.gain;
   try {
-    node.gain.gain.value = target;
+    const now = node.gain.context.currentTime;
+    param.cancelScheduledValues(now);
+    if (rampMs > 0) {
+      param.setValueAtTime(param.value, now);
+      param.linearRampToValueAtTime(target, now + rampMs / 1000);
+    } else {
+      param.value = target;
+    }
   } catch {
     /* 忽略 */
   }
 }
 
 /**
+ * 设置单个 deck 的响度补偿（dB，线性折算后写进图里的 trim 节点）。
+ * 每首曲子各带各的补偿，过渡期间两个 deck 分别对齐自己的目标响度，切歌时不会因为
+ * 「全局增益换值 + 过渡 trim 同时消失」而出现音量台阶。
+ */
+export function setDeckTrimGain(element: HTMLAudioElement, db: number): void {
+  const node = deckNodes.get(element);
+  if (!node) return;
+  const clamped = Number.isFinite(db) ? Math.max(-18, Math.min(12, db)) : 0;
+  const target = Math.pow(10, clamped / 20);
+  try {
+    node.trim.gain.cancelScheduledValues(context ? context.currentTime : 0);
+    node.trim.gain.setTargetAtTime(target, context ? context.currentTime : 0, 0.08);
+  } catch {
+    try {
+      node.trim.gain.value = target;
+    } catch {
+      /* 忽略 */
+    }
+  }
+}
+
+/** 调试：各 deck 的响度补偿（dB）与当前增益，供 CDP 验收用。 */
+export function readDeckTrimState(): { src: string; trimDb: number; gain: number }[] {
+  return [...deckNodes.entries()].map(([element, node]) => ({
+    src: (element.currentSrc || element.src || '').slice(-48),
+    trimDb: Math.round(20 * Math.log10(Math.max(1e-6, node.trim.gain.value)) * 10) / 10,
+    gain: Math.round(node.gain.gain.value * 1000) / 1000,
+  }));
+}
+(window as unknown as { __ziluxDeckTrim?: () => unknown }).__ziluxDeckTrim = readDeckTrimState;
+
+/**
  * 冻结某个 AudioParam 上已经排好的自动化：停在当前值、丢掉后面的事件。
  * cancelAndHoldAtTime 能把正在进行的斜坡停在当前位置；老内核没有它时退回 cancelScheduledValues。
- */
-function freezeParam(param: AudioParam, now: number): void {
+ */function freezeParam(param: AudioParam, now: number): void {
   try {
     const holder = param as AudioParam & { cancelAndHoldAtTime?: (when: number) => AudioParam };
     if (typeof holder.cancelAndHoldAtTime === 'function') holder.cancelAndHoldAtTime(now);
@@ -434,6 +481,21 @@ export function detachDeckFromGraph(element: HTMLAudioElement): void {
 export function setAudioTapVolume(value: number, immediate = false): void {
   localVolume = Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 1;
   applyLocalGain(immediate);
+}
+
+/** 响度均衡增益（dB）：负值压、正值补；需要图已建立（ensureEqualizerGraph）。 */
+export function setLoudnessGainDb(db: number): void {
+  if (!context || !loudnessGain) return;
+  const target = Math.pow(10, Math.max(-18, Math.min(12, db)) / 20);
+  loudnessGain.gain.cancelScheduledValues(context.currentTime);
+  loudnessGain.gain.setTargetAtTime(target, context.currentTime, 0.05);
+}
+
+/** 夜间模式：打开压缩器，压峰值、抬低处；关闭恢复直通。 */
+export function setNightCompressor(on: boolean): void {
+  if (!context || !nightCompressor) return;
+  nightCompressor.ratio.value = on ? 6 : 1;
+  nightCompressor.threshold.value = on ? -20 : -22;
 }
 
 /**
@@ -609,7 +671,17 @@ function buildLocalGraph(ctx: AudioContext): boolean {
     }
     tail.connect(vocalLow);
     vocalLow.connect(vocalHigh);
-    vocalHigh.connect(localGain);
+    loudnessGain = ctx.createGain();
+    loudnessGain.gain.value = 1;
+    nightCompressor = ctx.createDynamicsCompressor();
+    nightCompressor.threshold.value = -22;
+    nightCompressor.knee.value = 12;
+    nightCompressor.ratio.value = 1;
+    nightCompressor.attack.value = 0.004;
+    nightCompressor.release.value = 0.24;
+    vocalHigh.connect(loudnessGain);
+    loudnessGain.connect(nightCompressor);
+    nightCompressor.connect(localGain);
     localGain.connect(ctx.destination);
     applyEqGains();
     applyVocalFade();

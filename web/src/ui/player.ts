@@ -10,10 +10,11 @@
 
 import { onMediaControl, reportMedia, type MediaControl } from '../core/bridge';
 import { fetchStreamInfo, onlineInfo, qualityForSource, streamUrl, checkLiked, addLikedTrack, removeLikedTrack, recordRecent } from '../online/client';
-import { analyzeTrack, type AnalysisResult } from '../online/analysis';
+import { analyzeTrack, cachedAnalysis, type AnalysisResult } from '../online/analysis';
 import type { OnlineTrack } from '../online/types';
 import { getSettings } from '../core/settings';
-import { attachAudioTap, audioTapGraphActive, deckGraphConnected, ensureEqualizerGraph, setAudioTapVolume, setEqualizer, setVocalFade } from '../core/audioTap';
+import { attachAudioTap, audioTapGraphActive, deckGraphConnected, ensureEqualizerGraph, setAudioTapVolume, setDeckGraphGain, setDeckTrimGain, setEqualizer, setLoudnessGainDb, setNightCompressor, setVocalFade } from '../core/audioTap';
+import { compensationDbFor, loudnessEnabled, nightModeEnabled } from './loudness';
 import {
   cancelCrossfade,
   crossfadeApplyPlaybackRate,
@@ -264,21 +265,59 @@ function fadeTo(
   });
 }
 
-function applyPlaybackVolume(immediate = false): void {
+/** 副歌试听时临时压低主播放器音量，试听结束恢复；不影响用户音量设置。 */
+let previewDuck = 1;
+
+export function setPreviewDuck(value: number, rampMs = 0): void {
+  const next = Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 1;
+  if (next === previewDuck) return;
+  previewDuck = next;
+  applyPlaybackVolume(true, rampMs);
+}
+
+function applyPlaybackVolume(immediate = false, duckRampMs = 0): void {
   // 交叉淡化进行中：两 deck 音量由引擎按等功率曲线直接控制，这里只同步基础音量。
   if (crossfadeIsFading()) {
-    crossfadeApplyVolume(state.volume);
+    crossfadeApplyVolume(state.volume * previewDuck);
     return;
   }
   // 均衡器 / 人声保留淡出都需要 Web Audio 图；开启时保证图已建立，音量随之交给本地 gain。
   if ((fx.eqEnabled || fx.fadeVocal) && !audioTapGraphActive()) ensureEqualizerGraph();
-  const volume = state.volume * fadeScale;
+  const baseVolume = state.volume * fadeScale;
   if (audioTapGraphActive() && !activeDeckOutsideGraph) {
+    // 主 gain 用「不含试听 duck」的音量，试听压低调到当前 deck 自己的增益上：
+    // 悬停试听元素也接在同一张图里，若压主 gain 会把试听一起压小。
     audio.volume = 1;
-    setAudioTapVolume(volume, immediate);
+    setAudioTapVolume(baseVolume, immediate);
+    setDeckGraphGain(audio, previewDuck, duckRampMs);
   } else {
-    audio.volume = volume;
+    audio.volume = baseVolume * previewDuck;
   }
+}
+
+/** 应用当前曲目的响度补偿（有分析结果才补偿；未分析时回退 0dB）。 */
+async function applyLoudnessFor(track: OnlineTrack): Promise<void> {
+  if (!loudnessEnabled()) {
+    setLoudnessGainDb(0);
+    if (audioTapGraphActive() && !crossfadeIsFading()) setDeckTrimGain(audio, 0);
+    return;
+  }
+  if (!ensureEqualizerGraph()) return;
+  setNightCompressor(nightModeEnabled());
+  const result = await analysisFor(track).catch(() => null);
+  const db = compensationDbFor(result?.analysis?.loudnessLufs) ?? 0;
+  // 响度补偿写在当前 deck 自己的 trim 节点上，全局增益保持 0 dB：
+  // 过渡期间两首歌各带各的补偿，切换曲目时不会因为「全局增益换值 + 过渡 trim 消失」出现音量台阶。
+  setLoudnessGainDb(0);
+  // 过渡进行中 player 的 audio 还指着正在淡出的 A；此时写补偿会把 B 的目标套到 A 上。
+  // 两个 deck 的 trim 在 prepareCrossfade 里已按各自 LUFS 设好，这里直接跳过。
+  if (crossfadeIsFading()) return;
+  setDeckTrimGain(audio, db);
+  applyPlaybackVolume(true);
+}
+
+export function refreshLoudness(track: OnlineTrack | null | undefined): void {
+  if (track) void applyLoudnessFor(track);
 }
 
 let state: PlayerState = {
@@ -478,6 +517,7 @@ function tick(): void {
   const deckDur = durationMs();
   const nextPos = preview ? previewPositionMs() : deckPos;
   const nextDur = preview ? preview.durationMs : deckDur;
+  enforceBarLoop(deckPos);
   if (
     Math.abs(nextPos - state.positionMs) > 40 ||
     Math.abs(nextDur - state.durationMs) > 200 ||
@@ -625,15 +665,19 @@ function onError(element: HTMLAudioElement): void {
   }, 240);
 }
 
-/** 载入并播放队列中某一首。 */
-function load(index: number, autoplay = true): void {
+/** 载入并播放队列中某一首。skipFadeIn=true 时直接全音量起播（用于悬停试听的无缝交接）。 */
+function load(index: number, autoplay = true, startMs = 0, skipFadeIn = false): void {
   const track = state.queue[index] ?? null;
   if (!track) {
     stop();
     return;
   }
+  // 悬停试听交接：从曲内指定位置开始（普通切歌是 0）。
+  const startOffsetSec = Math.max(0, startMs) / 1000;
+  const startPositionMs = startOffsetSec > 0 ? Math.round(startOffsetSec * 1000) : 0;
   // 任何显式切歌都放弃上一首的无缝衔接计划（B 的预加载一并清掉）。
   cancelSeamless('load');
+  resetBarLoop();
   // 过渡期的 WSOLA 变速不跨曲残留：新的一首从用户倍速开始（默认 1 = 原速）。
   applyDeckRate(audio);
   applyDeckRate(standby);
@@ -641,7 +685,7 @@ function load(index: number, autoplay = true): void {
   setState({
     track,
     index,
-    positionMs: 0,
+    positionMs: startPositionMs,
     durationMs: cueSeconds > 0 ? cueSeconds * 1000 : track.durationMs,
     loading: true,
   });
@@ -678,7 +722,7 @@ function load(index: number, autoplay = true): void {
   if (autoplay) {
     cancelFade();
     const token = fadeToken;
-    const fade = fx.fadeEnabled ? Math.max(0, fx.fadeInMs) : 0;
+    const fade = fx.fadeEnabled && !skipFadeIn ? Math.max(0, fx.fadeInMs) : 0;
     fadeScale = fade > 0 ? 0 : 1;
     vocalHold = 0;
     setVocalFade(0);
@@ -686,7 +730,13 @@ function load(index: number, autoplay = true): void {
     void audio
       .play()
       .then(() => {
-        if (startAt > 0) audio.currentTime = startAt;
+        if (startAt > 0 || startOffsetSec > 0) {
+          try {
+            audio.currentTime = startAt + startOffsetSec;
+          } catch {
+            /* 媒体尚未就绪时交给后续 tick 的进度显示 */
+          }
+        }
         if (token !== fadeToken) return;
         setState({ playing: true, loading: false });
         scheduleTick();
@@ -706,14 +756,132 @@ function load(index: number, autoplay = true): void {
     // 暂停态也先预分析/预加载，用户按播放后可直接衔接。
     prepareSeamlessNext();
   }
+  // 这一首是队列末尾时，提前拉下一批续上（私人漫游），避免无缝计划绕回第一首。
+  maybeRefillQueue();
 }
 
-export function playQueue(tracks: OnlineTrack[], index = 0, autoplay = true): void {
+/* ------------------------------------------------------------------ */
+/* 队列续接（私人漫游等无限流）                                         */
+/* ------------------------------------------------------------------ */
+
+/** 队列播到最后一首时拉下一批的续接器；返回空数组表示这次没拉到。 */
+export type QueueRefill = () => Promise<OnlineTrack[]>;
+
+let queueRefill: QueueRefill | null = null;
+let refillInFlight = false;
+
+function queueKeyOf(track: OnlineTrack): string {
+  return `${track.source}:${track.id}`;
+}
+
+/**
+ * 注册队列续接器（传 null 清除）。只在「列表模式 + 当前曲目是队列最后一首」时触发；
+ * 任何显式 playQueue / replaceQueue 都会自动清除，避免普通歌单被无限续接。
+ */
+export function setQueueRefill(provider: QueueRefill | null): void {
+  queueRefill = provider;
+  refillInFlight = false;
+  if (!provider) return;
+  maybeRefillQueue();
+  prepareSeamlessNext();
+}
+
+/** 当前曲目已经是队列最后一首时，异步拉下一批、去重后追加进队列并重排无缝衔接。 */
+function maybeRefillQueue(): void {
+  const provider = queueRefill;
+  if (!provider || refillInFlight) return;
+  if (state.mode !== 'list') return;
+  if (state.queue.length === 0) return;
+  if (state.index < state.queue.length - 1) return;
+  const anchorIndex = state.index;
+  const anchorKey = state.track ? queueKeyOf(state.track) : '';
+  refillInFlight = true;
+  void (async () => {
+    let extra: OnlineTrack[] = [];
+    try {
+      const batch = await provider();
+      const seen = new Set(state.queue.map(queueKeyOf));
+      extra = batch.filter((track) => !seen.has(queueKeyOf(track)));
+    } catch (err) {
+      console.warn('[player] queue refill failed', err);
+    } finally {
+      refillInFlight = false;
+    }
+    // 拉取期间用户换过队列/曲目/清过续接器：这批结果直接丢弃。
+    if (queueRefill !== provider) return;
+    if (state.index !== anchorIndex) return;
+    if ((state.track ? queueKeyOf(state.track) : '') !== anchorKey) return;
+    if (extra.length === 0) return;
+    state = { ...state, queue: [...state.queue, ...extra] };
+    setState({ queue: state.queue });
+    console.debug(`[player] queue refilled +${extra.length}（共 ${state.queue.length} 首）`);
+    // 追加前排好的「下一首」是绕回第一首的旧计划，作废后按新队列重排。
+    plannedNextIndex = null;
+    plannedFor = '';
+    prepareSeamlessNext();
+  })();
+}
+
+/**
+ * 把外部「正在播放」的元素接管为当前 deck（悬停试听点击接续用）：
+ * 不重新加载、不 seek、不打断声音——元素继续放，播放器只接管状态与后续链路。
+ */
+export function adoptPlayingElement(
+  element: HTMLAudioElement,
+  track: OnlineTrack,
+  queue: OnlineTrack[],
+  index: number,
+): boolean {
+  if (element === audio || element.paused) return false;
+  cancelSeamless('adopt');
+  cancelFade();
+  const previous = audio;
+  // 顺序很重要：先停旧 deck，再恢复主音量，最后接管元素。
+  // 反过来会让旧歌在 duck 恢复的那一瞬间突然变响，听起来就是「顿一下」。
+  try {
+    previous.pause();
+  } catch {
+    /* 忽略 */
+  }
+  setPreviewDuck(1);
+  if (standby === element) standby = previous;
+  audio = element;
+  wireDeck(audio);
+  attachAudioTap(audio);
+  startAt = 0;
+  cueSeconds = 0;
+  fadeScale = 1;
+  applyDeckRate(audio);
+  const positionMs = Math.max(0, element.currentTime * 1000);
+  const durationMs =
+    Number.isFinite(element.duration) && element.duration > 0 ? element.duration * 1000 : (track.durationMs ?? 0);
+  setState({
+    track,
+    queue: queue.slice(),
+    index,
+    playing: !element.paused,
+    loading: false,
+    positionMs,
+    durationMs,
+  });
+  applyPlaybackVolume(true);
+  void applyLoudnessFor(track);
+  recordRecent(track);
+  maybeReport();
+  scheduleTick();
+  prepareSeamlessNext();
+  return true;
+}
+
+export function playQueue(tracks: OnlineTrack[], index = 0, autoplay = true, startMs = 0, skipFadeIn = false): void {
   if (tracks.length === 0) return;
   const safeIndex = Math.max(0, Math.min(index, tracks.length - 1));
   (window as unknown as { __ziluxSkip?: number }).__ziluxSkip = 0;
+  // 显式换队列：上一份续接器（私人漫游等）作废，普通歌单/搜索结果不会被无限续接。
+  queueRefill = null;
+  refillInFlight = false;
   state = { ...state, queue: tracks.slice() };
-  load(safeIndex, autoplay);
+  load(safeIndex, autoplay, startMs, skipFadeIn);
 }
 
 /**
@@ -723,6 +891,9 @@ export function playQueue(tracks: OnlineTrack[], index = 0, autoplay = true): vo
  */
 export function replaceQueue(tracks: OnlineTrack[]): void {
   if (tracks.length === 0) return;
+  // 换了一套完整列表：续接器作废（首页卡片补全列表属于同一队列，不能续接）。
+  queueRefill = null;
+  refillInFlight = false;
   const track = state.track;
   if (!track) {
     playQueue(tracks, 0);
@@ -734,6 +905,22 @@ export function replaceQueue(tracks: OnlineTrack[]): void {
   cancelSeamless('queue');
   state = { ...state, queue: tracks.slice(), index };
   setState({ queue: state.queue, index });
+  prepareSeamlessNext();
+}
+
+/**
+ * AutoMix 用：只替换「当前曲之后的队列」，已播部分与当前下标保持不变。
+ * 会作废旧的无缝计划，按新顺序重新准备下一首。
+ */
+export function reorderUpcoming(upcoming: OnlineTrack[]): void {
+  if (state.queue.length === 0) return;
+  const head = state.queue.slice(0, Math.max(0, state.index + 1));
+  const queue = [...head, ...upcoming];
+  plannedNextIndex = null;
+  plannedFor = '';
+  cancelSeamless('queue');
+  state = { ...state, queue };
+  setState({ queue: state.queue });
   prepareSeamlessNext();
 }
 
@@ -776,6 +963,41 @@ export function moveQueueItem(from: number, to: number): void {
   state = { ...state, queue, index };
   setState({ queue, index });
   prepareSeamlessNext();
+}
+
+/** 把一首歌插到「下一首」位置（已存在于队列时先移走再插回）。当前正在播的这首不处理。 */
+export function queueNext(track: OnlineTrack): void {
+  const key = queueKeyOf(track);
+  const existing = state.queue.findIndex((item) => queueKeyOf(item) === key);
+  if (existing === state.index) return;
+  const queue = state.queue.slice();
+  let index = state.index;
+  if (existing >= 0) {
+    queue.splice(existing, 1);
+    if (existing < index) index -= 1;
+  }
+  if (queue.length === 0) {
+    playQueue([track], 0, true);
+    return;
+  }
+  queue.splice(Math.min(queue.length, index + 1), 0, track);
+  cancelSeamless('queue');
+  state = { ...state, queue, index };
+  setState({ queue, index });
+  prepareSeamlessNext();
+}
+
+/** 追加到播放队列末尾；已在队列中则忽略并返回 false。 */
+export function queueAppend(track: OnlineTrack): boolean {
+  const key = queueKeyOf(track);
+  if (state.queue.some((item) => queueKeyOf(item) === key)) return false;
+  state = { ...state, queue: [...state.queue, track] };
+  setState({ queue: state.queue });
+  // 队列尾部变了：作废按旧长度准备的「下一首」计划。
+  plannedNextIndex = null;
+  plannedFor = '';
+  prepareSeamlessNext();
+  return true;
 }
 
 export function playAt(index: number, tracks?: OnlineTrack[]): void {
@@ -1163,6 +1385,156 @@ function analysisFor(track: OnlineTrack): Promise<AnalysisResult> {
     if (typeof oldest === 'string') analysisCache.delete(oldest);
   }
   return promise;
+}
+
+/** 播放条标记用：取某首曲目的分析结果（命中缓存直接复用，未命中会请求宿主分析器）。 */
+export function analysisForTrack(track: OnlineTrack): Promise<AnalysisResult> {
+  return analysisFor(track);
+}
+
+/* ------------------------------------------------------------------ */
+/* DJ 工具：热 cue 与小节循环                                          */
+/* ------------------------------------------------------------------ */
+
+const HOTCUES_KEY = 'zilux2.hotcues';
+const HOTCUE_SLOTS = 4;
+
+type HotCueMap = Record<string, number[]>;
+
+function readHotCueMap(): HotCueMap {
+  try {
+    const raw = localStorage.getItem(HOTCUES_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object') return {};
+    const out: HotCueMap = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!Array.isArray(value)) continue;
+      const slots = value
+        .slice(0, HOTCUE_SLOTS)
+        .map((item) => (typeof item === 'number' && Number.isFinite(item) && item >= 0 ? item : -1));
+      while (slots.length < HOTCUE_SLOTS) slots.push(-1);
+      out[key] = slots;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+let hotCueMap: HotCueMap = readHotCueMap();
+
+function saveHotCues(): void {
+  try {
+    localStorage.setItem(HOTCUES_KEY, JSON.stringify(hotCueMap));
+  } catch {
+    /* 忽略：localStorage 不可用 */
+  }
+}
+
+/** 当前曲目 4 个热 cue（-1 表示空）。 */
+export function getHotCues(): number[] {
+  const track = state.track;
+  if (!track) return [-1, -1, -1, -1];
+  const slots = hotCueMap[trackKeyOf(track)];
+  return slots ? slots.slice() : [-1, -1, -1, -1];
+}
+
+/** 按热 cue：空位=在当前位置设置；已设置=跳过去。返回实际动作与位置。 */
+export function toggleHotCue(slot: number): { action: 'set' | 'jump' | 'none'; ms: number } {
+  const index = Math.max(0, Math.min(HOTCUE_SLOTS - 1, Math.floor(slot)));
+  const track = state.track;
+  if (!track) return { action: 'none', ms: 0 };
+  const key = trackKeyOf(track);
+  const slots = hotCueMap[key] ?? [-1, -1, -1, -1];
+  const existing = slots[index] ?? -1;
+  if (existing >= 0) {
+    seek(existing);
+    return { action: 'jump', ms: existing };
+  }
+  const ms = Math.round(state.positionMs);
+  slots[index] = ms;
+  hotCueMap[key] = slots;
+  saveHotCues();
+  setState({});
+  return { action: 'set', ms };
+}
+
+/** 清除某个热 cue；返回是否确有清除。 */
+export function clearHotCue(slot: number): boolean {
+  const index = Math.max(0, Math.min(HOTCUE_SLOTS - 1, Math.floor(slot)));
+  const track = state.track;
+  if (!track) return false;
+  const key = trackKeyOf(track);
+  const slots = hotCueMap[key];
+  if (!slots || (slots[index] ?? -1) < 0) return false;
+  slots[index] = -1;
+  hotCueMap[key] = slots;
+  saveHotCues();
+  setState({});
+  return true;
+}
+
+let loopRange: { startMs: number; endMs: number } | null = null;
+
+/** 当前小节循环区间（没开为 null）。 */
+export function getBarLoop(): { startMs: number; endMs: number } | null {
+  return loopRange ? { ...loopRange } : null;
+}
+
+function barLoopBounds(bars: number): { startMs: number; endMs: number } | null {
+  const track = state.track;
+  if (!track) return null;
+  const analysis = cachedAnalysis(track)?.analysis;
+  const downbeats = analysis?.downbeats ?? [];
+  const duration = durationMs();
+  if (!analysis || downbeats.length < 2 || !(duration > 0)) return null;
+  const barMs = analysis.beatIntervalMs > 0 ? analysis.beatIntervalMs * (analysis.meter || 4) : 0;
+  if (!(barMs > 0)) return null;
+  let index = 0;
+  for (let i = 0; i < downbeats.length; i += 1) {
+    if (downbeats[i] <= state.positionMs + 4) index = i;
+  }
+  const aligned = index - (index % bars);
+  const startMs = Math.max(0, downbeats[aligned] ?? 0);
+  const endMs = Math.min(duration, startMs + bars * barMs);
+  if (!(endMs - startMs > 200)) return null;
+  return { startMs, endMs };
+}
+
+/** 切换「按小节循环」：开启时锁定当前位置所在乐句的 N 小节，再按一次关闭。 */
+export function toggleBarLoop(bars = 4): { ok: boolean; loop: { startMs: number; endMs: number } | null } {
+  if (loopRange) {
+    loopRange = null;
+    setState({});
+    return { ok: true, loop: null };
+  }
+  const bounds = barLoopBounds(bars);
+  if (!bounds) return { ok: false, loop: null };
+  loopRange = bounds;
+  setState({});
+  return { ok: true, loop: { ...bounds } };
+}
+
+function enforceBarLoop(position: number): void {
+  if (!loopRange) return;
+  if (preview) return;
+  if (!(loopRange.endMs > loopRange.startMs)) return;
+  if (position < loopRange.endMs - 40) return;
+  // 循环回到起点：直接改 currentTime，避免每次循环都重建无缝衔接计划。
+  try {
+    audio.currentTime = startAt + loopRange.startMs / 1000;
+  } catch {
+    return;
+  }
+  setState({ positionMs: loopRange.startMs });
+}
+
+function resetBarLoop(): void {
+  if (loopRange) {
+    loopRange = null;
+    setState({});
+  }
 }
 
 function setPrefetch(patch: Partial<PrefetchRecord>): void {
@@ -1562,6 +1934,8 @@ function commitSeamless(
   void recordRecent(track);
   maybeReport();
   scheduleTick();
+  // 无缝过渡也可能落在队列末尾（续接批次里的最后一首）：同样提前续上。
+  maybeRefillQueue();
   prepareSeamlessNext();
 }
 
@@ -1578,7 +1952,11 @@ function onLoadedMetadata(element: HTMLAudioElement): void {
 }
 
 /** 两个 deck 都要接事件：B 的 ended/error 用来及时放弃衔接计划，不触发切歌。 */
+const wiredDecks = new WeakSet<HTMLAudioElement>();
+
 function wireDeck(element: HTMLAudioElement): void {
+  if (wiredDecks.has(element)) return;
+  wiredDecks.add(element);
   element.addEventListener('ended', () => onEnded(element));
   element.addEventListener('error', () => onError(element));
   element.addEventListener('loadedmetadata', () => onLoadedMetadata(element));

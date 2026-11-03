@@ -10,6 +10,7 @@ import { onlineArtwork } from '../online/artwork';
 import { h, icon } from './dom';
 import { onPlayer, playerState } from './player';
 import { ui } from './theme';
+import { enableWheelScroll } from './wheelScroll';
 
 /** 热门歌单的播放次数：12345 → 1.2 万次播放。 */
 function formatPlays(value: number): string {
@@ -65,6 +66,8 @@ export interface HomeData {
   playlists: LibraryPlaylist[];
   /** 网易云热门歌单（第二块） */
   neteasePlaylists: LibraryPlaylist[];
+  /** 每日推荐歌单（网易云 + QQ 交错，排在热门歌单之前） */
+  recommendPlaylists: LibraryPlaylist[];
 }
 
 export class HomeView {
@@ -126,7 +129,10 @@ export class HomeView {
     }
     this.bindRecentScroll();
 
-    // 左中：网易云收藏 / QQ 音乐收藏；右侧：最近播放（窄栏，内部滚动）。下面热门歌单。
+    // 左中：网易云收藏 / QQ 音乐收藏；右侧：最近播放（窄栏，内部滚动）。下面每日推荐、热门歌单。
+
+    const recommendPlaylists = this.buildPlaylistSection(data.recommendPlaylists, '每日推荐歌单', true);
+    if (recommendPlaylists) this.root.append(recommendPlaylists);
 
     const playlists = this.buildPlaylistSection(data.playlists, '热门歌单', true);
     if (playlists) this.root.append(playlists);
@@ -155,7 +161,7 @@ export class HomeView {
         .reverse()
         .forEach(({ track, index }) => {
           const layer = h('div', { class: `daily-cover daily-cover-${index}`, 'data-layer': String(index) });
-          layer.append(h('img', { src: onlineArtwork(track), loading: 'lazy', alt: '' }));
+          layer.append(h('img', { src: onlineArtwork(track, 300), loading: 'lazy', alt: '' }));
           if (index === 0) {
             const play = h('button', { class: 'daily-play', title: `播放今日推荐：${track.title}` }, icon('play', 18));
             play.addEventListener('click', (event) => {
@@ -232,7 +238,7 @@ export class HomeView {
         .reverse()
         .forEach(({ track, index }) => {
           const layer = h('div', { class: `daily-cover daily-cover-${index}`, 'data-layer': String(index) });
-          layer.append(h('img', { src: onlineArtwork(track), loading: 'lazy', alt: '' }));
+          layer.append(h('img', { src: onlineArtwork(track, 300), loading: 'lazy', alt: '' }));
           if (index === 0) {
             const play = h('button', { class: 'daily-play', title: `播放私人雷达：${track.title}` }, icon('play', 18));
             play.addEventListener('click', (event) => {
@@ -333,7 +339,7 @@ export class HomeView {
     layers.forEach((layer, index) => {
       const item = order[index];
       const image = layer.querySelector('img');
-      if (image && item) image.src = onlineArtwork(item);
+      if (image && item) image.src = onlineArtwork(item, 300);
       layer.classList.toggle('is-empty', !item);
     });
 
@@ -389,7 +395,7 @@ export class HomeView {
     layers.forEach((layer, index) => {
       const item = order[index];
       const image = layer.querySelector('img');
-      if (image && item) image.src = onlineArtwork(item);
+      if (image && item) image.src = onlineArtwork(item, 300);
       layer.classList.toggle('is-empty', !item);
     });
 
@@ -453,7 +459,7 @@ export class HomeView {
       const row = h(
         'button',
         { class: 'recent-item', type: 'button', title: `${track.title} - ${track.artist}` },
-        h('img', { class: 'recent-thumb', src: track.cover || onlineArtwork(track), alt: '', loading: 'lazy' }),
+        h('img', { class: 'recent-thumb', src: track.cover || onlineArtwork(track, 120), alt: '', loading: 'lazy' }),
         h('span', { class: 'recent-name', text: track.title }),
         h('span', { class: 'recent-artist', text: track.artist }),
       );
@@ -495,7 +501,7 @@ export class HomeView {
         .reverse()
         .forEach(({ track, index }) => {
           const layer = h('div', { class: `daily-cover daily-cover-${index}` });
-          layer.append(h('img', { src: track.cover || onlineArtwork(track), loading: 'lazy', alt: '' }));
+          layer.append(h('img', { src: track.cover || onlineArtwork(track, 300), loading: 'lazy', alt: '' }));
           if (index === 0) {
             const play = h('button', { class: 'daily-play', type: 'button', title: `播放${item.label}` }, icon('play', 18));
             play.addEventListener('click', (event) => {
@@ -551,52 +557,11 @@ export class HomeView {
 
     const scroller = h('div', { class: ui.scroller() });
     // 鼠标滚轮竖向滚动时，把横向歌单平滑滚起来（rAF 缓动，不直接位移）
-    let target = scroller.scrollLeft;
-    let raf = 0;
-    const maxScroll = (): number => Math.max(0, scroller.scrollWidth - scroller.clientWidth);
-    const step = (): void => {
-      const max = maxScroll();
-      if (target > max) target = max;
-      if (target < 0) target = 0;
-      const distance = target - scroller.scrollLeft;
-      if (Math.abs(distance) < 0.6) {
-        scroller.scrollLeft = target;
-        raf = 0;
-        return;
-      }
-      scroller.scrollLeft += distance * 0.22;
-      raf = window.requestAnimationFrame(step);
-    };
-    const kick = (): void => {
-      if (raf === 0) raf = window.requestAnimationFrame(step);
-    };
-    scroller.addEventListener(
-      'wheel',
-      (event) => {
-        if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
-        const max = maxScroll();
-        if (max <= 0) return;
-        event.preventDefault();
-        target = Math.max(0, Math.min(max, target + event.deltaY * 1.35));
-        kick();
-      },
-      { passive: false },
-    );
-    scroller.addEventListener(
-      'pointerdown',
-      () => {
-        target = scroller.scrollLeft;
-        if (raf !== 0) {
-          window.cancelAnimationFrame(raf);
-          raf = 0;
-        }
-      },
-      { passive: true },
-    );
+    enableWheelScroll(scroller);
     items.forEach((item) => {
       const cover =
         item.cover ??
-        onlineArtwork({ id: item.id, title: item.title, artist: item.creator ?? '', album: '', cover: '' });
+        onlineArtwork({ id: item.id, title: item.title, artist: item.creator ?? '', album: '', cover: '' }, 300);
       const tile = h(
         'button',
         { class: ui.tile(), title: item.title },

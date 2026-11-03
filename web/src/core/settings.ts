@@ -59,6 +59,8 @@ export type ShortcutAction = 'playPause' | 'prev' | 'next' | 'toggleWindow';
 export interface ShortcutsSettings {
   /** 全局开关：关闭后宿主注销全部组合。 */
   enabled: boolean;
+  /** 系统媒体键（播放/暂停、上一首、下一首）是否始终由 Zilux2 接管。 */
+  alwaysHandleMediaKeys: boolean;
   /** 空字符串表示该条不绑定。 */
   playPause: string;
   prev: string;
@@ -80,6 +82,7 @@ export const SHORTCUT_LABELS: Record<ShortcutAction, { label: string; hint: stri
 /** 默认组合（与宿主 Shortcuts v1 schema 的默认值保持一致）。 */
 export const SHORTCUT_DEFAULTS: ShortcutsSettings = {
   enabled: true,
+  alwaysHandleMediaKeys: true,
   playPause: 'Ctrl+Alt+Space',
   prev: 'Ctrl+Alt+Left',
   next: 'Ctrl+Alt+Right',
@@ -223,6 +226,8 @@ export interface Settings {
     startMaximized: boolean;
     /** 开机自启（HKCU Run）；关闭时启动即注销注册项。 */
     autoLaunch: boolean;
+    /** 开机自启时不显示主界面（只驻留托盘）；手动打开仍正常显示。 */
+    autoStartHidden: boolean;
     /** 监控本地曲库文件夹（新增/删除实时同步）；关闭后需手动重新扫描。 */
     watchLocalFolder: boolean;
   };
@@ -296,7 +301,7 @@ export type SettingsPatch = {
 
 export const DEFAULT_SETTINGS: Settings = {
   version: 1,
-  general: { splash: true, startMaximized: false, autoLaunch: false, watchLocalFolder: true },
+  general: { splash: true, startMaximized: false, autoLaunch: false, autoStartHidden: true, watchLocalFolder: true },
   appearance: {
     theme: 'frost',
     reduceMotion: false,
@@ -403,6 +408,10 @@ function asFadeMs(value: unknown): number {
 function asShortcuts(value: Record<string, unknown>): ShortcutsSettings {
   return {
     enabled: asBool(value.enabled, SHORTCUT_DEFAULTS.enabled),
+    alwaysHandleMediaKeys: asBool(
+      value.alwaysHandleMediaKeys,
+      SHORTCUT_DEFAULTS.alwaysHandleMediaKeys,
+    ),
     playPause: normalizeShortcutBinding(value.playPause, SHORTCUT_DEFAULTS.playPause),
     prev: normalizeShortcutBinding(value.prev, SHORTCUT_DEFAULTS.prev),
     next: normalizeShortcutBinding(value.next, SHORTCUT_DEFAULTS.next),
@@ -426,6 +435,7 @@ export function normalizeSettings(raw: unknown): Settings {
       splash: asBool(general.splash, DEFAULT_SETTINGS.general.splash),
       startMaximized: asBool(general.startMaximized, DEFAULT_SETTINGS.general.startMaximized),
       autoLaunch: asBool(general.autoLaunch, DEFAULT_SETTINGS.general.autoLaunch),
+      autoStartHidden: asBool(general.autoStartHidden, DEFAULT_SETTINGS.general.autoStartHidden),
       watchLocalFolder: asBool(general.watchLocalFolder, DEFAULT_SETTINGS.general.watchLocalFolder),
     },
     appearance: {

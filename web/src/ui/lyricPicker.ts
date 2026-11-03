@@ -221,7 +221,7 @@ export function openLyricPicker(track: OnlineTrack | null): void {
       return;
     }
     for (const item of candidates) {
-      const cover = h('img', { class: 'lp-item-cover', alt: '', src: onlineArtwork(item.track) });
+      const cover = h('img', { class: 'lp-item-cover', alt: '', src: onlineArtwork(item.track, 96) });
       const badge = h('span', {
         class: `lp-score${item.score >= 0.8 ? ' is-high' : item.score >= 0.55 ? ' is-mid' : ''}`,
         text: fmtPercent(item.score),
@@ -259,7 +259,7 @@ export function openLyricPicker(track: OnlineTrack | null): void {
   const renderPreview = async (item: Candidate): Promise<void> => {
     preview.textContent = '';
     previewEls = [];
-    const cover = h('img', { class: 'lp-preview-cover', alt: '', src: onlineArtwork(item.track) });
+    const cover = h('img', { class: 'lp-preview-cover', alt: '', src: onlineArtwork(item.track, 300) });
     preview.append(
       cover,
       h('div', { class: 'lp-preview-title', text: item.track.title }),

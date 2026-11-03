@@ -575,6 +575,147 @@ internal sealed class DiscoverService
             : url;
     }
 
+    // ── 每日推荐歌单 ─────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// 每日推荐歌单（首页「每日推荐歌单」一排）。
+    /// 网易云用公开的 personalized/playlist（按天轮换，匿名也能拉，不需要登录）；
+    /// QQ 用 musicu 歌单广场的推荐流（PlaylistSquare/GetRecommendFeed）。
+    /// </summary>
+    public async Task<DiscoverPlaylistsResponse> GetRecommendPlaylistsAsync(
+        string source,
+        int offset,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        return source == "qq"
+            ? await GetQqRecommendPlaylistsAsync(offset, limit, cancellationToken).ConfigureAwait(false)
+            : await GetNeteaseRecommendPlaylistsAsync(limit, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<DiscoverPlaylistsResponse> GetNeteaseRecommendPlaylistsAsync(
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        // 这是「推荐歌单」聚合入口而不是某个用户的每日推荐：个人化的
+        // /api/v1/discovery/recommend/resource 已下线（301），公开接口对匿名也返回同一批。
+        var url = $"{NeteaseBase}/api/personalized/playlist?limit={limit}&total=true&n=1000";
+        using var document = await FetchJsonAsync(url, NeteaseReferer, NeteaseCookie, Timeout, cancellationToken)
+            .ConfigureAwait(false);
+
+        var playlists = new List<PlaylistCard>();
+        if (document.RootElement.TryGetProperty("result", out var list) && list.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var element in list.EnumerateArray())
+            {
+                var id = ReadId(element, "id");
+                if (id.Length == 0)
+                {
+                    continue;
+                }
+
+                playlists.Add(new PlaylistCard
+                {
+                    Source = "netease",
+                    Id = id,
+                    Title = ReadString(element, "name"),
+                    Cover = _coverUrl("netease", ReadString(element, "picUrl")),
+                    Count = ReadLong(element, "playCount"),
+                });
+            }
+        }
+
+        return new DiscoverPlaylistsResponse
+        {
+            Source = "netease",
+            Cat = "每日推荐",
+            Playlists = playlists,
+            HasMore = false,
+        };
+    }
+
+    private async Task<DiscoverPlaylistsResponse> GetQqRecommendPlaylistsAsync(
+        int offset,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        // 推荐歌单流模块名与歌单广场不同：PlaylistSquare/GetRecommendFeed，分页参数是 From/Size。
+        var payload = $"{{\"comm\":{{\"ct\":24,\"cv\":0}},\"req_1\":{{\"module\":\"music.playlist.PlaylistSquare\"," +
+                      $"\"method\":\"GetRecommendFeed\",\"param\":{{\"From\":{offset},\"Size\":{limit}}}}}}}";
+        var url = "https://u.y.qq.com/cgi-bin/musicu.fcg?format=json&data=" + Uri.EscapeDataString(payload);
+        using var document = await FetchJsonBytesAsUtf8Async(url, "https://y.qq.com/", QqCookie, Timeout, cancellationToken)
+            .ConfigureAwait(false);
+
+        var playlists = new List<PlaylistCard>();
+        var hasMore = false;
+        if (document.RootElement.TryGetProperty("req_1", out var request) && request.ValueKind == JsonValueKind.Object)
+        {
+            if (request.TryGetProperty("code", out var codeElement) &&
+                codeElement.ValueKind == JsonValueKind.Number &&
+                codeElement.TryGetInt32(out var code) &&
+                code != 0)
+            {
+                throw new DiscoverException(502, "upstream-failed", $"QQ 推荐歌单返回 {code}");
+            }
+
+            if (request.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object)
+            {
+                hasMore = data.TryGetProperty("HasMore", out var more) && more.ValueKind == JsonValueKind.True;
+                if (data.TryGetProperty("List", out var list) && list.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var element in list.EnumerateArray())
+                    {
+                        if (!element.TryGetProperty("Playlist", out var playlist) ||
+                            playlist.ValueKind != JsonValueKind.Object ||
+                            !playlist.TryGetProperty("basic", out var basic) ||
+                            basic.ValueKind != JsonValueKind.Object)
+                        {
+                            continue;
+                        }
+
+                        var id = ReadId(basic, "tid");
+                        if (id.Length == 0)
+                        {
+                            continue;
+                        }
+
+                        var creator = string.Empty;
+                        if (basic.TryGetProperty("creator", out var creatorElement) &&
+                            creatorElement.ValueKind == JsonValueKind.Object)
+                        {
+                            creator = ReadString(creatorElement, "nick");
+                        }
+
+                        var cover = string.Empty;
+                        if (basic.TryGetProperty("cover", out var coverElement) &&
+                            coverElement.ValueKind == JsonValueKind.Object)
+                        {
+                            cover = QqCoverUrl(ReadString(coverElement, "medium_url"));
+                        }
+
+                        playlists.Add(new PlaylistCard
+                        {
+                            Source = "qq",
+                            Id = id,
+                            Title = ReadString(basic, "title"),
+                            Cover = _coverUrl("qq", cover),
+                            Count = ReadLong(basic, "play_cnt"),
+                            Creator = creator,
+                        });
+                    }
+                }
+            }
+        }
+
+        return new DiscoverPlaylistsResponse
+        {
+            Source = "qq",
+            Cat = "每日推荐",
+            Playlists = playlists,
+            HasMore = hasMore,
+        };
+    }
+
     // ── 私人漫游 ─────────────────────────────────────────────────────────────────
 
     public async Task<DiscoverRadioResponse> GetRadioAsync(int count, CancellationToken cancellationToken)
@@ -2262,7 +2403,11 @@ internal sealed class DiscoverService
 
         return value.ValueKind switch
         {
-            JsonValueKind.Number => value.TryGetInt64(out var number) ? number : 0,
+            // 网易云部分接口把播放量写成指数形式（3.2659368E7），TryGetInt64 对指数形式返回 false，
+            // 需要再按 double 兜底，否则卡片会显示 0 次播放。
+            JsonValueKind.Number => value.TryGetInt64(out var number)
+                ? number
+                : value.TryGetDouble(out var real) ? (long)Math.Round(real) : 0,
             JsonValueKind.String => long.TryParse(value.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) ? parsed : 0,
             _ => 0,
         };

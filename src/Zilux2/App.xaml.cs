@@ -87,7 +87,7 @@ public partial class App : Application
         // registry value first) and re-applied on every general-section patch/reset below.
         if (Settings is not null)
         {
-            AutoLaunchService.Apply(Settings.AutoLaunch);
+            AutoLaunchService.Apply(Settings.AutoLaunch, Settings.AutoStartHidden);
             Settings.GeneralChanged += OnGeneralSettingsChanged;
         }
 
@@ -142,11 +142,39 @@ public partial class App : Application
         MainWindow = window;
         // 下载完成后让本地曲库立刻能看见：宿主把它当成一次本地文件新增处理。
         Online.FileDownloaded = path => window.NotifyDownloadedFile(path);
+        // 开机自启动时 Run 项会带 --hidden：照常 Show（让 Loaded/WebView2 初始化、恢复上次播放），
+        // 但先透明且不占任务栏，随后立刻收进托盘，避免启动时窗口闪一下。
+        var startHidden = Array.Exists(
+            e.Args,
+            static arg => string.Equals(arg, "--hidden", StringComparison.OrdinalIgnoreCase));
+        if (startHidden)
+        {
+            window.Opacity = 0;
+            window.ShowInTaskbar = false;
+        }
+
         window.Show();
 
         // 托盘图标：失败只失去托盘入口（窗口仍在，但关闭会被隐藏到托盘后找不回来，所以
         // TrayIconService 构造失败时它自己会记日志并退出；这里只兜底不抛到启动流程）。
         TryCreateTray(window);
+
+        if (startHidden)
+        {
+            // 没有托盘就没有回到窗口的入口：宁可显示窗口，也不能把界面藏没。
+            if (Tray is null)
+            {
+                HostLog.Warn("[startup] hidden requested but tray unavailable; showing window");
+                window.ShowInTaskbar = true;
+            }
+            else
+            {
+                window.HideToTray();
+                HostLog.Info("[startup] hidden=true");
+            }
+
+            window.Opacity = 1;
+        }
 
         if (Settings?.StartMaximized == true)
         {
@@ -412,7 +440,7 @@ public partial class App : Application
     /// </summary>
     private static void OnGeneralSettingsChanged()
     {
-        AutoLaunchService.Apply(Settings?.AutoLaunch == true);
+        AutoLaunchService.Apply(Settings?.AutoLaunch == true, Settings?.AutoStartHidden == true);
     }
 
     private static SettingsService? CreateSettingsService()

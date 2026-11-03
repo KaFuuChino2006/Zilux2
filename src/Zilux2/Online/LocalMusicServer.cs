@@ -194,7 +194,7 @@ internal sealed class LocalMusicServer : IDisposable
         var status = 0;
         try
         {
-            ApplyCors(context.Response);
+            ApplyCors(context);
 
             if (string.Equals(method, "OPTIONS", StringComparison.OrdinalIgnoreCase))
             {
@@ -208,6 +208,12 @@ internal sealed class LocalMusicServer : IDisposable
             if (!isGet && !isPost)
             {
                 status = WriteError(context, 405, "bad-request", "只支持 GET/POST 请求");
+                return;
+            }
+
+            if (!Authorize(context, path))
+            {
+                status = 401;
                 return;
             }
 
@@ -267,6 +273,7 @@ internal sealed class LocalMusicServer : IDisposable
                 "/api/discover/chart" => isGet ? await HandleDiscoverChartAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/discover/cats" => isGet ? await HandleDiscoverCatsAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/discover/playlists" => isGet ? await HandleDiscoverPlaylistsAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
+                "/api/discover/recommend-playlists" => isGet ? await HandleDiscoverRecommendPlaylistsAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/discover/radio" => isGet ? await HandleDiscoverRadioAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/discover/artist" => isGet ? await HandleDiscoverArtistAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/discover/album" => isGet ? await HandleDiscoverAlbumAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
@@ -305,6 +312,27 @@ internal sealed class LocalMusicServer : IDisposable
         }
     }
 
+    // 默认拒绝：除显式公开的路由外，所有 /api/* 请求都必须带有效 token。
+    private bool Authorize(HttpListenerContext context, string path)
+    {
+        if (!path.StartsWith("/api/", StringComparison.OrdinalIgnoreCase) || IsPublicApi(path))
+        {
+            return true;
+        }
+
+        if (ValidateToken(context.Request))
+        {
+            return true;
+        }
+
+        WriteUnauthorized(context);
+        OnlineHttp.Warn($"unauthorized {context.Request.HttpMethod} {path}");
+        return false;
+    }
+
+    private static bool IsPublicApi(string path) =>
+        string.Equals(path, "/api/health", StringComparison.OrdinalIgnoreCase);
+
     private static int MethodNotAllowed(HttpListenerContext context) =>
         WriteError(context, 405, "bad-request", "该接口不支持此请求方法");
 
@@ -312,11 +340,6 @@ internal sealed class LocalMusicServer : IDisposable
     // so the server only validates the token/parameters and writes them out.
     private int WriteAccount(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var accounts = _accounts;
         if (accounts is null)
         {
@@ -330,11 +353,6 @@ internal sealed class LocalMusicServer : IDisposable
 
     private async Task<int> HandleAccountLoginQrAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var accounts = _accounts;
         if (accounts is null)
         {
@@ -369,11 +387,6 @@ internal sealed class LocalMusicServer : IDisposable
 
     private async Task<int> HandleAccountLoginStatusAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var accounts = _accounts;
         if (accounts is null)
         {
@@ -415,11 +428,6 @@ internal sealed class LocalMusicServer : IDisposable
 
     private int HandleAccountLogout(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var accounts = _accounts;
         if (accounts is null)
         {
@@ -443,11 +451,6 @@ internal sealed class LocalMusicServer : IDisposable
     // 网络异常只返回 unknown，不清账号。宿主另有定时检测走同一方法。
     private async Task<int> HandleAccountVerifyAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var accounts = _accounts;
         if (accounts is null)
         {
@@ -478,11 +481,6 @@ internal sealed class LocalMusicServer : IDisposable
     // persisted, so a bad paste never replaces a working session.
     private async Task<int> HandleAccountImportAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var accounts = _accounts;
         if (accounts is null)
         {
@@ -593,11 +591,6 @@ internal sealed class LocalMusicServer : IDisposable
     /// <summary>返回实际下发的音质（供界面显示「现在播的是不是无损」）。</summary>
     private async Task<int> HandleStreamInfoAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var query = context.Request.QueryString;
         var source = (query["source"] ?? string.Empty).Trim();
         var provider = GetProvider(source);
@@ -643,11 +636,6 @@ internal sealed class LocalMusicServer : IDisposable
     // TrackAnalysisService 的后台线程池里跑，HTTP 处理线程只 await，不占用 UI 线程。
     private async Task<int> HandleAnalysisAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteAnalysisError(context, 401, "unauthorized", "缺少或无效的 token");
-        }
-
         var analysis = _analysis;
         if (analysis is null)
         {
@@ -694,10 +682,12 @@ internal sealed class LocalMusicServer : IDisposable
         var quality = query["quality"];
         var force = string.Equals(query["force"], "1", StringComparison.Ordinal) ||
                     string.Equals(query["force"], "true", StringComparison.OrdinalIgnoreCase);
+        var cacheOnly = string.Equals(query["cacheOnly"], "1", StringComparison.Ordinal) ||
+                        string.Equals(query["cacheOnly"], "true", StringComparison.OrdinalIgnoreCase);
         try
         {
             var outcome = await analysis
-                .AnalyzeAsync(new AnalysisRequest(source, trackId, rel, quality, force), _shutdown.Token)
+                .AnalyzeAsync(new AnalysisRequest(source, trackId, rel, quality, force, cacheOnly), _shutdown.Token)
                 .ConfigureAwait(false);
             if (outcome.Ok && outcome.Response is not null)
             {
@@ -748,11 +738,6 @@ internal sealed class LocalMusicServer : IDisposable
 
     private async Task<int> HandleHotPlaylistsAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var query = context.Request.QueryString;
         var source = (query["source"] ?? "qq").Trim().ToLowerInvariant();
         if (source != AccountSources.Qq && source != AccountSources.Netease)
@@ -806,11 +791,6 @@ internal sealed class LocalMusicServer : IDisposable
     // 全部只读；query 参数在这里校验，业务与上游解析在 DiscoverService 里，错误统一映射。
     private async Task<int> HandleDiscoverChartsAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var source = (context.Request.QueryString["source"] ?? string.Empty).Trim().ToLowerInvariant();
         if (source.Length > 0 && source != AccountSources.Netease && source != AccountSources.Qq)
         {
@@ -826,11 +806,6 @@ internal sealed class LocalMusicServer : IDisposable
 
     private async Task<int> HandleDiscoverChartAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var query = context.Request.QueryString;
         var source = ReadSource(query["source"]);
         if (source.Length == 0)
@@ -858,11 +833,6 @@ internal sealed class LocalMusicServer : IDisposable
 
     private async Task<int> HandleDiscoverCatsAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var source = ReadSource(context.Request.QueryString["source"]);
         if (source.Length == 0)
         {
@@ -878,11 +848,6 @@ internal sealed class LocalMusicServer : IDisposable
 
     private async Task<int> HandleDiscoverPlaylistsAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var query = context.Request.QueryString;
         var source = ReadSource(query["source"]);
         if (source.Length == 0)
@@ -914,13 +879,28 @@ internal sealed class LocalMusicServer : IDisposable
             .ConfigureAwait(false);
     }
 
-    private async Task<int> HandleDiscoverRadioAsync(HttpListenerContext context)
+    private async Task<int> HandleDiscoverRecommendPlaylistsAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
+        var source = ReadSource(context.Request.QueryString["source"]);
+        if (source.Length == 0)
         {
-            return WriteUnauthorized(context);
+            return WriteError(context, 400, "bad-request", "source 只支持 netease / qq");
         }
 
+        if (!TryReadPage(context, out var offset, out var limit, 12, 30, out var pageError))
+        {
+            return WriteError(context, 400, "bad-request", pageError);
+        }
+
+        return await RunDiscoverAsync(
+                context,
+                () => _discover.GetRecommendPlaylistsAsync(source, offset, limit, _shutdown.Token),
+                response => JsonSerializer.Serialize(response, DiscoverJsonContext.Default.DiscoverPlaylistsResponse))
+            .ConfigureAwait(false);
+    }
+
+    private async Task<int> HandleDiscoverRadioAsync(HttpListenerContext context)
+    {
         var loginRequired = RequireNeteaseLogin(context);
         if (loginRequired is not null)
         {
@@ -944,11 +924,6 @@ internal sealed class LocalMusicServer : IDisposable
 
     private async Task<int> HandleDiscoverArtistAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var query = context.Request.QueryString;
         var source = ReadSource(query["source"]);
         if (source.Length == 0)
@@ -979,11 +954,6 @@ internal sealed class LocalMusicServer : IDisposable
 
     private async Task<int> HandleDiscoverAlbumAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var query = context.Request.QueryString;
         var source = ReadSource(query["source"]);
         if (source.Length == 0)
@@ -1006,11 +976,6 @@ internal sealed class LocalMusicServer : IDisposable
 
     private async Task<int> HandleDiscoverCommentsAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var query = context.Request.QueryString;
         var source = ReadSource(query["source"]);
         if (source.Length == 0)
@@ -1038,11 +1003,6 @@ internal sealed class LocalMusicServer : IDisposable
 
     private async Task<int> HandleDiscoverPodcastsAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var loginRequired = RequireNeteaseLogin(context);
         if (loginRequired is not null)
         {
@@ -1066,11 +1026,6 @@ internal sealed class LocalMusicServer : IDisposable
 
     private async Task<int> HandleDiscoverCollectionsAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var loginRequired = RequireNeteaseLogin(context);
         if (loginRequired is not null)
         {
@@ -1104,11 +1059,6 @@ internal sealed class LocalMusicServer : IDisposable
 
     private async Task<int> HandleDiscoverSongAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var query = context.Request.QueryString;
         var source = ReadSource(query["source"]);
         if (source.Length == 0)
@@ -1204,11 +1154,6 @@ internal sealed class LocalMusicServer : IDisposable
 
     private async Task<int> HandleSearchAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var query = context.Request.QueryString;
         var source = (query["source"] ?? string.Empty).Trim();
         var provider = GetProvider(source);
@@ -1259,11 +1204,6 @@ internal sealed class LocalMusicServer : IDisposable
 
     private async Task<int> HandleLyricAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var query = context.Request.QueryString;
         var source = (query["source"] ?? string.Empty).Trim();
         var provider = GetProvider(source);
@@ -1314,11 +1254,6 @@ internal sealed class LocalMusicServer : IDisposable
     /// <summary>实验来源「无名音乐」的本地缓存统计/清空（设置页用）。</summary>
     private int WriteMvmp3CacheStat(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var (count, bytes) = Mvmp3Cache.Stat();
         WriteJson(
             context,
@@ -1329,11 +1264,6 @@ internal sealed class LocalMusicServer : IDisposable
 
     private int ClearMvmp3Cache(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         Mvmp3Cache.Clear();
         var (count, bytes) = Mvmp3Cache.Stat();
         WriteJson(context, 200, $"{{\"count\":{count},\"bytes\":{bytes}}}");
@@ -1444,11 +1374,6 @@ internal sealed class LocalMusicServer : IDisposable
 
     private async Task<int> HandleStreamAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var query = context.Request.QueryString;
         var source = (query["source"] ?? string.Empty).Trim();
         var provider = GetProvider(source);
@@ -1607,11 +1532,6 @@ internal sealed class LocalMusicServer : IDisposable
     // fields raw (CoverKey), the server rewrites covers into loopback /api/cover URLs.
     private async Task<int> HandleLibraryOverviewAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var library = _library;
         if (library is null)
         {
@@ -1638,11 +1558,6 @@ internal sealed class LocalMusicServer : IDisposable
 
     private async Task<int> HandleLibraryPlaylistAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var library = _library;
         if (library is null)
         {
@@ -1696,11 +1611,6 @@ internal sealed class LocalMusicServer : IDisposable
 
     private async Task<int> HandleLibraryLikedAsync(HttpListenerContext context, CancellationToken token)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var query = context.Request.QueryString;
         var source = query["source"] ?? string.Empty;
         var id = query["id"] ?? string.Empty;
@@ -1739,11 +1649,6 @@ internal sealed class LocalMusicServer : IDisposable
 
     private int HandleRecentList(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var query = context.Request.QueryString;
         var source = (query["source"] ?? string.Empty).Trim().ToLowerInvariant();
         if (source.Length > 0 && !LibraryService.IsKnownSource(source))
@@ -1766,11 +1671,6 @@ internal sealed class LocalMusicServer : IDisposable
 
     private async Task<int> HandleRecentRecordAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         using var reader = new StreamReader(context.Request.InputStream, Encoding.UTF8);
         var body = await reader.ReadToEndAsync().ConfigureAwait(false);
         try
@@ -1807,11 +1707,6 @@ internal sealed class LocalMusicServer : IDisposable
 
     private async Task<int> HandleLibraryFeedAsync(HttpListenerContext context, CancellationToken token)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var query = context.Request.QueryString;
         var source = (query["source"] ?? string.Empty).Trim().ToLowerInvariant();
         if (!LibraryService.IsKnownSource(source))
@@ -1874,11 +1769,6 @@ internal sealed class LocalMusicServer : IDisposable
     /// </summary>
     private async Task<int> HandleRecentMergedAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var limit = 120;
         if (context.Request.QueryString["limit"] is { Length: > 0 } limitRaw &&
             (!int.TryParse(limitRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out limit) || limit is < 1 or > 500))
@@ -1975,11 +1865,6 @@ internal sealed class LocalMusicServer : IDisposable
 
     private async Task<int> HandleLibraryLikeAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var library = _library;
         if (library is null)
         {
@@ -2018,11 +1903,6 @@ internal sealed class LocalMusicServer : IDisposable
 
     private async Task<int> HandleLibraryUnlikeAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var library = _library;
         if (library is null)
         {
@@ -2061,11 +1941,6 @@ internal sealed class LocalMusicServer : IDisposable
 
     private int HandleLibraryRefresh(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var library = _library;
         if (library is null)
         {
@@ -2136,17 +2011,20 @@ internal sealed class LocalMusicServer : IDisposable
 
     private async Task<int> HandleCoverAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var query = context.Request.QueryString;
         var source = (query["source"] ?? string.Empty).Trim().ToLowerInvariant();
         var key = NormalizeCoverKey((query["key"] ?? string.Empty).Trim());
         if (key.Length == 0)
         {
             return WriteError(context, 400, "bad-request", "缺少 key 参数");
+        }
+
+        // 可选缩略图：width=32..1024。喜欢墙几百张封面时，原图常见 2000~5000 像素，
+        // 全尺寸解码会把图片内存和解码时间拖爆；按 DecodePixelWidth 抽样解码后重新编码。
+        var thumbnailWidth = 0;
+        if (int.TryParse(query["width"], NumberStyles.Integer, CultureInfo.InvariantCulture, out var requestedWidth) && requestedWidth >= 32)
+        {
+            thumbnailWidth = Math.Min(requestedWidth, 1024);
         }
 
         string upstreamUrl;
@@ -2217,6 +2095,11 @@ internal sealed class LocalMusicServer : IDisposable
             return WriteError(context, 400, "bad-request", "暂不支持该音乐平台");
         }
 
+        if (thumbnailWidth > 0)
+        {
+            cacheKey = cacheKey + "|w" + thumbnailWidth.ToString(CultureInfo.InvariantCulture);
+        }
+
         if (_coverCache.TryGetValue(cacheKey, out var cached) && cached.ExpiresAt > DateTimeOffset.UtcNow)
         {
             WriteBinary(context, 200, cached.Bytes, cached.ContentType);
@@ -2229,9 +2112,16 @@ internal sealed class LocalMusicServer : IDisposable
             var upstream = await OnlineHttp.FetchBytesAsync(upstreamUrl, referer, CoverTimeout, _shutdown.Token)
                 .ConfigureAwait(false);
             var contentType = string.IsNullOrEmpty(upstream.ContentType) ? "image/jpeg" : upstream.ContentType;
-            StoreCover(cacheKey, upstream.Bytes, contentType);
-            WriteBinary(context, 200, upstream.Bytes, contentType);
-            OnlineHttp.Info($"GET cover source={source} ok {upstream.Bytes.Length}B {upstream.TookMs}ms");
+            var bytes = upstream.Bytes;
+            if (thumbnailWidth > 0 && TryCreateThumbnail(upstream.Bytes, thumbnailWidth, out var thumbnail, out var thumbnailType))
+            {
+                bytes = thumbnail;
+                contentType = thumbnailType;
+            }
+
+            StoreCover(cacheKey, bytes, contentType);
+            WriteBinary(context, 200, bytes, contentType);
+            OnlineHttp.Info($"GET cover source={source} ok {bytes.Length}B {upstream.TookMs}ms{(thumbnailWidth > 0 ? $" w={thumbnailWidth}" : string.Empty)}");
             return 200;
         }
         catch (OnlineUpstreamException exception) when (exception.StatusCode == 404)
@@ -2242,6 +2132,41 @@ internal sealed class LocalMusicServer : IDisposable
         {
             OnlineHttp.Error($"GET cover source={source} failed", exception);
             return WriteError(context, 502, "upstream-failed", "封面获取失败，请稍后重试");
+        }
+    }
+
+    /// <summary>
+    /// 按 DecodePixelWidth 抽样解码成缩略图（WPF 解码器会跳过多余像素，比全尺寸解码快一个量级），
+    /// 再编码回 JPEG；不支持的格式（如 webp）或异常时返回 false，调用方回退原始字节。
+    /// </summary>
+    private static bool TryCreateThumbnail(byte[] source, int width, out byte[] bytes, out string contentType)
+    {
+        bytes = Array.Empty<byte>();
+        contentType = "image/jpeg";
+        try
+        {
+            var image = new BitmapImage();
+            image.BeginInit();
+            image.CacheOption = BitmapCacheOption.OnLoad;
+            image.DecodePixelWidth = width;
+            using (var input = new MemoryStream(source, writable: false))
+            {
+                image.StreamSource = input;
+                image.EndInit();
+            }
+
+            image.Freeze();
+            var encoder = new JpegBitmapEncoder { QualityLevel = 88 };
+            encoder.Frames.Add(BitmapFrame.Create(image));
+            using var output = new MemoryStream();
+            encoder.Save(output);
+            bytes = output.ToArray();
+            return true;
+        }
+        catch (Exception exception)
+        {
+            OnlineHttp.Warn($"[cover] thumbnail failed w={width}: {exception.Message}");
+            return false;
         }
     }
 
@@ -2259,12 +2184,6 @@ internal sealed class LocalMusicServer : IDisposable
 
     private async Task<int> HandleDownloadStartAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            WriteUnauthorized(context);
-            return 401;
-        }
-
         var service = _download;
         if (service is null)
         {
@@ -2336,12 +2255,6 @@ internal sealed class LocalMusicServer : IDisposable
 
     private async Task<int> HandleDownloadRevealAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            WriteUnauthorized(context);
-            return 401;
-        }
-
         var service = _download;
         if (service is null)
         {
@@ -2391,11 +2304,6 @@ internal sealed class LocalMusicServer : IDisposable
     /// <summary>POST /api/download/{pause|resume|cancel}：body {id}，成功统一回 {"ok":true}。</summary>
     private async Task<int> HandleDownloadJobControlAsync(HttpListenerContext context, string action)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var service = _download;
         if (service is null)
         {
@@ -2440,11 +2348,6 @@ internal sealed class LocalMusicServer : IDisposable
     /// <summary>POST /api/download/clear：只把已完成/失败任务移出内存列表，不删磁盘文件。</summary>
     private int HandleDownloadClear(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var service = _download;
         if (service is null)
         {
@@ -2463,11 +2366,6 @@ internal sealed class LocalMusicServer : IDisposable
     /// </summary>
     private async Task<int> HandleLocalTagAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var resolver = LocalPathResolver;
         if (resolver is null)
         {
@@ -2726,6 +2624,16 @@ internal sealed class LocalMusicServer : IDisposable
         var provided = request.QueryString["token"];
         if (string.IsNullOrEmpty(provided))
         {
+            var authorization = request.Headers["Authorization"];
+            if (!string.IsNullOrEmpty(authorization) &&
+                authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+            {
+                provided = authorization.Substring("Bearer ".Length).Trim();
+            }
+        }
+
+        if (string.IsNullOrEmpty(provided))
+        {
             return false;
         }
 
@@ -2890,15 +2798,30 @@ internal sealed class LocalMusicServer : IDisposable
                host.Equals("qlogo.cn", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static void ApplyCors(HttpListenerResponse response)
+    // 只信任应用自己托管的页面；不再通配 Origin，也不答 Private Network Access。
+    private static readonly string[] AllowedCorsOrigins = { "https://zilux2.local" };
+
+    private void ApplyCors(HttpListenerContext context)
     {
-        response.Headers["Access-Control-Allow-Origin"] = "*";
-        response.Headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS";
-        response.Headers["Access-Control-Allow-Headers"] = "*";
+        var response = context.Response;
         response.Headers["Access-Control-Expose-Headers"] = "Content-Length, Content-Range, Accept-Ranges";
-        // Chromium's Private Network Access preflight demands this for localhost targets.
-        response.Headers["Access-Control-Allow-Private-Network"] = "true";
+        var origin = context.Request.Headers["Origin"];
+        if (string.IsNullOrEmpty(origin) || !IsAllowedCorsOrigin(origin))
+        {
+            return;
+        }
+
+        response.Headers["Access-Control-Allow-Origin"] = origin;
+        response.Headers["Vary"] = "Origin";
+        response.Headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS";
+        response.Headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type";
+        response.Headers["Access-Control-Max-Age"] = "600";
     }
+
+    private bool IsAllowedCorsOrigin(string origin) =>
+        AllowedCorsOrigins.Any(allowed => string.Equals(allowed, origin, StringComparison.OrdinalIgnoreCase)) ||
+        string.Equals(origin, $"http://127.0.0.1:{Port}", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(origin, $"http://localhost:{Port}", StringComparison.OrdinalIgnoreCase);
 
     private static string ReadString(JsonElement element, string name) =>
         element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
@@ -2915,11 +2838,11 @@ internal sealed class LocalMusicServer : IDisposable
         response.OutputStream.Write(bytes, 0, bytes.Length);
     }
 
-    private static void WriteBinary(HttpListenerContext context, int status, byte[] bytes, string contentType)
+    private void WriteBinary(HttpListenerContext context, int status, byte[] bytes, string contentType)
     {
         var response = context.Response;
         // 封面等二进制响应也要带 CORS：页面需要用 canvas 取封面像素做主题色
-        ApplyCors(response);
+        ApplyCors(context);
         response.StatusCode = status;
         response.ContentType = contentType;
         response.Headers["Cache-Control"] = "private, max-age=3600";
@@ -2940,11 +2863,6 @@ internal sealed class LocalMusicServer : IDisposable
     /// <summary>本地曲库歌手头像：按名字在网易云搜索歌手并回传头像图片，供 img 标签直接加载。</summary>
     private async Task<int> HandleArtistImageAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var name = (context.Request.QueryString["name"] ?? string.Empty).Trim();
         if (name.Length == 0)
         {
@@ -2980,11 +2898,6 @@ internal sealed class LocalMusicServer : IDisposable
     /// <summary>封面主色：宿主侧解码图片统计占比最高颜色，绕开页面 canvas 跨域取不到像素的问题。</summary>
     private async Task<int> HandleCoverColorsAsync(HttpListenerContext context)
     {
-        if (!ValidateToken(context.Request))
-        {
-            return WriteUnauthorized(context);
-        }
-
         var query = context.Request.QueryString;
         var source = (query["source"] ?? string.Empty).Trim().ToLowerInvariant();
         var key = NormalizeCoverKey((query["key"] ?? string.Empty).Trim());

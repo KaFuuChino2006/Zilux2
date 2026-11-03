@@ -1104,7 +1104,7 @@ export class LyricsView {
   private syncTrack(): void {
     const track = this.state?.track ?? null;
     const key = trackKeyOf(track);
-    const coverUrl = track ? onlineArtwork(track) : '';
+    const coverUrl = track ? onlineArtwork(track, 300) : '';
     const changed = key !== this.lastTrackKey && this.lastTrackKey !== '';
     if (changed) {
       this.spawnGhosts();
@@ -1262,7 +1262,7 @@ export class LyricsView {
       title: track?.title ?? '',
       artist: track?.artist ?? '',
       album: track?.album ?? '',
-      coverUrl: track ? onlineArtwork(track) : '',
+      coverUrl: track ? onlineArtwork(track, 300) : '',
       durationMs: this.state?.durationMs || track?.durationMs || 0,
       lyricOffsetMs: lyricOffsetOf(trackKey),
       lines: this.doc.lines.map((line) => ({

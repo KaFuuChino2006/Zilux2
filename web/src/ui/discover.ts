@@ -44,6 +44,7 @@ import { h, icon, toast, fmtTime } from './dom';
 import { openSongInfo, songInfoView } from './songInfo';
 import { ui } from './theme';
 import { gradientCover } from './coverFallback';
+import { enableWheelScroll } from './wheelScroll';
 
 /* -------------------------------------------------------------------------- */
 /* 对外接口                                                                    */
@@ -52,6 +53,8 @@ import { gradientCover } from './coverFallback';
 export interface DiscoverHandlers {
   /** 播放某一整个列表（index 为起始曲目）。 */
   play(tracks: OnlineTrack[], index: number): void;
+  /** 播放私人漫游（由 app 注册续接器，播完自动拉下一批）。 */
+  playRadio?(tracks: OnlineTrack[]): void;
   /** 打开歌单详情（由 app 复用现有 showPlaylist）。 */
   openPlaylist(item: LibraryPlaylist): void;
   /** 打开右侧 Sheet（由 app 复用现有 openSheet）。 */
@@ -334,6 +337,7 @@ export class DiscoverView {
     for (const category of group.categories) {
       section.append(h('div', { class: 'disc-sub', text: category.title }));
       const row = h('div', { class: ui.scroller() });
+      enableWheelScroll(row);
       for (const chart of category.charts) {
         const meta = [chart.count > 0 ? `${fmtCount(chart.count)} 首` : '', chart.updateFrequency].filter(Boolean).join(' · ');
         row.append(
@@ -420,6 +424,7 @@ export class DiscoverView {
     if (!cats.some((cat) => cat.id === this.playlistCat)) this.playlistCat = '全部';
 
     const chips = h('div', { class: 'disc-chips' });
+    enableWheelScroll(chips);
     for (const cat of cats) {
       const chip = h('button', {
         class: ui.chip(cat.id === this.playlistCat),
@@ -466,9 +471,10 @@ export class DiscoverView {
       wrap.append(this.emptyBox('这个分类下暂时没有歌单', '换一个分类或切到「全部」看看'));
       return wrap;
     }
-    const grid = h('div', { class: 'disc-grid' });
-    for (const item of items) grid.append(this.playlistCard(item));
-    wrap.append(grid);
+    const lane = h('div', { class: 'disc-lane' });
+    enableWheelScroll(lane);
+    for (const item of items) lane.append(this.playlistCard(item));
+    wrap.append(lane);
     return wrap;
   }
 
@@ -500,7 +506,12 @@ export class DiscoverView {
       h(
         'div',
         { class: 'disc-bar' },
-        h('div', { class: 'disc-bar-text' }, icon('sparkle', 15), h('span', { text: '为你漫游推荐 · 每次换一批都会重新挑歌' })),
+        h(
+          'div',
+          { class: 'disc-bar-text' },
+          icon('sparkle', 15),
+          h('span', { text: '为你漫游推荐 · 播完自动续下一批，换一批会重新挑歌' }),
+        ),
         this.swapButton(),
       ),
     );
@@ -509,7 +520,7 @@ export class DiscoverView {
       return wrap;
     }
     wrap.append(this.trackList(tracks));
-    wrap.append(h('div', { class: 'disc-actions' }, this.playAllButton(tracks, '播放全部')));
+    wrap.append(h('div', { class: 'disc-actions' }, this.playAllButton(tracks, '播放全部', true)));
     return wrap;
   }
 
@@ -527,7 +538,8 @@ export class DiscoverView {
   private async podcastsBody(): Promise<HTMLElement> {
     const programs = await fetchPodcasts(12);
     if (programs.length === 0) return this.emptyBox('暂时没有播客推荐');
-    const grid = h('div', { class: 'disc-grid' });
+    const grid = h('div', { class: 'disc-lane' });
+    enableWheelScroll(grid);
     for (const program of programs) grid.append(this.podcastCard(program));
     return h(
       'div',
@@ -570,7 +582,8 @@ export class DiscoverView {
       wrap.append(this.emptyBox('还没有收藏内容', COLLECTION_EMPTY[this.collectionKind]));
       return wrap;
     }
-    const grid = h('div', { class: 'disc-grid' });
+    const grid = h('div', { class: 'disc-lane' });
+    enableWheelScroll(grid);
     for (const item of data.items) grid.append(this.collectionCard(item));
     wrap.append(grid);
     if (data.hasMore) {
@@ -775,7 +788,7 @@ export class DiscoverView {
     return desc;
   }
 
-  private playAllButton(tracks: DiscoverTrack[], label: string): HTMLButtonElement {
+  private playAllButton(tracks: DiscoverTrack[], label: string, radio = false): HTMLButtonElement {
     const btn = h(
       'button',
       { class: ui.btn({ variant: 'primary', size: 'sm' }), type: 'button' },
@@ -784,7 +797,9 @@ export class DiscoverView {
     );
     btn.disabled = tracks.length === 0;
     btn.addEventListener('click', () => {
-      if (tracks.length > 0) this.handlers.play(tracks, 0);
+      if (tracks.length === 0) return;
+      if (radio && this.handlers.playRadio) this.handlers.playRadio(tracks);
+      else this.handlers.play(tracks, 0);
     });
     return btn;
   }
