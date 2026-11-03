@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
+using System.Windows.Media;
 using Zilux2.Interop;
 
 namespace Zilux2;
@@ -48,11 +49,11 @@ public partial class DesktopLyricsWindow : Window
         Height = hasTranslation ? 150 : 112;
     }
 
-    public void ApplyStyle(int fontSize, bool locked, bool topmost)
+    public void ApplyStyle(int fontSize, bool locked, bool topmost, string weight = "normal", int backdropOpacity = 40)
     {
         if (!Dispatcher.CheckAccess())
         {
-            Dispatcher.BeginInvoke(new Action(() => ApplyStyle(fontSize, locked, topmost)));
+            Dispatcher.BeginInvoke(new Action(() => ApplyStyle(fontSize, locked, topmost, weight, backdropOpacity)));
             return;
         }
 
@@ -60,7 +61,15 @@ public partial class DesktopLyricsWindow : Window
         _locked = locked;
         _topmost = topmost;
         NowText.FontSize = _fontSize;
+        NowText.FontWeight = weight switch
+        {
+            "bold" => FontWeights.Bold,
+            "semibold" => FontWeights.SemiBold,
+            _ => FontWeights.Normal,
+        };
         TranslationText.FontSize = Math.Max(12, Math.Round(_fontSize * 0.45));
+        var alpha = (byte)Math.Round(Math.Clamp(backdropOpacity, 30, 90) / 100d * 255);
+        Shell.Background = new SolidColorBrush(Color.FromArgb(alpha, 0, 0, 0));
         Topmost = topmost;
         ApplyClickThrough();
     }

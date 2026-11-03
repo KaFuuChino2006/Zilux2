@@ -12,13 +12,16 @@
         Height="150"
         WindowStartupLocation="Manual">
     <Border x:Name="Shell"
-            Background="#5C000000"
-            CornerRadius="20"
-            Padding="32,16"
+            Background="#66000000"
+            CornerRadius="999"
+            Padding="30,12"
             BorderThickness="1"
-            BorderBrush="#1FFFFFFF"
+            BorderBrush="#26FFFFFF"
             MouseLeftButtonDown="OnShellMouseDown"
             MouseRightButtonUp="OnShellRightClick">
+        <Border.Effect>
+            <DropShadowEffect BlurRadius="28" ShadowDepth="0" Opacity="0.35" Color="Black" />
+        </Border.Effect>
         <StackPanel VerticalAlignment="Center">
             <TextBlock x:Name="NowText"
                        Text="桌面歌词"

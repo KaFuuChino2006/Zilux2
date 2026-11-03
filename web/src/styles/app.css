@@ -7022,3 +7022,183 @@ html.is-pb-expanded .playerbar.is-hidden {
 .tag-editor-input:focus{border-color:color-mix(in srgb,var(--accent) 60%,var(--line))}
 .tag-editor-hint{font-size:11px;color:var(--muted);line-height:1.6}
 .tag-editor-actions{display:flex;justify-content:flex-end;gap:10px;padding-top:2px}
+
+/* ===== 「下一首 / 待播队列」面板：与快捷设置同一套容器语法 ===== */
+.upnext-panel {
+  width: min(300px, 86vw);
+  max-height: 52vh;
+  padding: 12px;
+  gap: 10px;
+  border-radius: var(--radius-l);
+  border: 1px solid var(--line);
+  background: var(--surface-strong);
+  box-shadow: var(--shadow-1);
+  backdrop-filter: none;
+}
+.upnext-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 2px 8px;
+  border-bottom: 0;
+}
+.upnext-head-title {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+}
+.upnext-head-actions {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 10px;
+  background: rgb(var(--overlay-rgb) / 0.06);
+}
+.upnext-head-actions .upnext-pill {
+  height: 26px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 11.5px;
+  line-height: 1;
+  white-space: nowrap;
+}
+.upnext-head-actions .upnext-pill:hover {
+  background: rgb(var(--overlay-rgb) / 0.08);
+  color: var(--text);
+}
+.upnext-list {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+}
+.upnext-row {
+  padding: 6px 8px;
+  border-radius: 10px;
+}
+.upnext-hint {
+  padding: 2px 4px 0;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+/* 播放条圆角与右侧胶囊统一成同一档（迷你态由宿主窗口圆角决定，保持不变） */
+.playerbar {
+  border-radius: 999px;
+}
+.playerbar:hover,
+.playerbar:focus-within {
+  border-radius: 999px;
+}
+
+/* 播放条统一圆角：普通态、悬停/聚焦展开态、html.is-pb-expanded 展开态都按胶囊处理 */
+.playerbar,
+.playerbar:hover,
+.playerbar:focus-within,
+html.is-pb-expanded .playerbar,
+html.is-pb-expanded .playerbar:hover,
+html.is-pb-expanded .playerbar:focus-within {
+  border-radius: 999px;
+}
+/* 播放条里的封面统一成圆形，和胶囊条 / 圆形按钮同一套圆角语言 */
+.playerbar .pb-cover {
+  border-radius: 50%;
+}
+/* AutoMix 临时模式：顺序按钮换成专属图标，用主题色底 + 描边明确标出「正在 AutoMix」 */
+.playerbar .pb-btn.is-smart {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 42%, transparent);
+}
+.playerbar .pb-btn.is-smart:hover {
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+}
+
+/* 快捷设置底部分页：播放 / 音效 两页各自只显示同类控件，避免一次塞满。 */
+.quick-cell.is-group-hidden {
+  display: none;
+}
+/* 歌词页是整窗沉浸视图：顶部搜索不该浮在歌词上 */
+.app.is-lyrics-open .search-wrap {
+  opacity: 0;
+  transform: translateY(-10px);
+  pointer-events: none;
+}
+.app.is-lyrics-open .search-pop {
+  opacity: 0;
+  pointer-events: none;
+}
+/* AutoMix 启用时，待播面板里的按钮要有明确的激活态 */
+.upnext-pill.is-active {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 42%, transparent);
+}
+.upnext-pill.is-active:hover {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+}
+/* 快捷设置底部标签从 6 个扩到 8 个（加「试听 / 过渡」）后，字号略收一点保证不挤 */
+.quick-tabs .quick-tab {
+  font-size: 11.5px;
+}
+
+/* 收听统计：Top3 高亮与空态 */
+.stats-row.is-top .stats-rank {
+  width: 26px;
+  height: 26px;
+  line-height: 26px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+.stats-row.is-top .stats-share-fill {
+  background: color-mix(in srgb, var(--accent) 88%, white);
+}
+.stats-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin: 28px 0;
+  padding: 46px 24px;
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  text-align: center;
+}
+.stats-empty-icon { color: var(--accent); opacity: .85; }
+.stats-empty-title { font-size: 16px; font-weight: 600; color: var(--text); }
+.stats-empty-hint { font-size: 12.5px; color: var(--muted); }
+
+/* 本地曲库搜索条 */
+.wall-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 14px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  max-width: 420px;
+}
+.wall-search-icon { display: flex; color: var(--muted); }
+.wall-search-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  outline: none;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+}
+.wall-search-input::placeholder { color: var(--muted); }
+.wall-search-count { font-size: 11.5px; color: var(--muted); white-space: nowrap; }

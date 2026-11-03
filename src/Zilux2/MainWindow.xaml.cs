@@ -256,7 +256,9 @@ public partial class MainWindow : Window
         _desktopLyricsWindow.ApplyStyle(
             options?.FontSize ?? 40,
             options?.Locked == true,
-            options?.Topmost != false);
+            options?.Topmost != false,
+            options?.Weight ?? GeneralSettings.DesktopLyricsWeightNormal,
+            options?.BackdropOpacity ?? 40);
     }
 
     internal void UpdateDesktopLyrics(string now, string translation)
@@ -960,7 +962,8 @@ public partial class MainWindow : Window
     /// </summary>
     internal void SendCommand(string action)
     {
-        if (action is not ("togglePlay" or "prev" or "next"))
+        if (action is not ("togglePlay" or "prev" or "next" or "volumeUp" or "volumeDown" or "mute" or "like"
+            or "mode" or "mini" or "desktopLyrics" or "crossfade"))
         {
             HostLog.Warn($"tray.command ignored action={action}");
             return;

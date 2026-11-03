@@ -23,6 +23,15 @@ internal static class HotkeyCatalog
         new(2, "prev", "prev", ShortcutSettings.DefaultPrev, new[] { "Ctrl+Alt+Shift+Left", "Ctrl+Alt+J" }),
         new(3, "next", "next", ShortcutSettings.DefaultNext, new[] { "Ctrl+Alt+Shift+Right", "Ctrl+Alt+K" }),
         new(4, "toggleWindow", "toggleWindow", ShortcutSettings.DefaultToggleWindow, Array.Empty<string>()),
+        // 以下为「不常用但值得给全局键」的动作：默认不绑定，用户在设置里录制后才注册。
+        new(5, "volumeUp", "volumeUp", string.Empty, Array.Empty<string>()),
+        new(6, "volumeDown", "volumeDown", string.Empty, Array.Empty<string>()),
+        new(7, "mute", "mute", string.Empty, Array.Empty<string>()),
+        new(8, "like", "like", string.Empty, Array.Empty<string>()),
+        new(9, "mode", "mode", string.Empty, Array.Empty<string>()),
+        new(10, "mini", "mini", string.Empty, Array.Empty<string>()),
+        new(11, "desktopLyrics", "desktopLyrics", string.Empty, Array.Empty<string>()),
+        new(12, "crossfade", "crossfade", string.Empty, Array.Empty<string>()),
     };
 
     /// <summary>读取 settings.shortcuts 中对应字段（switch 而不是反射，热键应用只在 UI 线程跑）。</summary>
@@ -32,6 +41,14 @@ internal static class HotkeyCatalog
         "prev" => settings.Prev,
         "next" => settings.Next,
         "toggleWindow" => settings.ToggleWindow,
+        "volumeUp" => settings.VolumeUp,
+        "volumeDown" => settings.VolumeDown,
+        "mute" => settings.Mute,
+        "like" => settings.Like,
+        "mode" => settings.Mode,
+        "mini" => settings.Mini,
+        "desktopLyrics" => settings.DesktopLyrics,
+        "crossfade" => settings.Crossfade,
         _ => string.Empty,
     };
 }

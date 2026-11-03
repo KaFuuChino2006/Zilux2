@@ -11,6 +11,9 @@ export type LyricsSize = 'small' | 'medium' | 'large';
 export type WindowAnimation = 'custom' | 'native';
 /** 迷你播放器尺寸预设：compact=360×100、standard=420×120、wide=520×150。 */
 export type MiniSize = 'compact' | 'standard' | 'wide';
+
+/** 桌面歌词主行粗细。 */
+export type DesktopLyricsWeight = 'normal' | 'semibold' | 'bold';
 export const MINI_SIZES: readonly MiniSize[] = ['compact', 'standard', 'wide'];
 export const MINI_SIZE_LABELS: ReadonlyArray<readonly [MiniSize, string]> = [
   ['compact', '小'],
@@ -81,7 +84,19 @@ const FADE_CURVE_IDS = FADE_CURVES.map((item) => item.value);
 /* ---- 全局快捷键（Shortcuts v1，宿主注册结果走 bridge 的 shortcuts 事件） ---- */
 
 /** 可配置的全局快捷键动作（与宿主 schema 的键名一致）。 */
-export type ShortcutAction = 'playPause' | 'prev' | 'next' | 'toggleWindow';
+export type ShortcutAction =
+  | 'playPause'
+  | 'prev'
+  | 'next'
+  | 'toggleWindow'
+  | 'volumeUp'
+  | 'volumeDown'
+  | 'mute'
+  | 'like'
+  | 'mode'
+  | 'mini'
+  | 'desktopLyrics'
+  | 'crossfade';
 
 export interface ShortcutsSettings {
   /** 全局开关：关闭后宿主注销全部组合。 */
@@ -93,10 +108,31 @@ export interface ShortcutsSettings {
   prev: string;
   next: string;
   toggleWindow: string;
+  volumeUp: string;
+  volumeDown: string;
+  mute: string;
+  like: string;
+  mode: string;
+  mini: string;
+  desktopLyrics: string;
+  crossfade: string;
 }
 
 /** 四条可配置的全局快捷键（顺序即设置页展示顺序）。 */
-export const SHORTCUT_ACTIONS: readonly ShortcutAction[] = ['playPause', 'prev', 'next', 'toggleWindow'];
+export const SHORTCUT_ACTIONS: readonly ShortcutAction[] = [
+  'playPause',
+  'prev',
+  'next',
+  'toggleWindow',
+  'volumeUp',
+  'volumeDown',
+  'mute',
+  'like',
+  'mode',
+  'mini',
+  'desktopLyrics',
+  'crossfade',
+];
 
 /** 设置页展示用的标签与说明。 */
 export const SHORTCUT_LABELS: Record<ShortcutAction, { label: string; hint: string }> = {
@@ -104,6 +140,14 @@ export const SHORTCUT_LABELS: Record<ShortcutAction, { label: string; hint: stri
   prev: { label: '上一首', hint: '切到当前播放队列的上一首' },
   next: { label: '下一首', hint: '切到当前播放队列的下一首' },
   toggleWindow: { label: '显示 / 隐藏窗口', hint: '窗口最小化到托盘后也能一键呼出' },
+  volumeUp: { label: '音量加', hint: '每次 +5%，应用在后台也生效' },
+  volumeDown: { label: '音量减', hint: '每次 −5%' },
+  mute: { label: '静音 / 取消静音', hint: '和播放条上的音量键等效' },
+  like: { label: '收藏当前歌曲', hint: '加入「我喜欢的音乐」；本地歌曲不支持' },
+  mode: { label: '切换播放模式', hint: '列表循环 → 单曲循环 → 随机播放' },
+  mini: { label: '迷你播放器', hint: '进入 / 退出迷你模式' },
+  desktopLyrics: { label: '桌面歌词', hint: '开关独立歌词窗口' },
+  crossfade: { label: '无缝衔接', hint: '临时开关自动过渡（与设置里的开关同步）' },
 };
 
 /** 默认组合（与宿主 Shortcuts v1 schema 的默认值保持一致）。 */
@@ -114,6 +158,14 @@ export const SHORTCUT_DEFAULTS: ShortcutsSettings = {
   prev: 'Ctrl+Alt+Left',
   next: 'Ctrl+Alt+Right',
   toggleWindow: 'Ctrl+Alt+Z',
+  volumeUp: '',
+  volumeDown: '',
+  mute: '',
+  like: '',
+  mode: '',
+  mini: '',
+  desktopLyrics: '',
+  crossfade: '',
 };
 
 const SHORTCUT_MODIFIERS = ['Ctrl', 'Alt', 'Shift', 'Win'] as const;
@@ -265,6 +317,10 @@ export interface Settings {
     desktopLyricsLocked: boolean;
     /** 主行字号，28..64（默认 40）。 */
     desktopLyricsFontSize: number;
+    /** 主行粗细。 */
+    desktopLyricsWeight: DesktopLyricsWeight;
+    /** 胶囊底色不透明度百分比，30..90（默认 40）。 */
+    desktopLyricsBackdropOpacity: number;
     desktopLyricsTopmost: boolean;
   };
   appearance: {
@@ -353,7 +409,7 @@ export type SettingsPatch = {
 
 export const DEFAULT_SETTINGS: Settings = {
   version: 1,
-  general: { splash: true, startMaximized: false, autoLaunch: false, autoStartHidden: true, watchLocalFolder: true, mediaSession: true, desktopLyrics: false, desktopLyricsLocked: false, desktopLyricsFontSize: 40, desktopLyricsTopmost: true },
+  general: { splash: true, startMaximized: false, autoLaunch: false, autoStartHidden: true, watchLocalFolder: true, mediaSession: true, desktopLyrics: false, desktopLyricsLocked: false, desktopLyricsFontSize: 40, desktopLyricsWeight: 'normal', desktopLyricsBackdropOpacity: 40, desktopLyricsTopmost: true },
   appearance: {
     theme: 'frost',
     reduceMotion: false,
@@ -445,6 +501,11 @@ function asFontSize(value: unknown): number {
   return Math.round(Math.min(64, Math.max(28, value)));
 }
 
+function asBackdropOpacity(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_SETTINGS.general.desktopLyricsBackdropOpacity;
+  return Math.round(Math.min(90, Math.max(30, value)));
+}
+
 function asEqGains(value: unknown): number[] {
   const source = Array.isArray(value) ? value : [];
   return EQ_BAND_FREQS.map((_, index) => {
@@ -474,6 +535,14 @@ function asShortcuts(value: Record<string, unknown>): ShortcutsSettings {
       SHORTCUT_DEFAULTS.alwaysHandleMediaKeys,
     ),
     playPause: normalizeShortcutBinding(value.playPause, SHORTCUT_DEFAULTS.playPause),
+    volumeUp: normalizeShortcutBinding(value.volumeUp, ''),
+    volumeDown: normalizeShortcutBinding(value.volumeDown, ''),
+    mute: normalizeShortcutBinding(value.mute, ''),
+    like: normalizeShortcutBinding(value.like, ''),
+    mode: normalizeShortcutBinding(value.mode, ''),
+    mini: normalizeShortcutBinding(value.mini, ''),
+    desktopLyrics: normalizeShortcutBinding(value.desktopLyrics, ''),
+    crossfade: normalizeShortcutBinding(value.crossfade, ''),
     prev: normalizeShortcutBinding(value.prev, SHORTCUT_DEFAULTS.prev),
     next: normalizeShortcutBinding(value.next, SHORTCUT_DEFAULTS.next),
     toggleWindow: normalizeShortcutBinding(value.toggleWindow, SHORTCUT_DEFAULTS.toggleWindow),
@@ -502,6 +571,8 @@ export function normalizeSettings(raw: unknown): Settings {
       desktopLyrics: asBool(general.desktopLyrics, DEFAULT_SETTINGS.general.desktopLyrics),
       desktopLyricsLocked: asBool(general.desktopLyricsLocked, DEFAULT_SETTINGS.general.desktopLyricsLocked),
       desktopLyricsFontSize: asFontSize(general.desktopLyricsFontSize),
+      desktopLyricsWeight: asEnum(general.desktopLyricsWeight, ['normal', 'semibold', 'bold'], DEFAULT_SETTINGS.general.desktopLyricsWeight),
+      desktopLyricsBackdropOpacity: asBackdropOpacity(general.desktopLyricsBackdropOpacity),
       desktopLyricsTopmost: asBool(general.desktopLyricsTopmost, DEFAULT_SETTINGS.general.desktopLyricsTopmost),
     },
     appearance: {
