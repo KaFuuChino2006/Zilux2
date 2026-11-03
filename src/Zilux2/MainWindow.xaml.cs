@@ -46,6 +46,7 @@ public partial class MainWindow : Window
     private const int MinimizeAnimationMs = 180;
     private const int CloseAnimationMs = 140;
     private DispatcherTimer? _windowAnim;
+    private EventHandler? _windowAnimRendering;
     private long _windowAnimGeneration;
     private bool _suppressClamp;
     private NativeMethods.Rect _restoreRect;
@@ -89,9 +90,11 @@ public partial class MainWindow : Window
     private readonly List<ShortcutItemState> _shortcutItems = new();
     private string? _shortcutStateJson;
     private bool _shortcutsEnabled = true;
+    private bool _alwaysHandleMediaKeys = true;
 
     // 系统媒体键接管：别的程序用 RegisterHotKey 抢注媒体键后，本机 SMTC 收不到 ButtonPressed，
-    // 由底层键盘钩子在本机是「当前媒体会话」时兜底（详见 MediaKeyHookService）。
+    // 由底层键盘钩子兜底（详见 MediaKeyHookService）；是否接管由 shortcuts.alwaysHandleMediaKeys
+    // 决定，关闭后退回「媒体键跟着当前播放器走」的原生行为。
     private MediaKeyHookService? _mediaKeyHook;
 
     internal MainWindow(
@@ -732,6 +735,9 @@ public partial class MainWindow : Window
                 WindowState = WindowState.Normal;
             }
 
+            // 开机自启隐藏启动时暂时去掉了任务栏/不透明度，回到前台要把它们恢复。
+            Opacity = 1;
+            ShowInTaskbar = true;
             Show();
             Activate();
             if (_hwnd != IntPtr.Zero)
@@ -898,6 +904,7 @@ public partial class MainWindow : Window
         UnregisterHotkeys();
         _shortcutItems.Clear();
         _shortcutsEnabled = settings.Enabled;
+        _alwaysHandleMediaKeys = settings.AlwaysHandleMediaKeys;
 
         var registeredCount = 0;
         foreach (var spec in HotkeyCatalog.Actions)
@@ -1099,9 +1106,11 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// 系统媒体键接管：Windows 的媒体键常被别的程序用 RegisterHotKey 抢注（例如 QQ 音乐），
-    /// 被抢注后本机 SMTC 永远收不到 ButtonPressed。底层键盘钩子仍能看到按键，所以这里只在
-    /// 「本机是当前媒体会话」时吞下媒体键并走自家命令链，其余情况放行——既覆盖了被抢注的场景，
-    /// 又保留系统「媒体键跟着当前播放器走」的原生行为。快捷键总开关关闭时也不接管。
+    /// 被抢注后本机 SMTC 永远收不到 ButtonPressed。底层键盘钩子仍能看到按键，所以这里把媒体键
+    /// 吞下并走自家命令链。是否吞键由 shortcuts.alwaysHandleMediaKeys 决定：
+    /// 默认 true——媒体键永远控制 Zilux2（键盘驱动把自定义键映射成媒体键时，切到别的窗口也生效）；
+    /// false——只在「本机是当前媒体会话」时接管，其余情况放行，保留系统原生「媒体键跟着当前
+    /// 播放器走」的行为。快捷键总开关关闭时也不接管。
     /// </summary>
     private void InstallMediaKeyHook()
     {
@@ -1111,7 +1120,7 @@ public partial class MainWindow : Window
         }
 
         _mediaKeyHook = new MediaKeyHookService(
-            () => _shortcutsEnabled && _media.IsCurrentSession,
+            () => _shortcutsEnabled && (_alwaysHandleMediaKeys || _media.IsCurrentSession),
             action =>
             {
                 HostLog.Info($"mediakey.fire action={action}");
@@ -1152,25 +1161,34 @@ public partial class MainWindow : Window
         var started = Environment.TickCount64;
         _suppressClamp = true;
 
-        var timer = new DispatcherTimer(DispatcherPriority.Render)
+        // 补间节奏跟着合成帧走（CompositionTarget.Rendering 与显示器刷新同步）。
+        // 之前用 15ms 的 DispatcherTimer，在 120Hz/165Hz 屏上每帧窗口位置要停 2~3 个屏幕帧、
+        // 分布还不均匀，看起来就是「掉帧」；改成每合成帧推一次之后，窗口边缘每一步都落在刷新帧上。
+        var frames = 0;
+        var lastFrameTicks = 0L;
+
+        void Finish()
         {
-            Interval = TimeSpan.FromMilliseconds(15),
-        };
-        _windowAnim = timer;
-        timer.Tick += (_, _) =>
+            var elapsed = Math.Max(1, Environment.TickCount64 - started);
+            var avg = frames > 0 ? elapsed / (double)frames : 0;
+            HostLog.Info($"window.motion ticks={frames} avgMs={avg:F1} durationMs={durationMs}");
+            StopWindowMotion();
+            completed?.Invoke();
+        }
+
+        void Frame()
         {
             if (generation != _windowAnimGeneration)
             {
-                timer.Stop();
                 return;
             }
 
-            var t = Math.Clamp(
-                (Environment.TickCount64 - started) / (double)Math.Max(1, durationMs),
-                0,
-                1);
+            var now = Environment.TickCount64;
+            lastFrameTicks = now;
+            var t = Math.Clamp((now - started) / (double)Math.Max(1, durationMs), 0, 1);
             var k = ease(t);
             var rect = BlendRect(from, to, k);
+            frames++;
             NativeMethods.SetWindowPos(
                 hwnd,
                 IntPtr.Zero,
@@ -1180,22 +1198,49 @@ public partial class MainWindow : Window
                 Math.Max(1, rect.Bottom - rect.Top),
                 NativeMethods.SwpNoZOrder | NativeMethods.SwpNoActivate);
 
-            if (t < 1)
+            if (t >= 1)
+            {
+                Finish();
+            }
+        }
+
+        EventHandler rendering = (_, _) => Frame();
+        _windowAnimRendering = rendering;
+        CompositionTarget.Rendering += rendering;
+
+        // 合成帧偶发停顿（窗口被遮挡、DWM 降频）时兜底继续推进，避免动画卡在半路。
+        var watchdog = new DispatcherTimer(DispatcherPriority.Render)
+        {
+            Interval = TimeSpan.FromMilliseconds(30),
+        };
+        _windowAnim = watchdog;
+        watchdog.Tick += (_, _) =>
+        {
+            if (generation != _windowAnimGeneration)
+            {
+                watchdog.Stop();
+                return;
+            }
+
+            if (Environment.TickCount64 - lastFrameTicks < 24)
             {
                 return;
             }
 
-            timer.Stop();
-            _windowAnim = null;
-            _suppressClamp = false;
-            completed?.Invoke();
+            Frame();
         };
-        timer.Start();
+        watchdog.Start();
     }
 
     private void StopWindowMotion()
     {
         _windowAnimGeneration++;
+        if (_windowAnimRendering is not null)
+        {
+            CompositionTarget.Rendering -= _windowAnimRendering;
+            _windowAnimRendering = null;
+        }
+
         if (_windowAnim is not null)
         {
             _windowAnim.Stop();
@@ -1625,8 +1670,8 @@ public partial class MainWindow : Window
     /// <summary>
     /// 部分键盘驱动 / OEM 热键服务按下「系统切换音乐」键时不发 VK_MEDIA_* 按键，而是往
     /// 前台窗口投一条 WM_APPCOMMAND 消息；底层键盘钩子看不到这条路径，只能在这里兜接。
-    /// 只在本机是当前媒体会话且快捷键总开关打开时接住，其余情况返回 false 交给系统默认处理，
-    /// 保留「媒体键跟着当前播放器走」的原生行为。
+    /// 快捷键总开关打开、且（alwaysHandleMediaKeys=true 或本机是当前媒体会话）时接住，
+    /// 其余情况返回 false 交给系统默认处理，保留「媒体键跟着当前播放器走」的原生行为。
     /// </summary>
     private bool HandleAppCommand(IntPtr lParam)
     {
@@ -1644,8 +1689,10 @@ public partial class MainWindow : Window
         }
 
         var owns = _media?.IsCurrentSession == true;
-        HostLog.Info($"[appcommand] command={command} action={action} ours={(owns ? "true" : "false")}");
-        if (!_shortcutsEnabled || !owns)
+        var handle = _alwaysHandleMediaKeys || owns;
+        HostLog.Info(
+            $"[appcommand] command={command} action={action} ours={(owns ? "true" : "false")} always={(_alwaysHandleMediaKeys ? "true" : "false")}");
+        if (!_shortcutsEnabled || !handle)
         {
             return false;
         }

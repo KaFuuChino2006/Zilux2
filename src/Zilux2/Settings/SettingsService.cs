@@ -63,6 +63,18 @@ internal sealed class SettingsService : IDisposable
         }
     }
 
+    /// <summary>开机自启时是否隐藏主界面（决定 Run 项命令行是否带 --hidden）。</summary>
+    internal bool AutoStartHidden
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _state.General.AutoStartHidden;
+            }
+        }
+    }
+
     /// <summary>本地曲库目录自动监控开关（LocalMusicService.Watch 的启停依据）。</summary>
     internal bool WatchLocalFolder
     {
@@ -432,7 +444,7 @@ internal sealed class SettingsService : IDisposable
 
     private static bool IsKnownField(string section, string name) => section switch
     {
-        "general" => name is "splash" or "startMaximized" or "autoLaunch" or "watchLocalFolder",
+        "general" => name is "splash" or "startMaximized" or "autoLaunch" or "autoStartHidden" or "watchLocalFolder",
         "appearance" => name is "theme" or "reduceMotion" or "glow" or "heroAutoRotate" or "lyricsSize",
         "playback" => name is "defaultSource" or "searchLimit" or "lyricsAutoOpen" or "volume" or "audioReactive"
             or "eqEnabled" or "eqPreset" or "eqGains" or "fadeEnabled" or "fadeMs"
@@ -517,6 +529,8 @@ internal sealed class SettingsService : IDisposable
             state.General.Splash = ReadBool(general, "splash", state.General.Splash, "general.splash", keys);
             state.General.StartMaximized = ReadBool(general, "startMaximized", state.General.StartMaximized, "general.startMaximized", keys);
             state.General.AutoLaunch = ReadBool(general, "autoLaunch", state.General.AutoLaunch, "general.autoLaunch", keys);
+            state.General.AutoStartHidden = ReadBool(
+                general, "autoStartHidden", state.General.AutoStartHidden, "general.autoStartHidden", keys);
             state.General.WatchLocalFolder = ReadBool(
                 general, "watchLocalFolder", state.General.WatchLocalFolder, "general.watchLocalFolder", keys);
         }
@@ -617,6 +631,12 @@ internal sealed class SettingsService : IDisposable
         if (TryGetObject(document, "shortcuts", out var shortcuts))
         {
             state.Shortcuts.Enabled = ReadBool(shortcuts, "enabled", state.Shortcuts.Enabled, "shortcuts.enabled", keys);
+            state.Shortcuts.AlwaysHandleMediaKeys = ReadBool(
+                shortcuts,
+                "alwaysHandleMediaKeys",
+                state.Shortcuts.AlwaysHandleMediaKeys,
+                "shortcuts.alwaysHandleMediaKeys",
+                keys);
             state.Shortcuts.PlayPause = ReadShortcut(shortcuts, "playPause", state.Shortcuts.PlayPause, "shortcuts.playPause", keys);
             state.Shortcuts.Prev = ReadShortcut(shortcuts, "prev", state.Shortcuts.Prev, "shortcuts.prev", keys);
             state.Shortcuts.Next = ReadShortcut(shortcuts, "next", state.Shortcuts.Next, "shortcuts.next", keys);

@@ -10,6 +10,8 @@ import { startAutoPlayOnBoot } from './ui/autoPlay';
 import { h, toast } from './ui/dom';
 import { initTheme } from './ui/theme';
 import { installCoverFallback } from './ui/coverFallback';
+import { installAppTooltips } from './ui/tooltip';
+import { installChorusPreview } from './ui/chorusPreview';
 import { refreshArtworkCovers } from './online/artwork';
 import { confirmDialog } from './ui/confirmDialog';
 import { initUpdates, installUpdate, onUpdateChange, updateSnapshot } from './ui/updates';
@@ -88,6 +90,8 @@ function sleep(ms: number): Promise<void> {
 
 async function main(): Promise<void> {
   installCoverFallback();
+  installAppTooltips();
+  installChorusPreview(document.body);
   // 宿主消息监听要先装好，再告诉宿主页面已就绪（宿主收到 ready 才会推送在线端口/账号）。
   initOnline();
   initAccount();
@@ -156,6 +160,38 @@ async function main(): Promise<void> {
     if (event.code === 'Space') {
       event.preventDefault();
       app.playCurrent();
+      return;
+    }
+    // M：静音 / 恢复
+    if (event.key.toLowerCase() === 'm' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      event.preventDefault();
+      app.toggleMute();
+      return;
+    }
+    // Shift + ←/→：快退 / 快进 5 秒
+    if (
+      event.shiftKey &&
+      !event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      (event.key === 'ArrowLeft' || event.key === 'ArrowRight')
+    ) {
+      event.preventDefault();
+      app.seekBy(event.key === 'ArrowRight' ? 5000 : -5000);
+      return;
+    }
+    // 数字 1–4：热 cue（空位记录 / 已记录则跳转）；Shift + 数字：清除
+    if (/^[1-4]$/.test(event.key) && !event.altKey && !event.ctrlKey && !event.metaKey) {
+      event.preventDefault();
+      const slot = Number(event.key);
+      if (event.shiftKey) app.clearHotCue(slot);
+      else app.hotCue(slot);
+      return;
+    }
+    // L：按当前小节循环（4 小节）
+    if (event.key.toLowerCase() === 'l' && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
+      event.preventDefault();
+      app.toggleLoop();
       return;
     }
     if (event.key === 'ArrowRight' && event.altKey) {

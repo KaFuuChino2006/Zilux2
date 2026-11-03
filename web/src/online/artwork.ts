@@ -95,44 +95,92 @@ export function refreshArtworkCovers(): void {
   }
 }
 
-function makeCover(track: Pick<OnlineTrack, 'id' | 'title' | 'artist' | 'album' | 'cover'>): string {
+/** 程序化封面用的 XML 文本转义（标题首字可能是 & < > 等）。 */
+function escapeXml(text: string): string {
+  return text.replace(/[&<>"']/g, (ch) => {
+    switch (ch) {
+      case '&':
+        return '&amp;';
+      case '<':
+        return '&lt;';
+      case '>':
+        return '&gt;';
+      case '"':
+        return '&quot;';
+      default:
+        return '&#39;';
+    }
+  });
+}
+
+/**
+ * 给宿主封面代理地址追加缩放参数（只处理 /api/cover，其它地址原样返回）。
+ * 宿主按 width 抽样解码并缓存缩略图，海报墙请求 300、列表行请求 120 左右即可。
+ */
+function withCoverWidth(cover: string, width: number): string {
+  if (width <= 0) return cover;
+  let url: URL;
+  try {
+    url = new URL(cover);
+  } catch {
+    return cover;
+  }
+  const localhost = url.hostname === '127.0.0.1' || url.hostname === 'localhost';
+  if (!localhost || !url.pathname.endsWith('/api/cover')) return cover;
+  url.searchParams.set('width', String(Math.round(width)));
+  return url.toString();
+}
+
+/**
+ * 程序化封面：用内联 SVG data URL 代替 canvas + JPEG 编码。
+ * 喜欢墙 / 待播队列动辄几百首没封面的歌，每张 canvas 建 256×256 再 toDataURL 是同步且昂贵的，
+ * 一次渲染几百张会直接卡住主线程；SVG 字符串拼装几乎零成本，位图化交给图片管线异步完成。
+ */
+function makeCover(
+  track: Pick<OnlineTrack, 'id' | 'title' | 'artist' | 'album' | 'cover'>,
+  width = 0,
+): string {
   const remapped = rebindCover(track.cover);
-  if (remapped) return remapped;
+  if (remapped) {
+    const sized = withCoverWidth(remapped, width);
+    if (sized === remapped) return remapped;
+    const sizedKey = `${track.id}:w${Math.round(width)}`;
+    const cachedSize = cache.get(sizedKey);
+    if (cachedSize) return cachedSize;
+    cache.set(sizedKey, sized);
+    return sized;
+  }
   const key = `${track.id}:art`;
   const cached = cache.get(key);
   if (cached) return cached;
   const palette = PALETTES[hash(track.id) % PALETTES.length] ?? PALETTES[0]!;
   const [a, b] = palette;
-  const canvas = document.createElement('canvas');
-  canvas.width = 256;
-  canvas.height = 256;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return '';
-  const gradient = ctx.createLinearGradient(0, 0, 256, 256);
-  gradient.addColorStop(0, b);
-  gradient.addColorStop(1, a);
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, 256, 256);
-  const glow = ctx.createRadialGradient(190, 50, 6, 190, 50, 240);
-  glow.addColorStop(0, 'rgba(255,255,255,0.42)');
-  glow.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.fillStyle = glow;
-  ctx.fillRect(0, 0, 256, 256);
-  ctx.fillStyle = 'rgba(255,255,255,0.92)';
-  ctx.font = '700 96px "Segoe UI", "Microsoft YaHei UI", sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText((track.title.trim()[0] ?? '♪').toUpperCase(), 128, 136);
-  const url = canvas.toDataURL('image/jpeg', 0.86);
+  const letter = escapeXml((track.title.trim()[0] ?? '♪').toUpperCase());
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">` +
+    `<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">` +
+    `<stop offset="0" stop-color="${b}"/><stop offset="1" stop-color="${a}"/></linearGradient>` +
+    `<radialGradient id="r" cx="0.74" cy="0.2" r="0.9">` +
+    `<stop offset="0" stop-color="#ffffff" stop-opacity="0.42"/>` +
+    `<stop offset="1" stop-color="#ffffff" stop-opacity="0"/></radialGradient></defs>` +
+    `<rect width="256" height="256" fill="url(#g)"/><rect width="256" height="256" fill="url(#r)"/>` +
+    `<text x="128" y="136" text-anchor="middle" dominant-baseline="middle" ` +
+    `font-family="Segoe UI, Microsoft YaHei UI, sans-serif" font-weight="700" font-size="96" ` +
+    `fill="#ffffff" fill-opacity="0.92">${letter}</text></svg>`;
+  const url = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
   cache.set(key, url);
   return url;
 }
 
-/** 曲目封面（真实代理封面优先，缺省用程序化封面）。 */
+/** 曲目封面（真实代理封面优先，缺省用程序化封面）。
+ *  width 可选：给宿主 /api/cover 请求缩略图（32..1024），海报只显示约 150px、列表行更小，
+ *  原图常见 2000~5000 像素，几百张同时驻留会把图片解码和显存拖爆。
+ */
 export function onlineArtwork(
   track: Pick<OnlineTrack, 'id' | 'title' | 'artist' | 'album' | 'cover'>,
+  width = 0,
 ): string {
-  return makeCover(track);
+  return makeCover(track, width);
 }
 
 /** 预热封面，避免一次创建过多 canvas。 */

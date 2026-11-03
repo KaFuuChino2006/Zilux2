@@ -34,6 +34,10 @@ internal sealed class GeneralSettings
     // 保证旧 settings.json 的字段顺序不变。
     public bool AutoLaunch { get; set; }
 
+    // 开机自启时不显示主界面：Run 项命令行追加 --hidden，宿主启动后直接驻留托盘。
+    // 默认开启——开机自启的语义就是「后台待命」，需要窗口时从托盘或任务栏再打开。
+    public bool AutoStartHidden { get; set; } = true;
+
     // 本地曲库目录自动监控开关（LocalMusicService.Watch）。追加在最后，同上。
     public bool WatchLocalFolder { get; set; } = true;
 }
@@ -202,6 +206,13 @@ internal sealed class ShortcutSettings
     /// <summary>快捷键总开关；false 时宿主注销全部全局热键。</summary>
     public bool Enabled { get; set; } = true;
 
+    /// <summary>
+    /// 系统媒体键（播放/暂停、上一首、下一首）始终由 Zilux2 接管：true 时不看「本机是不是
+    /// Windows 当前媒体会话」，媒体键永远控制本机播放；false 保留系统原生「媒体键跟着当前
+    /// 播放器走」的行为。见 MainWindow.InstallMediaKeyHook / docs/zilux2-settings-contract.md §2。
+    /// </summary>
+    public bool AlwaysHandleMediaKeys { get; set; } = true;
+
     /// <summary>播放/暂停，默认 Ctrl+Alt+Space。</summary>
     public string PlayPause { get; set; } = DefaultPlayPause;
 
@@ -218,6 +229,7 @@ internal sealed class ShortcutSettings
     public ShortcutSettings Clone() => new()
     {
         Enabled = Enabled,
+        AlwaysHandleMediaKeys = AlwaysHandleMediaKeys,
         PlayPause = PlayPause,
         Prev = Prev,
         Next = Next,

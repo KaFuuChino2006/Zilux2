@@ -98,3 +98,9 @@ research/airplay/_lead-harness/
 research/airplay/_lead-probe/
 research/patch_*.py
 research/qa/patch_*.py
+
+# 一次性技术样机（Three.js 档案场景移植验证，不入库）
+web/arc-proto/
+
+# 例外：档案终端源码要入库（上面的 archive/ 规则原本针对构建产物）
+!web/src/ui/archive/

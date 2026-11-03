@@ -31,8 +31,10 @@ body.is-mini {
     var(--bg);
 }
 
-/* 只有最终迷你态才切 block 布局；过渡态保持原 grid，避免旧界面在幕布下重排跳动。 */
-.app.is-mini {
+/* 迷你态一律 block 布局：过渡期其余顶层节点已经隐藏（见下），不需要再算原窗口的 grid。 */
+.app.is-mini,
+.app.is-mini-entering,
+.app.is-mini-exiting {
   display: block;
 }
 
@@ -78,6 +80,13 @@ body.is-mini {
 
 /* 只保留播放条；其余顶层节点（自定义背景层 / 顶栏 / 主区 / 待播队列 / 浮层…）全部藏掉。 */
 .app.is-mini > :not(.playerbar-wrap) {
+  display: none !important;
+}
+
+/* 过渡期同样只留播放条：壁纸、舞台光效、主区在窗口补间时全部停画，
+   否则宿主每 15ms 改一次窗口尺寸，整页都会跟着重排重绘，这是「缩小掉帧」的主因。 */
+.app.is-mini-entering > :not(.playerbar-wrap),
+.app.is-mini-exiting > :not(.playerbar-wrap) {
   display: none !important;
 }
 
@@ -161,6 +170,11 @@ body.is-mini {
   max-width: 400px !important;
   height: 100px !important;
   max-height: 100px !important;
+  /* 过渡卡片用实色底、关掉毛玻璃：窗口每帧改尺寸时 backdrop-filter 要重算整层模糊，
+     是补间卡顿的另一大头；幕布本身是纯色，模糊也看不出差别。 */
+  background: var(--panel-solid) !important;
+  backdrop-filter: none !important;
+  box-shadow: none !important;
 }
 
 /* 封面：普通窗口里默认 max-width:0 收起、hover 才展开，这里强制常显。 */
@@ -317,7 +331,15 @@ html.is-pb-expanded .app.is-mini .playerbar .pb-meta {
 .app.is-mini-exiting .track-rail {
   height: 3px;
   border-radius: 2px;
-  background: rgb(255 255 255 / 0.14);
+  /* 用主题的 overlay 色：纯白 0.14 在浅色主题的白色卡片上会完全看不见。 */
+  background: rgb(var(--overlay-rgb) / 0.16);
+}
+
+/* 小窗里不画过渡/高潮/热 cue 刻度：3px 细线上挤一排标记只会显脏。 */
+.app.is-mini .track-marks,
+.app.is-mini-entering .track-marks,
+.app.is-mini-exiting .track-marks {
+  display: none !important;
 }
 
 .app.is-mini .track-fill,
@@ -326,19 +348,79 @@ html.is-pb-expanded .app.is-mini .playerbar .pb-meta {
   height: 100%;
   border-radius: 2px;
   background: var(--accent);
+  /* 补间期不做宽度过渡：每帧额外的布局动画只会和窗口运动抢帧。 */
+  transition: none !important;
 }
 
-/* 右侧：只留收起按钮；播放模式 / 收藏 / 下载 / 歌词 / 音量在小窗里没有意义。 */
-.app.is-mini .pb-actions,
-.app.is-mini-entering .pb-actions,
-.app.is-mini-exiting .pb-actions,
+/* 小窗里保留播放模式 / 收藏（常用且不占地方），下载队列和歌词、音量仍藏掉。 */
 .app.is-mini .pb-btn-lyrics,
 .app.is-mini-entering .pb-btn-lyrics,
 .app.is-mini-exiting .pb-btn-lyrics,
 .app.is-mini .volume-wrap,
 .app.is-mini-entering .volume-wrap,
-.app.is-mini-exiting .volume-wrap {
+.app.is-mini-exiting .volume-wrap,
+.app.is-mini .pb-actions .pb-download,
+.app.is-mini-entering .pb-actions .pb-download,
+.app.is-mini-exiting .pb-actions .pb-download {
   display: none !important;
+}
+
+.app.is-mini .pb-actions,
+.app.is-mini-entering .pb-actions,
+.app.is-mini-exiting .pb-actions {
+  display: flex !important;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  max-width: none !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+
+.app.is-mini .pb-actions .pb-btn,
+.app.is-mini-entering .pb-actions .pb-btn,
+.app.is-mini-exiting .pb-actions .pb-btn {
+  width: 26px;
+  height: 26px;
+  max-width: 26px !important;
+  opacity: 1 !important;
+}
+
+/* 第三行迷你信息：进度时间 + 下一首（普通窗口里不显示）。 */
+.pb-mini-line {
+  display: none;
+}
+
+.app.is-mini .pb-mini-line,
+.app.is-mini-entering .pb-mini-line,
+.app.is-mini-exiting .pb-mini-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 1px;
+  font-size: 9.5px;
+  line-height: 1.2;
+  color: var(--muted);
+}
+
+.pb-mini-time {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  opacity: 0.9;
+}
+
+.pb-mini-next {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pb-mini-next.is-empty {
+  display: none;
 }
 
 .app.is-mini .pb-extra,
@@ -395,6 +477,20 @@ html.is-pb-expanded .app.is-mini .playerbar .pb-meta {
     opacity: 0.55;
     transform: translateY(4px) scale(0.98);
   }
+}
+
+/* 退出迷你、窗口已长回后：顶层界面补一段很短的淡入，避免硬切。 */
+@keyframes mini-content-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.app.is-mini-restored > :not(.playerbar-wrap) {
+  animation: mini-content-in 200ms var(--ease) both;
 }
 
 .app.is-mini-entering .playerbar {

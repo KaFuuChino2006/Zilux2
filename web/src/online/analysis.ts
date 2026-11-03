@@ -12,7 +12,7 @@ import { relOf } from '../ui/local';
 import { OnlineError, api, qualityForSource } from './client';
 import type { OnlineTrack } from './types';
 
-/** 契约 §2.1 的 analysis.sections 元素。 */
+/** 契约 §2.1 的 analysis.sections 元素。label：intro / outro / climax，或空串。 */
 export interface BeatSection {
   startMs: number;
   endMs: number;
@@ -42,6 +42,32 @@ export interface BeatAnalysis {
   audibleEndMs?: number;
   /** 尾部静音时长（ms）= durationMs - audibleEndMs；无尾部静音为 0。缺失时同样回退。 */
   tailSilenceMs?: number;
+  /**
+   * 进度条高潮标记窗口（p0-7 起）：命中的 `climax` 段落内能量最高的 8 小节。
+   * 未命中（或无峰值）时宿主给 0；旧宿主 / 旧缓存缺失时回退到 `sections` 里的整段。
+   */
+  climaxStartMs?: number;
+  /** 高潮标记窗口终点（ms）；与 `climaxStartMs` 成对出现，缺失时同样回退。 */
+  climaxEndMs?: number;
+  /** 调性主音音级（p0-9 起，0=C … 11=B；未识别为 -1）。 */
+  key?: number;
+  /** 调式：major / minor（p0-9 起）。 */
+  keyMode?: string;
+  /** Camelot 轮盘编号（如 8A / 8B，p0-9 起），用于智能接歌的调性兼容判断。 */
+  camelot?: string;
+  /** 整曲能量（0~1，p0-9 起），用于场景歌单分桶。 */
+  energy?: number;
+  /** 整曲响度近似值（LUFS 口径，p0-9 起），用于响度均衡。 */
+  loudnessLufs?: number;
+  /** 峰值电平（dBFS，p0-9 起）。 */
+  peakDb?: number;
+  /**
+   * 推荐混音入点（ms，p0-11 起）：下一首从这里进场。宿主优先取首个 drop，其次首个副歌，
+   * 都没有则取 intro 结束，并对齐 8 小节乐句；未识别为 0 / 缺失。
+   */
+  cueInMs?: number;
+  /** 推荐混音出点（ms，p0-11 起）：这一首从这里让位（尾奏起点，对齐 8 小节乐句）；未识别为 0 / 缺失。 */
+  cueOutMs?: number;
 }
 
 /** 契约 §2.1 成功响应。 */
@@ -122,6 +148,44 @@ export function analysisCacheSize(): number {
  * 分析一首歌。失败抛 AnalysisError（带 code/message）。
  * 同一首正在分析时复用同一个 Promise；默认命中内存缓存。
  */
+/**
+ * 只读缓存的分析结果（cacheOnly=1）：宿主不下载/不解码，未分析过时返回 null。
+ * 场景歌单 / 智能接歌这类需要批量看多首歌元数据的地方用它，避免一次触发几十次解码。
+ */
+export async function peekAnalysis(track: OnlineTrack): Promise<AnalysisResult | null> {
+  const key = analysisKey(track);
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const running = inflight.get(key);
+  if (running) {
+    try {
+      return await running;
+    } catch {
+      return null;
+    }
+  }
+  const params: Record<string, string> = { cacheOnly: '1' };
+  if (track.source === 'local') {
+    const rel = relOf(track);
+    if (!rel) return null;
+    params.source = 'local';
+    params.rel = rel;
+  } else {
+    params.source = String(track.source);
+    params.id = track.id;
+    params.quality = qualityForSource(String(track.source));
+  }
+  try {
+    const raw = await api<AnalysisResponse>('/api/analysis', params, 8000);
+    if (!raw || raw.ok !== true) return null;
+    const result = normalizeResult(raw, track);
+    cache.set(key, result);
+    return result;
+  } catch {
+    return null;
+  }
+}
+
 export async function analyzeTrack(track: OnlineTrack, options: { force?: boolean } = {}): Promise<AnalysisResult> {
   const key = analysisKey(track);
   if (!options.force) {
@@ -197,9 +261,42 @@ function normalizeResult(raw: AnalysisResponse, track: OnlineTrack): AnalysisRes
       : [],
     warnings: strings(source.warnings),
   };
+  // p0-7：高潮标记窗口（analysis 子对象内）。旧宿主 / 旧缓存没有这两个字段时保持
+  // undefined，进度条回退到 sections 里 label === 'climax' 的整段。
+  const climaxStartMs = source.climaxStartMs;
+  const climaxEndMs = source.climaxEndMs;
+  if (
+    typeof climaxStartMs === 'number' &&
+    Number.isFinite(climaxStartMs) &&
+    climaxStartMs > 0 &&
+    typeof climaxEndMs === 'number' &&
+    Number.isFinite(climaxEndMs) &&
+    climaxEndMs > climaxStartMs
+  ) {
+    analysis.climaxStartMs = climaxStartMs;
+    analysis.climaxEndMs = climaxEndMs;
+  }
   // p0-4：可听结尾 / 尾部静音。宿主字段在响应顶层（与 durationMs 同级）；
   // 同时兼容放在 analysis 对象里的写法（防御旧草案）。缺失时保持 undefined，
   // 交叉淡化调度回退 durationMs（task-19 行为不变）。
+  // p0-9：调性 / 能量 / 响度。缺失（旧宿主、旧缓存）时保持 undefined，消费方各自回退。
+  const camelot = typeof source.camelot === 'string' ? source.camelot : '';
+  if (camelot.length > 0) analysis.camelot = camelot;
+  const key = source.key;
+  if (typeof key === 'number' && Number.isFinite(key) && key >= 0) analysis.key = key;
+  if (typeof source.keyMode === 'string' && source.keyMode.length > 0) analysis.keyMode = source.keyMode;
+  if (typeof source.energy === 'number' && Number.isFinite(source.energy)) analysis.energy = clamp01(source.energy);
+  if (typeof source.loudnessLufs === 'number' && Number.isFinite(source.loudnessLufs)) {
+    analysis.loudnessLufs = source.loudnessLufs;
+  }
+  if (typeof source.peakDb === 'number' && Number.isFinite(source.peakDb)) analysis.peakDb = source.peakDb;
+  // p0-11：结构 cue（混音入点/出点）。缺失时保持 undefined，过渡计划回退旧逻辑。
+  if (typeof source.cueInMs === 'number' && Number.isFinite(source.cueInMs) && source.cueInMs > 0) {
+    analysis.cueInMs = source.cueInMs;
+  }
+  if (typeof source.cueOutMs === 'number' && Number.isFinite(source.cueOutMs) && source.cueOutMs > 0) {
+    analysis.cueOutMs = source.cueOutMs;
+  }
   const rawAudibleEnd = raw.audibleEndMs ?? source.audibleEndMs;
   if (typeof rawAudibleEnd === 'number' && Number.isFinite(rawAudibleEnd) && rawAudibleEnd > 0) {
     const audibleEndMs = durationMs > 0 ? Math.min(durationMs, rawAudibleEnd) : rawAudibleEnd;

@@ -59,6 +59,36 @@ internal sealed class BeatAnalysisPayload
 
     public int BarCount { get; set; }
 
+    /// <summary>高潮标记窗口起点（ms）：命中段落内能量最高的 8 小节窗口；未命中为 0。</summary>
+    public double ClimaxStartMs { get; set; }
+
+    /// <summary>高潮标记窗口终点（ms）；未命中为 0。</summary>
+    public double ClimaxEndMs { get; set; }
+
+    /// <summary>推荐混音入点（ms）：下一首从这里进场（优先 drop，其次副歌，对齐 8 小节乐句）；未识别为 0。</summary>
+    public double CueInMs { get; set; }
+
+    /// <summary>推荐混音出点（ms）：这一首从这里开始让位（末段副歌结束 / 尾奏起点，对齐乐句）；未识别为 0。</summary>
+    public double CueOutMs { get; set; }
+
+    /// <summary>调性主音音级（0=C … 11=B；未识别为 -1）。</summary>
+    public int Key { get; set; } = -1;
+
+    /// <summary>调式：major / minor；未识别为空串。</summary>
+    public string KeyMode { get; set; } = string.Empty;
+
+    /// <summary>Camelot 轮盘编号（如 8A / 8B）；未识别为空串。</summary>
+    public string Camelot { get; set; } = string.Empty;
+
+    /// <summary>整曲能量（0~1，按小节能量均值）。</summary>
+    public double Energy { get; set; }
+
+    /// <summary>整曲响度近似值（LUFS 口径，越大越响）。</summary>
+    public double LoudnessLufs { get; set; }
+
+    /// <summary>峰值电平（dBFS）。</summary>
+    public double PeakDb { get; set; }
+
     public AnalysisSectionPayload[] Sections { get; set; } = Array.Empty<AnalysisSectionPayload>();
 
     public string[] Warnings { get; set; } = Array.Empty<string>();
@@ -92,7 +122,8 @@ internal readonly record struct AnalysisRequest(
     string? TrackId,
     string? Rel,
     string? Quality,
-    bool Force);
+    bool Force,
+    bool CacheOnly = false);
 
 /// <summary>
 /// Result of one analysis attempt. <see cref="Code"/> is the contract error code when

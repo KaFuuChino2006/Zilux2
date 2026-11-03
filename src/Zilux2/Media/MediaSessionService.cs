@@ -134,8 +134,8 @@ internal sealed class MediaSessionService : IDisposable
     }
 
     // 会话管理器只用来回答一个问题：Windows 现在的「当前媒体会话」是不是本机。媒体键被别的
-    // 程序抢注时，系统不会再路由 ButtonPressed，只能靠底层键盘钩子兜底；但钩子要在本机不是
-    // 当前会话时放行，否则会抢走正在放歌的其它程序的媒体键。
+    // 程序抢注时，系统不会再路由 ButtonPressed，只能靠底层键盘钩子兜底；钩子是否放行由
+    // shortcuts.alwaysHandleMediaKeys 决定（默认 true 时不再看这里的结果，见 MainWindow）。
     private async Task InitializeSessionManagerAsync()
     {
         try

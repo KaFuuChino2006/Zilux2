@@ -134,7 +134,7 @@ export function createUpNextToast(onSkip: () => void): UpNextToastHandle {
     main.classList.add('is-swapping');
     swapTimer = window.setTimeout(() => {
       kicker.textContent = label;
-      const artwork = onlineArtwork(track);
+      const artwork = onlineArtwork(track, 96);
       if (artwork !== currentSrc) {
         currentSrc = artwork;
         if (artwork.length > 0) cover.src = artwork;

@@ -161,7 +161,9 @@ Base：`http://127.0.0.1:<port>/api/...`，除 `/api/health` 外都必须带 `&t
 
 ### 通用
 
-- 所有响应带 `Access-Control-Allow-Origin: *`；`OPTIONS` 返回 `204` + `Access-Control-Allow-Methods: GET,OPTIONS` + `Access-Control-Allow-Headers: *`。
+- 除 `GET /api/health` 外，所有 `/api/*` 默认要求 token：`?token=` 或 `Authorization: Bearer <token>`，缺失/错误一律 `401`（默认拒绝，新增路由无需再手写校验）。
+- CORS 只回显白名单来源 `https://zilux2.local`（以及本机同端口 `http://127.0.0.1:<port>`）；不再返回 `Access-Control-Allow-Origin: *`，也不再应答 Private Network Access。
+- `OPTIONS` 返回 `204`；对白名单来源附加 `Access-Control-Allow-Methods: GET,POST,OPTIONS`、`Access-Control-Allow-Headers: Authorization, Content-Type`、`Access-Control-Max-Age: 600`。
 - 业务错误统一 JSON：`{"error":"code","message":"用户可读文本"}`。
 - 搜索 `q` 长度 ≤ 100、`limit` ≤ 50，否则 400。
 
