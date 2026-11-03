@@ -715,6 +715,7 @@ internal sealed class LocalMusicServer : IDisposable
     private static int MapAnalysisStatus(string code) => code switch
     {
         "not-found" => 404,
+        "not-cached" => 404,
         "not-playable" => 403,
         "upstream-failed" => 502,
         "decode-failed" => 422,
