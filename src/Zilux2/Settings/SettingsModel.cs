@@ -53,6 +53,22 @@ internal sealed class GeneralSettings
     public int DesktopLyricsFontSize { get; set; } = 40;
 
     public bool DesktopLyricsTopmost { get; set; } = true;
+
+    // 粗细：normal / semibold / bold；底色不透明度 30..90（百分比，默认 40）。
+    public const string DesktopLyricsWeightNormal = "normal";
+    public const string DesktopLyricsWeightSemibold = "semibold";
+    public const string DesktopLyricsWeightBold = "bold";
+
+    internal static readonly string[] DesktopLyricsWeights =
+    {
+        DesktopLyricsWeightNormal,
+        DesktopLyricsWeightSemibold,
+        DesktopLyricsWeightBold,
+    };
+
+    public string DesktopLyricsWeight { get; set; } = DesktopLyricsWeightNormal;
+
+    public int DesktopLyricsBackdropOpacity { get; set; } = 40;
 }
 
 internal sealed class AppearanceSettings
@@ -280,6 +296,30 @@ internal sealed class ShortcutSettings
     /// <summary>显示/隐藏主窗口，默认 Ctrl+Alt+Z。</summary>
     public string ToggleWindow { get; set; } = DefaultToggleWindow;
 
+    /// <summary>音量加（默认不绑定，用户在设置里自行录制）。</summary>
+    public string VolumeUp { get; set; } = string.Empty;
+
+    /// <summary>音量减。</summary>
+    public string VolumeDown { get; set; } = string.Empty;
+
+    /// <summary>静音 / 取消静音。</summary>
+    public string Mute { get; set; } = string.Empty;
+
+    /// <summary>收藏当前歌曲。</summary>
+    public string Like { get; set; } = string.Empty;
+
+    /// <summary>切换播放模式（列表循环 / 单曲循环 / 随机）。</summary>
+    public string Mode { get; set; } = string.Empty;
+
+    /// <summary>进入 / 退出迷你播放器。</summary>
+    public string Mini { get; set; } = string.Empty;
+
+    /// <summary>开关桌面歌词。</summary>
+    public string DesktopLyrics { get; set; } = string.Empty;
+
+    /// <summary>开关无缝衔接。</summary>
+    public string Crossfade { get; set; } = string.Empty;
+
     /// <summary>复制一份，避免调用方在锁外直接读写正在被序列化的实例。</summary>
     public ShortcutSettings Clone() => new()
     {
@@ -289,6 +329,14 @@ internal sealed class ShortcutSettings
         Prev = Prev,
         Next = Next,
         ToggleWindow = ToggleWindow,
+        VolumeUp = VolumeUp,
+        VolumeDown = VolumeDown,
+        Mute = Mute,
+        Like = Like,
+        Mode = Mode,
+        Mini = Mini,
+        DesktopLyrics = DesktopLyrics,
+        Crossfade = Crossfade,
     };
 }
 

@@ -100,14 +100,14 @@ internal sealed class SettingsService : IDisposable
     }
 
     /// <summary>桌面歌词窗口的显示状态与样式（窗口由 MainWindow 懒创建）。</summary>
-    internal (bool Enabled, bool Locked, int FontSize, bool Topmost) DesktopLyricsOptions
+    internal (bool Enabled, bool Locked, int FontSize, bool Topmost, string Weight, int BackdropOpacity) DesktopLyricsOptions
     {
         get
         {
             lock (_gate)
             {
                 var general = _state.General;
-                return (general.DesktopLyrics, general.DesktopLyricsLocked, general.DesktopLyricsFontSize, general.DesktopLyricsTopmost);
+                return (general.DesktopLyrics, general.DesktopLyricsLocked, general.DesktopLyricsFontSize, general.DesktopLyricsTopmost, general.DesktopLyricsWeight, general.DesktopLyricsBackdropOpacity);
             }
         }
     }
@@ -542,7 +542,8 @@ internal sealed class SettingsService : IDisposable
     private static bool IsKnownField(string section, string name) => section switch
     {
         "general" => name is "splash" or "startMaximized" or "autoLaunch" or "autoStartHidden" or "watchLocalFolder"
-            or "mediaSession" or "desktopLyrics" or "desktopLyricsLocked" or "desktopLyricsFontSize" or "desktopLyricsTopmost",
+            or "mediaSession" or "desktopLyrics" or "desktopLyricsLocked" or "desktopLyricsFontSize" or "desktopLyricsTopmost"
+            or "desktopLyricsWeight" or "desktopLyricsBackdropOpacity",
         "appearance" => name is "theme" or "reduceMotion" or "glow" or "heroAutoRotate" or "lyricsSize"
             or "windowAnimation" or "playerBarExpanded" or "miniSize" or "miniAlwaysOnTop",
         "playback" => name is "defaultSource" or "searchLimit" or "lyricsAutoOpen" or "volume" or "audioReactive"
@@ -551,7 +552,8 @@ internal sealed class SettingsService : IDisposable
             or "sleepFadeSeconds" or "sleepAction",
         "downloads" => name is "directory" or "quality" or "maxConcurrent" or "fileNameTemplate" or "openFolderWhenDone",
         "updates" => name is "autoCheck" or "mode" or "repo",
-        "shortcuts" => name is "enabled" or "playPause" or "prev" or "next" or "toggleWindow",
+        "shortcuts" => name is "enabled" or "alwaysHandleMediaKeys" or "playPause" or "prev" or "next" or "toggleWindow"
+            or "volumeUp" or "volumeDown" or "mute" or "like" or "mode" or "mini" or "desktopLyrics" or "crossfade",
         _ => false,
     };
 
@@ -644,6 +646,12 @@ internal sealed class SettingsService : IDisposable
                 state.General.DesktopLyricsFontSize, "general.desktopLyricsFontSize", keys);
             state.General.DesktopLyricsTopmost = ReadBool(
                 general, "desktopLyricsTopmost", state.General.DesktopLyricsTopmost, "general.desktopLyricsTopmost", keys);
+            state.General.DesktopLyricsWeight = ReadEnum(
+                general, "desktopLyricsWeight", GeneralSettings.DesktopLyricsWeights,
+                state.General.DesktopLyricsWeight, "general.desktopLyricsWeight", keys);
+            state.General.DesktopLyricsBackdropOpacity = ReadIntInRange(
+                general, "desktopLyricsBackdropOpacity", 30, 90,
+                state.General.DesktopLyricsBackdropOpacity, "general.desktopLyricsBackdropOpacity", keys);
         }
 
         if (TryGetObject(document, "appearance", out var appearance))
@@ -769,6 +777,15 @@ internal sealed class SettingsService : IDisposable
             state.Shortcuts.Next = ReadShortcut(shortcuts, "next", state.Shortcuts.Next, "shortcuts.next", keys);
             state.Shortcuts.ToggleWindow = ReadShortcut(
                 shortcuts, "toggleWindow", state.Shortcuts.ToggleWindow, "shortcuts.toggleWindow", keys);
+            state.Shortcuts.VolumeUp = ReadShortcut(shortcuts, "volumeUp", state.Shortcuts.VolumeUp, "shortcuts.volumeUp", keys);
+            state.Shortcuts.VolumeDown = ReadShortcut(shortcuts, "volumeDown", state.Shortcuts.VolumeDown, "shortcuts.volumeDown", keys);
+            state.Shortcuts.Mute = ReadShortcut(shortcuts, "mute", state.Shortcuts.Mute, "shortcuts.mute", keys);
+            state.Shortcuts.Like = ReadShortcut(shortcuts, "like", state.Shortcuts.Like, "shortcuts.like", keys);
+            state.Shortcuts.Mode = ReadShortcut(shortcuts, "mode", state.Shortcuts.Mode, "shortcuts.mode", keys);
+            state.Shortcuts.Mini = ReadShortcut(shortcuts, "mini", state.Shortcuts.Mini, "shortcuts.mini", keys);
+            state.Shortcuts.DesktopLyrics = ReadShortcut(
+                shortcuts, "desktopLyrics", state.Shortcuts.DesktopLyrics, "shortcuts.desktopLyrics", keys);
+            state.Shortcuts.Crossfade = ReadShortcut(shortcuts, "crossfade", state.Shortcuts.Crossfade, "shortcuts.crossfade", keys);
         }
 
         return keys;

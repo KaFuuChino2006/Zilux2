@@ -64,6 +64,8 @@ const ICONS: Record<string, string> = {
   repeat: '<path d="M7 7h10l-2.2-2.2M17 17H7l2.2 2.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M17 7v3.2M7 17v-3.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>',
   repeatOne: '<path d="M7 7h10l-2.2-2.2M17 17H7l2.2 2.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M17 7v3.2M7 17v-3.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M12 10v4.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>',
   shuffle: '<path d="M5 7h3.2l7.6 10H19M19 7h-3.2L8.2 17H5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M17 4.6 19.4 7 17 9.4M17 14.6 19.4 17 17 19.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" fill="none"/>',
+  smartmix:
+    '<path d="M5 9.4v5.2M9 5.4v13.2M13 8.2v7.6M17 10.4v3.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/><path d="M19 2.6l.85 2.05 2.05.85-2.05.85-.85 2.05-.85-2.05-2.05-.85 2.05-.85z" fill="currentColor"/>',
   list: '<path d="M5 7h14M5 12h14M5 17h9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/><circle cx="18.4" cy="17" r="1.7" fill="currentColor"/>',
   heart:
     '<path d="M12 19.5s-7.2-4.4-7.2-9.4A4.1 4.1 0 0112 7.7a4.1 4.1 0 017.2 2.4c0 5-7.2 9.4-7.2 9.4z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>',

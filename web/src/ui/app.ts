@@ -90,6 +90,7 @@ import {
   SLEEP_FADE_SECONDS_CHOICES,
   SLEEP_TIMER_ACTIONS,
   shortcutBindingFromEvent,
+  type DesktopLyricsWeight,
   type EqPreset,
   type FadeCurve,
   type ShortcutAction,
@@ -114,6 +115,9 @@ import { autoPlaySettings, listAutoPlayPlaylists, onAutoPlayChange, saveAutoPlay
 import {
   buildCrossfadeSection,
   bpmOverrideOf,
+  CROSSFADE_BAR_CHOICES,
+  CROSSFADE_BEAT_CHOICES,
+  CROSSFADE_LENGTH_CHOICES,
   captureCrossfadeOverride,
   effectiveCrossfadeSettings,
   overrideKeyOfTrack,
@@ -124,6 +128,7 @@ import {
   trackOverrideOf,
   readCrossfadeSettings,
   setBpmOverride,
+  writeCrossfadeSettings,
   subscribeCrossfadeDebug,
   suppressNextCrossfade,
 } from './crossfadeDeck';
@@ -224,6 +229,7 @@ import {
   playAt,
   playQueue,
   playerState,
+  peekUpcoming,
   prev,
   queueAppend,
   queueNext,
@@ -236,6 +242,7 @@ import {
   setPlaybackSpeed,
   setQueueRefill,
   setVolume,
+  subscribeQueueSwitch,
   toggle,
   toggleBarLoop,
   toggleHotCue,
@@ -318,7 +325,7 @@ interface SheetHandle {
 
 
 /** 无缝过渡倒计时弹窗停留时长（毫秒）：弹出后几秒自动消失，同一轮准备只弹一次。 */
-const SEAMLESS_HINT_VISIBLE_MS = 4200;
+/** 无缝过渡倒计时：准备就绪后常驻显示到开始淡化，不再几秒后自动消失。 */
 
 /** 过渡时长文案：整秒省略小数，否则保留一位小数（如 6.9 秒 / 2 分 12 秒以上只会出现在倒计时里）。 */
 function formatFadeSeconds(ms: number): string {
@@ -435,6 +442,7 @@ export class App {
   private likedMode: 'all' | OnlineSource = 'all';
   /** 封面显示方式：网格卡片 / 横条列表（与首页热门歌单共用偏好） */
   private wallLayout: PosterLayout = readPosterLayout();
+  private localQuery = '';
   /** 本地曲库视图：歌曲列表 / 歌手（艺术家）网格。 */
   private localMode: 'songs' | 'artists' = 'songs';
   /** 当前打开的本地艺术家名；null 表示本地曲库总览。 */
@@ -473,6 +481,8 @@ export class App {
   private pbPlayBtn!: HTMLButtonElement;
   private pbLikeBtn!: HTMLButtonElement;
   private pbModeBtn!: HTMLButtonElement;
+  private smartMixActive = false;
+  private smartMixPrevMode: PlayerState['mode'] = 'list';
   private pbQueueBtn!: HTMLButtonElement;
   private pbFill!: HTMLDivElement;
   private pbMarks!: HTMLDivElement;
@@ -519,7 +529,7 @@ export class App {
   private quickVolume!: HTMLInputElement;
   private quickThumb!: HTMLDivElement;
   private quickTabBtns: Record<string, HTMLButtonElement> = {};
-  private quickTab: 'cover' | 'lyrics' | 'settings' | 'airplay' | 'download' = 'cover';
+  private quickTab: 'cover' | 'lyrics' | 'play' | 'sound' | 'preview' | 'transition' | 'airplay' | 'download' = 'cover';
   private quickBody!: HTMLDivElement;
   private quickBodyInner!: HTMLDivElement;
   private quickRenderKey = '';
@@ -537,16 +547,13 @@ export class App {
   private miniRestoreTimer = 0;
   /** 无缝衔接准备就绪后，播放条上方短暂弹出的「将在 X 分 Y 秒后过渡至 xxx」提示。 */
   private seamlessHint!: HTMLDivElement;
-  /** 倒计时弹窗的自动消失定时器。 */
-  private seamlessHintTimer = 0;
-  /** 本轮提示的标识（曲目 + 淡化起点 + 下一首），同一轮准备只弹一次。 */
-  private seamlessHintKey = '';
   /** 过渡试放台：覆盖层 / 关闭回调 / 模拟播放的停止函数。 */
   private crossfadeLab: HTMLDivElement | null = null;
   private crossfadeLabDispose: (() => void) | null = null;
   private crossfadeLabStop: (() => void) | null = null;
   /** 待播队列小卡里的「过渡」行：说明这次怎么过渡，准备后显示实际秒数与起点。 */
   private upnextTransition!: HTMLDivElement;
+  private upnextMixBtn!: HTMLButtonElement;
   /** 上一次渲染的过渡说明，避免每次状态同步都重写 DOM。 */
   private pbTransitionKey = '';
   private appBgMode: AppBgMode = readAppBgMode();
@@ -678,6 +685,8 @@ export class App {
         this.sleepFadeVolume = null;
       }),
     );
+    // AutoMix是临时模式：换了整套队列或手动点歌后，恢复点击前的模式图标。
+    this.disposers.add(subscribeQueueSwitch(() => this.exitSmartMix('queue')));
     // 「播完当前曲」：曲末前 300ms 触发；其余模式由睡眠定时模块自己计时。
     window.setInterval(() => {
       const timer = getSleepTimerState();
@@ -713,7 +722,39 @@ export class App {
       if (action === 'togglePlay') toggle();
       else if (action === 'prev') prev();
       else if (action === 'next') next();
-      else return;
+      else if (action === 'volumeUp' || action === 'volumeDown') {
+        const delta = action === 'volumeUp' ? 0.05 : -0.05;
+        const next = Math.max(0, Math.min(1, playerState().volume + delta));
+        setVolume(next);
+        patchSettings({ playback: { volume: next } });
+        toast(`音量 ${Math.round(next * 100)}%`);
+      } else if (action === 'mute') this.toggleMute();
+      else if (action === 'like') {
+        void toggleLiked().then((result) => {
+          if (result === 'error') {
+            toast('收藏失败：请检查登录状态或平台限制', 'error');
+            return;
+          }
+          toast(result === 'liked' ? '已加入「我喜欢的音乐」' : '已取消收藏');
+          this.afterLikedChange(result === 'liked');
+          this.paintQuickLike(result === 'liked');
+        });
+      } else if (action === 'mode') {
+        if (this.smartMixActive) this.exitSmartMix('mode');
+        const mode = cycleMode();
+        this.paintModeBtn(mode);
+        this.paintQuickMode(mode);
+        toast(this.modeLabel(mode));
+      } else if (action === 'mini') this.toggleMiniMode();
+      else if (action === 'desktopLyrics') {
+        const next = !getSettings().general.desktopLyrics;
+        patchSettings({ general: { desktopLyrics: next } });
+        toast(next ? '桌面歌词已开启' : '桌面歌词已关闭');
+      } else if (action === 'crossfade') {
+        const next = !readCrossfadeSettings().enabled;
+        writeCrossfadeSettings({ enabled: next });
+        toast(next ? '已开启无缝衔接' : '已关闭无缝衔接');
+      } else return;
       host.log('info', `command ${action}`);
     });
   }
@@ -1231,9 +1272,8 @@ export class App {
     const recent = [track, ...data.recent.filter((item) => `${item.source}:${item.id}` !== key)].slice(0, 160);
     const next: HomeData = { ...data, recent };
     this.homeData = next;
-    if (!this.homeHost.classList.contains('is-hidden')) {
-      this.classicHome?.update(next);
-    }
+    // 不在这里整页重建首页：HomeView.update() 会重建所有卡片并重新拉封面，
+    // 切歌时看起来像「推荐/雷达/收藏都在刷新」。最近播放回到首页时再以宿主记录为准。
   }
 
   /** 播放「我喜欢的音乐」整列（经典首页收藏卡片的播放按钮）。 */
@@ -1474,7 +1514,12 @@ export class App {
       this.playlistsScope?.dispose();
       this.playlistsScope = null;
     }
-    const { title, subtitle, tracks } = this.wall;
+    const { title, subtitle } = this.wall;
+    let tracks = this.wall.tracks;
+    if (this.wall.kind === 'local' && this.localMode === 'songs' && this.localQuery.trim().length > 0) {
+      const needle = this.localQuery.trim().toLowerCase();
+      tracks = tracks.filter((track) => track.title.toLowerCase().includes(needle) || (track.artist ?? '').toLowerCase().includes(needle));
+    }
     const actions: HTMLElement[] = [];
     if (this.wall.kind !== 'search' && tracks.length > 0 && !this.isLocalArtistGrid()) {
       const seg = h('div', { class: 'seg seg-sm layout-modes' });
@@ -1629,6 +1674,37 @@ export class App {
       actions.length > 0 ? h('div', { class: 'wall-head-actions' }, ...actions) : null,
     );
     this.wallHost.append(head);
+
+    if (this.wall.kind === 'local' && this.localMode === 'songs' && !this.isLocalArtistGrid()) {
+      const input = h('input', {
+        class: 'wall-search-input',
+        type: 'search',
+        placeholder: '在本地曲库里搜索歌曲或歌手',
+        value: this.localQuery,
+      }) as HTMLInputElement;
+      let timer = 0;
+      input.addEventListener('input', () => {
+        window.clearTimeout(timer);
+        timer = window.setTimeout(() => {
+          this.localQuery = input.value;
+          this.renderWall(true);
+          const next = this.wallHost.querySelector<HTMLInputElement>('.wall-search-input');
+          if (next) {
+            next.focus();
+            const end = next.value.length;
+            next.setSelectionRange(end, end);
+          }
+        }, 140);
+      });
+      input.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+          this.localQuery = '';
+          this.renderWall(true);
+        }
+      });
+      const count = this.localQuery.trim() ? '匹配 ' + tracks.length + ' 首' : '';
+      this.wallHost.append(h('div', { class: 'wall-search' }, h('span', { class: 'wall-search-icon' }, icon('search', 15)), input, h('span', { class: 'wall-search-count', text: count })));
+    }
 
     // 「推荐」整页：热门歌单卡片网格。
     if (this.wall.kind === 'recommend') {
@@ -3834,9 +3910,30 @@ export class App {
           String(settings.general.desktopLyricsFontSize),
           (value) => patchSettings({ general: { desktopLyricsFontSize: Number(value) } }),
         ),
+        segField(
+          '桌面歌词粗细',
+          [
+            { value: 'normal', label: '常规' },
+            { value: 'semibold', label: '中粗' },
+            { value: 'bold', label: '加粗' },
+          ],
+          settings.general.desktopLyricsWeight,
+          (value) => patchSettings({ general: { desktopLyricsWeight: value as DesktopLyricsWeight } }),
+        ),
+        segField(
+          '桌面歌词底色',
+          [
+            { value: '30', label: '浅' },
+            { value: '40', label: '标准' },
+            { value: '55', label: '深' },
+            { value: '70', label: '更实' },
+          ],
+          String(settings.general.desktopLyricsBackdropOpacity),
+          (value) => patchSettings({ general: { desktopLyricsBackdropOpacity: Number(value) } }),
+        ),
         toggleField(
           '桌面歌词锁定',
-          '锁定后歌词窗口不再响应鼠标（点击穿透到下面的窗口），避免挡住桌面操作；解锁回设置页关掉这一项即可',
+          '锁定后歌词窗口不再响应鼠标（点击穿透到下面的窗口），避免挡住桌面操作；右键歌词窗口或用设置页关掉这一项都能解锁',
           settings.general.desktopLyricsLocked,
           (value) => {
             patchSettings({ general: { desktopLyricsLocked: value } });
@@ -4903,10 +5000,8 @@ export class App {
     });
 
     function patchShortcut(action: ShortcutAction, binding: string): void {
-      if (action === 'playPause') patchSettings({ shortcuts: { playPause: binding } });
-      else if (action === 'prev') patchSettings({ shortcuts: { prev: binding } });
-      else if (action === 'next') patchSettings({ shortcuts: { next: binding } });
-      else patchSettings({ shortcuts: { toggleWindow: binding } });
+      // 每个动作写自己那一格；以前只处理前三个，后加的动作会错误地写进 toggleWindow。
+      patchSettings({ shortcuts: { [action]: binding } as Partial<Record<ShortcutAction, string>> });
     }
 
     /** 宿主回执里的 action 可能是 play_pause 之类写法，统一成小写字母再比较。 */
@@ -5702,6 +5797,7 @@ export class App {
     this.pbModeBtn.addEventListener('pointerdown', (event) => {
       event.preventDefault();
       event.stopPropagation();
+      if (this.smartMixActive) this.exitSmartMix('manual');
       const mode = cycleMode();
       this.paintModeBtn(mode);
       toast(mode === 'list' ? '列表循环' : mode === 'single' ? '单曲循环' : '随机播放');
@@ -6122,7 +6218,7 @@ export class App {
       else this.openUpNext();
     });
 
-    const skip = h('button', { class: 'btn upnext-skip', title: '切换到下一首（当前这首不再播放）', text: '跳过这首' });
+    const skip = h('button', { class: 'upnext-pill upnext-skip', title: '切换到下一首（当前这首不再播放）', text: '跳过这首' });
     skip.addEventListener('click', () => {
       next();
       this.closeUpNext();
@@ -6143,14 +6239,25 @@ export class App {
       event.preventDefault();
       this.commitUpnextDrop(playerState().queue.length);
     });
-    const mixBtn = h('button', { class: 'btn upnext-mix', title: '按调性（Camelot）与 BPM 重排待播队列', text: '智能接歌' });
+    const mixBtn = h('button', {
+      class: 'upnext-pill upnext-mix',
+      'data-qa': 'upnext-mix',
+      title: 'AutoMix：按调性（Camelot）与 BPM 重排待播队列',
+      text: 'AutoMix',
+    });
+    this.upnextMixBtn = mixBtn as HTMLButtonElement;
     mixBtn.addEventListener('click', () => {
       void this.runAutoMix();
     });
     this.upnextPanel = h(
       'div',
       { class: 'upnext-panel' },
-      h('div', { class: 'upnext-head' }, h('div', { class: 'upnext-head-title', text: '待播队列' }), mixBtn, skip),
+      h(
+        'div',
+        { class: 'upnext-head' },
+        h('div', { class: 'upnext-head-title', text: '待播队列' }),
+        h('div', { class: 'upnext-head-actions' }, mixBtn, skip),
+      ),
       this.upnextList,
       h('div', { class: 'upnext-hint', text: '拖动或 ↑↓ 调整顺序 · 双击播放 · 垃圾桶移出队列' }),
     );
@@ -6291,7 +6398,7 @@ export class App {
     this.quickThumb = h('div', { class: 'quick-thumb' });
     // 底部五个选项只在快捷设置这个小窗口内切换内容，不再从侧边打开整页
     const tab = (
-      key: 'cover' | 'lyrics' | 'settings' | 'airplay' | 'download',
+      key: 'cover' | 'lyrics' | 'play' | 'sound' | 'preview' | 'transition' | 'airplay' | 'download',
       label: string,
     ): HTMLButtonElement => {
       const button = h('button', { class: 'quick-tab', type: 'button', text: label });
@@ -6307,7 +6414,10 @@ export class App {
       this.quickThumb,
       tab('cover', '封面'),
       tab('lyrics', '歌词'),
-      tab('settings', '设置'),
+      tab('play', '播放'),
+      tab('sound', '音效'),
+      tab('preview', '试听'),
+      tab('transition', '过渡'),
       tab('airplay', '投送'),
       tab('download', '下载'),
     );
@@ -6367,6 +6477,8 @@ export class App {
     min: number;
     max: number;
     step: number;
+    /** 拖动时的步长（默认同 step）：按钮粗调、拖动细调。 */
+    dragStep?: number;
     format: (value: number) => string;
     onInput: (value: number) => void;
   }): { root: HTMLElement; setValue: (value: number) => void } {
@@ -6400,8 +6512,9 @@ export class App {
     let dragStartX = 0;
     let dragStartValue = 0;
     const span = Math.max(1, options.max - options.min);
+    const dragStep = options.dragStep ?? options.step;
     const quantize = (value: number): number => {
-      const stepped = Math.round((value - options.min) / options.step) * options.step + options.min;
+      const stepped = Math.round((value - options.min) / dragStep) * dragStep + options.min;
       return Math.max(options.min, Math.min(options.max, stepped));
     };
     root.addEventListener('pointerdown', (event) => {
@@ -7046,6 +7159,176 @@ export class App {
     const quickVocalSwitch = this.pillSwitch(getSettings().playback.fadeVocal, (next) => {
       patchSettings({ playback: { fadeVocal: next } });
     });
+
+    // 主设置里常用、但没必要为此开整页的开关：直接放进快捷设置。
+    // 播放速度复用音量的调节器（按钮粗调 0.05×、拖动细调 0.01×），不再用五档分段。
+    const speedStepper = this.quickStepper({
+      value: Math.round(getPlaybackSpeed() * 100),
+      min: 50,
+      max: 200,
+      step: 5,
+      dragStep: 1,
+      format: (percent) => `${(percent / 100).toFixed(2).replace(/0+$/, '').replace(/.$/, '')}×`,
+      onInput: (percent) => {
+        setPlaybackSpeed(percent / 100);
+      },
+    });
+
+    const quickLoudnessSwitch = this.pillSwitch(loudnessEnabled(), (next) => {
+      setLoudnessEnabled(next);
+      this.applyLoudnessNow();
+    });
+    const quickNightSwitch = this.pillSwitch(nightModeEnabled(), (next) => {
+      setNightModeEnabled(next);
+    });
+    const quickDesktopLyricsSwitch = this.pillSwitch(getSettings().general.desktopLyrics, (next) => {
+      patchSettings({ general: { desktopLyrics: next } });
+    });
+    const quickMediaSessionSwitch = this.pillSwitch(getSettings().general.mediaSession, (next) => {
+      patchSettings({ general: { mediaSession: next } });
+    });
+
+    // 主设置里常用的分段控件：统一用快捷设置的白色滑块分段。
+    const quickSeg = <T extends string>(
+      choices: { value: T; label: string }[],
+      current: T,
+      onPick: (value: T) => void,
+    ): HTMLElement => {
+      const thumb = h('div', { class: 'quick-seg-thumb' });
+      const buttons: HTMLButtonElement[] = [];
+      const paint = (): void => {
+        const active = buttons.find((item) => item.classList.contains('is-on')) ?? buttons[0];
+        if (!active) return;
+        thumb.style.width = `${active.offsetWidth}px`;
+        thumb.style.transform = `translateX(${active.offsetLeft}px)`;
+      };
+      choices.forEach((choice) => {
+        const btn = h('button', {
+          class: `quick-seg-btn${choice.value === current ? ' is-on' : ''}`,
+          type: 'button',
+          text: choice.label,
+        });
+        btn.addEventListener('pointerdown', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        });
+        btn.addEventListener('click', () => {
+          buttons.forEach((node) => node.classList.toggle('is-on', node === btn));
+          paint();
+          onPick(choice.value);
+        });
+        buttons.push(btn);
+      });
+      const root = h('div', { class: 'quick-seg-slider' }, thumb, ...buttons);
+      window.requestAnimationFrame(paint);
+      return root;
+    };
+
+    // 试听
+    const chorus = readChorusPreviewSettings();
+    const previewDelaySeg = quickSeg(chorusPreviewDelayChoices(), String(chorus.delayMs), (value) => {
+      writeChorusPreviewSettings({ delayMs: Number(value) });
+    });
+    const previewStartSeg = quickSeg(CHORUS_PREVIEW_START_CHOICES, chorus.startAt, (value) => {
+      writeChorusPreviewSettings({ startAt: value });
+    });
+    const previewVolumeStepper = this.quickStepper({
+      value: Math.round(chorus.volume * 100),
+      min: 10,
+      max: 100,
+      step: 5,
+      format: (value) => `${value}%`,
+      onInput: (value) => {
+        writeChorusPreviewSettings({ volume: value / 100 });
+      },
+    });
+    const previewMaxSeg = quickSeg(CHORUS_PREVIEW_MAX_CHOICES, String(chorus.maxMs), (value) => {
+      writeChorusPreviewSettings({ maxMs: Number(value) });
+    });
+    const previewTakeoverSwitch = this.pillSwitch(chorus.takeover, (next) => {
+      writeChorusPreviewSettings({ takeover: next });
+    });
+
+    // 过渡
+    const cross = readCrossfadeSettings();
+    const crossEnabledSwitch = this.pillSwitch(cross.enabled, (next) => {
+      writeCrossfadeSettings({ enabled: next });
+      toast(next ? '已开启无缝衔接' : '已关闭无缝衔接');
+    });
+    const crossLengthModeSeg = quickSeg(
+      [
+        { value: 'auto', label: '自动' },
+        { value: 'seconds', label: '秒' },
+        { value: 'beats', label: '拍' },
+        { value: 'bars', label: '小节' },
+        { value: 'phrase', label: '乐句' },
+      ],
+      cross.lengthMode,
+      (value) => {
+        writeCrossfadeSettings({ lengthMode: value });
+        window.requestAnimationFrame(() => this.renderQuickBody());
+      },
+    );
+    const crossLengthValueHost = h('div', {});
+    {
+      const mode = cross.lengthMode;
+      if (mode === 'auto' || mode === 'phrase') {
+        crossLengthValueHost.append(
+          h('div', {
+            class: 'quick-cell-hint',
+            text: mode === 'auto' ? '自动：按拍点 / 小节 / 前奏尾奏空间自适应' : '1 乐句 = 4 小节（小节太短时按 8 小节）',
+          }),
+        );
+      } else {
+        const choices =
+          mode === 'seconds'
+            ? CROSSFADE_LENGTH_CHOICES.map((value) => ({ value: String(value), label: `${value} 秒` }))
+            : mode === 'beats'
+              ? CROSSFADE_BEAT_CHOICES.map((value) => ({ value: String(value), label: `${value} 拍` }))
+              : CROSSFADE_BAR_CHOICES.map((value) => ({ value: String(value), label: `${value} 小节` }));
+        crossLengthValueHost.append(
+          quickSeg(choices, String(cross.lengthValue), (value) => {
+            writeCrossfadeSettings({ lengthValue: Number(value) });
+          }),
+        );
+      }
+    }
+    const crossStyleSeg = quickSeg(
+      [
+        { value: 'auto', label: '自动' },
+        { value: 'am', label: '交融' },
+        { value: 'equal', label: '等功率' },
+        { value: 'cut', label: '快速切入' },
+      ],
+      cross.style,
+      (value) => {
+        writeCrossfadeSettings({ style: value });
+      },
+    );
+    const crossCueSeg = quickSeg(
+      [
+        { value: 'auto', label: '自动' },
+        { value: 'drop', label: '进 drop' },
+        { value: 'chorus', label: '进副歌' },
+        { value: 'intro', label: '进 intro' },
+      ],
+      cross.cueMode,
+      (value) => {
+        writeCrossfadeSettings({ cueMode: value });
+      },
+    );
+    const crossHandoffSwitch = this.pillSwitch(cross.handoff, (next) => {
+      writeCrossfadeSettings({ handoff: next });
+    });
+
+    // 播放页新增：自动播放与媒体键
+    const quickAutoPlaySwitch = this.pillSwitch(autoPlaySettings().enabled, (next) => {
+      saveAutoPlaySettings({ enabled: next });
+      toast(next ? '已开启：启动后自动播放' : '已关闭：启动后不自动播放');
+    });
+    const quickMediaKeysSwitch = this.pillSwitch(getSettings().shortcuts.alwaysHandleMediaKeys, (next) => {
+      patchSettings({ shortcuts: { alwaysHandleMediaKeys: next } });
+    });
     body.append(
       h(
         'div',
@@ -7062,6 +7345,26 @@ export class App {
         ),
         cell('播放/暂停渐变', false, quickFadeSwitch.root),
         cell('人声保留淡出', false, quickVocalSwitch.root),
+        cell('播放速度', false, speedStepper.root),
+        cell('自动播放', false, quickAutoPlaySwitch.root),
+        cell('媒体键始终控制', false, quickMediaKeysSwitch.root),
+        cell('响度均衡', false, quickLoudnessSwitch.root),
+        cell('夜间模式', false, quickNightSwitch.root),
+        cell('桌面歌词', false, quickDesktopLyricsSwitch.root),
+        cell('系统媒体控制', false, quickMediaSessionSwitch.root),
+
+        cell('悬停试听延迟', true, previewDelaySeg),
+        cell('预听起点', true, previewStartSeg),
+        cell('最长试听时长', true, previewMaxSeg),
+        cell('试听音量', false, previewVolumeStepper.root),
+        cell('点击接管续播', false, previewTakeoverSwitch.root),
+
+        cell('过渡时长模式', true, crossLengthModeSeg),
+        cell('过渡时长数值', true, crossLengthValueHost),
+        cell('过渡风格', true, crossStyleSeg),
+        cell('B 入场时机', true, crossCueSeg),
+        cell('无缝衔接', false, crossEnabledSwitch.root),
+        cell('歌词衔接', false, crossHandoffSwitch.root),
       ),
       h('div', {
         class: 'quick-hint',
@@ -7070,6 +7373,48 @@ export class App {
         }`,
       }),
     );
+
+    // 设置类控件分成「播放 / 音效 / 试听 / 过渡」四页（在底部标签栏直接切换）：每页只放同类控件。
+    const group: 'play' | 'sound' | 'preview' | 'transition' =
+      this.quickTab === 'sound'
+        ? 'sound'
+        : this.quickTab === 'preview'
+          ? 'preview'
+          : this.quickTab === 'transition'
+            ? 'transition'
+            : 'play';
+    const groupOfTitle = new Map<string, 'play' | 'sound' | 'preview' | 'transition'>([
+      ['音量', 'play'],
+      ['播放模式', 'play'],
+      ['播放速度', 'play'],
+      ['自动播放', 'play'],
+      ['媒体键始终控制', 'play'],
+      ['桌面歌词', 'play'],
+      ['系统媒体控制', 'play'],
+      ['音质', 'sound'],
+      ['均衡器', 'sound'],
+      ['播放/暂停渐变', 'sound'],
+      ['人声保留淡出', 'sound'],
+      ['响度均衡', 'sound'],
+      ['夜间模式', 'sound'],
+      ['悬停试听延迟', 'preview'],
+      ['预听起点', 'preview'],
+      ['试听音量', 'preview'],
+      ['最长试听时长', 'preview'],
+      ['点击接管续播', 'preview'],
+      ['无缝衔接', 'transition'],
+      ['过渡时长模式', 'transition'],
+      ['过渡时长数值', 'transition'],
+      ['过渡风格', 'transition'],
+      ['B 入场时机', 'transition'],
+      ['歌词衔接', 'transition'],
+    ]);
+    for (const node of Array.from(body.querySelectorAll<HTMLElement>('.quick-cell'))) {
+      const title = node.querySelector('.quick-cell-title')?.textContent ?? '';
+      const cellGroup = groupOfTitle.get(title);
+      if (cellGroup) node.dataset.group = cellGroup;
+      node.classList.toggle('is-group-hidden', !!cellGroup && cellGroup !== group);
+    }
   }
 
   /** 快捷设置「下载」页的视图单例：首次进页面时创建，切走只 deactivate（不重建 DOM）。 */
@@ -7177,7 +7522,7 @@ export class App {
     });
   }
 
-  private setQuickTab(key: 'cover' | 'lyrics' | 'settings' | 'airplay' | 'download'): void {
+  private setQuickTab(key: 'cover' | 'lyrics' | 'play' | 'sound' | 'preview' | 'transition' | 'airplay' | 'download'): void {
     const body = this.quickBody;
     const before = body ? body.offsetHeight : 0;
     const beforeWidth = this.quickPanelEl ? this.quickPanelEl.getBoundingClientRect().width : 0;
@@ -7560,23 +7905,35 @@ export class App {
 
   private renderUpNextList(force = false): void {
     const state = playerState();
-    const upcoming = state.queue.slice(state.index + 1);
-    const listKey = `${state.index}|${upcoming.map((item) => `${item.source}:${item.id}`).join(',')}`;
+    // 随机播放没有固定顺序：从「真正会播的下一首」开始轮转展示，列表第一行永远等于小卡上的下一首。
+    const planned = state.mode === 'single' ? null : peekUpcoming();
+    const entries: Array<{ index: number; track: OnlineTrack }> = [];
+    if (state.mode === 'shuffle' && planned && state.queue.length > 1) {
+      const total = state.queue.length;
+      for (let step = 0; step < total; step += 1) {
+        const index = (planned.index + step) % total;
+        if (index === state.index) continue;
+        const track = state.queue[index];
+        if (track) entries.push({ index, track });
+      }
+    } else {
+      state.queue.slice(state.index + 1).forEach((track, offset) => entries.push({ index: state.index + 1 + offset, track }));
+    }
+    const listKey = `${state.index}|${state.mode}|${planned?.index ?? -1}|${entries.map((item) => `${item.track.source}:${item.track.id}`).join(',')}`;
     if (!force && listKey === this.upnextListKey) return;
     this.upnextListKey = listKey;
     this.upnextList.textContent = '';
-    if (upcoming.length === 0) {
+    if (entries.length === 0) {
       this.upnextList.append(h('li', { class: 'upnext-empty', text: '队列里没有下一首了' }));
       return;
     }
-    upcoming.forEach((track, offset) => {
-      const index = state.index + 1 + offset;
+    entries.forEach(({ index, track }, offset) => {
       // 待播行的操作：上移 / 下移 / 移出队列（跳过）。点击不会触发行的选中与双击播放。
       const upBtn = h('button', { class: 'upnext-act', title: '上移', 'aria-label': '上移' }, icon('chevronUp', 14));
       const downBtn = h('button', { class: 'upnext-act', title: '下移', 'aria-label': '下移' }, icon('chevronDown', 14));
       const removeBtn = h('button', { class: 'upnext-act is-remove', title: '跳过这首（移出队列）', 'aria-label': '跳过这首' }, icon('trash', 14));
       (upBtn as HTMLButtonElement).disabled = offset === 0;
-      (downBtn as HTMLButtonElement).disabled = offset === upcoming.length - 1;
+      (downBtn as HTMLButtonElement).disabled = offset === entries.length - 1;
       for (const btn of [upBtn, downBtn, removeBtn]) {
         btn.addEventListener('pointerdown', (event) => event.stopPropagation());
         btn.addEventListener('click', (event) => {
@@ -7669,7 +8026,10 @@ export class App {
   }
 
   private syncUpNext(state: PlayerState): void {
-    const upcoming = state.queue[state.index + 1] ?? null;
+    // 下一首以「真正会播放的那一首」为准：shuffle 的随机结果在准备阶段固定，
+    // 不能再用 queue[index + 1]（那只是队列里的下一行，随机播放时和实际下一首不一致）。
+    const planned = state.mode === 'single' ? null : peekUpcoming();
+    const upcoming = planned?.track ?? null;
     const visible = state.track !== null && upcoming !== null;
     this.upnextRoot.classList.toggle('is-hidden', !visible);
     if (!visible || upcoming === null) {
@@ -7740,8 +8100,20 @@ export class App {
     if (wrap) wrap.title = muted ? '已静音 · 滚轮调节音量' : `音量 ${percent}% · 滚轮调节`;
   }
 
+  private modeLabel(mode: PlayerState['mode']): string {
+    return mode === 'list' ? '列表循环' : mode === 'single' ? '单曲循环' : '随机播放';
+  }
+
   private paintModeBtn(mode: PlayerState['mode']): void {
     this.pbModeBtn.textContent = '';
+    if (this.smartMixActive) {
+      this.pbModeBtn.append(icon('smartmix', 17));
+      this.pbModeBtn.title = `AutoMix（临时）· 播放其他歌单或手动选歌后恢复${this.modeLabel(this.smartMixPrevMode)}`;
+      this.pbModeBtn.classList.add('is-active', 'is-smart');
+      this.pbModeBtn.dataset.mode = 'smartmix';
+      return;
+    }
+    this.pbModeBtn.classList.remove('is-smart');
     this.pbModeBtn.append(icon(mode === 'single' ? 'repeatOne' : mode === 'shuffle' ? 'shuffle' : 'repeat', 17));
     this.pbModeBtn.title =
       mode === 'list' ? '列表循环（点击切换）' : mode === 'single' ? '单曲循环（点击切换）' : '随机播放（点击切换）';
@@ -7900,28 +8272,16 @@ export class App {
     );
     if (!ready) {
       this.hideSeamlessHint();
-      this.seamlessHintKey = '';
       return;
     }
     const next = debug.nextTitle || '下一首';
     const fadeText = debug.fadeMs > 0 ? `（过渡约 ${formatFadeSeconds(debug.fadeMs)}）` : '';
     const text = `将在 ${formatCountdownSpan(remainingMs)} 后过渡至「${next}」${fadeText}`;
-    const key = `${state.track?.id ?? ''}|${Math.round(debug.fadeStartPosMs)}|${next}`;
-    if (key !== this.seamlessHintKey) {
-      // 新一轮准备就绪：弹出提示并在几秒后自动消失（同一轮只弹一次）。
-      this.seamlessHintKey = key;
-      hint.textContent = text;
-      hint.classList.add('is-visible');
-      this.seamlessHintTimer = window.setTimeout(() => this.hideSeamlessHint(), SEAMLESS_HINT_VISIBLE_MS);
-      return;
-    }
-    // 弹窗仍在显示时继续刷新秒数；自动消失后本轮不再重复弹出。
-    if (hint.classList.contains('is-visible') && hint.textContent !== text) hint.textContent = text;
+    if (hint.textContent !== text) hint.textContent = text;
+    hint.classList.add('is-visible');
   }
 
   private hideSeamlessHint(): void {
-    window.clearTimeout(this.seamlessHintTimer);
-    this.seamlessHintTimer = 0;
     if (this.seamlessHint) this.seamlessHint.classList.remove('is-visible');
   }
 
@@ -8113,6 +8473,19 @@ export class App {
     const year = new Date().getFullYear();
     const topTracks = topListenedTracks(10);
     const topArtists = topListenedArtists(8);
+    if (stats.totalMs === 0) {
+      page.append(
+        h(
+          'div',
+          { class: 'stats-empty' },
+          h('div', { class: 'stats-empty-icon' }, icon('chart', 26)),
+          h('div', { class: 'stats-empty-title', text: '还没有收听记录' }),
+          h('div', { class: 'stats-empty-hint', text: '播放任意一首歌超过 10 秒，这里就会开始累计。' }),
+          h('div', { class: 'stats-empty-hint', text: '统计只保存在这台设备上，不会上传。' }),
+        ),
+      );
+      return page;
+    }
     if (stats.totalMs > 0) {
       page.append(
         h(
@@ -8170,7 +8543,7 @@ export class App {
         list.append(
           h(
             'div',
-            { class: 'stats-row' },
+            { class: index < 3 ? 'stats-row is-top' : 'stats-row' },
             h('span', { class: 'stats-rank', text: String(index + 1) }),
             h('div', { class: 'stats-meta' }, h('div', { class: 'stats-name', text: row.title }), h('div', { class: 'stats-artist', text: row.artist || '未知歌手' }), bar),
             h('div', { class: 'stats-value' }, h('div', { text: formatListening(row.ms) }), h('div', { class: 'stats-sub', text: `${row.plays} 次 · ${Math.round(row.share * 100)}%` })),
@@ -8194,10 +8567,6 @@ export class App {
         );
       }
       page.append(chips);
-    }
-
-    if (stats.totalMs === 0) {
-      page.append(h('div', { class: 'empty', text: '还没有播放记录。播几首歌再回来看看。' }));
     }
 
     const resetBtn = h('button', { class: 'pill', title: '清空本机收听统计' }, icon('trash', 16), h('span', { text: '清除统计' }));
@@ -8252,7 +8621,7 @@ export class App {
     return pool;
   }
 
-  /** 智能接歌：按调性与 BPM 重排待播队列（AutoMix）。 */
+  /** AutoMix：按调性与 BPM 重排待播队列（AutoMix），并进入临时图标模式。 */
   private async runAutoMix(): Promise<void> {
     const before = playerState();
     const beforeNext = before.queue[before.index + 1];
@@ -8261,6 +8630,7 @@ export class App {
       toast('待播队列不足，先加几首歌再试');
       return;
     }
+    this.enterSmartMix();
     this.renderUpNextList(true);
     const after = playerState();
     const afterNext = after.queue[after.index + 1];
@@ -8275,9 +8645,35 @@ export class App {
         ? `；下一首仍是「${afterNext.title}」${result.analyzed < 8 ? '（分析数据不足时排序可能不变）' : ''}`
         : `；下一首换成「${afterNext.title}」`
       : '';
-    toast(`已按调性 / BPM 重排 ${result.total} 首${coverage}${nextNote}`);
+    toast(`AutoMix：已按调性 / BPM 重排 ${result.total} 首${coverage}${nextNote}`);
     // 重排后计划会重建；这里补一次重绘，暂停状态下也能立刻看到新的渐变位置。
     this.paintProgressMarks(playerState());
+  }
+
+  /** 进入AutoMix的临时图标状态（不改播放模式本身，只换按钮图标）。 */
+  private paintMixBtn(): void {
+    const btn = this.upnextMixBtn;
+    if (!btn) return;
+    btn.classList.toggle('is-active', this.smartMixActive);
+    btn.setAttribute('aria-pressed', this.smartMixActive ? 'true' : 'false');
+    btn.title = this.smartMixActive
+      ? 'AutoMix 已启用（点击重新按调性 / BPM 排序）'
+      : 'AutoMix：按调性（Camelot）与 BPM 重排待播队列';
+  }
+
+  private enterSmartMix(): void {
+    if (!this.smartMixActive) this.smartMixPrevMode = playerState().mode;
+    this.smartMixActive = true;
+    this.paintModeBtn(playerState().mode);
+    this.paintMixBtn();
+  }
+
+  /** 退出临时图标状态，恢复点击前的播放模式图标。 */
+  private exitSmartMix(_reason: 'queue' | 'manual' | 'mode'): void {
+    if (!this.smartMixActive) return;
+    this.smartMixActive = false;
+    this.paintModeBtn(playerState().mode);
+    this.paintMixBtn();
   }
 
   /** 设置页改了响度均衡 / 夜间模式后立即对当前曲目重算补偿。 */

@@ -71,9 +71,13 @@ let userRate = readUserRate();
 /** 给 deck 设置用户倍速（preservesPitch = 变速不变调；越界夹到 0.5–2.0）。 */
 function applyDeckRate(element: HTMLAudioElement, rate = userRate): void {
   try {
+    const value = clampRate(rate);
     element.preservesPitch = true;
     (element as HTMLAudioElement & { webkitPreservesPitch?: boolean }).webkitPreservesPitch = true;
-    element.playbackRate = clampRate(rate);
+    element.playbackRate = value;
+    // 切歌时音源走 load()，浏览器会把 playbackRate 重置回 defaultPlaybackRate；
+    // 两个都写，倍速才会在换歌后继续生效。
+    element.defaultPlaybackRate = value;
   } catch {
     /* 忽略 */
   }
@@ -123,6 +127,8 @@ export interface PlayerState {
   /** 当前曲总时长（毫秒，CUE 轨取分轨时长） */
   durationMs: number;
   volume: number;
+  /** 当前实际播放倍速（0.5–2.0，来自正在发声 deck） */
+  rate: number;
   liked: boolean;
   /** 播放模式：列表 / 单曲循环 / 随机 */
   mode: PlayMode;
@@ -329,6 +335,7 @@ let state: PlayerState = {
   positionMs: 0,
   durationMs: 0,
   volume: getSettings().playback.volume,
+  rate: userRate,
   liked: false,
   mode: readMode(),
   streamQuality: '',
@@ -521,9 +528,10 @@ function tick(): void {
   if (
     Math.abs(nextPos - state.positionMs) > 40 ||
     Math.abs(nextDur - state.durationMs) > 200 ||
-    state.playing !== !audio.paused
+    state.playing !== !audio.paused ||
+    Math.abs(audio.playbackRate - state.rate) > 0.001
   ) {
-    setState({ positionMs: nextPos, durationMs: nextDur, playing: !audio.paused });
+    setState({ positionMs: nextPos, durationMs: nextDur, playing: !audio.paused, rate: audio.playbackRate });
   }
   // 到点就起播 B 并开始等功率交叉淡化（内部有开关/图表/过期守卫）。
   crossfadeTick(deckPos, deckDur);
@@ -873,8 +881,30 @@ export function adoptPlayingElement(
   return true;
 }
 
+type QueueSwitchHandler = () => void;
+const queueSwitchHandlers = new Set<QueueSwitchHandler>();
+
+/** 订阅「换了一整套队列 / 手动点歌」：临时模式（如律动接歌图标）据此恢复原设定。 */
+export function subscribeQueueSwitch(handler: QueueSwitchHandler): () => void {
+  queueSwitchHandlers.add(handler);
+  return () => {
+    queueSwitchHandlers.delete(handler);
+  };
+}
+
+function notifyQueueSwitch(): void {
+  for (const handler of Array.from(queueSwitchHandlers)) {
+    try {
+      handler();
+    } catch {
+      /* 单个订阅者出错不影响播放 */
+    }
+  }
+}
+
 export function playQueue(tracks: OnlineTrack[], index = 0, autoplay = true, startMs = 0, skipFadeIn = false): void {
   if (tracks.length === 0) return;
+  notifyQueueSwitch();
   const safeIndex = Math.max(0, Math.min(index, tracks.length - 1));
   (window as unknown as { __ziluxSkip?: number }).__ziluxSkip = 0;
   // 显式换队列：上一份续接器（私人漫游等）作废，普通歌单/搜索结果不会被无限续接。
@@ -1007,6 +1037,8 @@ export function playAt(index: number, tracks?: OnlineTrack[]): void {
   }
   if (state.queue.length === 0) return;
   const safe = Math.max(0, Math.min(index, state.queue.length - 1));
+  // 手动点歌属于「用户换了选择」：通知临时模式恢复。
+  notifyQueueSwitch();
   // 点列表换曲：播放中走 1.2–2.0 秒短过渡，暂停中/无法过渡时回退硬切。
   manualSwitch(safe);
 }
@@ -1300,7 +1332,8 @@ export function seek(ms: number): void {
   // 再按用户点的新位置继续 —— 否则进度条会落到正在淡出的 A 上。
   if (preview && crossfadeIsFading()) crossfadeFinishNow('seek');
   // 拖动进度：旧的淡化窗口失效，先取消并清理 B，再按新位置重新准备。
-  cancelSeamless('seek');
+  // keepPlan：保留已预选的下一首（shuffle 的随机结果不在 seek 时重抽）。
+  cancelSeamless('seek', true);
   const duration = durationMs();
   const target = Math.max(0, Math.min(ms, duration > 0 ? duration : ms));
   try {
@@ -1598,6 +1631,14 @@ function planUpcoming(): { index: number; track: OnlineTrack } | null {
   return { index, track };
 }
 
+/**
+ * 待播预览：与「自然播完 / 下一首按钮」完全一致的下一首。
+ * shuffle 模式下随机结果在此刻固定，避免界面显示与真正播放的不一致。
+ */
+export function peekUpcoming(): { index: number; track: OnlineTrack } | null {
+  return planUpcoming();
+}
+
 /** 正在过渡的目标曲目（预告条 UI 用；没有过渡时为 null）。 */
 export function getTransitionTarget(): OnlineTrack | null {
   return transitionTarget;
@@ -1673,10 +1714,13 @@ function restorePreview(reason: string): void {
  * 取消无缝衔接：作废异步准备与预取、中止引擎里的计划/淡化（引擎会恢复 A 的音量），
  * 并清掉 B 的预加载。任何显式切歌/暂停/seek/停止/改队列/关开关都走这里。
  */
-function cancelSeamless(reason: string): void {
+function cancelSeamless(reason: string, keepPlan = false): void {
   seamlessToken += 1;
-  plannedNextIndex = null;
-  plannedFor = '';
+  // 拖进度条只是换本次过渡的起点，不该把「随机播放预选好的下一首」也换掉。
+  if (!keepPlan) {
+    plannedNextIndex = null;
+    plannedFor = '';
+  }
   prefetchToken += 1;
   transitionTarget = null;
   // 预分析目标跟着计划一起作废（队列/模式/seek/暂停都会走到这里）。
