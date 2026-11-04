@@ -69,6 +69,10 @@ internal sealed class GeneralSettings
     public string DesktopLyricsWeight { get; set; } = DesktopLyricsWeightNormal;
 
     public int DesktopLyricsBackdropOpacity { get; set; } = 40;
+
+    // 桌面背景歌词：把歌词页的播放效果镜像到桌面壁纸层（第二个 WebView2 窗口挂在 WorkerW 下），
+    // 打开期间软件内的歌词页不再显示歌词，关掉后恢复。追加在最后，保证旧 settings.json 字段顺序不变。
+    public bool BackgroundLyrics { get; set; }
 }
 
 internal sealed class AppearanceSettings

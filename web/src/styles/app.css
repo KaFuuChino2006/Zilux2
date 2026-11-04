@@ -7202,3 +7202,24 @@ html.is-pb-expanded .playerbar:focus-within {
 }
 .wall-search-input::placeholder { color: var(--muted); }
 .wall-search-count { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+
+/* 桌面背景歌词：LyricsView 铺满桌面壁纸层时的演出模式——去掉交互与左栏，只留效果本身。 */
+/* 页面整体透明：真实壁纸从桌面层透出来，歌词与效果叠在上面（WebView2 侧 DefaultBackgroundColor 也设成透明）。 */
+html.is-bg-lyrics-scene,
+html.is-bg-lyrics-scene body{height:100%;margin:0;background:transparent;overflow:hidden}
+html.is-bg-lyrics-scene #app{display:none}
+.lyrics-view.is-background-lyrics{background:transparent;cursor:none}
+.lyrics-view.is-background-lyrics .lyrics-close{display:none}
+/* 歌词页自己的模糊封面/渐变会挡住壁纸，背景模式里关掉；只留一层很淡的压暗保证白字可读。 */
+.lyrics-view.is-background-lyrics .lyrics-bg{opacity:0}
+.lyrics-view.is-background-lyrics .lyrics-scrim{
+  background:
+    radial-gradient(90% 70% at 50% 42%,rgb(0 0 0 / .05),rgb(0 0 0 / .42) 82%),
+    linear-gradient(180deg,rgb(0 0 0 / .3),rgb(0 0 0 / .12) 34%,rgb(0 0 0 / .38));
+}
+.lyrics-view.is-background-lyrics.is-lumiere .lyrics-frame{display:none}
+.lyrics-view.is-background-lyrics:not(.is-lumiere) .lyrics-frame{padding:8vh 9vw}
+.lyrics-view.is-background-lyrics:not(.is-lumiere) .lyrics-left{display:none}
+.lyrics-view.is-background-lyrics:not(.is-lumiere) .lyrics-right{width:100%}
+.lyrics-view.is-background-lyrics:not(.is-lumiere) .lyrics-lines{align-items:center}
+.lyrics-view.is-background-lyrics:not(.is-lumiere) .lyric-line{text-align:center}

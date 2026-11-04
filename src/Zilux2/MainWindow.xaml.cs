@@ -145,6 +145,9 @@ public partial class MainWindow : Window
     {
         _hwnd = new WindowInteropHelper(this).Handle;
         HwndSource.FromHwnd(_hwnd)?.AddHook(WndProc);
+        // Explorer 重启后 Progman/WorkerW 会重建，桌面背景歌词窗口会被连带销毁；
+        // 任务栏重建时会广播 TaskbarCreated，收到后重新挂一层。
+        _taskbarCreatedMessage = NativeMethods.RegisterWindowMessage("TaskbarCreated");
         StartHotkeyHook();
         ApplyShortcutSettings("startup");
         InstallMediaKeyHook();
@@ -209,8 +212,10 @@ public partial class MainWindow : Window
     {
         Loaded -= OnLoaded;
         _host = new WebViewHost(this, Browser, _plan, _settings, _audio, _media, _airplay);
+        _host.SharedEnvironmentReady += OnHostEnvironmentReady;
         _ = _host.InitializeAsync();
         ApplyDesktopLyricsSettings();
+        ApplyBackgroundLyricsSettings();
     }
 
     // 桌面歌词窗口开关/样式都从设置里读；页面只负责推当前句（见 UpdateDesktopLyrics）。
@@ -287,6 +292,113 @@ public partial class MainWindow : Window
         }
     }
 
+    // 桌面背景歌词：把一个 WebView2 窗口挂到桌面壁纸层（Progman 的图标层下方）当播放器用。
+    // 歌词页的视觉效果、背景模式、样式设置都来自同一份站点存储，窗口只负责渲染。
+    private DesktopBackgroundWindow? _backgroundLyricsWindow;
+    private uint _taskbarCreatedMessage;
+
+    private void OnHostEnvironmentReady()
+    {
+        ApplyBackgroundLyricsSettings();
+    }
+
+    internal void ApplyBackgroundLyricsSettings()
+    {
+        var enabled = _settings?.BackgroundLyricsEnabled == true;
+        if (!enabled)
+        {
+            CloseBackgroundLyrics();
+            return;
+        }
+
+        if (_backgroundLyricsWindow is not null)
+        {
+            return;
+        }
+
+        // 背景窗口必须复用主窗口的 WebView2 环境（同 user data folder 才能共享站点存储）；
+        // 环境可能还在初始化，等 SharedEnvironmentReady 回调时再补一次。
+        var environment = _host?.SharedEnvironment;
+        if (environment is null || _settings is null)
+        {
+            return;
+        }
+
+        var window = new DesktopBackgroundWindow(environment, _settings, _plan);
+        window.Closed += OnBackgroundLyricsClosed;
+        _backgroundLyricsWindow = window;
+        window.Show();
+        HostLog.Info("[bgLyrics] desktop background window shown");
+    }
+
+    internal void ForwardToBackgroundLyrics(string json)
+    {
+        _backgroundLyricsWindow?.PostJson(json);
+    }
+
+    private void OnBackgroundLyricsClosed(object? sender, EventArgs e)
+    {
+        if (ReferenceEquals(_backgroundLyricsWindow, sender))
+        {
+            _backgroundLyricsWindow = null;
+            HostLog.Info("[bgLyrics] desktop background window closed");
+        }
+    }
+
+    private async void OnShellRestarted()
+    {
+        HostLog.Info("[bgLyrics] shell restarted (TaskbarCreated)");
+        if (_settings?.BackgroundLyricsEnabled != true)
+        {
+            return;
+        }
+
+        // 旧窗口已经随 Progman 一起销毁，重建并重新挂到新的桌面层。
+        CloseBackgroundLyrics();
+
+        // WebView2 的 controller 销毁和共用 environment 上的新建有竞态：立刻重建偶发
+        // InvalidCastException（QueryInterface 拿到已失效的 controller），先让旧的完全收尾。
+        try
+        {
+            await Task.Delay(700);
+            if (_settings?.BackgroundLyricsEnabled == true)
+            {
+                ApplyBackgroundLyricsSettings();
+            }
+        }
+        catch (Exception exception)
+        {
+            HostLog.Error("[bgLyrics] shell restart rebuild failed", exception);
+        }
+    }
+
+    private void CloseBackgroundLyrics()
+    {
+        var window = _backgroundLyricsWindow;
+        if (window is null)
+        {
+            return;
+        }
+
+        _backgroundLyricsWindow = null;
+        window.Closed -= OnBackgroundLyricsClosed;
+        try
+        {
+            window.Close();
+        }
+        catch (Exception exception)
+        {
+            // Explorer 重启时父窗口先被销毁，这里再 Close 可能抛「窗口已关闭」。
+            HostLog.Warn($"[bgLyrics] close background window failed: {exception.Message}");
+        }
+
+        // Close 失败时窗口对象可能还没走过 OnClosed（HWND 已被 Explorer 连带销毁），
+        // 这里补一次释放并抑制 HwndHost 终结器，避免终结器线程上的 COM 异常终止进程。
+        window.DisposeBrowser();
+
+        HostLog.Info("[bgLyrics] desktop background window hidden");
+    }
+
     private void OnStateChanged(object? sender, EventArgs e)
     {
         var maximized = IsMaximized;
@@ -316,6 +428,8 @@ public partial class MainWindow : Window
 
     private void OnClosed(object? sender, EventArgs e)
     {
+        CloseBackgroundLyrics();
+
         if (_settings is not null)
         {
             _settings.ShortcutsChanged -= OnShortcutsChanged;
@@ -1834,6 +1948,17 @@ public partial class MainWindow : Window
         else if (msg == NativeMethods.WmAppCommand)
         {
             handled = HandleAppCommand(lParam);
+        }
+        else if (_taskbarCreatedMessage != 0 && msg == (int)_taskbarCreatedMessage)
+        {
+            Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(OnShellRestarted));
+        }
+        else if (msg == 0x007E)
+        {
+            // WM_DISPLAYCHANGE：分辨率/显示器布局变了，重新铺满新的虚拟桌面。
+            Dispatcher.BeginInvoke(
+                DispatcherPriority.Background,
+                new Action(() => _backgroundLyricsWindow?.RepositionToDesktop()));
         }
 
         return IntPtr.Zero;

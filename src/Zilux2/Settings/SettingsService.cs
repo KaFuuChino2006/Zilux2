@@ -112,6 +112,18 @@ internal sealed class SettingsService : IDisposable
         }
     }
 
+    /// <summary>桌面背景歌词开关（背景窗口由 MainWindow 懒创建）。</summary>
+    internal bool BackgroundLyricsEnabled
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _state.General.BackgroundLyrics;
+            }
+        }
+    }
+
     // Read by the audio feature service on its capture thread, so it must stay cheap and locked.
     internal bool AudioReactive
     {
@@ -543,7 +555,7 @@ internal sealed class SettingsService : IDisposable
     {
         "general" => name is "splash" or "startMaximized" or "autoLaunch" or "autoStartHidden" or "watchLocalFolder"
             or "mediaSession" or "desktopLyrics" or "desktopLyricsLocked" or "desktopLyricsFontSize" or "desktopLyricsTopmost"
-            or "desktopLyricsWeight" or "desktopLyricsBackdropOpacity",
+            or "desktopLyricsWeight" or "desktopLyricsBackdropOpacity" or "backgroundLyrics",
         "appearance" => name is "theme" or "reduceMotion" or "glow" or "heroAutoRotate" or "lyricsSize"
             or "windowAnimation" or "playerBarExpanded" or "miniSize" or "miniAlwaysOnTop",
         "playback" => name is "defaultSource" or "searchLimit" or "lyricsAutoOpen" or "volume" or "audioReactive"
@@ -652,6 +664,8 @@ internal sealed class SettingsService : IDisposable
             state.General.DesktopLyricsBackdropOpacity = ReadIntInRange(
                 general, "desktopLyricsBackdropOpacity", 30, 90,
                 state.General.DesktopLyricsBackdropOpacity, "general.desktopLyricsBackdropOpacity", keys);
+            state.General.BackgroundLyrics = ReadBool(
+                general, "backgroundLyrics", state.General.BackgroundLyrics, "general.backgroundLyrics", keys);
         }
 
         if (TryGetObject(document, "appearance", out var appearance))

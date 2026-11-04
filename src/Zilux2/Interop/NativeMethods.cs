@@ -227,6 +227,66 @@ internal static class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool GetCursorPos(out Point point);
 
+    // 桌面背景歌词：把第二个 WebView2 窗口挂到桌面壁纸层（WorkerW）下面。
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr FindWindow(string? className, string? windowName);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string? className, string? windowName);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr SetParent(IntPtr hWnd, IntPtr newParent);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetParent(IntPtr hWnd);
+
+    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder name, int maxCount);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr SendMessageTimeout(
+        IntPtr hWnd,
+        int msg,
+        IntPtr wParam,
+        IntPtr lParam,
+        uint flags,
+        uint timeout,
+        out IntPtr result);
+
+    [DllImport("user32.dll")]
+    public static extern int GetSystemMetrics(int index);
+
+    // 桌面背景歌词：方案 B 要把窗口改成 WS_CHILD 挂到 Progman 下（图标层 SHELLDLL_DefView 的正下方）。
+    // 样式是 LONG_PTR，必须用 Ptr 版本读写，否则 64 位下会截断 WS_POPUP 这类高位标志。
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
+    public static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int index);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
+    public static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int index, IntPtr value);
+
+    // SetParent 之后 GetParent 对 popup 语义的窗口仍返回 0，验证父子关系只能用 GetAncestor(GA_PARENT=1)。
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
+
+    // SetWindowPos 的坐标是父客户区坐标，铺满父窗口要配合 ClientToScreen/GetClientRect。
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool ClientToScreen(IntPtr hWnd, ref Point point);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetClientRect(IntPtr hWnd, out Rect rect);
+
+    // Explorer 重启后 Progman/WorkerW 会重建，桌面背景歌词要靠 TaskbarCreated 广播消息重新挂载。
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern uint RegisterWindowMessage(string name);
+
     /// <summary>
     /// The placement WPF/Windows keeps for a minimized window. rcNormalPosition is what the
     /// taskbar restore animates back to, so it has to survive the minimize shrink animation.

@@ -210,6 +210,15 @@ internal sealed class WebViewHost : IDisposable
     private DispatcherTimer? _onlineRetryTimer;
     private int _onlineRetryAttempts;
 
+    /// <summary>
+    /// 主页面创建好的 WebView2 环境。桌面背景歌词的第二个窗口要复用它：同一个 user data folder
+    /// 意味着同一个站点存储（localStorage 里的歌词样式/背景模式/偏移，两窗口自动共享）。
+    /// </summary>
+    public CoreWebView2Environment? SharedEnvironment { get; private set; }
+
+    /// <summary>共享环境就绪通知（背景窗口可能比 WebView2 初始化更早被请求）。</summary>
+    public event Action? SharedEnvironmentReady;
+
     public WebViewHost(
         MainWindow window,
         WebView2 webView,
@@ -282,6 +291,8 @@ internal sealed class WebViewHost : IDisposable
             }
 
             HostLog.Info($"webview2 runtime: {environment.BrowserVersionString}");
+            SharedEnvironment = environment;
+            SharedEnvironmentReady?.Invoke();
             await _webView.EnsureCoreWebView2Async(environment);
             if (_disposed)
             {
@@ -571,6 +582,8 @@ internal sealed class WebViewHost : IDisposable
 
                 case "media":
                     HandleMediaMessage(root);
+                    // 桌面背景歌词窗口没有自己的播放引擎：把主页面这一份媒体快照原样转发过去。
+                    _window.ForwardToBackgroundLyrics(json);
                     break;
                 case "audio":
                     HandleAudioMessage(root);
@@ -733,6 +746,16 @@ internal sealed class WebViewHost : IDisposable
         catch (Exception exception)
         {
             HostLog.Error("[settings] desktopLyrics apply failed", exception);
+        }
+
+        // 桌面背景歌词：开关即时创建/销毁壁纸层窗口。
+        try
+        {
+            _window.ApplyBackgroundLyricsSettings();
+        }
+        catch (Exception exception)
+        {
+            HostLog.Error("[settings] backgroundLyrics apply failed", exception);
         }
     }
 

@@ -480,6 +480,13 @@ function startLyricMatch(track: OnlineTrack, base: LyricDoc): void {
 }
 let lastDoc: LyricDoc | null = null;
 
+/** 桌面背景歌词场景：跳过网络拉歌，歌词文档由主窗口经共享 localStorage 送进来。 */
+let externalLyricMode = false;
+
+export function setExternalLyricMode(enabled: boolean): void {
+  externalLyricMode = enabled;
+}
+
 function writeOffsets(): void {
   try {
     window.localStorage.setItem(OFFSET_KEY, JSON.stringify(lyricOffsets));
@@ -1517,6 +1524,11 @@ export class LyricsView {
   }
 
   private async reload(track: OnlineTrack | null): Promise<void> {
+    if (externalLyricMode) {
+      // 背景场景不拉歌：等主窗口把文档写进快照后由 applyExternalDoc 送进来。
+      this.render();
+      return;
+    }
     const token = ++this.loadToken;
     const doc = await loadLyricDoc(track);
     if (this.disposed || token !== this.loadToken) return;
@@ -1524,6 +1536,25 @@ export class LyricsView {
     lastDoc = doc;
     this.render();
     if (track) startLyricMatch(track, doc);
+  }
+
+  /** 背景场景：直接应用外部（共享快照）送来的歌词文档。 */
+  applyExternalDoc(doc: LyricDoc | null): void {
+    if (this.disposed) return;
+    this.doc = doc ?? EMPTY;
+    lastDoc = doc ?? null;
+    this.render();
+  }
+
+  /** 背景场景：另一窗口改了共享设置（样式/背景/偏移）后重新取本地设置并重绘。 */
+  refreshSharedStyle(): void {
+    if (this.disposed) return;
+    this.bgMode = lyricsBgMode;
+    void this.applyTextTint();
+    this.applyLumiereMode();
+    this.applyLyricStyle();
+    this.applyLyricUnsungColor();
+    this.render();
   }
 
   private render(): void {

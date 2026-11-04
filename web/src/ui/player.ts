@@ -402,6 +402,14 @@ function setState(patch: Partial<PlayerState>): void {
   emit();
   if (state.track) schedulePersist();
 }
+/**
+ * 桌面背景歌词场景：把宿主转发的播放快照并进状态并广播。
+ * 只用于没有播放引擎的辅助窗口：不碰解码器、不持久化、不回报宿主。
+ */
+export function applyExternalPlayback(patch: Partial<PlayerState>): void {
+  state = { ...state, ...patch };
+  emit();
+}
 
 /** 上次退出时的播放状态：启动时恢复播放条（不自动播放）。 */
 const LAST_KEY = 'zilux2.lastPlay';
