@@ -59,7 +59,7 @@ function freshCoverUrl(track: OnlineTrack): string {
     const source = url.searchParams.get('source') ?? track.source;
     const key = url.searchParams.get('key') ?? '';
     if (!key) return raw;
-    return onlineEndpoint('/api/cover', { source, key, width: '1600' }) || raw;
+    return onlineEndpoint('/api/cover', { source, key, width: '2048' }) || raw;
   } catch {
     return raw;
   }
@@ -187,24 +187,83 @@ export async function bootBackgroundLyricsScene(): Promise<void> {
   view.root.classList.add('is-background-lyrics');
   document.body.append(view.root);
 
-  // 「封面在左」样式：独立的一层封面图，铺左半边并用 CSS mask 向右渐隐；歌词列由 CSS 挪到右半边。
-  const coverLayer = document.createElement('div');
-  coverLayer.className = 'bg-cover-left';
-  view.root.append(coverLayer);
-  const applyCoverImage = (): void => {
-    const track = bgLyricsCoverStyle() === 'cover' ? readSnapshot()?.track : null;
-    const cover = track ? freshCoverUrl(track) : '';
-    coverLayer.style.backgroundImage = cover ? `url("${cover}")` : 'none';
-  };
+  // 「封面在左」样式：两层封面图交叉淡入淡出（换歌时旧封面压着新封面淡出，避免硬切），
+  // 铺左半边并用 CSS mask 向右渐隐；歌词列由 CSS 挪到右半边。
+  const coverLayers: HTMLDivElement[] = [0, 1].map(() => {
+    const layer = document.createElement('div');
+    layer.className = 'bg-cover-left';
+    view.root.append(layer);
+    return layer;
+  });
+  let activeCoverLayer = 0;
+  let currentCoverUrl = '';
+  let coverPreload: HTMLImageElement | null = null;
+  let coverPreloadTimer = 0;
   let coverInitialized = false;
   let coverSwitchTimer = 0;
-  /** 纯壁纸 ⇄ 封面在左：歌词先压暗，再换布局，最后淡回；封面层本身由 CSS opacity 过渡。 */
+
+  const coverMode = (): boolean => view.root.classList.contains('is-bg-cover-left');
+
+  /** 只改两层封面的可见性；切换本身交给 CSS 的 opacity 过渡。 */
+  const syncCoverOpacity = (): void => {
+    const on = coverMode();
+    coverLayers.forEach((layer, index) => {
+      layer.style.opacity = on && index === activeCoverLayer ? '1' : '0';
+    });
+  };
+
+  const currentTrackCover = (): string => {
+    const track = bgLyricsCoverStyle() === 'cover' ? readSnapshot()?.track : null;
+    return track ? freshCoverUrl(track) : '';
+  };
+
+  const revealCover = (url: string): void => {
+    const nextIndex = activeCoverLayer === 0 ? 1 : 0;
+    const next = coverLayers[nextIndex];
+    next.style.backgroundImage = url ? `url("${url}")` : 'none';
+    // 两层封面都留在歌词框架之下（CSS z-index:1 / 框架 z-index:2），靠 DOM 顺序决定谁在上：
+    // 把新层移到末尾，换歌时旧层压着新层淡出，不会挡住歌词。
+    if (next.nextSibling !== null) view.root.append(next);
+    activeCoverLayer = nextIndex;
+    currentCoverUrl = url;
+    syncCoverOpacity();
+  };
+
+  const applyCoverImage = (animate: boolean): void => {
+    const url = currentTrackCover();
+    if (url === currentCoverUrl) {
+      syncCoverOpacity();
+      return;
+    }
+    if (!animate || !url) {
+      revealCover(url);
+      return;
+    }
+    // 先预载新封面，加载完成后再交叉淡入；否则新图层会在解码前空一帧，看起来还是硬切。
+    window.clearTimeout(coverPreloadTimer);
+    const preload = new Image();
+    coverPreload = preload;
+    let done = false;
+    const reveal = (): void => {
+      if (done || preload !== coverPreload) return;
+      done = true;
+      window.clearTimeout(coverPreloadTimer);
+      coverPreload = null;
+      revealCover(url);
+    };
+    preload.onload = reveal;
+    preload.onerror = reveal;
+    preload.src = url;
+    coverPreloadTimer = window.setTimeout(reveal, 900);
+  };
+
+  /** 纯壁纸 ⇄ 封面在左：歌词先压暗，再换布局，最后淡回；封面层由 opacity 过渡。 */
   const applyCoverStyle = (animate: boolean): void => {
     const wantCover = bgLyricsCoverStyle() === 'cover';
     const changed = view.root.classList.contains('is-bg-cover-left') !== wantCover;
     const commitStyle = (): void => {
       view.root.classList.toggle('is-bg-cover-left', wantCover);
-      applyCoverImage();
+      syncCoverOpacity();
     };
     if (!coverInitialized || !animate || !changed) {
       commitStyle();
@@ -215,6 +274,7 @@ export async function bootBackgroundLyricsScene(): Promise<void> {
     window.clearTimeout(coverSwitchTimer);
     window.setTimeout(() => {
       commitStyle();
+      applyCoverImage(false);
       coverSwitchTimer = window.setTimeout(() => view.root.classList.remove('is-bg-cover-switching'), 340);
     }, 160);
   };
@@ -226,12 +286,15 @@ export async function bootBackgroundLyricsScene(): Promise<void> {
     if (snapshot.savedAt === appliedSavedAt) return;
     appliedSavedAt = snapshot.savedAt;
     const key = trackKey(snapshot.track);
-    if (key !== appliedTrackKey) {
+    const trackChanged = key !== appliedTrackKey;
+    if (trackChanged) {
       appliedTrackKey = key;
       applyExternalPlayback({ track: snapshot.track });
     }
     view.applyExternalDoc(snapshot.doc);
     applyCoverStyle(false);
+    // 换歌时封面走预载 + 交叉淡化；同一首只是歌词来源刷新，不动封面。
+    applyCoverImage(trackChanged);
   };
   const receiveSnapshot = (animate: boolean): void => {
     const snapshot = readSnapshot();
@@ -256,8 +319,12 @@ export async function bootBackgroundLyricsScene(): Promise<void> {
 
   receiveSnapshot(false);
   applyCoverStyle(false);
+  applyCoverImage(false);
   // 在线源端点比页面 ready 晚到；端点一到就把旧端口拼的封面地址换成当前端口。
-  onOnlineChange(() => applyCoverStyle(false));
+  onOnlineChange(() => {
+    applyCoverStyle(false);
+    applyCoverImage(false);
+  });
 
   window.addEventListener('storage', (event) => {
     if (event.key === DOC_KEY) {
@@ -266,6 +333,7 @@ export async function bootBackgroundLyricsScene(): Promise<void> {
     }
     if (event.key === BG_COVER_KEY) {
       applyCoverStyle(true);
+      applyCoverImage(false);
       return;
     }
     // 样式/偏移类设置改了才重绘；其它键（播放进度、统计、封面缓存…）不碰歌词树。

@@ -1139,7 +1139,7 @@ export class LyricsView {
     const coverUrl = track ? onlineArtwork(track, this.coverRequestWidth()) : '';
     const changed = key !== this.lastTrackKey && this.lastTrackKey !== '';
     if (changed) {
-      this.spawnGhosts();
+      this.spawnMetaGhost();
       this.bgEl.classList.remove('is-switching');
       void this.bgEl.offsetWidth;
       this.bgEl.classList.add('is-switching');
@@ -1147,24 +1147,56 @@ export class LyricsView {
     }
     this.bgEl.style.backgroundImage = coverUrl ? `url("${coverUrl}")` : 'none';
     void this.applyTextTint();
-    this.coverEl.src = coverUrl;
+    if (changed) {
+      this.swapCoverWithFade(coverUrl);
+      this.metaEl.classList.remove('is-switching');
+      this.metaEl.classList.add('is-switching');
+      window.setTimeout(() => this.metaEl.classList.remove('is-switching'), 620);
+    } else {
+      this.coverEl.src = coverUrl;
+    }
     this.titleEl.textContent = track?.title ?? '未在播放';
     this.artistEl.textContent = track?.artist ?? '';
-    if (changed) {
-      this.coverEl.classList.remove('is-switching');
-      this.metaEl.classList.remove('is-switching');
-      void this.coverEl.offsetWidth;
-      this.coverEl.classList.add('is-switching');
-      this.metaEl.classList.add('is-switching');
-      window.setTimeout(() => {
-        this.coverEl.classList.remove('is-switching');
-        this.metaEl.classList.remove('is-switching');
-      }, 620);
-    }
     if (changed || key !== this.lastTrackKey) {
       this.lastTrackKey = key;
       void this.reload(track);
     }
+  }
+
+  /**
+   * 换封面：先预载新图，加载完再把旧图做成 ghost 淡出、新图淡入。
+   * 之前是直接替换 src，新图解码前会先出现一帧空白，看起来就像硬切。
+   */
+  private swapCoverWithFade(url: string): void {
+    const previous = this.coverEl.getAttribute('src') ?? '';
+    let swapped = false;
+    const swap = (): void => {
+      if (this.disposed || swapped) return;
+      swapped = true;
+      if (previous) this.spawnCoverGhost(previous);
+      this.coverEl.src = url;
+      this.coverEl.classList.remove('is-switching');
+      void this.coverEl.offsetWidth;
+      this.coverEl.classList.add('is-switching');
+      window.setTimeout(() => this.coverEl.classList.remove('is-switching'), 620);
+    };
+    if (!url || url === previous) {
+      swapped = true;
+      this.coverEl.src = url;
+      return;
+    }
+    const image = new Image();
+    image.onload = swap;
+    image.onerror = swap;
+    image.src = url;
+    window.setTimeout(swap, 700);
+  }
+
+  private spawnCoverGhost(url: string): void {
+    const ghost = h('div', { class: 'lyrics-cover-ghost' });
+    ghost.style.backgroundImage = `url("${url}")`;
+    this.coverWrapEl.append(ghost);
+    window.setTimeout(() => ghost.remove(), 560);
   }
 
   syncBackgroundMode(): void {
@@ -1179,7 +1211,8 @@ export class LyricsView {
    */
   private coverRequestWidth(): number {
     if (document.documentElement.classList.contains('is-bg-lyrics-scene')) return 300;
-    return bgLyricsCoverStyle() === 'cover' ? Math.min(2048, Math.max(900, Math.round(window.innerWidth * 0.62))) : 300;
+    // 「封面在左」的封面层现在铺满整宽（右侧用 mask 渐隐），所以按整窗宽度要大图。
+    return bgLyricsCoverStyle() === 'cover' ? Math.min(2048, Math.max(900, Math.round(window.innerWidth))) : 300;
   }
 
   private refreshCoverResolution(): void {
@@ -1558,16 +1591,8 @@ export class LyricsView {
   }
 
 
-  /** 旧封面 / 旧歌名做一层 ghost，让切歌看起来是「旧的滑出、新的推入」。 */
-  private spawnGhosts(): void {
-    const oldCover = this.coverEl.src;
-    if (oldCover) {
-      const ghost = h('div', { class: 'lyrics-cover-ghost' });
-      ghost.style.backgroundImage = `url("${oldCover}")`;
-      this.coverWrapEl.append(ghost);
-      window.setTimeout(() => ghost.remove(), 560);
-    }
-
+  /** 旧歌名做一层 ghost，让切歌看起来是「旧的滑出、新的推入」；封面由 swapCoverWithFade 单独处理。 */
+  private spawnMetaGhost(): void {
     const ghostMeta = h(
       'div',
       { class: 'lyrics-meta-ghost' },
