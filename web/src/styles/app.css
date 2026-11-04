@@ -7447,3 +7447,20 @@ html.is-bg-lyrics-scene #app{display:none}
 .quick-panel .quick-body{scrollbar-gutter:stable}
 .quick-panel .quick-body::-webkit-scrollbar-thumb{background:rgb(var(--ink-rgb) / .16)}
 .quick-panel .quick-body{scrollbar-color:rgb(var(--ink-rgb) / .2) transparent;scrollbar-width:thin}
+
+/* 背景歌词：封面在左时提高歌词可读性（模糊封面透过来时也要看得清） */
+.lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .lyrics-scrim{
+  background:linear-gradient(90deg,rgba(0,0,0,.06) 0%,rgba(0,0,0,.16) 36%,rgba(0,0,0,.5) 58%,rgba(0,0,0,.76) 82%,rgba(0,0,0,.84) 100%);
+}
+.lyrics-view.is-background-lyrics .lyrics-right .lyric-line{opacity:.55;text-shadow:0 2px 14px rgba(0,0,0,.6),0 0 30px rgba(0,0,0,.4)}
+.lyrics-view.is-background-lyrics .lyrics-right .lyric-line.is-near{opacity:.78}
+.lyrics-view.is-background-lyrics .lyrics-right .lyric-line.is-active{opacity:1;text-shadow:0 2px 18px rgba(0,0,0,.55),0 0 42px rgba(0,0,0,.35)}
+.lyrics-view.is-background-lyrics .lyrics-right .lyric-line .lyric-char:not(.is-hot):not(.is-sung){opacity:.55!important}
+
+/* 快捷设置：分段按钮文字不换行；高度动画更跟手，减少过冲带来的「卡」感 */
+.quick-seg-btn{white-space:nowrap}
+.quick-panel .quick-body{transition:height .26s cubic-bezier(.2,.8,.25,1)}
+
+/* 旋入/上浮等样式用 !important 把当前行之后的整行压到 0.2；封面在左的背景模式覆盖成可读亮度 */
+.lyrics-view.is-background-lyrics.is-bg-cover-left .lyrics-right .lyric-line.is-active ~ .lyric-line{opacity:.55!important}
+.lyrics-view.is-background-lyrics.is-bg-cover-left .lyrics-right .lyric-line.is-active ~ .lyric-line.is-near{opacity:.78!important}
