@@ -555,7 +555,9 @@ public partial class App : Application
         {
             if (args.ExceptionObject is Exception exception)
             {
-                HostLog.Error("unhandled.appdomain", exception);
+                // ToString keeps the stack: background-thread crashes (finalizer / COM cleanup)
+                // otherwise log nothing but the message and are impossible to trace.
+                HostLog.Error($"unhandled.appdomain: {exception}");
             }
             else
             {

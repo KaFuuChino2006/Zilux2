@@ -7040,10 +7040,23 @@ export class App {
       });
       unsungSwatches.append(unsungCustomLabel);
       paintUnsung();
+      const backgroundLyricsSwitch = this.pillSwitch(
+        getSettings().general.backgroundLyrics,
+        (next) => {
+          patchSettings({ general: { backgroundLyrics: next } });
+          toast(next ? '桌面背景歌词已开启：歌词效果显示在桌面壁纸层' : '桌面背景歌词已关闭：软件内歌词恢复显示');
+        },
+      );
       body.append(
         h(
           'div',
           { class: 'quick-grid' },
+          cell(
+            '桌面背景歌词',
+            true,
+            backgroundLyricsSwitch.root,
+            h('div', { class: 'quick-hint', text: '开启后歌词效果显示在桌面壁纸层，软件内歌词页暂时关闭' }),
+          ),
           cell('歌词来源', true, sourceValue),
           cell('跨平台匹配', true, matchValue),
           cell('匹配度阈值', false, thresholdStepper.root),
@@ -8800,6 +8813,8 @@ export class App {
     const settings = getSettings();
     this.volumeInput.value = String(Math.round(settings.playback.volume * 100));
     this.paintVolumeIcon(Math.round(settings.playback.volume * 100));
+    // 桌面背景歌词开启后，软件内歌词页让位（关闭开关后恢复）。
+    if (settings.general.backgroundLyrics && this.lyrics) this.closeLyrics();
   }
 
   /* ------------------------------------------------------------------ */
@@ -8808,6 +8823,10 @@ export class App {
 
   private openLyrics(): void {
     if (this.lyrics) return;
+    if (getSettings().general.backgroundLyrics) {
+      toast('歌词正在桌面背景显示，关闭「桌面背景歌词」后恢复软件内歌词');
+      return;
+    }
     // 歌词页是整窗覆盖层：先收起搜索，避免搜索层与歌词页互相抢层级
     this.closeSearchDock();
     const view = new LyricsView(() => this.closeLyrics());

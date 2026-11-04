@@ -322,6 +322,8 @@ export interface Settings {
     /** 胶囊底色不透明度百分比，30..90（默认 40）。 */
     desktopLyricsBackdropOpacity: number;
     desktopLyricsTopmost: boolean;
+    /** 桌面背景歌词：把歌词页效果镜像到桌面壁纸层；开启期间软件内歌词页不显示歌词。 */
+    backgroundLyrics: boolean;
   };
   appearance: {
     theme: Theme;
@@ -409,7 +411,7 @@ export type SettingsPatch = {
 
 export const DEFAULT_SETTINGS: Settings = {
   version: 1,
-  general: { splash: true, startMaximized: false, autoLaunch: false, autoStartHidden: true, watchLocalFolder: true, mediaSession: true, desktopLyrics: false, desktopLyricsLocked: false, desktopLyricsFontSize: 40, desktopLyricsWeight: 'normal', desktopLyricsBackdropOpacity: 40, desktopLyricsTopmost: true },
+  general: { splash: true, startMaximized: false, autoLaunch: false, autoStartHidden: true, watchLocalFolder: true, mediaSession: true, desktopLyrics: false, desktopLyricsLocked: false, desktopLyricsFontSize: 40, desktopLyricsWeight: 'normal', desktopLyricsBackdropOpacity: 40, desktopLyricsTopmost: true, backgroundLyrics: false },
   appearance: {
     theme: 'frost',
     reduceMotion: false,
@@ -574,6 +576,7 @@ export function normalizeSettings(raw: unknown): Settings {
       desktopLyricsWeight: asEnum(general.desktopLyricsWeight, ['normal', 'semibold', 'bold'], DEFAULT_SETTINGS.general.desktopLyricsWeight),
       desktopLyricsBackdropOpacity: asBackdropOpacity(general.desktopLyricsBackdropOpacity),
       desktopLyricsTopmost: asBool(general.desktopLyricsTopmost, DEFAULT_SETTINGS.general.desktopLyricsTopmost),
+      backgroundLyrics: asBool(general.backgroundLyrics, DEFAULT_SETTINGS.general.backgroundLyrics),
     },
     appearance: {
       theme: asEnum(appearance.theme, THEMES, DEFAULT_SETTINGS.appearance.theme),

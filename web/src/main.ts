@@ -15,6 +15,7 @@ import { installChorusPreview } from './ui/chorusPreview';
 import { refreshArtworkCovers } from './online/artwork';
 import { confirmDialog } from './ui/confirmDialog';
 import { initUpdates, installUpdate, onUpdateChange, updateSnapshot } from './ui/updates';
+import { bootBackgroundLyricsScene, installBackgroundLyricsPublisher, isBackgroundLyricsScene } from './ui/backgroundLyrics';
 
 // 更新提示去重：同一个版本只提示一次，宿主重复推送也不会反复弹窗。
 let promptedVersion: string | null = null;
@@ -89,6 +90,12 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  // 桌面背景歌词：宿主把这块页面挂在桌面壁纸层下，只需要演出，不启动整套 App。
+  if (isBackgroundLyricsScene()) {
+    await bootBackgroundLyricsScene();
+    return;
+  }
+
   installCoverFallback();
   installAppTooltips();
   installChorusPreview(document.body);
@@ -106,6 +113,7 @@ async function main(): Promise<void> {
 
   const app = new App();
   app.mount(root);
+  installBackgroundLyricsPublisher();
   restoreLastPlayback();
   host.ready();
   host.setChromeColor('#f3f1ea');
