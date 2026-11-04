@@ -547,6 +547,9 @@ export class App {
   private miniRestoreTimer = 0;
   /** 无缝衔接准备就绪后，播放条上方短暂弹出的「将在 X 分 Y 秒后过渡至 xxx」提示。 */
   private seamlessHint!: HTMLDivElement;
+  /** 过渡提示：本次计划第一次出现的时刻与计划指纹（用于「先弹几秒、到跟前再常驻」）。 */
+  private hintShownAt = 0;
+  private hintShownKey = '';
   /** 过渡试放台：覆盖层 / 关闭回调 / 模拟播放的停止函数。 */
   private crossfadeLab: HTMLDivElement | null = null;
   private crossfadeLabDispose: (() => void) | null = null;
@@ -8274,9 +8277,22 @@ export class App {
       this.hideSeamlessHint();
       return;
     }
+    // 计划第一次出现时先弹 6 秒让人看到，然后就收起；等真正进入最后 10 秒再常驻倒数。
+    const planKey = `${debug.currentTitle}->${debug.nextTitle}:${debug.fadeStartPosMs}`;
+    if (planKey !== this.hintShownKey) {
+      this.hintShownKey = planKey;
+      this.hintShownAt = Date.now();
+    }
+    const HINT_FRESH_MS = 6000;
+    const HINT_NEAR_MS = 10000;
+    const fresh = Date.now() - this.hintShownAt <= HINT_FRESH_MS;
+    if (remainingMs > HINT_NEAR_MS && !fresh) {
+      this.hideSeamlessHint();
+      return;
+    }
     const next = debug.nextTitle || '下一首';
     const fadeText = debug.fadeMs > 0 ? `（过渡约 ${formatFadeSeconds(debug.fadeMs)}）` : '';
-    const text = `将在 ${formatCountdownSpan(remainingMs)} 后过渡至「${next}」${fadeText}`;
+    const text = `将在 ${formatCountdownSpan(remainingMs)}后过渡至「${next}」${fadeText}`;
     if (hint.textContent !== text) hint.textContent = text;
     hint.classList.add('is-visible');
   }

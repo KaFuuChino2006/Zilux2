@@ -280,6 +280,59 @@ internal static class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool SetForegroundWindow(IntPtr hWnd);
 
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, [MarshalAs(UnmanagedType.Bool)] bool attach);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool BringWindowToTop(IntPtr hWnd);
+
+    public const int SwRestore = 9;
+
+    /// <summary>
+    /// 把窗口真正带到前台。开机自启（隐藏启动）后从托盘/任务栏唤醒时，
+    /// 进程不持有前台权限，SetForegroundWindow 会静默失败，窗口就停在别的窗口后面；
+    /// 这里附到当前前台线程的输入队列再设置前台，是 Windows 官方认可的做法。
+    /// </summary>
+    public static void ForceForeground(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        ShowWindow(hwnd, SwRestore);
+        if (SetForegroundWindow(hwnd))
+        {
+            return;
+        }
+
+        var foreground = GetForegroundWindow();
+        var foregroundThread = foreground == IntPtr.Zero ? 0 : GetWindowThreadProcessId(foreground, out _);
+        var currentThread = GetCurrentThreadId();
+        if (foregroundThread != 0 && foregroundThread != currentThread
+            && AttachThreadInput(currentThread, foregroundThread, true))
+        {
+            try
+            {
+                SetForegroundWindow(hwnd);
+            }
+            finally
+            {
+                AttachThreadInput(currentThread, foregroundThread, false);
+            }
+        }
+
+        BringWindowToTop(hwnd);
+    }
+
     [DllImport("user32.dll", SetLastError = true)]
     public static extern IntPtr SetWindowsHookEx(
         int idHook,
