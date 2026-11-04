@@ -6832,6 +6832,9 @@ export class App {
           h('div', { class: 'quick-cell-title', text: title }),
           ...children,
         );
+      /** 分组标题：把歌词页签里的设置分块，避免一屏堆太多参数。 */
+      const section = (title: string): HTMLElement =>
+        h('div', { class: 'quick-section' }, h('span', { class: 'quick-section-title', text: title }));
       // 歌词样式：经典 / 上浮 / 波浪 / 摇曳 / 打字机 / 旋入（只对「关闭」档的 DOM 歌词生效，画布效果下没有意义）。
       // 这些样式只改「播放动画」（字的进出场与律动），颜色仍归上面的「歌词颜色」管；新增样式的制作模板见 lyricStyle.ts 顶部注释。
       const styleThumb = h('div', { class: 'quick-seg-thumb' });
@@ -7144,21 +7147,25 @@ export class App {
         h(
           'div',
           { class: 'quick-grid' },
+          section('歌词内容'),
+          cell('歌词来源', true, sourceValue),
+          cell('跨平台匹配', true, matchValue),
+          cell('匹配度阈值', false, thresholdStepper.root),
+          cell('时间轴偏移', false, offsetStepper.root, reset),
+          section('歌词外观'),
+          cell('歌词颜色', true, bgControl),
+          cell('未播放颜色', true, unsungSwatches),
+          styleCell,
+          growCell,
+          cell('播放效果', true, effectControl),
+          effectSettingsCell,
+          section('桌面背景歌词'),
           cell(
             '桌面背景歌词',
             true,
             backgroundLyricsSwitch.root,
             h('div', { class: 'quick-hint', text: '开启后歌词效果显示在桌面壁纸层，软件内歌词页暂时关闭' }),
           ),
-          cell('歌词来源', true, sourceValue),
-          cell('跨平台匹配', true, matchValue),
-          cell('匹配度阈值', false, thresholdStepper.root),
-          cell('时间轴偏移', false, offsetStepper.root, reset),
-          cell('歌词颜色', true, bgControl),
-          cell('未播放颜色', true, unsungSwatches),
-          styleCell,
-          growCell,
-          cell('播放效果', true, effectControl),
           cell(
             '背景歌词样式',
             true,
@@ -7167,7 +7174,6 @@ export class App {
           ),
           cell('封面模糊', false, bgBlurControl),
           cell('封面之后', false, bgFillControl, h('div', { class: 'quick-hint', text: '模糊铺满：右侧不再露出壁纸，整屏都是封面的模糊延伸' })),
-          effectSettingsCell,
         ),
       );
       return;
