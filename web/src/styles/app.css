@@ -7245,8 +7245,23 @@ html.is-bg-lyrics-scene #app{display:none}
   position:absolute;inset:0;z-index:1;width:100%;height:100%;pointer-events:none;
   opacity:0;
   background-position:left center;background-size:cover;background-repeat:no-repeat;
-  -webkit-mask-image:linear-gradient(90deg,#000 0%,#000 74%,rgb(0 0 0 / .88) 84%,rgb(0 0 0 / .55) 92%,rgb(0 0 0 / .2) 97%,transparent 100%);
-  mask-image:linear-gradient(90deg,#000 0%,#000 74%,rgb(0 0 0 / .88) 84%,rgb(0 0 0 / .55) 92%,rgb(0 0 0 / .2) 97%,transparent 100%);
+  -webkit-mask-image:linear-gradient(90deg,#000 0%,#000 86%,rgb(0 0 0 / .82) 93%,rgb(0 0 0 / .45) 97%,transparent 100%);
+  mask-image:linear-gradient(90deg,#000 0%,#000 86%,rgb(0 0 0 / .82) 93%,rgb(0 0 0 / .45) 97%,transparent 100%);
+}
+/* 每层里的两个 pane：左边清晰、右边用同一张图的模糊副本渐入，过渡区是真的高斯模糊而不是只改透明度。 */
+.lyrics-view.is-background-lyrics .bg-cover-pane{
+  position:absolute;inset:0;background-position:left center;background-size:cover;background-repeat:no-repeat;
+}
+/* 清晰 pane 在右侧淡出、模糊 pane 接过，避免两张图叠着显虚。 */
+.lyrics-view.is-background-lyrics .bg-cover-sharp{
+  -webkit-mask-image:linear-gradient(90deg,#000 0%,#000 40%,rgb(0 0 0 / .5) 62%,transparent 78%);
+  mask-image:linear-gradient(90deg,#000 0%,#000 40%,rgb(0 0 0 / .5) 62%,transparent 78%);
+}
+.lyrics-view.is-background-lyrics .bg-cover-blur{
+  filter:blur(44px) saturate(1.1) brightness(.96);
+  transform:scale(1.12);transform-origin:left center;
+  -webkit-mask-image:linear-gradient(90deg,transparent 16%,rgb(0 0 0 / .5) 36%,rgb(0 0 0 / .95) 58%,#000 76%);
+  mask-image:linear-gradient(90deg,transparent 16%,rgb(0 0 0 / .5) 36%,rgb(0 0 0 / .95) 58%,#000 76%);
 }
 .lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .bg-cover-left{opacity:1}
 /* 封面层在压暗层之上，右侧压暗要画在封面自己身上；跟着 mask 一起淡出。 */
@@ -7257,7 +7272,7 @@ html.is-bg-lyrics-scene #app{display:none}
 .lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .lyrics-scrim{
   /* 压在封面层之上、歌词框架之下：浅色封面时白字才不会糊成一片。 */
   z-index:2;
-  background:linear-gradient(90deg,rgb(0 0 0 / .1) 0%,rgb(0 0 0 / .06) 38%,rgb(0 0 0 / .4) 64%,rgb(0 0 0 / .7) 100%);
+  background:linear-gradient(90deg,rgb(0 0 0 / .08) 0%,rgb(0 0 0 / .05) 38%,rgb(0 0 0 / .3) 64%,rgb(0 0 0 / .52) 100%);
 }
 .lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .lyrics-frame{padding:6vh 6vw 6vh 0;justify-content:flex-end}
 .lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .lyrics-right{flex:0 0 auto;width:clamp(560px,42vw,1500px)}
@@ -7323,8 +7338,23 @@ html.is-bg-lyrics-scene #app{display:none}
 .lyrics-view.is-cover-left:not(.is-background-lyrics):not(.is-lumiere) .lyrics-cover-wrap{
   position:absolute;inset:0;width:100%;height:100%;aspect-ratio:auto;
   border-radius:0;box-shadow:none;animation:none;
-  -webkit-mask-image:linear-gradient(90deg,#000 0%,#000 74%,rgb(0 0 0 / .88) 84%,rgb(0 0 0 / .55) 92%,rgb(0 0 0 / .2) 97%,transparent 100%);
-  mask-image:linear-gradient(90deg,#000 0%,#000 74%,rgb(0 0 0 / .88) 84%,rgb(0 0 0 / .55) 92%,rgb(0 0 0 / .2) 97%,transparent 100%);
+  -webkit-mask-image:linear-gradient(90deg,#000 0%,#000 86%,rgb(0 0 0 / .82) 93%,rgb(0 0 0 / .45) 97%,transparent 100%);
+  mask-image:linear-gradient(90deg,#000 0%,#000 86%,rgb(0 0 0 / .82) 93%,rgb(0 0 0 / .45) 97%,transparent 100%);
+}
+/* 每层里的两个 pane：左边清晰、右边用同一张图的模糊副本渐入，过渡区是真的高斯模糊而不是只改透明度。 */
+.lyrics-view.is-background-lyrics .bg-cover-pane{
+  position:absolute;inset:0;background-position:left center;background-size:cover;background-repeat:no-repeat;
+}
+/* 清晰 pane 在右侧淡出、模糊 pane 接过，避免两张图叠着显虚。 */
+.lyrics-view.is-background-lyrics .bg-cover-sharp{
+  -webkit-mask-image:linear-gradient(90deg,#000 0%,#000 40%,rgb(0 0 0 / .5) 62%,transparent 78%);
+  mask-image:linear-gradient(90deg,#000 0%,#000 40%,rgb(0 0 0 / .5) 62%,transparent 78%);
+}
+.lyrics-view.is-background-lyrics .bg-cover-blur{
+  filter:blur(44px) saturate(1.1) brightness(.96);
+  transform:scale(1.12);transform-origin:left center;
+  -webkit-mask-image:linear-gradient(90deg,transparent 16%,rgb(0 0 0 / .5) 36%,rgb(0 0 0 / .95) 58%,#000 76%);
+  mask-image:linear-gradient(90deg,transparent 16%,rgb(0 0 0 / .5) 36%,rgb(0 0 0 / .95) 58%,#000 76%);
 }
 .lyrics-view.is-cover-left:not(.is-background-lyrics):not(.is-lumiere) .lyrics-cover{
   aspect-ratio:auto;height:100%;

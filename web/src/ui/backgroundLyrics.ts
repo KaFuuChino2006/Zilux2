@@ -188,10 +188,17 @@ export async function bootBackgroundLyricsScene(): Promise<void> {
   document.body.append(view.root);
 
   // 「封面在左」样式：两层封面图交叉淡入淡出（换歌时旧封面压着新封面淡出，避免硬切），
-  // 铺左半边并用 CSS mask 向右渐隐；歌词列由 CSS 挪到右半边。
+  // 铺满整宽并用 CSS mask 向右渐隐；歌词列由 CSS 挪到右半边。
+  // 每层再分「清晰」「模糊」两个 pane：右侧用同一张图的模糊副本渐入，过渡区才真的会糊。
+  const createCoverPane = (extra: string): HTMLDivElement => {
+    const pane = document.createElement('div');
+    pane.className = `bg-cover-pane ${extra}`;
+    return pane;
+  };
   const coverLayers: HTMLDivElement[] = [0, 1].map(() => {
     const layer = document.createElement('div');
     layer.className = 'bg-cover-left';
+    layer.append(createCoverPane('bg-cover-sharp'), createCoverPane('bg-cover-blur'));
     view.root.append(layer);
     return layer;
   });
@@ -220,7 +227,10 @@ export async function bootBackgroundLyricsScene(): Promise<void> {
   const revealCover = (url: string): void => {
     const nextIndex = activeCoverLayer === 0 ? 1 : 0;
     const next = coverLayers[nextIndex];
-    next.style.backgroundImage = url ? `url("${url}")` : 'none';
+    const image = url ? `url("${url}")` : 'none';
+    next.querySelectorAll<HTMLDivElement>('.bg-cover-pane').forEach((pane) => {
+      pane.style.backgroundImage = image;
+    });
     // 两层封面都留在歌词框架之下（CSS z-index:1 / 框架 z-index:2），靠 DOM 顺序决定谁在上：
     // 把新层移到末尾，换歌时旧层压着新层淡出，不会挡住歌词。
     if (next.nextSibling !== null) view.root.append(next);
