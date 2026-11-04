@@ -26,6 +26,7 @@ import { createVinylStage, setVinylLyricTintProvider, type VinylStage } from './
 import type { Theme } from './lumiere-folia/types';
 import type { LyricTextSettings } from './lumiereSettings';
 import { LYRIC_STYLES, lyricStyle, lyricStyleNeedsCharTiming, onLyricStyle } from './lyricStyle';
+import { BG_COVER_EVENT, bgLyricsCoverStyle } from './bgLyricsCover';
 
 /** 歌词页播放效果（纯字）；导出给快捷设置用。 */
 export type { LumiereMode };
@@ -1041,6 +1042,8 @@ export class LyricsView {
   private stageObserver: MutationObserver | null = null;
   /** 默认歌词页的播放样式（见 lyricStyle.ts）：只切 root 上的 lyric-style-<id> class，动画全在 CSS 里。 */
   private styleUnsub: (() => void) | null = null;
+  /** 「封面在左」样式与桌面背景歌词共用，快捷设置里改了要当场切换。 */
+  private coverStyleUnsub: (() => void) | null = null;
 
   constructor(private readonly onClose: () => void) {
     this.bgEl = h('div', { class: 'lyrics-bg' });
@@ -1098,6 +1101,12 @@ export class LyricsView {
     this.applyLyricStyle();
     this.applyLyricUnsungColor();
     this.styleUnsub = onLyricStyle(() => this.applyLyricStyle());
+
+    // 「封面在左」：软件内歌词页和桌面背景歌词保持一致，共用 bgLyricsCover 里的样式选择。
+    this.applyCoverStyle();
+    const onCoverStyle = (): void => this.applyCoverStyle();
+    window.addEventListener(BG_COVER_EVENT, onCoverStyle);
+    this.coverStyleUnsub = () => window.removeEventListener(BG_COVER_EVENT, onCoverStyle);
 
     this.matchUnsub = onLyricMatch(() => {
       if (this.disposed) return;
@@ -1160,6 +1169,16 @@ export class LyricsView {
     if (this.disposed) return;
     this.bgMode = lyricsBgMode;
     void this.applyTextTint();
+  }
+
+  /**
+   * 「封面在左」：只影响播放效果为「关闭」的 DOM 歌词（纯字/房间/唱片有画布，CSS 里有 :not(.is-lumiere) 门槛）。
+   * 背景场景自己用 `is-bg-cover-left` + `.bg-cover-left` 层，这里只处理软件内歌词页。
+   */
+  applyCoverStyle(): void {
+    if (this.disposed) return;
+    if (document.documentElement.classList.contains('is-bg-lyrics-scene')) return;
+    this.root.classList.toggle('is-cover-left', bgLyricsCoverStyle() === 'cover');
   }
 
   /** 应用「未播放歌词颜色」：写到歌词视图上，空串恢复主题语义色（关闭效果下生效）。 */
@@ -1892,6 +1911,8 @@ export class LyricsView {
     this.unsubscribe = null;
     this.matchUnsub?.();
     this.matchUnsub = null;
+    this.coverStyleUnsub?.();
+    this.coverStyleUnsub = null;
     if (this.rafId) window.cancelAnimationFrame(this.rafId);
     window.clearTimeout(this.manualTimer);
     if (this.manualRaf) {
