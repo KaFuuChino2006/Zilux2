@@ -7223,3 +7223,18 @@ html.is-bg-lyrics-scene #app{display:none}
 .lyrics-view.is-background-lyrics:not(.is-lumiere) .lyrics-right{width:100%}
 .lyrics-view.is-background-lyrics:not(.is-lumiere) .lyrics-lines{align-items:center}
 .lyrics-view.is-background-lyrics:not(.is-lumiere) .lyric-line{text-align:center}
+/* 桌面尺寸下（3440 宽）主歌词页的 31px 字号上限太小；背景模式按视口高度放大，并去掉行首强调条与偏移。
+   主歌词页的 active 字号是带 !important 的 --grow 动画，这里必须同时用 !important 才能压过。 */
+.lyrics-view.is-background-lyrics:not(.is-lumiere) .lyrics-right{width:min(2400px,92vw)}
+.lyrics-view.is-background-lyrics:not(.is-lumiere) .lyrics-lines{gap:26px}
+.lyrics-view.is-background-lyrics:not(.is-lumiere) .lyrics-right .lyric-line{
+  font-size:clamp(38px,4.6vh,88px)!important;
+  line-height:1.28;
+  font-weight:700;
+  text-align:center;
+}
+.lyrics-view.is-background-lyrics:not(.is-lumiere) .lyrics-right .lyric-line.is-active{
+  font-size:clamp(46px,5.4vh,104px)!important;
+  transform:none;
+}
+.lyrics-view.is-background-lyrics:not(.is-lumiere) .lyrics-right .lyric-line.is-active:before{display:none}
