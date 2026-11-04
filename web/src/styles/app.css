@@ -7420,3 +7420,18 @@ html.is-bg-lyrics-scene #app{display:none}
 .quick-section{grid-column:1/-1;display:flex;align-items:center;gap:8px;margin:10px 0 0;color:var(--muted);font-size:11px;letter-spacing:.06em}
 .quick-section:first-child{margin-top:0}
 .quick-section::after{content:'';flex:1;height:1px;background:var(--line);opacity:.7}
+
+/* 软件内「封面在左」的模糊副本：贴在清晰封面下面，模糊范围由 --cover-blur 控制。 */
+.lyrics-view.is-cover-left:not(.is-background-lyrics):not(.is-lumiere) .lyrics-cover-blur{
+  position:absolute;inset:0;z-index:0;
+  background-position:center;background-size:cover;
+  filter:blur(var(--cover-blur, 44px)) saturate(1.1) brightness(.96);
+  transform:scale(1.08);
+  opacity:0;
+}
+.lyrics-view.is-cover-left.is-cover-blur:not(.is-background-lyrics):not(.is-lumiere) .lyrics-cover-blur{opacity:1}
+/* 有模糊副本时，清晰封面提前淡出，右侧交给模糊层，过渡区才够宽。 */
+.lyrics-view.is-cover-left.is-cover-blur:not(.is-background-lyrics):not(.is-lumiere) .lyrics-cover-wrap{
+  -webkit-mask-image:linear-gradient(90deg,#000 0%,#000 40%,rgb(0 0 0 / .5) 62%,transparent 78%);
+  mask-image:linear-gradient(90deg,#000 0%,#000 40%,rgb(0 0 0 / .5) 62%,transparent 78%);
+}
