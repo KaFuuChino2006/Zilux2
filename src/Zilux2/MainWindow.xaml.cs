@@ -889,11 +889,15 @@ public partial class MainWindow : Window
             Opacity = 1;
             ShowInTaskbar = true;
             Show();
-            Activate();
-            if (_hwnd != IntPtr.Zero)
+            // ShowInTaskbar 变化后 WPF 可能重建 HWND，这里重新取一次句柄再激活。
+            var handle = new WindowInteropHelper(this).Handle;
+            if (handle != IntPtr.Zero)
             {
-                NativeMethods.SetForegroundWindow(_hwnd);
+                _hwnd = handle;
             }
+
+            Activate();
+            NativeMethods.ForceForeground(handle);
 
             _isHiddenToTray = false;
             HostLog.Info("tray.show");
@@ -943,10 +947,8 @@ public partial class MainWindow : Window
         try
         {
             Activate();
-            if (_hwnd != IntPtr.Zero)
-            {
-                NativeMethods.SetForegroundWindow(_hwnd);
-            }
+            var handle = _hwnd != IntPtr.Zero ? _hwnd : new WindowInteropHelper(this).Handle;
+            NativeMethods.ForceForeground(handle);
 
             HostLog.Info("instance.focus");
         }
