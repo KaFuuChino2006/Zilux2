@@ -9,7 +9,15 @@ import { host } from '../core/bridge';
 import { getSettings, loadSettings, onSettingsChange } from '../core/settings';
 import { initOnline, onlineEndpoint, onOnlineChange } from '../online/client';
 import type { OnlineTrack } from '../online/types';
-import { BG_COVER_KEY, bgLyricsCoverStyle } from './bgLyricsCover';
+import {
+  BG_BLUR_KEY,
+  BG_BLUR_PX,
+  BG_COVER_KEY,
+  BG_FILL_KEY,
+  bgLyricsBlurLevel,
+  bgLyricsCoverStyle,
+  bgLyricsFillMode,
+} from './bgLyricsCover';
 import { LyricsView, loadLyricDoc, setExternalLyricMode, type LyricDoc } from './lyrics';
 import { applyExternalPlayback, onPlayer, playerState } from './player';
 
@@ -211,6 +219,14 @@ export async function bootBackgroundLyricsScene(): Promise<void> {
 
   const coverMode = (): boolean => view.root.classList.contains('is-bg-cover-left');
 
+  /** 模糊强度 / 「封面之后」的填充方式：写到 root 的 CSS 变量与类上，由样式表消费。 */
+  const applyCoverBlur = (): void => {
+    const level = bgLyricsBlurLevel();
+    view.root.style.setProperty('--bg-cover-blur', `${BG_BLUR_PX[level]}px`);
+    view.root.classList.toggle('is-bg-cover-noblur', level === 'off');
+    view.root.classList.toggle('is-bg-cover-fill', bgLyricsFillMode() === 'fill' && level !== 'off');
+  };
+
   /** 只改两层封面的可见性；切换本身交给 CSS 的 opacity 过渡。 */
   const syncCoverOpacity = (): void => {
     const on = coverMode();
@@ -330,6 +346,7 @@ export async function bootBackgroundLyricsScene(): Promise<void> {
   receiveSnapshot(false);
   applyCoverStyle(false);
   applyCoverImage(false);
+  applyCoverBlur();
   // 在线源端点比页面 ready 晚到；端点一到就把旧端口拼的封面地址换成当前端口。
   onOnlineChange(() => {
     applyCoverStyle(false);
@@ -344,6 +361,10 @@ export async function bootBackgroundLyricsScene(): Promise<void> {
     if (event.key === BG_COVER_KEY) {
       applyCoverStyle(true);
       applyCoverImage(false);
+      return;
+    }
+    if (event.key === BG_BLUR_KEY || event.key === BG_FILL_KEY) {
+      applyCoverBlur();
       return;
     }
     // 样式/偏移类设置改了才重绘；其它键（播放进度、统计、封面缓存…）不碰歌词树。

@@ -200,6 +200,14 @@ import { openTrackMenu, type TrackMenuItem } from './trackMenu';
 import { buildSettingsIOActions } from './settingsIO';
 import { buildSleepTimerPanel, completeSleepTimer, getSleepTimerState, subscribeSleepTimer } from './sleepTimer';
 import { bgLyricsCoverStyle, setBgLyricsCoverStyle, type BgLyricsCoverStyle } from './bgLyricsCover';
+import {
+  bgLyricsBlurLevel,
+  bgLyricsFillMode,
+  setBgLyricsBlurLevel,
+  setBgLyricsFillMode,
+  type BgLyricsBlurLevel,
+  type BgLyricsFillMode,
+} from './bgLyricsCover';
 import { currentLyricDisplay, currentLyricSource, lyricGrowMode, lyricMatchMinScore, lyricOffsetOf, LYRIC_UNSUNG_PRESETS, lyricsBackgroundMode, lyricsLumiereMode, lyricUnsungColor, LyricsView, primeLyrics, setLyricGrowMode, setLyricsBackgroundMode, setLyricsLumiereMode, setLyricMatchMinScore, setLyricOffset, setLyricUnsungColor, updateCurrentLyricLine, lyricMatchText } from './lyrics';
 import { LUMIERE_MODES } from './lumiere';
 import {
@@ -7037,6 +7045,56 @@ export class App {
       paintEffectMode();
       syncEffectSettingsCell();
       window.requestAnimationFrame(() => paintEffectMode());
+      // 封面右侧模糊强度 / 背景是否一起模糊（播放效果=关闭 + 封面在左时生效）。
+      const makeChoiceSeg = <T extends string>(
+        options: { id: T; label: string }[],
+        current: () => T,
+        pick: (id: T) => void,
+      ): HTMLElement => {
+        const thumb = h('div', { class: 'quick-seg-thumb' });
+        const btns: HTMLButtonElement[] = options.map((option) => {
+          const btn = h('button', { class: 'quick-seg-btn', type: 'button', text: option.label }) as HTMLButtonElement;
+          btn.addEventListener('pointerdown', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          });
+          btn.addEventListener('click', () => {
+            pick(option.id);
+            paint();
+          });
+          return btn;
+        });
+        const paint = (): void => {
+          const index = Math.max(0, options.findIndex((item) => item.id === current()));
+          btns.forEach((btn, i) => btn.classList.toggle('is-on', i === index));
+          const active = btns[index];
+          if (!active) return;
+          thumb.style.width = `${active.offsetWidth}px`;
+          thumb.style.transform = `translateX(${active.offsetLeft}px)`;
+        };
+        const root = h('div', { class: 'quick-seg-slider' }, thumb, ...btns);
+        paint();
+        window.requestAnimationFrame(paint);
+        return root;
+      };
+      const bgBlurControl = makeChoiceSeg<BgLyricsBlurLevel>(
+        [
+          { id: 'off', label: '不模糊' },
+          { id: 'soft', label: '轻' },
+          { id: 'medium', label: '中' },
+          { id: 'strong', label: '重' },
+        ],
+        bgLyricsBlurLevel,
+        setBgLyricsBlurLevel,
+      );
+      const bgFillControl = makeChoiceSeg<BgLyricsFillMode>(
+        [
+          { id: 'edge', label: '渐隐到壁纸' },
+          { id: 'fill', label: '模糊铺满' },
+        ],
+        bgLyricsFillMode,
+        setBgLyricsFillMode,
+      );
       // 「关闭」效果下未播放歌词的颜色：跟随主题 / 预设 / 自定义取色器。
       const unsungSwatches = h('div', { class: 'theme-swatches quick-unsung' });
       const unsungCustom = h('input', {
@@ -7105,8 +7163,10 @@ export class App {
             '背景歌词样式',
             true,
             bgCoverControl,
-            h('div', { class: 'quick-hint', text: '播放效果为「关闭」时生效；封面在左：封面铺左半边并向壁纸渐隐，歌词移到右半边' }),
+            h('div', { class: 'quick-hint', text: '播放效果为「关闭」时生效；封面在左：封面铺满并向右侧渐隐/模糊，歌词移到右半边' }),
           ),
+          cell('封面模糊', false, bgBlurControl),
+          cell('封面之后', false, bgFillControl, h('div', { class: 'quick-hint', text: '模糊铺满：右侧不再露出壁纸，整屏都是封面的模糊延伸' })),
           effectSettingsCell,
         ),
       );
