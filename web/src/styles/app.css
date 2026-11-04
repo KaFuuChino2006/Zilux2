@@ -7415,3 +7415,8 @@ html.is-bg-lyrics-scene #app{display:none}
     calc(var(--drift-y, 0.4em) * var(--scatter, 1) * 0.5) !important;
   rotate: calc(var(--drift-rot, -16deg) * var(--scatter, 1) * 0.55) !important;
 }
+
+/* 歌词页签分组标题：把参数分块，避免一屏堆太多设置。 */
+.quick-section{grid-column:1/-1;display:flex;align-items:center;gap:8px;margin:10px 0 0;color:var(--muted);font-size:11px;letter-spacing:.06em}
+.quick-section:first-child{margin-top:0}
+.quick-section::after{content:'';flex:1;height:1px;background:var(--line);opacity:.7}
