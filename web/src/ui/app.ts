@@ -6818,8 +6818,8 @@ export class App {
             bgCoverControl,
             h('div', { class: 'quick-hint', text: '播放效果为「关闭」时生效；封面在左：封面铺满并向右侧渐隐/模糊，歌词移到右半边' }),
           ),
-          cell('封面模糊', false, bgBlurControl),
-          cell('封面之后', false, bgFillControl, h('div', { class: 'quick-hint', text: '模糊铺满：右侧不再露出壁纸，整屏都是封面的模糊延伸' })),
+          cell('封面模糊', true, bgBlurControl),
+          cell('封面之后', true, bgFillControl, h('div', { class: 'quick-hint', text: '模糊铺满：右侧不再露出壁纸，整屏都是封面的模糊延伸' })),
         ),
       );
       return;
@@ -7725,7 +7725,7 @@ export class App {
       return;
     }
     const target = Math.min(natural, max);
-    if (natural <= 0 || Math.abs(target - current) < 1.5) return;
+    if (natural <= 0 || Math.abs(target - current) < 4) return;
     this.animateQuickBodyHeight(current, target);
   }
 
@@ -7755,6 +7755,7 @@ export class App {
     this.quickRoot.classList.toggle('is-airplay', key === 'airplay');
     if (key === 'lyrics') primeLyrics(playerState().track);
     this.renderQuickBody();
+    if (body) body.scrollTop = 0;
     // 内容高度变化用动画过渡，避免面板一下子跳大/跳小；
     // 目标高度按切完之后的「目标宽度」量，否则宽度过渡结束时内容重排、高度会再跳一下。
     if (body && before > 0) {
