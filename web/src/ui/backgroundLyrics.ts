@@ -110,10 +110,33 @@ export function installBackgroundLyricsPublisher(): void {
 
 /* ------------------------------ 背景场景侧 ------------------------------ */
 
+/** 只影响演出外观、需要背景窗口跟着重绘的共享设置键（其它 localStorage 写入一律忽略）。 */
+const STYLE_KEYS = new Set([
+  'zilux2.lumiere',
+  'zilux2.lyricsBg',
+  'zilux2.lyricStyle',
+  'zilux2.lyricGrow',
+  'zilux2.lyricUnsung',
+  'zilux2.lyricText',
+  'zilux2.lyricOffsets',
+  'zilux2.lyricManual',
+]);
+
+let appliedSavedAt = -1;
+let appliedTrackKey = '';
+
 function applySnapshot(view: LyricsView): void {
   const snapshot = readSnapshot();
   if (!snapshot) return;
-  applyExternalPlayback({ track: snapshot.track });
+  // 主窗口每写一次 localStorage（播放进度、统计等）都会让 storage 事件冒到这里；
+  // 只有歌词快照真的换了才重建 DOM，否则整块歌词会被反复清空重画（看起来就是上下乱跳）。
+  if (snapshot.savedAt === appliedSavedAt) return;
+  appliedSavedAt = snapshot.savedAt;
+  const key = trackKey(snapshot.track);
+  if (key !== appliedTrackKey) {
+    appliedTrackKey = key;
+    applyExternalPlayback({ track: snapshot.track });
+  }
   view.applyExternalDoc(snapshot.doc);
 }
 
@@ -132,17 +155,27 @@ export async function bootBackgroundLyricsScene(): Promise<void> {
 
   applySnapshot(view);
 
-  window.addEventListener('storage', () => {
-    applySnapshot(view);
-    view.refreshSharedStyle();
+  window.addEventListener('storage', (event) => {
+    if (event.key === DOC_KEY) {
+      applySnapshot(view);
+      return;
+    }
+    // 样式/偏移类设置改了才重绘；其它键（播放进度、统计、封面缓存…）不碰歌词树。
+    if (event.key && STYLE_KEYS.has(event.key)) view.refreshSharedStyle();
   });
 
   const clock = { positionMs: 0, durationMs: 0, playing: false, syncedAt: performance.now() };
+  let pushedPositionMs = 0;
+  let lastTrackKeyPushed = '';
 
   const pushClock = (): void => {
     const elapsed = clock.playing ? performance.now() - clock.syncedAt : 0;
     let position = clock.positionMs + elapsed;
     if (clock.durationMs > 0) position = Math.min(position, clock.durationMs);
+    // 宿主快照 1 秒才来一次，采样点比本地外推略旧；四舍五入回跳会让行索引来回抖，
+    // 所以播放中只允许向前（真的 seek 由下面的跳变判断放行）。
+    if (clock.playing) position = Math.max(position, pushedPositionMs);
+    pushedPositionMs = position;
     applyExternalPlayback({ positionMs: position, durationMs: clock.durationMs, playing: clock.playing });
   };
 
@@ -150,10 +183,22 @@ export async function bootBackgroundLyricsScene(): Promise<void> {
     if (message.type !== 'media') return;
     const payload = message.payload as MediaPayload | undefined;
     if (!payload || typeof payload !== 'object') return;
-    if (typeof payload.positionMs === 'number') clock.positionMs = Math.max(0, payload.positionMs);
+    const previous = clock.positionMs;
+    const next = typeof payload.positionMs === 'number' ? Math.max(0, payload.positionMs) : previous;
+    // 明显的前后跳（>2 秒）视为用户 seek，重置单调基线；正常刷新允许小幅回正。
+    if (Math.abs(next - previous) > 2000) pushedPositionMs = next;
+    clock.positionMs = next;
     if (typeof payload.durationMs === 'number') clock.durationMs = Math.max(0, payload.durationMs);
     clock.playing = payload.playing === true;
     clock.syncedAt = performance.now();
+    const track = playerState().track;
+    if (track) {
+      const key = trackKey(track);
+      if (key !== lastTrackKeyPushed) {
+        lastTrackKeyPushed = key;
+        pushedPositionMs = next;
+      }
+    }
     pushClock();
   });
 
