@@ -18,6 +18,23 @@ export function bgLyricsCoverStyle(): BgLyricsCoverStyle {
   }
 }
 
+/** 「播放效果」为纯字/房间/唱片时，「封面在左」属于「关闭」档的样式，不应生效。 */
+export const LUMIERE_KEY = 'zilux2.lumiere';
+
+export function lumiereEffectOn(): boolean {
+  try {
+    const raw = window.localStorage.getItem(LUMIERE_KEY);
+    return raw !== null && raw !== 'off';
+  } catch {
+    return false;
+  }
+}
+
+/** 实际生效的封面样式：播放效果开启时一律回落纯壁纸（UI 里的选择保留，关掉效果后恢复）。 */
+export function effectiveBgLyricsCoverStyle(): BgLyricsCoverStyle {
+  return lumiereEffectOn() ? 'wallpaper' : bgLyricsCoverStyle();
+}
+
 export function setBgLyricsCoverStyle(style: BgLyricsCoverStyle): void {
   try {
     window.localStorage.setItem(BG_COVER_KEY, style);
