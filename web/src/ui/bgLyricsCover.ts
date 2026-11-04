@@ -26,3 +26,51 @@ export function setBgLyricsCoverStyle(style: BgLyricsCoverStyle): void {
   }
   window.dispatchEvent(new CustomEvent<BgLyricsCoverStyle>(BG_COVER_EVENT, { detail: style }));
 }
+
+/** 封面右侧的模糊强度；背景歌词场景按这个值给 CSS 变量。 */
+export type BgLyricsBlurLevel = 'off' | 'soft' | 'medium' | 'strong';
+/** 封面右侧之后的背景：渐隐露出壁纸，或直接用模糊封面铺满。 */
+export type BgLyricsFillMode = 'edge' | 'fill';
+
+export const BG_BLUR_KEY = 'zilux2.bgLyricsBlur';
+export const BG_FILL_KEY = 'zilux2.bgLyricsFill';
+
+export const BG_BLUR_PX: Record<BgLyricsBlurLevel, number> = {
+  off: 0,
+  soft: 20,
+  medium: 44,
+  strong: 64,
+};
+
+export function bgLyricsBlurLevel(): BgLyricsBlurLevel {
+  try {
+    const raw = window.localStorage.getItem(BG_BLUR_KEY);
+    return raw === 'off' || raw === 'soft' || raw === 'strong' ? raw : 'medium';
+  } catch {
+    return 'medium';
+  }
+}
+
+export function setBgLyricsBlurLevel(level: BgLyricsBlurLevel): void {
+  try {
+    window.localStorage.setItem(BG_BLUR_KEY, level);
+  } catch {
+    /* 存储不可用时保持默认 */
+  }
+}
+
+export function bgLyricsFillMode(): BgLyricsFillMode {
+  try {
+    return window.localStorage.getItem(BG_FILL_KEY) === 'fill' ? 'fill' : 'edge';
+  } catch {
+    return 'edge';
+  }
+}
+
+export function setBgLyricsFillMode(mode: BgLyricsFillMode): void {
+  try {
+    window.localStorage.setItem(BG_FILL_KEY, mode);
+  } catch {
+    /* 存储不可用时保持默认 */
+  }
+}

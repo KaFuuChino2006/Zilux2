@@ -7258,10 +7258,20 @@ html.is-bg-lyrics-scene #app{display:none}
   mask-image:linear-gradient(90deg,#000 0%,#000 40%,rgb(0 0 0 / .5) 62%,transparent 78%);
 }
 .lyrics-view.is-background-lyrics .bg-cover-blur{
-  filter:blur(44px) saturate(1.1) brightness(.96);
+  filter:blur(var(--bg-cover-blur, 44px)) saturate(1.1) brightness(.96);
   transform:scale(1.12);transform-origin:left center;
   -webkit-mask-image:linear-gradient(90deg,transparent 16%,rgb(0 0 0 / .5) 36%,rgb(0 0 0 / .95) 58%,#000 76%);
   mask-image:linear-gradient(90deg,transparent 16%,rgb(0 0 0 / .5) 36%,rgb(0 0 0 / .95) 58%,#000 76%);
+}
+/* 模糊关掉：只留清晰层，右侧照旧渐隐到壁纸。 */
+.lyrics-view.is-background-lyrics.is-bg-cover-noblur .bg-cover-blur{display:none}
+/* 模糊铺满：整屏都留在封面上，右侧是同一张图的模糊延伸，不再露出壁纸。 */
+.lyrics-view.is-background-lyrics.is-bg-cover-fill .bg-cover-left{
+  -webkit-mask-image:none;mask-image:none;
+}
+.lyrics-view.is-background-lyrics.is-bg-cover-fill .bg-cover-blur{
+  -webkit-mask-image:linear-gradient(90deg,transparent 16%,rgb(0 0 0 / .5) 36%,rgb(0 0 0 / .95) 58%,#000 70%);
+  mask-image:linear-gradient(90deg,transparent 16%,rgb(0 0 0 / .5) 36%,rgb(0 0 0 / .95) 58%,#000 70%);
 }
 .lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .bg-cover-left{opacity:1}
 /* 封面层在压暗层之上，右侧压暗要画在封面自己身上；跟着 mask 一起淡出。 */
@@ -7351,10 +7361,20 @@ html.is-bg-lyrics-scene #app{display:none}
   mask-image:linear-gradient(90deg,#000 0%,#000 40%,rgb(0 0 0 / .5) 62%,transparent 78%);
 }
 .lyrics-view.is-background-lyrics .bg-cover-blur{
-  filter:blur(44px) saturate(1.1) brightness(.96);
+  filter:blur(var(--bg-cover-blur, 44px)) saturate(1.1) brightness(.96);
   transform:scale(1.12);transform-origin:left center;
   -webkit-mask-image:linear-gradient(90deg,transparent 16%,rgb(0 0 0 / .5) 36%,rgb(0 0 0 / .95) 58%,#000 76%);
   mask-image:linear-gradient(90deg,transparent 16%,rgb(0 0 0 / .5) 36%,rgb(0 0 0 / .95) 58%,#000 76%);
+}
+/* 模糊关掉：只留清晰层，右侧照旧渐隐到壁纸。 */
+.lyrics-view.is-background-lyrics.is-bg-cover-noblur .bg-cover-blur{display:none}
+/* 模糊铺满：整屏都留在封面上，右侧是同一张图的模糊延伸，不再露出壁纸。 */
+.lyrics-view.is-background-lyrics.is-bg-cover-fill .bg-cover-left{
+  -webkit-mask-image:none;mask-image:none;
+}
+.lyrics-view.is-background-lyrics.is-bg-cover-fill .bg-cover-blur{
+  -webkit-mask-image:linear-gradient(90deg,transparent 16%,rgb(0 0 0 / .5) 36%,rgb(0 0 0 / .95) 58%,#000 70%);
+  mask-image:linear-gradient(90deg,transparent 16%,rgb(0 0 0 / .5) 36%,rgb(0 0 0 / .95) 58%,#000 70%);
 }
 .lyrics-view.is-cover-left:not(.is-background-lyrics):not(.is-lumiere) .lyrics-cover{
   aspect-ratio:auto;height:100%;
