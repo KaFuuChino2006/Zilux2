@@ -7635,9 +7635,8 @@ export class App {
     body.style.overflow = '';
     const settled = body.getBoundingClientRect().height;
     const toH = settled > 0 ? settled : Math.min(to, max);
-    // 动画期间用 clip 锁住滚动；配合 scrollbar-gutter:stable，滚动条出现/消失不会改变宽度，
-    // 也就不会反过来触发 ResizeObserver 让滚动条抖。
-    body.style.overflow = 'clip';
+    // 动画期间保持 overflow:auto，让 scrollbar-gutter:stable 一直预留滚动条槽位；
+    // 若改成 clip 就不再是滚动容器、槽位不保留，动画结束恢复滚动时整块内容会窄 10px，开关看起来会挪一下。
     body.style.height = `${fromH}px`;
     void body.offsetHeight;
     body.style.height = `${toH}px`;
