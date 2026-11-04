@@ -26,7 +26,7 @@ import { createVinylStage, setVinylLyricTintProvider, type VinylStage } from './
 import type { Theme } from './lumiere-folia/types';
 import type { LyricTextSettings } from './lumiereSettings';
 import { LYRIC_STYLES, lyricStyle, lyricStyleNeedsCharTiming, onLyricStyle } from './lyricStyle';
-import { BG_BLUR_PX, BG_COVER_EVENT, bgLyricsBlurLevel, bgLyricsCoverStyle } from './bgLyricsCover';
+import { BG_BLUR_PX, BG_COVER_EVENT, bgLyricsBlurLevel, effectiveBgLyricsCoverStyle, lumiereEffectOn } from './bgLyricsCover';
 
 /** 歌词页播放效果（纯字）；导出给快捷设置用。 */
 export type { LumiereMode };
@@ -1250,7 +1250,7 @@ export class LyricsView {
   private coverRequestWidth(): number {
     if (document.documentElement.classList.contains('is-bg-lyrics-scene')) return 300;
     // 「封面在左」的封面层现在铺满整宽（右侧用 mask 渐隐），所以按整窗宽度要大图。
-    return bgLyricsCoverStyle() === 'cover' ? Math.min(2048, Math.max(900, Math.round(window.innerWidth))) : 300;
+    return effectiveBgLyricsCoverStyle() === 'cover' ? Math.min(2048, Math.max(900, Math.round(window.innerWidth))) : 300;
   }
 
   private refreshCoverResolution(): void {
@@ -1269,6 +1269,10 @@ export class LyricsView {
   /** 封面模糊强度（和桌面背景歌词共用设置）：只改 root 上的 CSS 变量与开关类。 */
   private applyCoverBlurStyle(): void {
     if (this.disposed) return;
+    if (lumiereEffectOn()) {
+      this.root.classList.remove('is-cover-blur');
+      return;
+    }
     const level = bgLyricsBlurLevel();
     this.root.style.setProperty('--cover-blur', `${BG_BLUR_PX[level]}px`);
     this.root.classList.toggle('is-cover-blur', level !== 'off');
@@ -1281,7 +1285,7 @@ export class LyricsView {
   applyCoverStyle(): void {
     if (this.disposed) return;
     if (document.documentElement.classList.contains('is-bg-lyrics-scene')) return;
-    const wantCover = bgLyricsCoverStyle() === 'cover';
+    const wantCover = effectiveBgLyricsCoverStyle() === 'cover';
     if (!this.coverStyleInitialized) {
       this.root.classList.toggle('is-cover-left', wantCover);
       this.coverStyleInitialized = true;
@@ -1343,6 +1347,11 @@ export class LyricsView {
     this.root.classList.toggle('is-lumiere-pure', textOn);
     this.root.classList.toggle('is-room', roomOn);
     this.root.classList.toggle('is-vinyl', vinylOn);
+    // 播放效果开启/关闭会改变「封面在左」是否生效，切完模式立即重算一次。
+    if (this.coverEl) {
+      this.applyCoverStyle();
+      this.applyCoverBlurStyle();
+    }
     const stage = this.lumiereText;
     if (stage) {
       stage.setMode(textOn ? 'text' : 'off');

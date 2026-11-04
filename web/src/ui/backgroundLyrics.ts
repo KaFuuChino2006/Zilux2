@@ -15,8 +15,9 @@ import {
   BG_COVER_KEY,
   BG_FILL_KEY,
   bgLyricsBlurLevel,
-  bgLyricsCoverStyle,
   bgLyricsFillMode,
+  effectiveBgLyricsCoverStyle,
+  lumiereEffectOn,
 } from './bgLyricsCover';
 import { LyricsView, loadLyricDoc, setExternalLyricMode, type LyricDoc } from './lyrics';
 import { applyExternalPlayback, onPlayer, playerState } from './player';
@@ -221,6 +222,10 @@ export async function bootBackgroundLyricsScene(): Promise<void> {
 
   /** 模糊强度 / 「封面之后」的填充方式：写到 root 的 CSS 变量与类上，由样式表消费。 */
   const applyCoverBlur = (): void => {
+    if (lumiereEffectOn()) {
+      view.root.classList.remove('is-bg-cover-noblur', 'is-bg-cover-fill');
+      return;
+    }
     const level = bgLyricsBlurLevel();
     view.root.style.setProperty('--bg-cover-blur', `${BG_BLUR_PX[level]}px`);
     view.root.classList.toggle('is-bg-cover-noblur', level === 'off');
@@ -236,7 +241,7 @@ export async function bootBackgroundLyricsScene(): Promise<void> {
   };
 
   const currentTrackCover = (): string => {
-    const track = bgLyricsCoverStyle() === 'cover' ? readSnapshot()?.track : null;
+    const track = effectiveBgLyricsCoverStyle() === 'cover' ? readSnapshot()?.track : null;
     return track ? freshCoverUrl(track) : '';
   };
 
@@ -285,7 +290,7 @@ export async function bootBackgroundLyricsScene(): Promise<void> {
 
   /** 纯壁纸 ⇄ 封面在左：歌词先压暗，再换布局，最后淡回；封面层由 opacity 过渡。 */
   const applyCoverStyle = (animate: boolean): void => {
-    const wantCover = bgLyricsCoverStyle() === 'cover';
+    const wantCover = effectiveBgLyricsCoverStyle() === 'cover';
     const changed = view.root.classList.contains('is-bg-cover-left') !== wantCover;
     const commitStyle = (): void => {
       view.root.classList.toggle('is-bg-cover-left', wantCover);
@@ -357,6 +362,11 @@ export async function bootBackgroundLyricsScene(): Promise<void> {
     if (event.key === DOC_KEY) {
       receiveSnapshot(true);
       return;
+    }
+    if (event.key === 'zilux2.lumiere') {
+      applyCoverStyle(false);
+      applyCoverImage(false);
+      applyCoverBlur();
     }
     if (event.key === BG_COVER_KEY) {
       applyCoverStyle(true);

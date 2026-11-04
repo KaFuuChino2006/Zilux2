@@ -7464,3 +7464,7 @@ html.is-bg-lyrics-scene #app{display:none}
 /* 旋入/上浮等样式用 !important 把当前行之后的整行压到 0.2；封面在左的背景模式覆盖成可读亮度 */
 .lyrics-view.is-background-lyrics.is-bg-cover-left .lyrics-right .lyric-line.is-active ~ .lyric-line{opacity:.55!important}
 .lyrics-view.is-background-lyrics.is-bg-cover-left .lyrics-right .lyric-line.is-active ~ .lyric-line.is-near{opacity:.78!important}
+
+/* 播放效果（纯字/房间/唱片）开启时，「封面在左」相关层一律不参与渲染 */
+.lyrics-view.is-lumiere .bg-cover-left{display:none!important}
+.lyrics-view.is-lumiere .lyrics-cover-blur{display:none!important}
