@@ -7446,3 +7446,4 @@ html.is-bg-lyrics-scene #app{display:none}
 .quick-panel .quick-body::-webkit-scrollbar-track{background:transparent}
 .quick-panel .quick-body{scrollbar-gutter:stable}
 .quick-panel .quick-body::-webkit-scrollbar-thumb{background:rgb(var(--ink-rgb) / .16)}
+.quick-panel .quick-body{scrollbar-color:rgb(var(--ink-rgb) / .2) transparent;scrollbar-width:thin}
