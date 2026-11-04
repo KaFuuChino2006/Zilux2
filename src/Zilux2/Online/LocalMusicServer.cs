@@ -10,6 +10,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using Zilux2.Analysis;
@@ -2020,13 +2021,18 @@ internal sealed class LocalMusicServer : IDisposable
             return WriteError(context, 400, "bad-request", "缺少 key 参数");
         }
 
-        // 可选缩略图：width=32..1024。喜欢墙几百张封面时，原图常见 2000~5000 像素，
+        // 可选缩略图：width=32..2048。喜欢墙几百张封面时，原图常见 2000~5000 像素，
         // 全尺寸解码会把图片内存和解码时间拖爆；按 DecodePixelWidth 抽样解码后重新编码。
+        // width 超过 600 视为「大图」请求：歌词页封面在 4K 屏上会放大到 2000 像素宽，
+        // 用 300 的缩略图会糊成一片，所以这时改向上游要更大的版本（网易去掉 param，
+        // QQ 从 R300x300 换到 R1500x1500），再按请求宽度缩放。
         var thumbnailWidth = 0;
         if (int.TryParse(query["width"], NumberStyles.Integer, CultureInfo.InvariantCulture, out var requestedWidth) && requestedWidth >= 32)
         {
-            thumbnailWidth = Math.Min(requestedWidth, 1024);
+            thumbnailWidth = Math.Min(requestedWidth, 2048);
         }
+
+        var highResCover = thumbnailWidth > 600;
 
         string upstreamUrl;
         string referer;
@@ -2039,7 +2045,7 @@ internal sealed class LocalMusicServer : IDisposable
                 return WriteError(context, 400, "bad-request", "key 必须是 music.126.net 的图片地址");
             }
 
-            upstreamUrl = key;
+            upstreamUrl = highResCover ? RemoveQueryParam(key, "param") : key;
             referer = NeteaseProvider.RefererUrl;
             cacheKey = "netease|" + key;
         }
@@ -2048,7 +2054,7 @@ internal sealed class LocalMusicServer : IDisposable
             if (IsAllowedQqCoverUrl(key))
             {
                 // Library playlist covers are full qpic URLs; only whitelisted QQ image hosts pass.
-                upstreamUrl = key;
+                upstreamUrl = highResCover ? UpgradeQqCoverSize(key, "1500x1500") : key;
                 referer = QqProvider.RefererUrl;
                 cacheKey = "qq|" + key;
             }
@@ -2061,7 +2067,7 @@ internal sealed class LocalMusicServer : IDisposable
                     return WriteError(context, 400, "bad-request", "key 必须是 QQ 专辑 mid");
                 }
 
-                upstreamUrl = $"https://y.gtimg.cn/music/photo_new/T002R300x300M000{key}.jpg";
+                upstreamUrl = $"https://y.gtimg.cn/music/photo_new/T002R{(highResCover ? "1500x1500" : "300x300")}M000{key}.jpg";
                 referer = QqProvider.RefererUrl;
                 cacheKey = "qq|" + key;
             }
@@ -2779,6 +2785,31 @@ internal sealed class LocalMusicServer : IDisposable
 
         return $"http://127.0.0.1:{Port}/api/cover?source={Uri.EscapeDataString(source)}" +
                $"&key={Uri.EscapeDataString(coverKey)}&token={Uri.EscapeDataString(_token)}";
+    }
+
+    private static string RemoveQueryParam(string url, string name)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            return url;
+        }
+
+        var kept = uri.Query.TrimStart('?')
+            .Split('&', StringSplitOptions.RemoveEmptyEntries)
+            .Where(part =>
+            {
+                var index = part.IndexOf('=');
+                var key = index > 0 ? part[..index] : part;
+                return !key.Equals(name, StringComparison.OrdinalIgnoreCase);
+            })
+            .ToArray();
+        var builder = new UriBuilder(uri) { Query = string.Join('&', kept) };
+        return builder.Uri.ToString();
+    }
+
+    private static string UpgradeQqCoverSize(string url, string size)
+    {
+        return Regex.Replace(url, @"R\d+x\d+", "R" + size);
     }
 
     private static bool IsAllowedQqCoverUrl(string value)

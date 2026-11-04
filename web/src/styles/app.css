@@ -7226,7 +7226,7 @@ html.is-bg-lyrics-scene #app{display:none}
 /* 桌面尺寸下（3440 宽）主歌词页的 31px 字号上限太小；背景模式按视口高度放大，并去掉行首强调条与偏移。
    主歌词页的 active 字号是带 !important 的 --grow 动画，这里必须同时用 !important 才能压过。 */
 .lyrics-view.is-background-lyrics:not(.is-lumiere) .lyrics-right{width:min(2400px,92vw)}
-.lyrics-view.is-background-lyrics:not(.is-lumiere) .lyrics-lines{gap:26px}
+.lyrics-view.is-background-lyrics:not(.is-lumiere) .lyrics-lines{gap:40px}
 .lyrics-view.is-background-lyrics:not(.is-lumiere) .lyrics-right .lyric-line{
   font-size:clamp(38px,4.6vh,88px)!important;
   line-height:1.28;
@@ -7242,18 +7242,19 @@ html.is-bg-lyrics-scene #app{display:none}
 /* 「封面在左」样式（播放效果=关闭时可切换）：封面铺左半边并向壁纸渐隐，歌词列移到右半边左对齐。
    封面层由 backgroundLyrics.ts 的 .bg-cover-left 创建，z-index 在压暗层之上、歌词框架之下。 */
 .lyrics-view.is-background-lyrics .bg-cover-left{
-  position:absolute;inset:0 auto 0 0;z-index:1;width:58%;height:100%;display:none;pointer-events:none;
+  position:absolute;inset:0 auto 0 0;z-index:1;width:58%;height:100%;pointer-events:none;
+  opacity:0;
   background-position:center;background-size:cover;background-repeat:no-repeat;
   -webkit-mask-image:linear-gradient(90deg,#000 0%,#000 58%,rgb(0 0 0 / .6) 82%,transparent 100%);
   mask-image:linear-gradient(90deg,#000 0%,#000 58%,rgb(0 0 0 / .6) 82%,transparent 100%);
 }
-.lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .bg-cover-left{display:block}
+.lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .bg-cover-left{opacity:1}
 .lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .lyrics-scrim{
   background:linear-gradient(90deg,rgb(0 0 0 / .08) 0%,rgb(0 0 0 / .04) 42%,rgb(0 0 0 / .34) 66%,rgb(0 0 0 / .62) 100%);
 }
 .lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .lyrics-frame{padding:6vh 6vw 6vh 0;justify-content:flex-end}
 .lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .lyrics-right{flex:0 0 auto;width:clamp(560px,42vw,1500px)}
-.lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .lyrics-right .lyrics-lines{align-items:flex-start;gap:30px}
+.lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .lyrics-right .lyrics-lines{align-items:flex-start;gap:46px}
 .lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .lyrics-right .lyric-line{
   font-size:clamp(28px,3.3vh,62px)!important;
   line-height:1.3;
@@ -7270,38 +7271,86 @@ html.is-bg-lyrics-scene #app{display:none}
   text-shadow:0 3px 22px rgb(0 0 0 / .7),0 0 54px rgb(0 0 0 / .45);
 }
 
+/* 封面在左：右上角显示歌曲信息与歌词来源（桌面背景层）。 */
+.lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .lyrics-left{
+  display:block;position:absolute;inset:0;padding:0;pointer-events:none;
+}
+.lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .lyrics-cover-wrap{display:none}
+.lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .lyrics-meta{
+  position:absolute;top:6.5vh;right:6vw;left:auto;width:clamp(560px,42vw,1500px);
+  display:flex;flex-direction:column;align-items:flex-start;gap:.7vh;margin:0;text-align:left;
+  color:#fff;text-shadow:0 2px 16px rgb(0 0 0 / .55);
+}
+.lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .lyrics-title{
+  font-size:clamp(26px,2.5vh,44px);font-weight:700;color:#fff;
+}
+.lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .lyrics-artist{
+  font-size:clamp(16px,1.6vh,26px);color:rgb(255 255 255 / .78);
+}
+.lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .lyrics-source{
+  font-size:clamp(13px,1.2vh,20px);color:rgb(255 255 255 / .6);
+}
+.lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .lyrics-progress{display:none}
+
 /* 换歌过渡：先淡出旧歌词/封面，200ms 后换文档再淡入（backgroundLyrics.ts 的 receiveSnapshot）。 */
 .lyrics-view.is-background-lyrics .lyrics-right .lyrics-lines{
   transition:transform .54s cubic-bezier(.22,1.28,.36,1),opacity .2s ease;
 }
-.lyrics-view.is-background-lyrics .bg-cover-left{transition:opacity .2s ease}
+.lyrics-view.is-background-lyrics .bg-cover-left{transition:opacity .32s ease}
 .lyrics-view.is-background-lyrics.is-bg-doc-switching .lyrics-right .lyrics-lines,
 .lyrics-view.is-background-lyrics.is-bg-doc-switching .bg-cover-left{opacity:0}
+/* 纯壁纸 ⇄ 封面在左：布局尺寸缓慢过渡 + 内容先压暗再淡回（backgroundLyrics.ts 的 applyCoverStyle）。 */
+.lyrics-view.is-background-lyrics:not(.is-lumiere) .lyrics-frame{transition:padding .32s ease}
+.lyrics-view.is-background-lyrics:not(.is-lumiere) .lyrics-right{transition:width .32s ease}
+.lyrics-view.is-background-lyrics .lyrics-meta{transition:opacity .18s ease}
+.lyrics-view.is-background-lyrics.is-bg-cover-switching .lyrics-right .lyrics-lines,
+.lyrics-view.is-background-lyrics.is-bg-cover-switching .lyrics-meta{opacity:.12}
+.lyrics-view.is-background-lyrics.is-bg-cover-switching .lyrics-left{opacity:0}
 
 /* 「封面在左」在软件内歌词页同样生效：和桌面背景歌词共用 bgLyricsCover 的样式选择。 */
 .lyrics-view.is-cover-left:not(.is-background-lyrics):not(.is-lumiere) .lyrics-frame{
   padding:0;justify-content:flex-end;gap:0;
 }
 .lyrics-view.is-cover-left:not(.is-background-lyrics):not(.is-lumiere) .lyrics-left{
-  position:absolute;inset:0 auto 0 0;width:58%;z-index:0;display:block;padding:0;
+  position:absolute;inset:0;width:100%;display:block;padding:0;pointer-events:none;
 }
 .lyrics-view.is-cover-left:not(.is-background-lyrics):not(.is-lumiere) .lyrics-cover-wrap{
-  width:100%;height:100%;aspect-ratio:auto;border-radius:0;box-shadow:none;animation:none;
+  position:absolute;inset:0 auto 0 0;width:58%;height:100%;aspect-ratio:auto;
+  border-radius:0;box-shadow:none;animation:none;
   -webkit-mask-image:linear-gradient(90deg,#000 0%,#000 55%,rgb(0 0 0 / .65) 82%,transparent 100%);
   mask-image:linear-gradient(90deg,#000 0%,#000 55%,rgb(0 0 0 / .65) 82%,transparent 100%);
 }
 .lyrics-view.is-cover-left:not(.is-background-lyrics):not(.is-lumiere) .lyrics-cover{
   aspect-ratio:auto;height:100%;
 }
-.lyrics-view.is-cover-left:not(.is-background-lyrics):not(.is-lumiere) .lyrics-meta,
 .lyrics-view.is-cover-left:not(.is-background-lyrics):not(.is-lumiere) .lyrics-progress{display:none}
+/* 歌曲信息与歌词来源放在右上，和桌面背景层保持一致。 */
+.lyrics-view.is-cover-left:not(.is-background-lyrics):not(.is-lumiere) .lyrics-meta{
+  position:absolute;top:6vh;right:6vw;left:auto;width:clamp(560px,42vw,1500px);
+  display:flex;flex-direction:column;align-items:flex-start;gap:.6vh;margin:0;text-align:left;
+}
+.lyrics-view.is-cover-left:not(.is-background-lyrics):not(.is-lumiere) .lyrics-title{
+  font-size:clamp(26px,2.4vh,42px);font-weight:700;
+}
+.lyrics-view.is-cover-left:not(.is-background-lyrics):not(.is-lumiere) .lyrics-artist{
+  font-size:clamp(16px,1.6vh,26px);
+}
+.lyrics-view.is-cover-left:not(.is-background-lyrics):not(.is-lumiere) .lyrics-source{
+  font-size:clamp(13px,1.2vh,20px);opacity:.72;
+}
 .lyrics-view.is-cover-left:not(.is-background-lyrics):not(.is-lumiere) .lyrics-right{
   flex:0 0 auto;width:clamp(560px,42vw,1500px);margin-right:6vw;
 }
 .lyrics-view.is-cover-left:not(.is-background-lyrics):not(.is-lumiere) .lyrics-right .lyrics-lines{
-  align-items:flex-start;gap:22px;
+  align-items:flex-start;gap:32px;
 }
 .lyrics-view.is-cover-left:not(.is-background-lyrics):not(.is-lumiere) .lyrics-right .lyric-line{text-align:left}
+/* 纯壁纸 ⇄ 封面在左切换：歌词、信息与封面一起淡出淡入（LyricsView.applyCoverStyle）。 */
+.lyrics-view.is-cover-switching .lyrics-meta,
+.lyrics-view.is-cover-switching .lyrics-right .lyrics-lines{opacity:.12}
+.lyrics-view.is-cover-switching .lyrics-cover-wrap{opacity:.25}
+.lyrics-view:not(.is-lumiere) .lyrics-cover-wrap{transition:opacity .32s ease}
+.lyrics-view:not(.is-lumiere) .lyrics-meta{transition:opacity .18s ease}
 
 /* 桌面壁纸层字号比软件内大得多：「旋入」的字间散开幅度按 0.5 收一档，
    否则相邻两行的字会互相叠在一起（唱到的字仍会归位到 0，不受影响）。 */

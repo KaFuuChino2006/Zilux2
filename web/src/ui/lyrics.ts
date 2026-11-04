@@ -1044,6 +1044,8 @@ export class LyricsView {
   private styleUnsub: (() => void) | null = null;
   /** 「封面在左」样式与桌面背景歌词共用，快捷设置里改了要当场切换。 */
   private coverStyleUnsub: (() => void) | null = null;
+  private coverStyleInitialized = false;
+  private coverSwitchTimer = 0;
 
   constructor(private readonly onClose: () => void) {
     this.bgEl = h('div', { class: 'lyrics-bg' });
@@ -1134,7 +1136,7 @@ export class LyricsView {
   private syncTrack(): void {
     const track = this.state?.track ?? null;
     const key = trackKeyOf(track);
-    const coverUrl = track ? onlineArtwork(track, 300) : '';
+    const coverUrl = track ? onlineArtwork(track, this.coverRequestWidth()) : '';
     const changed = key !== this.lastTrackKey && this.lastTrackKey !== '';
     if (changed) {
       this.spawnGhosts();
@@ -1172,13 +1174,47 @@ export class LyricsView {
   }
 
   /**
+   * 封面请求宽度：歌词页普通模式 300 足够；「封面在左」时封面会被放大到半屏，
+   * 必须向宿主要大图（宿主 width>600 会改向上游请求高分辨率封面，否则就是三百像素拉大）。
+   */
+  private coverRequestWidth(): number {
+    if (document.documentElement.classList.contains('is-bg-lyrics-scene')) return 300;
+    return bgLyricsCoverStyle() === 'cover' ? Math.min(2048, Math.max(900, Math.round(window.innerWidth * 0.62))) : 300;
+  }
+
+  private refreshCoverResolution(): void {
+    const track = this.state?.track ?? null;
+    if (!track || this.disposed) return;
+    const src = onlineArtwork(track, this.coverRequestWidth());
+    if (this.coverEl.getAttribute('src') !== src) {
+      this.coverEl.src = src;
+    }
+  }
+
+  /**
    * 「封面在左」：只影响播放效果为「关闭」的 DOM 歌词（纯字/房间/唱片有画布，CSS 里有 :not(.is-lumiere) 门槛）。
    * 背景场景自己用 `is-bg-cover-left` + `.bg-cover-left` 层，这里只处理软件内歌词页。
    */
   applyCoverStyle(): void {
     if (this.disposed) return;
     if (document.documentElement.classList.contains('is-bg-lyrics-scene')) return;
-    this.root.classList.toggle('is-cover-left', bgLyricsCoverStyle() === 'cover');
+    const wantCover = bgLyricsCoverStyle() === 'cover';
+    if (!this.coverStyleInitialized) {
+      this.root.classList.toggle('is-cover-left', wantCover);
+      this.coverStyleInitialized = true;
+      this.refreshCoverResolution();
+      return;
+    }
+    if (this.root.classList.contains('is-cover-left') === wantCover) return;
+    // 纯壁纸 ⇄ 封面在左：先把歌词压暗，再换布局，最后淡回（封面图本身由 CSS 过渡）。
+    this.root.classList.add('is-cover-switching');
+    window.clearTimeout(this.coverSwitchTimer);
+    window.setTimeout(() => {
+      if (this.disposed) return;
+      this.root.classList.toggle('is-cover-left', wantCover);
+      this.refreshCoverResolution();
+      this.coverSwitchTimer = window.setTimeout(() => this.root.classList.remove('is-cover-switching'), 340);
+    }, 160);
   }
 
   /** 应用「未播放歌词颜色」：写到歌词视图上，空串恢复主题语义色（关闭效果下生效）。 */
@@ -1913,6 +1949,7 @@ export class LyricsView {
     this.matchUnsub = null;
     this.coverStyleUnsub?.();
     this.coverStyleUnsub = null;
+    window.clearTimeout(this.coverSwitchTimer);
     if (this.rafId) window.cancelAnimationFrame(this.rafId);
     window.clearTimeout(this.manualTimer);
     if (this.manualRaf) {

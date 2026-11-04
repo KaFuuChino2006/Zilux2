@@ -59,7 +59,7 @@ function freshCoverUrl(track: OnlineTrack): string {
     const source = url.searchParams.get('source') ?? track.source;
     const key = url.searchParams.get('key') ?? '';
     if (!key) return raw;
-    return onlineEndpoint('/api/cover', { source, key }) || raw;
+    return onlineEndpoint('/api/cover', { source, key, width: '1600' }) || raw;
   } catch {
     return raw;
   }
@@ -191,12 +191,32 @@ export async function bootBackgroundLyricsScene(): Promise<void> {
   const coverLayer = document.createElement('div');
   coverLayer.className = 'bg-cover-left';
   view.root.append(coverLayer);
-  const applyCoverStyle = (): void => {
-    const style = bgLyricsCoverStyle();
-    view.root.classList.toggle('is-bg-cover-left', style === 'cover');
-    const track = readSnapshot()?.track;
+  const applyCoverImage = (): void => {
+    const track = bgLyricsCoverStyle() === 'cover' ? readSnapshot()?.track : null;
     const cover = track ? freshCoverUrl(track) : '';
-    coverLayer.style.backgroundImage = style === 'cover' && cover ? `url("${cover}")` : 'none';
+    coverLayer.style.backgroundImage = cover ? `url("${cover}")` : 'none';
+  };
+  let coverInitialized = false;
+  let coverSwitchTimer = 0;
+  /** 纯壁纸 ⇄ 封面在左：歌词先压暗，再换布局，最后淡回；封面层本身由 CSS opacity 过渡。 */
+  const applyCoverStyle = (animate: boolean): void => {
+    const wantCover = bgLyricsCoverStyle() === 'cover';
+    const changed = view.root.classList.contains('is-bg-cover-left') !== wantCover;
+    const commitStyle = (): void => {
+      view.root.classList.toggle('is-bg-cover-left', wantCover);
+      applyCoverImage();
+    };
+    if (!coverInitialized || !animate || !changed) {
+      commitStyle();
+      coverInitialized = true;
+      return;
+    }
+    view.root.classList.add('is-bg-cover-switching');
+    window.clearTimeout(coverSwitchTimer);
+    window.setTimeout(() => {
+      commitStyle();
+      coverSwitchTimer = window.setTimeout(() => view.root.classList.remove('is-bg-cover-switching'), 340);
+    }, 160);
   };
 
   // 换歌时先让上一首的歌词/封面淡出 200ms，再换文档淡入；同一首（例如歌词来源刷新）直接替换。
@@ -211,7 +231,7 @@ export async function bootBackgroundLyricsScene(): Promise<void> {
       applyExternalPlayback({ track: snapshot.track });
     }
     view.applyExternalDoc(snapshot.doc);
-    applyCoverStyle();
+    applyCoverStyle(false);
   };
   const receiveSnapshot = (animate: boolean): void => {
     const snapshot = readSnapshot();
@@ -235,9 +255,9 @@ export async function bootBackgroundLyricsScene(): Promise<void> {
   };
 
   receiveSnapshot(false);
-  applyCoverStyle();
+  applyCoverStyle(false);
   // 在线源端点比页面 ready 晚到；端点一到就把旧端口拼的封面地址换成当前端口。
-  onOnlineChange(() => applyCoverStyle());
+  onOnlineChange(() => applyCoverStyle(false));
 
   window.addEventListener('storage', (event) => {
     if (event.key === DOC_KEY) {
@@ -245,7 +265,7 @@ export async function bootBackgroundLyricsScene(): Promise<void> {
       return;
     }
     if (event.key === BG_COVER_KEY) {
-      applyCoverStyle();
+      applyCoverStyle(true);
       return;
     }
     // 样式/偏移类设置改了才重绘；其它键（播放进度、统计、封面缓存…）不碰歌词树。
