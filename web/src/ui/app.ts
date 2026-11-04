@@ -199,6 +199,7 @@ import { buildSearchHistoryPanel, recordSearch, type SearchHistoryPanelHandle } 
 import { openTrackMenu, type TrackMenuItem } from './trackMenu';
 import { buildSettingsIOActions } from './settingsIO';
 import { buildSleepTimerPanel, completeSleepTimer, getSleepTimerState, subscribeSleepTimer } from './sleepTimer';
+import { bgLyricsCoverStyle, setBgLyricsCoverStyle, type BgLyricsCoverStyle } from './bgLyricsCover';
 import { currentLyricDisplay, currentLyricSource, lyricGrowMode, lyricMatchMinScore, lyricOffsetOf, LYRIC_UNSUNG_PRESETS, lyricsBackgroundMode, lyricsLumiereMode, lyricUnsungColor, LyricsView, primeLyrics, setLyricGrowMode, setLyricsBackgroundMode, setLyricsLumiereMode, setLyricMatchMinScore, setLyricOffset, setLyricUnsungColor, updateCurrentLyricLine, lyricMatchText } from './lyrics';
 import { LUMIERE_MODES } from './lumiere';
 import {
@@ -6999,6 +7000,40 @@ export class App {
         effectThumb.style.transform = `translateX(${active.offsetLeft}px)`;
       };
       const effectControl = h('div', { class: 'quick-seg-slider quick-effect-seg' }, effectThumb, ...effectBtns);
+      // 「封面在左」：播放效果=关闭 时背景歌词的布局样式（纯壁纸 / 封面在左半边渐隐）。
+      const bgCoverOptions: { id: BgLyricsCoverStyle; label: string }[] = [
+        { id: 'wallpaper', label: '纯壁纸' },
+        { id: 'cover', label: '封面在左' },
+      ];
+      const bgCoverThumb = h('div', { class: 'quick-seg-thumb' });
+      const bgCoverBtns: HTMLButtonElement[] = bgCoverOptions.map((option) => {
+        const btn = h('button', {
+          class: `quick-seg-btn${option.id === bgLyricsCoverStyle() ? ' is-on' : ''}`,
+          type: 'button',
+          text: option.label,
+        }) as HTMLButtonElement;
+        btn.addEventListener('pointerdown', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        });
+        btn.addEventListener('click', () => {
+          setBgLyricsCoverStyle(option.id);
+          paintBgCover();
+        });
+        return btn;
+      });
+      const paintBgCover = (): void => {
+        const current = bgLyricsCoverStyle();
+        const index = Math.max(0, bgCoverOptions.findIndex((item) => item.id === current));
+        bgCoverBtns.forEach((btn, i) => btn.classList.toggle('is-on', i === index));
+        const active = bgCoverBtns[index];
+        if (!active) return;
+        bgCoverThumb.style.width = `${active.offsetWidth}px`;
+        bgCoverThumb.style.transform = `translateX(${active.offsetLeft}px)`;
+      };
+      const bgCoverControl = h('div', { class: 'quick-seg-slider' }, bgCoverThumb, ...bgCoverBtns);
+      paintBgCover();
+      window.requestAnimationFrame(() => paintBgCover());
       paintEffectMode();
       syncEffectSettingsCell();
       window.requestAnimationFrame(() => paintEffectMode());
@@ -7066,6 +7101,12 @@ export class App {
           styleCell,
           growCell,
           cell('播放效果', true, effectControl),
+          cell(
+            '背景歌词样式',
+            true,
+            bgCoverControl,
+            h('div', { class: 'quick-hint', text: '播放效果为「关闭」时生效；封面在左：封面铺左半边并向壁纸渐隐，歌词移到右半边' }),
+          ),
           effectSettingsCell,
         ),
       );

@@ -7,7 +7,9 @@
  */
 import { host } from '../core/bridge';
 import { getSettings, loadSettings, onSettingsChange } from '../core/settings';
+import { initOnline, onlineEndpoint, onOnlineChange } from '../online/client';
 import type { OnlineTrack } from '../online/types';
+import { BG_COVER_KEY, bgLyricsCoverStyle } from './bgLyricsCover';
 import { LyricsView, loadLyricDoc, setExternalLyricMode, type LyricDoc } from './lyrics';
 import { applyExternalPlayback, onPlayer, playerState } from './player';
 
@@ -44,6 +46,25 @@ function trackKey(track: OnlineTrack): string {
   return `${track.source}:${track.id}`;
 }
 
+/**
+ * 封面地址在「上次播放」里是绝对回环 URL（含宿主端口），重启后端口会变、旧地址直接连不上。
+ * 这里把回环地址按当前在线源端点重新拼一遍；外链封面原样返回。
+ */
+function freshCoverUrl(track: OnlineTrack): string {
+  const raw = track.cover;
+  if (!raw) return '';
+  try {
+    const url = new URL(raw);
+    if (url.hostname !== '127.0.0.1' && url.hostname !== 'localhost') return raw;
+    const source = url.searchParams.get('source') ?? track.source;
+    const key = url.searchParams.get('key') ?? '';
+    if (!key) return raw;
+    return onlineEndpoint('/api/cover', { source, key }) || raw;
+  } catch {
+    return raw;
+  }
+}
+
 function readSnapshot(): BackgroundDocSnapshot | null {
   try {
     const raw = window.localStorage.getItem(DOC_KEY);
@@ -70,42 +91,68 @@ function writeSnapshot(track: OnlineTrack, doc: LyricDoc): void {
 
 let publishedKey = '';
 let publishing = false;
-
-async function publishDoc(track: OnlineTrack): Promise<void> {
-  if (publishing) return;
-  publishing = true;
-  try {
-    const doc = await loadLyricDoc(track);
-    writeSnapshot(track, doc);
-  } catch (err) {
-    console.warn('[bgLyrics] publish failed', err);
-  } finally {
-    publishing = false;
-  }
-}
+/** 上一次发布是不是空歌词（启动早期在线服务没好，歌词接口会返回空）。 */
+let publishedEmpty = true;
+/** 发布过程中又收到强制发布请求（例如在线端点刚就绪），结束后补一次。 */
+let retryAfterPublish = false;
+/** 空歌词自动补发的次数（避免无歌词的纯音乐无限重试）。 */
+let emptyRetries = 0;
 
 /**
  * 主窗口启动时调用：开关打开期间，跟随播放曲目把歌词文档写进共享快照。
  * 关掉开关时不必清理快照，下次打开会按当前曲目重写。
  */
 export function installBackgroundLyricsPublisher(): void {
-  const publishCurrent = (): void => {
-    if (!getSettings().general.backgroundLyrics) {
-      publishedKey = '';
-      return;
-    }
-
-    const track = playerState().track;
-    if (!track) return;
-
-    const key = trackKey(track);
-    if (key === publishedKey) return;
-    publishedKey = key;
-    void publishDoc(track);
-  };
-
   onPlayer(() => publishCurrent());
-  onSettingsChange(() => publishCurrent());
+  onSettingsChange(() => publishCurrent(true));
+  // 宿主端口/token 比页面 ready 晚到；到了以后把当前曲目重发一次（封面地址也会换成新端口）。
+  onOnlineChange(() => publishCurrent(true));
+}
+
+function publishCurrent(force = false): void {
+  if (!getSettings().general.backgroundLyrics) {
+    publishedKey = '';
+    return;
+  }
+
+  const track = playerState().track;
+  if (!track) return;
+
+  const key = trackKey(track);
+  if (key !== publishedKey) emptyRetries = 0;
+  // 空歌词要允许重发：启动早期歌词接口还没就绪，之后在线端点到达要补一次。
+  if (!force && key === publishedKey && !publishedEmpty) return;
+  publishedKey = key;
+  void publishDoc(track);
+}
+
+async function publishDoc(track: OnlineTrack): Promise<void> {
+  if (publishing) {
+    retryAfterPublish = true;
+    return;
+  }
+  publishing = true;
+  try {
+    const doc = await loadLyricDoc(track);
+    // 快照里的封面必须是当前宿主的回环地址：上次播放持久化的是旧端口，背景窗口拿不到在线端点，
+    // 只能由主窗口在发布时用当前端点重拼，否则重启后封面一直是裂图。
+    writeSnapshot({ ...track, cover: freshCoverUrl(track) || track.cover }, doc);
+    publishedEmpty = doc.lines.length === 0;
+    if (!publishedEmpty) emptyRetries = 0;
+  } catch (err) {
+    publishedEmpty = true;
+    console.warn('[bgLyrics] publish failed', err);
+  } finally {
+    publishing = false;
+    if (retryAfterPublish) {
+      retryAfterPublish = false;
+      publishCurrent(true);
+    } else if (publishedEmpty && emptyRetries < 3) {
+      // 启动早期歌词接口可能还没就绪：隔一会儿补发，直到拿到非空歌词或重试次数用完。
+      emptyRetries += 1;
+      window.setTimeout(() => publishCurrent(true), 1500 * emptyRetries);
+    }
+  }
 }
 
 /* ------------------------------ 背景场景侧 ------------------------------ */
@@ -125,21 +172,6 @@ const STYLE_KEYS = new Set([
 let appliedSavedAt = -1;
 let appliedTrackKey = '';
 
-function applySnapshot(view: LyricsView): void {
-  const snapshot = readSnapshot();
-  if (!snapshot) return;
-  // 主窗口每写一次 localStorage（播放进度、统计等）都会让 storage 事件冒到这里；
-  // 只有歌词快照真的换了才重建 DOM，否则整块歌词会被反复清空重画（看起来就是上下乱跳）。
-  if (snapshot.savedAt === appliedSavedAt) return;
-  appliedSavedAt = snapshot.savedAt;
-  const key = trackKey(snapshot.track);
-  if (key !== appliedTrackKey) {
-    appliedTrackKey = key;
-    applyExternalPlayback({ track: snapshot.track });
-  }
-  view.applyExternalDoc(snapshot.doc);
-}
-
 /**
  * 背景场景的入口。必须在正常 App 启动之前分叉调用：
  * 这里不创建 App、不启动在线服务，只把一块 LyricsView 铺满窗口。
@@ -147,17 +179,73 @@ function applySnapshot(view: LyricsView): void {
 export async function bootBackgroundLyricsScene(): Promise<void> {
   document.documentElement.classList.add('is-bg-lyrics-scene');
   setExternalLyricMode(true);
+  // 背景页也要拿到宿主的在线源端点：封面是回环绝对地址，重启后端口会变，需要按当前端点重拼。
+  initOnline();
   await loadSettings();
 
   const view = new LyricsView(() => undefined);
   view.root.classList.add('is-background-lyrics');
   document.body.append(view.root);
 
-  applySnapshot(view);
+  // 「封面在左」样式：独立的一层封面图，铺左半边并用 CSS mask 向右渐隐；歌词列由 CSS 挪到右半边。
+  const coverLayer = document.createElement('div');
+  coverLayer.className = 'bg-cover-left';
+  view.root.append(coverLayer);
+  const applyCoverStyle = (): void => {
+    const style = bgLyricsCoverStyle();
+    view.root.classList.toggle('is-bg-cover-left', style === 'cover');
+    const track = readSnapshot()?.track;
+    const cover = track ? freshCoverUrl(track) : '';
+    coverLayer.style.backgroundImage = style === 'cover' && cover ? `url("${cover}")` : 'none';
+  };
+
+  // 换歌时先让上一首的歌词/封面淡出 200ms，再换文档淡入；同一首（例如歌词来源刷新）直接替换。
+  let switchTimer = 0;
+  let pending: BackgroundDocSnapshot | null = null;
+  const commit = (snapshot: BackgroundDocSnapshot): void => {
+    if (snapshot.savedAt === appliedSavedAt) return;
+    appliedSavedAt = snapshot.savedAt;
+    const key = trackKey(snapshot.track);
+    if (key !== appliedTrackKey) {
+      appliedTrackKey = key;
+      applyExternalPlayback({ track: snapshot.track });
+    }
+    view.applyExternalDoc(snapshot.doc);
+    applyCoverStyle();
+  };
+  const receiveSnapshot = (animate: boolean): void => {
+    const snapshot = readSnapshot();
+    if (!snapshot || snapshot.savedAt === appliedSavedAt) return;
+    const nextKey = trackKey(snapshot.track);
+    const switchesTrack = Boolean(appliedTrackKey) && nextKey !== appliedTrackKey;
+    if (!animate || !switchesTrack) {
+      commit(snapshot);
+      return;
+    }
+    pending = snapshot;
+    view.root.classList.add('is-bg-doc-switching');
+    if (switchTimer) window.clearTimeout(switchTimer);
+    switchTimer = window.setTimeout(() => {
+      switchTimer = 0;
+      const next = pending ?? readSnapshot();
+      pending = null;
+      if (next) commit(next);
+      view.root.classList.remove('is-bg-doc-switching');
+    }, 200);
+  };
+
+  receiveSnapshot(false);
+  applyCoverStyle();
+  // 在线源端点比页面 ready 晚到；端点一到就把旧端口拼的封面地址换成当前端口。
+  onOnlineChange(() => applyCoverStyle());
 
   window.addEventListener('storage', (event) => {
     if (event.key === DOC_KEY) {
-      applySnapshot(view);
+      receiveSnapshot(true);
+      return;
+    }
+    if (event.key === BG_COVER_KEY) {
+      applyCoverStyle();
       return;
     }
     // 样式/偏移类设置改了才重绘；其它键（播放进度、统计、封面缓存…）不碰歌词树。
