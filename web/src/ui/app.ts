@@ -7627,13 +7627,16 @@ export class App {
     const body = this.quickBody;
     if (!body || from <= 0) return;
     if (this.quickHeightTimer) window.clearTimeout(this.quickHeightTimer);
-    // 小窗口里内容比可用高度还高时，别让面板顶出屏幕：直接交给正文滚动，不再播高度动画，
-    // 否则滚动条出现/消失会反过来改变内容宽度、触发 ResizeObserver，滚动条就一直在闪。
+    // 先让正文按 flex 自然落位，量出动画结束后的真实高度；否则用估算的上限做终点，
+    // 动画结束清掉内联高度时会再跳 2–3px（看起来像「缩了一点点」）。
     const max = this.quickBodyMaxHeight();
     const fromH = Math.min(from, max);
-    const toH = Math.min(to, max);
-    // 即使内容超高也保留高度动画：正文用 clip 锁住滚动，动画结束再交给滚动；
-    // 配合 scrollbar-gutter:stable，滚动条出现/消失不会改变宽度，也就不会和 ResizeObserver 打架。
+    body.style.height = '';
+    body.style.overflow = '';
+    const settled = body.getBoundingClientRect().height;
+    const toH = settled > 0 ? settled : Math.min(to, max);
+    // 动画期间用 clip 锁住滚动；配合 scrollbar-gutter:stable，滚动条出现/消失不会改变宽度，
+    // 也就不会反过来触发 ResizeObserver 让滚动条抖。
     body.style.overflow = 'clip';
     body.style.height = `${fromH}px`;
     void body.offsetHeight;
