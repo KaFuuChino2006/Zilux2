@@ -1190,6 +1190,7 @@ export class LyricsView {
       window.setTimeout(() => this.metaEl.classList.remove('is-switching'), 620);
     } else {
       this.coverEl.src = coverUrl;
+      this.coverBlurEl.style.backgroundImage = coverUrl ? `url("${coverUrl}")` : 'none';
     }
     this.titleEl.textContent = track?.title ?? '未在播放';
     this.artistEl.textContent = track?.artist ?? '';
@@ -1211,6 +1212,7 @@ export class LyricsView {
       swapped = true;
       if (previous) this.spawnCoverGhost(previous);
       this.coverEl.src = url;
+      this.coverBlurEl.style.backgroundImage = url ? `url("${url}")` : 'none';
       this.coverEl.classList.remove('is-switching');
       void this.coverEl.offsetWidth;
       this.coverEl.classList.add('is-switching');
