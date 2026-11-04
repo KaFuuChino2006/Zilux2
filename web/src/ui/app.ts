@@ -7627,9 +7627,14 @@ export class App {
     const body = this.quickBody;
     if (!body || from <= 0) return;
     if (this.quickHeightTimer) window.clearTimeout(this.quickHeightTimer);
-    body.style.height = `${from}px`;
+    // 小窗口里内容比可用高度还高时，别让面板顶出屏幕：锁到上限，剩余交给正文滚动。
+    const max = this.quickBodyMaxHeight();
+    const fromH = Math.min(from, max);
+    const toH = Math.min(to, max);
+    body.style.overflow = 'hidden';
+    body.style.height = `${fromH}px`;
     void body.offsetHeight;
-    body.style.height = `${to}px`;
+    body.style.height = `${toH}px`;
     this.quickHeightTimer = window.setTimeout(() => {
       this.quickHeightTimer = 0;
       if (!this.quickBody) return;
@@ -7693,6 +7698,11 @@ export class App {
     });
   }
 
+  /** 快捷设置正文在小窗口里可用的最大高度（给标题、页签栏与内边距留出空间）。 */
+  private quickBodyMaxHeight(): number {
+    return Math.max(160, window.innerHeight - 300);
+  }
+
   private syncQuickBodyHeight(): void {
     if (!this.quickPanelOpen || this.quickHeightTimer) return;
     const inner = this.quickBodyInner ?? this.quickBody;
@@ -7700,8 +7710,9 @@ export class App {
     if (!inner || !body) return;
     const natural = inner.offsetHeight;
     const current = body.getBoundingClientRect().height;
-    if (natural <= 0 || Math.abs(natural - current) < 1.5) return;
-    this.animateQuickBodyHeight(current, natural);
+    const target = Math.min(natural, this.quickBodyMaxHeight());
+    if (natural <= 0 || Math.abs(target - current) < 1.5) return;
+    this.animateQuickBodyHeight(current, target);
   }
 
   /**
