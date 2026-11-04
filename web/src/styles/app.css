@@ -7444,3 +7444,5 @@ html.is-bg-lyrics-scene #app{display:none}
 .quick-panel .quick-body::-webkit-scrollbar{width:6px}
 .quick-panel .quick-body::-webkit-scrollbar-thumb{background:rgb(var(--ink-rgb) / .18);border-radius:3px}
 .quick-panel .quick-body::-webkit-scrollbar-track{background:transparent}
+.quick-panel .quick-body{scrollbar-gutter:stable}
+.quick-panel .quick-body::-webkit-scrollbar-thumb{background:rgb(var(--ink-rgb) / .16)}

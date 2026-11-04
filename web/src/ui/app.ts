@@ -7627,11 +7627,17 @@ export class App {
     const body = this.quickBody;
     if (!body || from <= 0) return;
     if (this.quickHeightTimer) window.clearTimeout(this.quickHeightTimer);
-    // 小窗口里内容比可用高度还高时，别让面板顶出屏幕：锁到上限，剩余交给正文滚动。
+    // 小窗口里内容比可用高度还高时，别让面板顶出屏幕：直接交给正文滚动，不再播高度动画，
+    // 否则滚动条出现/消失会反过来改变内容宽度、触发 ResizeObserver，滚动条就一直在闪。
     const max = this.quickBodyMaxHeight();
     const fromH = Math.min(from, max);
     const toH = Math.min(to, max);
-    body.style.overflow = 'hidden';
+    if (to >= max - 0.5) {
+      body.style.height = '';
+      body.style.overflow = '';
+      return;
+    }
+    body.style.overflow = 'clip';
     body.style.height = `${fromH}px`;
     void body.offsetHeight;
     body.style.height = `${toH}px`;
@@ -7710,7 +7716,16 @@ export class App {
     if (!inner || !body) return;
     const natural = inner.offsetHeight;
     const current = body.getBoundingClientRect().height;
-    const target = Math.min(natural, this.quickBodyMaxHeight());
+    const max = this.quickBodyMaxHeight();
+    if (natural > max) {
+      // 内容超过可用高度：正文进入滚动模式，内联高度会让滚动条与观察器互相触发，清掉即可。
+      if (body.style.height || body.style.overflow) {
+        body.style.height = '';
+        body.style.overflow = '';
+      }
+      return;
+    }
+    const target = Math.min(natural, max);
     if (natural <= 0 || Math.abs(target - current) < 1.5) return;
     this.animateQuickBodyHeight(current, target);
   }
