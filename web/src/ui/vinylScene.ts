@@ -808,7 +808,10 @@ export function createVinylScene(options: VinylSceneOptions = {}): VinylScene {
     if (nextWidth === width && nextHeight === height) return;
     width = nextWidth;
     height = nextHeight;
-    dpr = clamp(window.devicePixelRatio || 1, 1, cfg.dpr);
+    // 桌面背景歌词是 3440×1440 的 2D 画布，满分辨率每帧重绘很吃 CPU/GPU；
+    // 壁纸层本来就不是近距离细看，按 0.62 缩放后再由 CSS 拉伸，观感几乎无损但帧率明显回升。
+    const backgroundScale = document.documentElement.classList.contains('is-bg-lyrics-scene') ? 0.62 : 1;
+    dpr = clamp(window.devicePixelRatio || 1, 1, cfg.dpr) * backgroundScale;
     canvas.width = Math.round(width * dpr);
     canvas.height = Math.round(height * dpr);
     canvas.style.width = `${width}px`;
