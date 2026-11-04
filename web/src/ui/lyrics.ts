@@ -26,7 +26,7 @@ import { createVinylStage, setVinylLyricTintProvider, type VinylStage } from './
 import type { Theme } from './lumiere-folia/types';
 import type { LyricTextSettings } from './lumiereSettings';
 import { LYRIC_STYLES, lyricStyle, lyricStyleNeedsCharTiming, onLyricStyle } from './lyricStyle';
-import { BG_COVER_EVENT, bgLyricsCoverStyle } from './bgLyricsCover';
+import { BG_BLUR_PX, BG_COVER_EVENT, bgLyricsBlurLevel, bgLyricsCoverStyle } from './bgLyricsCover';
 
 /** 歌词页播放效果（纯字）；导出给快捷设置用。 */
 export type { LumiereMode };
@@ -164,6 +164,38 @@ export function setLyricUnsungColor(color: string): void {
     // ignore
   }
   activeLyricsView?.applyLyricUnsungColor();
+}
+
+/** 自定义「纯色」歌词颜色；空串表示跟随主题。 */
+const LYRIC_SOLID_KEY = 'zilux2.lyricSolid';
+const SOLID_HEX = /^#[0-9a-fA-F]{6}$/;
+
+function readLyricSolidColor(): string {
+  try {
+    const value = window.localStorage.getItem(LYRIC_SOLID_KEY);
+    if (value && SOLID_HEX.test(value)) return value.toLowerCase();
+  } catch {
+    // ignore
+  }
+  return '';
+}
+
+let lyricSolidColorValue: string = readLyricSolidColor();
+
+/** 当前自定义的纯色歌词颜色；空串表示跟随主题。 */
+export function lyricSolidColor(): string {
+  return lyricSolidColorValue;
+}
+
+/** 修改纯色歌词颜色（传空串恢复跟随主题）；歌词页开着时立即生效。 */
+export function setLyricSolidColor(color: string): void {
+  lyricSolidColorValue = SOLID_HEX.test(color) ? color.toLowerCase() : '';
+  try {
+    window.localStorage.setItem(LYRIC_SOLID_KEY, lyricSolidColorValue);
+  } catch {
+    // ignore
+  }
+  activeLyricsView?.applyLyricSolidColor();
 }
 
 /** 把十六进制颜色转成带透明度的 rgb() 语义值（未播放歌词的四个语义令牌共用）。 */
@@ -1001,6 +1033,8 @@ export class LyricsView {
   private coverWrapEl: HTMLDivElement;
   private metaEl: HTMLDivElement;
   private coverEl: HTMLImageElement;
+  /** 「封面在左」的模糊副本：贴在清晰封面下面，强度与背景歌词共用。 */
+  private coverBlurEl: HTMLDivElement;
   private titleEl: HTMLDivElement;
   private artistEl: HTMLDivElement;
   private sourceEl: HTMLDivElement;
@@ -1060,6 +1094,7 @@ export class LyricsView {
     this.emptyEl = h('div', { class: 'lyrics-empty', text: '这首歌还没有歌词' });
     this.rightEl = h('div', { class: 'lyrics-right' }, this.linesEl, this.emptyEl);
 
+    this.coverBlurEl = h('div', { class: 'lyrics-cover-blur' });
     this.coverWrapEl = h('div', { class: 'lyrics-cover-wrap' }, this.coverEl);
     this.metaEl = h('div', { class: 'lyrics-meta' }, this.titleEl, this.artistEl, this.sourceEl);
 
@@ -1086,6 +1121,7 @@ export class LyricsView {
         h(
           'div',
           { class: 'lyrics-left' },
+          this.coverBlurEl,
           this.coverWrapEl,
           this.metaEl,
           h(
@@ -1222,6 +1258,18 @@ export class LyricsView {
     if (this.coverEl.getAttribute('src') !== src) {
       this.coverEl.src = src;
     }
+    const blurImage = src ? `url("${src}")` : '';
+    if (this.coverBlurEl.style.backgroundImage !== blurImage) {
+      this.coverBlurEl.style.backgroundImage = blurImage;
+    }
+  }
+
+  /** 封面模糊强度（和桌面背景歌词共用设置）：只改 root 上的 CSS 变量与开关类。 */
+  private applyCoverBlurStyle(): void {
+    if (this.disposed) return;
+    const level = bgLyricsBlurLevel();
+    this.root.style.setProperty('--cover-blur', `${BG_BLUR_PX[level]}px`);
+    this.root.classList.toggle('is-cover-blur', level !== 'off');
   }
 
   /**
@@ -1235,6 +1283,7 @@ export class LyricsView {
     if (!this.coverStyleInitialized) {
       this.root.classList.toggle('is-cover-left', wantCover);
       this.coverStyleInitialized = true;
+      this.applyCoverBlurStyle();
       this.refreshCoverResolution();
       return;
     }
@@ -1245,6 +1294,7 @@ export class LyricsView {
     window.setTimeout(() => {
       if (this.disposed) return;
       this.root.classList.toggle('is-cover-left', wantCover);
+      this.applyCoverBlurStyle();
       this.refreshCoverResolution();
       this.coverSwitchTimer = window.setTimeout(() => this.root.classList.remove('is-cover-switching'), 340);
     }, 160);
@@ -1405,7 +1455,10 @@ export class LyricsView {
     const token = ++this.bgToken;
     const mode = this.bgMode;
     if (mode === 'solid') {
-      this.palette = null;
+      const solid = lyricSolidColor();
+      this.palette = solid
+        ? [solid, this.mixColor(solid, '#ffffff', 0.18), this.mixColor(solid, '#ffffff', 0.34)]
+        : null;
       this.applyLumiereTheme();
       this.paintActiveLineTint();
       return;
@@ -1481,6 +1534,13 @@ export class LyricsView {
     return this.mixColor(palette[index], palette[index + 1], scaled - index);
   }
 
+  /** 自定义「纯色」歌词颜色变了：按当前档位重算调色板并重涂当前行。 */
+  applyLyricSolidColor(): void {
+    if (this.disposed) return;
+    void this.applyTextTint();
+    this.paintActiveLineTint();
+  }
+
   /** 只给当前行重新上色：已唱字走色板渐变、当前字提亮，未唱字保持主题灰。 */
   private paintActiveLineTint(): void {
     const previous = this.tintedIndex;
@@ -1519,6 +1579,28 @@ export class LyricsView {
       return;
     }
     const [first, second] = palette;
+    // 「纯色」档且用户指定了颜色：尊重用户选择，不再压暗成墨色。
+    if (this.bgMode === 'solid' && lyricSolidColor()) {
+      activeEl.style.setProperty('--lyric-bar-a', first);
+      activeEl.style.setProperty('--lyric-bar-b', first);
+      activeEl.style.setProperty('--lyric-bar-c', first);
+      activeEl.style.setProperty('--lyric-hot', first);
+      activeEl.style.setProperty('--lyric-line', first);
+      activeEl.style.setProperty('--lyric-glow', `0 0 16px ${this.mixColor(first, '#ffffff', 0.3)}`);
+      for (const span of this.charEls[this.activeIndex] ?? []) {
+        if (span.classList.contains('is-hot')) {
+          span.style.setProperty('--lyric-hot', first);
+          span.style.setProperty('--lyric-glow', `0 0 16px ${this.mixColor(first, '#ffffff', 0.3)}`);
+          span.style.removeProperty('--lyric-sung');
+          continue;
+        }
+        span.style.removeProperty('--lyric-hot');
+        span.style.removeProperty('--lyric-glow');
+        if (span.classList.contains('is-sung')) span.style.setProperty('--lyric-sung', first);
+        else span.style.removeProperty('--lyric-sung');
+      }
+      return;
+    }
     const gradientMode = this.bgMode === 'gradient';
     // 左侧竖条跟随歌词颜色：封面色用主色，自动渐变用色板中段
     const barColor = gradientMode ? this.samplePalette(0.5) : first;

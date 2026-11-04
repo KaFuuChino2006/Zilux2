@@ -208,7 +208,7 @@ import {
   type BgLyricsBlurLevel,
   type BgLyricsFillMode,
 } from './bgLyricsCover';
-import { currentLyricDisplay, currentLyricSource, lyricGrowMode, lyricMatchMinScore, lyricOffsetOf, LYRIC_UNSUNG_PRESETS, lyricsBackgroundMode, lyricsLumiereMode, lyricUnsungColor, LyricsView, primeLyrics, setLyricGrowMode, setLyricsBackgroundMode, setLyricsLumiereMode, setLyricMatchMinScore, setLyricOffset, setLyricUnsungColor, updateCurrentLyricLine, lyricMatchText } from './lyrics';
+import { currentLyricDisplay, currentLyricSource, lyricGrowMode, lyricMatchMinScore, lyricOffsetOf, LYRIC_UNSUNG_PRESETS, lyricsBackgroundMode, lyricSolidColor, setLyricSolidColor, lyricsLumiereMode, lyricUnsungColor, LyricsView, primeLyrics, setLyricGrowMode, setLyricsBackgroundMode, setLyricsLumiereMode, setLyricMatchMinScore, setLyricOffset, setLyricUnsungColor, updateCurrentLyricLine, lyricMatchText } from './lyrics';
 import { LUMIERE_MODES } from './lumiere';
 import {
   CHORUS_PREVIEW_MAX_CHOICES,
@@ -538,7 +538,7 @@ export class App {
   private quickVolume!: HTMLInputElement;
   private quickThumb!: HTMLDivElement;
   private quickTabBtns: Record<string, HTMLButtonElement> = {};
-  private quickTab: 'cover' | 'lyrics' | 'play' | 'sound' | 'preview' | 'transition' | 'airplay' | 'download' = 'cover';
+  private quickTab: 'cover' | 'lyrics' | 'bgLyrics' | 'play' | 'sound' | 'preview' | 'transition' | 'airplay' | 'download' = 'cover';
   private quickBody!: HTMLDivElement;
   private quickBodyInner!: HTMLDivElement;
   private quickRenderKey = '';
@@ -6410,7 +6410,7 @@ export class App {
     this.quickThumb = h('div', { class: 'quick-thumb' });
     // 底部五个选项只在快捷设置这个小窗口内切换内容，不再从侧边打开整页
     const tab = (
-      key: 'cover' | 'lyrics' | 'play' | 'sound' | 'preview' | 'transition' | 'airplay' | 'download',
+      key: 'cover' | 'lyrics' | 'bgLyrics' | 'play' | 'sound' | 'preview' | 'transition' | 'airplay' | 'download',
       label: string,
     ): HTMLButtonElement => {
       const button = h('button', { class: 'quick-tab', type: 'button', text: label });
@@ -6426,6 +6426,7 @@ export class App {
       this.quickThumb,
       tab('cover', '封面'),
       tab('lyrics', '歌词'),
+      tab('bgLyrics', '背景'),
       tab('play', '播放'),
       tab('sound', '音效'),
       tab('preview', '试听'),
@@ -6702,6 +6703,127 @@ export class App {
       window.requestAnimationFrame(paintBg);
       return;
     }
+    if (this.quickTab === 'bgLyrics') {
+      const cell = (title: string, wide: boolean, ...children: HTMLElement[]): HTMLElement =>
+        h(
+          'div',
+          { class: `quick-cell${wide ? ' is-wide' : ''}` },
+          h('div', { class: 'quick-cell-title', text: title }),
+          ...children,
+        );
+      // 「封面在左」：播放效果=关闭 时背景歌词的布局样式（纯壁纸 / 封面在左半边渐隐）。
+      const bgCoverOptions: { id: BgLyricsCoverStyle; label: string }[] = [
+        { id: 'wallpaper', label: '纯壁纸' },
+        { id: 'cover', label: '封面在左' },
+      ];
+      const bgCoverThumb = h('div', { class: 'quick-seg-thumb' });
+      const bgCoverBtns: HTMLButtonElement[] = bgCoverOptions.map((option) => {
+        const btn = h('button', {
+          class: `quick-seg-btn${option.id === bgLyricsCoverStyle() ? ' is-on' : ''}`,
+          type: 'button',
+          text: option.label,
+        }) as HTMLButtonElement;
+        btn.addEventListener('pointerdown', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        });
+        btn.addEventListener('click', () => {
+          setBgLyricsCoverStyle(option.id);
+          paintBgCover();
+        });
+        return btn;
+      });
+      const paintBgCover = (): void => {
+        const current = bgLyricsCoverStyle();
+        const index = Math.max(0, bgCoverOptions.findIndex((item) => item.id === current));
+        bgCoverBtns.forEach((btn, i) => btn.classList.toggle('is-on', i === index));
+        const active = bgCoverBtns[index];
+        if (!active) return;
+        bgCoverThumb.style.width = `${active.offsetWidth}px`;
+        bgCoverThumb.style.transform = `translateX(${active.offsetLeft}px)`;
+      };
+      const bgCoverControl = h('div', { class: 'quick-seg-slider' }, bgCoverThumb, ...bgCoverBtns);
+      paintBgCover();
+      window.requestAnimationFrame(() => paintBgCover());
+      // 封面右侧模糊强度 / 背景是否一起模糊（播放效果=关闭 + 封面在左时生效）。
+      const makeChoiceSeg = <T extends string>(
+        options: { id: T; label: string }[],
+        current: () => T,
+        pick: (id: T) => void,
+      ): HTMLElement => {
+        const thumb = h('div', { class: 'quick-seg-thumb' });
+        const btns: HTMLButtonElement[] = options.map((option) => {
+          const btn = h('button', { class: 'quick-seg-btn', type: 'button', text: option.label }) as HTMLButtonElement;
+          btn.addEventListener('pointerdown', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          });
+          btn.addEventListener('click', () => {
+            pick(option.id);
+            paint();
+          });
+          return btn;
+        });
+        const paint = (): void => {
+          const index = Math.max(0, options.findIndex((item) => item.id === current()));
+          btns.forEach((btn, i) => btn.classList.toggle('is-on', i === index));
+          const active = btns[index];
+          if (!active) return;
+          thumb.style.width = `${active.offsetWidth}px`;
+          thumb.style.transform = `translateX(${active.offsetLeft}px)`;
+        };
+        const root = h('div', { class: 'quick-seg-slider' }, thumb, ...btns);
+        paint();
+        window.requestAnimationFrame(paint);
+        return root;
+      };
+      const bgBlurControl = makeChoiceSeg<BgLyricsBlurLevel>(
+        [
+          { id: 'off', label: '不模糊' },
+          { id: 'soft', label: '轻' },
+          { id: 'medium', label: '中' },
+          { id: 'strong', label: '重' },
+        ],
+        bgLyricsBlurLevel,
+        setBgLyricsBlurLevel,
+      );
+      const bgFillControl = makeChoiceSeg<BgLyricsFillMode>(
+        [
+          { id: 'edge', label: '渐隐到壁纸' },
+          { id: 'fill', label: '模糊铺满' },
+        ],
+        bgLyricsFillMode,
+        setBgLyricsFillMode,
+      );
+      const backgroundLyricsSwitch = this.pillSwitch(
+        getSettings().general.backgroundLyrics,
+        (next) => {
+          patchSettings({ general: { backgroundLyrics: next } });
+          toast(next ? '桌面背景歌词已开启：歌词效果显示在桌面壁纸层' : '桌面背景歌词已关闭：软件内歌词恢复显示');
+        },
+      );
+      body.append(
+        h(
+          'div',
+          { class: 'quick-grid' },
+          cell(
+            '桌面背景歌词',
+            true,
+            backgroundLyricsSwitch.root,
+            h('div', { class: 'quick-hint', text: '开启后歌词效果显示在桌面壁纸层，软件内歌词页暂时关闭' }),
+          ),
+          cell(
+            '背景歌词样式',
+            true,
+            bgCoverControl,
+            h('div', { class: 'quick-hint', text: '播放效果为「关闭」时生效；封面在左：封面铺满并向右侧渐隐/模糊，歌词移到右半边' }),
+          ),
+          cell('封面模糊', false, bgBlurControl),
+          cell('封面之后', false, bgFillControl, h('div', { class: 'quick-hint', text: '模糊铺满：右侧不再露出壁纸，整屏都是封面的模糊延伸' })),
+        ),
+      );
+      return;
+    }
     if (this.quickTab === 'lyrics') {
       const track = playerState().track;
       const trackKey = track ? `${track.source}:${track.id}` : '';
@@ -6774,6 +6896,7 @@ export class App {
         btn.addEventListener('click', () => {
           setLyricsBackgroundMode(mode.id);
           paintBgMode();
+          paintSolidVisibility();
         });
         return btn;
       });
@@ -6787,6 +6910,52 @@ export class App {
         bgThumb.style.transform = `translateX(${active.offsetLeft}px)`;
       };
       const bgControl = h('div', { class: 'quick-seg-slider' }, bgThumb, ...bgBtns);
+      // 「纯色」档下的自定义颜色：预设色块 + 取色器；其他档位置灰隐藏。
+      const solidPresets = [
+        { label: '暖金', color: '#c9a068' },
+        { label: '雾蓝', color: '#5d6f83' },
+        { label: '青瓷', color: '#4f7d70' },
+        { label: '绛紫', color: '#7a6484' },
+        { label: '玫瑰', color: '#b3576b' },
+        { label: '月白', color: '#e8e2d6' },
+      ];
+      const solidSwatches = h('div', { class: 'theme-swatches quick-unsung' });
+      const solidCustom = h('input', {
+        class: 'theme-color-input',
+        type: 'color',
+        value: lyricSolidColor() || '#c9a068',
+        title: '自定义纯色',
+      });
+      const solidCustomLabel = h(
+        'label',
+        { class: 'theme-swatch is-custom', title: '自定义纯色' },
+        solidCustom,
+        h('span', { class: 'theme-swatch-plus', text: '+' }),
+      );
+      const paintSolid = (): void => {
+        const saved = lyricSolidColor();
+        solidSwatches.querySelectorAll<HTMLButtonElement>('.theme-swatch').forEach((button) => {
+          button.classList.toggle('is-on', (button.dataset.color ?? '') === saved);
+        });
+        solidCustom.value = saved || '#c9a068';
+        solidCustomLabel.classList.toggle('is-on', saved !== '');
+      };
+      for (const preset of solidPresets) {
+        const button = h('button', { class: 'theme-swatch', type: 'button', title: preset.label });
+        button.dataset.color = preset.color;
+        button.style.setProperty('--swatch', preset.color);
+        button.addEventListener('click', () => {
+          setLyricSolidColor(preset.color);
+          paintSolid();
+        });
+        solidSwatches.append(button);
+      }
+      solidCustom.addEventListener('input', () => {
+        setLyricSolidColor(solidCustom.value);
+        paintSolid();
+      });
+      solidSwatches.append(solidCustomLabel);
+      paintSolid();
       paintBgMode();
       window.requestAnimationFrame(() => paintBgMode());
       // 歌词动效：和「歌词颜色」同一套白色滑块分段样式
@@ -6832,6 +7001,17 @@ export class App {
           h('div', { class: 'quick-cell-title', text: title }),
           ...children,
         );
+      const solidCell = cell(
+        '纯色颜色',
+        true,
+        solidSwatches,
+        h('div', { class: 'quick-hint', text: '只在「纯色」档生效；不选时跟随主题色' }),
+      );
+      const paintSolidVisibility = (): void => {
+        solidCell.hidden = lyricsBackgroundMode() !== 'solid';
+      };
+      paintSolidVisibility();
+
       /** 分组标题：把歌词页签里的设置分块，避免一屏堆太多参数。 */
       const section = (title: string): HTMLElement =>
         h('div', { class: 'quick-section' }, h('span', { class: 'quick-section-title', text: title }));
@@ -7011,93 +7191,9 @@ export class App {
         effectThumb.style.transform = `translateX(${active.offsetLeft}px)`;
       };
       const effectControl = h('div', { class: 'quick-seg-slider quick-effect-seg' }, effectThumb, ...effectBtns);
-      // 「封面在左」：播放效果=关闭 时背景歌词的布局样式（纯壁纸 / 封面在左半边渐隐）。
-      const bgCoverOptions: { id: BgLyricsCoverStyle; label: string }[] = [
-        { id: 'wallpaper', label: '纯壁纸' },
-        { id: 'cover', label: '封面在左' },
-      ];
-      const bgCoverThumb = h('div', { class: 'quick-seg-thumb' });
-      const bgCoverBtns: HTMLButtonElement[] = bgCoverOptions.map((option) => {
-        const btn = h('button', {
-          class: `quick-seg-btn${option.id === bgLyricsCoverStyle() ? ' is-on' : ''}`,
-          type: 'button',
-          text: option.label,
-        }) as HTMLButtonElement;
-        btn.addEventListener('pointerdown', (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-        });
-        btn.addEventListener('click', () => {
-          setBgLyricsCoverStyle(option.id);
-          paintBgCover();
-        });
-        return btn;
-      });
-      const paintBgCover = (): void => {
-        const current = bgLyricsCoverStyle();
-        const index = Math.max(0, bgCoverOptions.findIndex((item) => item.id === current));
-        bgCoverBtns.forEach((btn, i) => btn.classList.toggle('is-on', i === index));
-        const active = bgCoverBtns[index];
-        if (!active) return;
-        bgCoverThumb.style.width = `${active.offsetWidth}px`;
-        bgCoverThumb.style.transform = `translateX(${active.offsetLeft}px)`;
-      };
-      const bgCoverControl = h('div', { class: 'quick-seg-slider' }, bgCoverThumb, ...bgCoverBtns);
-      paintBgCover();
-      window.requestAnimationFrame(() => paintBgCover());
       paintEffectMode();
       syncEffectSettingsCell();
       window.requestAnimationFrame(() => paintEffectMode());
-      // 封面右侧模糊强度 / 背景是否一起模糊（播放效果=关闭 + 封面在左时生效）。
-      const makeChoiceSeg = <T extends string>(
-        options: { id: T; label: string }[],
-        current: () => T,
-        pick: (id: T) => void,
-      ): HTMLElement => {
-        const thumb = h('div', { class: 'quick-seg-thumb' });
-        const btns: HTMLButtonElement[] = options.map((option) => {
-          const btn = h('button', { class: 'quick-seg-btn', type: 'button', text: option.label }) as HTMLButtonElement;
-          btn.addEventListener('pointerdown', (event) => {
-            event.preventDefault();
-            event.stopPropagation();
-          });
-          btn.addEventListener('click', () => {
-            pick(option.id);
-            paint();
-          });
-          return btn;
-        });
-        const paint = (): void => {
-          const index = Math.max(0, options.findIndex((item) => item.id === current()));
-          btns.forEach((btn, i) => btn.classList.toggle('is-on', i === index));
-          const active = btns[index];
-          if (!active) return;
-          thumb.style.width = `${active.offsetWidth}px`;
-          thumb.style.transform = `translateX(${active.offsetLeft}px)`;
-        };
-        const root = h('div', { class: 'quick-seg-slider' }, thumb, ...btns);
-        paint();
-        window.requestAnimationFrame(paint);
-        return root;
-      };
-      const bgBlurControl = makeChoiceSeg<BgLyricsBlurLevel>(
-        [
-          { id: 'off', label: '不模糊' },
-          { id: 'soft', label: '轻' },
-          { id: 'medium', label: '中' },
-          { id: 'strong', label: '重' },
-        ],
-        bgLyricsBlurLevel,
-        setBgLyricsBlurLevel,
-      );
-      const bgFillControl = makeChoiceSeg<BgLyricsFillMode>(
-        [
-          { id: 'edge', label: '渐隐到壁纸' },
-          { id: 'fill', label: '模糊铺满' },
-        ],
-        bgLyricsFillMode,
-        setBgLyricsFillMode,
-      );
       // 「关闭」效果下未播放歌词的颜色：跟随主题 / 预设 / 自定义取色器。
       const unsungSwatches = h('div', { class: 'theme-swatches quick-unsung' });
       const unsungCustom = h('input', {
@@ -7136,13 +7232,6 @@ export class App {
       });
       unsungSwatches.append(unsungCustomLabel);
       paintUnsung();
-      const backgroundLyricsSwitch = this.pillSwitch(
-        getSettings().general.backgroundLyrics,
-        (next) => {
-          patchSettings({ general: { backgroundLyrics: next } });
-          toast(next ? '桌面背景歌词已开启：歌词效果显示在桌面壁纸层' : '桌面背景歌词已关闭：软件内歌词恢复显示');
-        },
-      );
       body.append(
         h(
           'div',
@@ -7154,26 +7243,13 @@ export class App {
           cell('时间轴偏移', false, offsetStepper.root, reset),
           section('歌词外观'),
           cell('歌词颜色', true, bgControl),
+          solidCell,
           cell('未播放颜色', true, unsungSwatches),
           styleCell,
           growCell,
           cell('播放效果', true, effectControl),
           effectSettingsCell,
           section('桌面背景歌词'),
-          cell(
-            '桌面背景歌词',
-            true,
-            backgroundLyricsSwitch.root,
-            h('div', { class: 'quick-hint', text: '开启后歌词效果显示在桌面壁纸层，软件内歌词页暂时关闭' }),
-          ),
-          cell(
-            '背景歌词样式',
-            true,
-            bgCoverControl,
-            h('div', { class: 'quick-hint', text: '播放效果为「关闭」时生效；封面在左：封面铺满并向右侧渐隐/模糊，歌词移到右半边' }),
-          ),
-          cell('封面模糊', false, bgBlurControl),
-          cell('封面之后', false, bgFillControl, h('div', { class: 'quick-hint', text: '模糊铺满：右侧不再露出壁纸，整屏都是封面的模糊延伸' })),
         ),
       );
       return;
@@ -7645,7 +7721,7 @@ export class App {
     });
   }
 
-  private setQuickTab(key: 'cover' | 'lyrics' | 'play' | 'sound' | 'preview' | 'transition' | 'airplay' | 'download'): void {
+  private setQuickTab(key: 'cover' | 'lyrics' | 'bgLyrics' | 'play' | 'sound' | 'preview' | 'transition' | 'airplay' | 'download'): void {
     const body = this.quickBody;
     const before = body ? body.offsetHeight : 0;
     const beforeWidth = this.quickPanelEl ? this.quickPanelEl.getBoundingClientRect().width : 0;

@@ -57,6 +57,7 @@ export function setBgLyricsBlurLevel(level: BgLyricsBlurLevel): void {
   } catch {
     /* 存储不可用时保持默认 */
   }
+  window.dispatchEvent(new CustomEvent<BgLyricsCoverStyle>(BG_COVER_EVENT, { detail: bgLyricsCoverStyle() }));
 }
 
 export function bgLyricsFillMode(): BgLyricsFillMode {
@@ -73,4 +74,5 @@ export function setBgLyricsFillMode(mode: BgLyricsFillMode): void {
   } catch {
     /* 存储不可用时保持默认 */
   }
+  window.dispatchEvent(new CustomEvent<BgLyricsCoverStyle>(BG_COVER_EVENT, { detail: bgLyricsCoverStyle() }));
 }
