@@ -269,6 +269,12 @@ export function dailyListening(days = 14): DailyListening[] {
 
 /** 清空全部收听统计。 */
 export function resetListeningStats(): void {
+  // 清空后不能再让排队中的 flush 把内存里的空统计写回 storage（否则键会「复活」）。
+  if (flushTimer) {
+    globalThis.clearTimeout(flushTimer);
+    flushTimer = 0;
+  }
+  dirty = false;
   cache = emptyStats();
   cache.updatedAt = Date.now();
   try {

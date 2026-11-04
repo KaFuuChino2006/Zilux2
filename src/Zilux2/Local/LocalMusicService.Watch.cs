@@ -142,9 +142,13 @@ internal sealed partial class LocalMusicService : IDisposable
         try
         {
             var state = _extraWatch.GetOrAdd(root, static _ => new ExtraWatchState());
+            var created = state.Watcher is null;
             state.Watcher ??= new LocalFolderWatcher(batch => OnExtraWatchBatch(root, batch), WatchDebounceMs);
             state.Watcher.Start(root);
-            HostLog.Info($"[local] extra watch start: {root}");
+            if (created)
+            {
+                HostLog.Info($"[local] extra watch start: {root}");
+            }
         }
         catch (Exception exception)
         {
