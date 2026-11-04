@@ -7249,11 +7249,11 @@ html.is-bg-lyrics-scene #app{display:none}
 }
 .lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .bg-cover-left{display:block}
 .lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .lyrics-scrim{
-  background:linear-gradient(90deg,rgb(0 0 0 / .10) 0%,rgb(0 0 0 / .06) 48%,rgb(0 0 0 / .46) 100%);
+  background:linear-gradient(90deg,rgb(0 0 0 / .08) 0%,rgb(0 0 0 / .04) 42%,rgb(0 0 0 / .34) 66%,rgb(0 0 0 / .62) 100%);
 }
 .lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .lyrics-frame{padding:6vh 6vw 6vh 0;justify-content:flex-end}
 .lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .lyrics-right{flex:0 0 auto;width:clamp(560px,42vw,1500px)}
-.lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .lyrics-right .lyrics-lines{align-items:flex-start;gap:22px}
+.lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .lyrics-right .lyrics-lines{align-items:flex-start;gap:30px}
 .lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .lyrics-right .lyric-line{
   font-size:clamp(28px,3.3vh,62px)!important;
   line-height:1.3;
@@ -7261,6 +7261,13 @@ html.is-bg-lyrics-scene #app{display:none}
 }
 .lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .lyrics-right .lyric-line.is-active{
   font-size:clamp(34px,3.9vh,74px)!important;
+}
+/* 壁纸可能是任意画面：补一层柔和投影，保证歌词压在复杂背景上也读得清。 */
+.lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .lyrics-right .lyric-line{
+  text-shadow:0 2px 18px rgb(0 0 0 / .55),0 0 42px rgb(0 0 0 / .35);
+}
+.lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .lyrics-right .lyric-line.is-active{
+  text-shadow:0 3px 22px rgb(0 0 0 / .7),0 0 54px rgb(0 0 0 / .45);
 }
 
 /* 换歌过渡：先淡出旧歌词/封面，200ms 后换文档再淡入（backgroundLyrics.ts 的 receiveSnapshot）。 */
@@ -7295,3 +7302,11 @@ html.is-bg-lyrics-scene #app{display:none}
   align-items:flex-start;gap:22px;
 }
 .lyrics-view.is-cover-left:not(.is-background-lyrics):not(.is-lumiere) .lyrics-right .lyric-line{text-align:left}
+
+/* 桌面壁纸层字号比软件内大得多：「旋入」的字间散开幅度按 0.5 收一档，
+   否则相邻两行的字会互相叠在一起（唱到的字仍会归位到 0，不受影响）。 */
+.lyrics-view.is-background-lyrics.lyric-style-spin .lyrics-right .lyric-line .lyric-char{
+  translate: calc(var(--drift-x, 0.42em) * var(--scatter, 1) * 0.5)
+    calc(var(--drift-y, 0.4em) * var(--scatter, 1) * 0.5) !important;
+  rotate: calc(var(--drift-rot, -16deg) * var(--scatter, 1) * 0.55) !important;
+}
