@@ -57,7 +57,9 @@ internal sealed partial class LocalMusicService
         public List<string> Lyrics = new();
     }
 
-    private readonly List<ExtraRoot> _extraRoots = new();
+    // 整体换引用而不是原地 Clear/Add：watcher 回调和重扫线程可能并发读它，
+    // 用不可变快照 + volatile 读避免读到半截列表（UI 线程负责发布新快照）。
+    private volatile List<ExtraRoot> _extraRoots = new();
     private CoreWebView2? _attachedCore;
     private readonly Dictionary<string, (byte[] Bytes, string ContentType)> _coverCache =
         new(StringComparer.OrdinalIgnoreCase);
@@ -698,6 +700,42 @@ internal sealed partial class LocalMusicService
         }
     }
 
+    /// <summary>
+    /// 按 Rel 在下载曲库 / 主目录 / 各附加根里找曲目对象，用于写标签后的就地更新与 CUE 分支保护。
+    /// 附加根的 Rel 带 `@libN/` 前缀，所以直接按完整 Rel 比较。
+    /// </summary>
+    private LocalTrackDto? FindTrackByRel(string rel)
+    {
+        foreach (var track in _downloadTracks)
+        {
+            if (string.Equals(track.Rel, rel, StringComparison.OrdinalIgnoreCase))
+            {
+                return track;
+            }
+        }
+
+        foreach (var track in _folderTracks)
+        {
+            if (string.Equals(track.Rel, rel, StringComparison.OrdinalIgnoreCase))
+            {
+                return track;
+            }
+        }
+
+        foreach (var extra in _extraRoots)
+        {
+            foreach (var track in extra.Tracks)
+            {
+                if (string.Equals(track.Rel, rel, StringComparison.OrdinalIgnoreCase))
+                {
+                    return track;
+                }
+            }
+        }
+
+        return null;
+    }
+
     /// <summary>把选中的本地/下载文件（连同 .lrc/.json sidecar）移进回收站，并刷新曲库。</summary>
     private void DeleteTracks(List<string> rels)
     {
@@ -759,7 +797,50 @@ internal sealed partial class LocalMusicService
             PostResult("delete", false, "删除失败：文件可能正被播放占用，先切歌或暂停再试");
         }
 
+        // 附加根里的条目先按 rel 精准摘掉（宿主删除会被 watcher 抑制，否则留幽灵）。
+        if (failed == 0 && RemoveFromExtras(rels))
+        {
+            HostLog.Info("[local] delete: removed extra-root entries from memory");
+        }
+
         ReloadAfterChange();
+    }
+
+    /// <summary>
+    /// 删除/移动附加根里的文件后，按 rel 直接从内存中摘掉曲目与对应歌词条目：
+    /// 附加根不在主目录的重扫范围内，而宿主自己的删除会被 watcher 抑制窗口挡住，
+    /// 不摘掉的话列表里会留一条幽灵。
+    /// </summary>
+    private bool RemoveFromExtras(IEnumerable<string> rels)
+    {
+        var removed = false;
+        foreach (var rel in rels)
+        {
+            if (!TryMapExtraPath(rel, out var root, out _))
+            {
+                continue;
+            }
+
+            var extra = FindExtraRoot(root);
+            if (extra is null)
+            {
+                continue;
+            }
+
+            if (extra.Tracks.RemoveAll((track) => string.Equals(track.Rel, rel, StringComparison.OrdinalIgnoreCase)) > 0)
+            {
+                removed = true;
+            }
+
+            var lyricRel = Path.ChangeExtension(rel, ".lrc")?.Replace('\\', '/');
+            if (lyricRel is not null
+                && extra.Lyrics.RemoveAll((lyric) => string.Equals(lyric, lyricRel, StringComparison.OrdinalIgnoreCase)) > 0)
+            {
+                removed = true;
+            }
+        }
+
+        return removed;
     }
 
     private void RevealTrack(string? rel)
@@ -816,8 +897,7 @@ internal sealed partial class LocalMusicService
         }
 
         // CUE 分轨共用一个镜像文件，写标签会把整张碟的标签改掉，直接拒绝。
-        var track = _folderTracks.FirstOrDefault((item) => string.Equals(item.Rel, rel, StringComparison.Ordinal))
-            ?? _downloadTracks.FirstOrDefault((item) => string.Equals(item.Rel, rel, StringComparison.Ordinal));
+        var track = FindTrackByRel(rel);
         if (track is not null && track.Cue > 0)
         {
             PostResult("writeTags", false, "CUE 分轨不支持写标签");
@@ -1052,7 +1132,9 @@ internal sealed partial class LocalMusicService
     /// <summary>加载附加曲库根目录（主目录之外）。附加目录的曲目 Rel 与歌词都加 `@libN/` 前缀。</summary>
     private void LoadExtras(IReadOnlyList<string> folders)
     {
-        _extraRoots.Clear();
+        // 先在本地的根上建好新列表，最后整体替换 _extraRoots：watcher 回调/重扫线程只会看到
+        // 完整快照，不会看到被 Clear 之后、重新填满之前的空列表。
+        var roots = new List<ExtraRoot>();
         var index = 1;
         foreach (var raw in folders)
         {
@@ -1079,7 +1161,7 @@ internal sealed partial class LocalMusicService
             }
 
             if (string.Equals(fullPath, _currentFolder, StringComparison.OrdinalIgnoreCase)
-                || _extraRoots.Any((root) => string.Equals(root.Path, fullPath, StringComparison.OrdinalIgnoreCase)))
+                || roots.Any((root) => string.Equals(root.Path, fullPath, StringComparison.OrdinalIgnoreCase)))
             {
                 continue;
             }
@@ -1107,7 +1189,7 @@ internal sealed partial class LocalMusicService
                 lyrics[i] = prefix + lyrics[i];
             }
 
-            _extraRoots.Add(new ExtraRoot
+            roots.Add(new ExtraRoot
             {
                 Path = fullPath,
                 Prefix = prefix,
@@ -1117,6 +1199,36 @@ internal sealed partial class LocalMusicService
             index += 1;
             HostLog.Info($"[local] extra root {fullPath} prefix={prefix} tracks={tracks.Count}");
         }
+
+        _extraRoots = roots;
+        // 根列表变了：给新根挂 watcher、摘掉已移除的根（watch 关闭时是空操作）。
+        SyncExtraWatches();
+    }
+
+    /// <summary>把磁盘绝对路径映射回附加根 + 相对路径（不在任何附加根下返回 false）。</summary>
+    private bool TryFindExtraForPath(string fullPath, out string root, out string relative)
+    {
+        foreach (var extra in _extraRoots)
+        {
+            var normalized = NormalizeFolder(extra.Path);
+            if (normalized.Length == 0)
+            {
+                continue;
+            }
+
+            if (!fullPath.StartsWith(normalized + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            root = normalized;
+            relative = Path.GetRelativePath(normalized, fullPath).Replace('\\', '/');
+            return true;
+        }
+
+        root = string.Empty;
+        relative = string.Empty;
+        return false;
     }
 
     /// <summary>把带 `@libN/` 前缀的 rel 映射回对应的附加根目录。</summary>
@@ -1525,6 +1637,40 @@ internal sealed partial class LocalMusicService
         {
             RescanDownloads();
             PostOnUi(PostMergedTracks);
+            return;
+        }
+
+        // 附加曲库根里的文件：走附加根的增量应用路径（Rel 要带 `@libN/` 前缀）。
+        if (TryFindExtraForPath(fullPath, out var extraRoot, out var extraRelative))
+        {
+            var extra = FindExtraRoot(extraRoot);
+            if (extra is null)
+            {
+                return;
+            }
+
+            var extraRel = extra.Prefix + extraRelative;
+            var extraTrack = TryBuildTrack(fullPath, extraRel);
+            var extraUpserts = new List<LocalTrackDto>();
+            var extraRemovals = new List<string>();
+            if (extraTrack is null)
+            {
+                extraRemovals.Add(extraRel);
+            }
+            else
+            {
+                extraUpserts.Add(extraTrack);
+            }
+
+            ApplyExtraWatchChanges(
+                extraRoot,
+                extraRemovals,
+                extraUpserts,
+                new List<string>(),
+                new List<string>(),
+                new List<string>(),
+                0);
+            HostLog.Info($"[tag] refreshed extra track {extraRel}");
             return;
         }
 
