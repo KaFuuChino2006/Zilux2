@@ -7632,11 +7632,8 @@ export class App {
     const max = this.quickBodyMaxHeight();
     const fromH = Math.min(from, max);
     const toH = Math.min(to, max);
-    if (to >= max - 0.5) {
-      body.style.height = '';
-      body.style.overflow = '';
-      return;
-    }
+    // 即使内容超高也保留高度动画：正文用 clip 锁住滚动，动画结束再交给滚动；
+    // 配合 scrollbar-gutter:stable，滚动条出现/消失不会改变宽度，也就不会和 ResizeObserver 打架。
     body.style.overflow = 'clip';
     body.style.height = `${fromH}px`;
     void body.offsetHeight;
