@@ -7242,15 +7242,22 @@ html.is-bg-lyrics-scene #app{display:none}
 /* 「封面在左」样式（播放效果=关闭时可切换）：封面铺左半边并向壁纸渐隐，歌词列移到右半边左对齐。
    封面层由 backgroundLyrics.ts 的 .bg-cover-left 创建，z-index 在压暗层之上、歌词框架之下。 */
 .lyrics-view.is-background-lyrics .bg-cover-left{
-  position:absolute;inset:0 auto 0 0;z-index:1;width:58%;height:100%;pointer-events:none;
+  position:absolute;inset:0;z-index:1;width:100%;height:100%;pointer-events:none;
   opacity:0;
-  background-position:center;background-size:cover;background-repeat:no-repeat;
-  -webkit-mask-image:linear-gradient(90deg,#000 0%,#000 58%,rgb(0 0 0 / .6) 82%,transparent 100%);
-  mask-image:linear-gradient(90deg,#000 0%,#000 58%,rgb(0 0 0 / .6) 82%,transparent 100%);
+  background-position:left center;background-size:cover;background-repeat:no-repeat;
+  -webkit-mask-image:linear-gradient(90deg,#000 0%,#000 74%,rgb(0 0 0 / .88) 84%,rgb(0 0 0 / .55) 92%,rgb(0 0 0 / .2) 97%,transparent 100%);
+  mask-image:linear-gradient(90deg,#000 0%,#000 74%,rgb(0 0 0 / .88) 84%,rgb(0 0 0 / .55) 92%,rgb(0 0 0 / .2) 97%,transparent 100%);
 }
 .lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .bg-cover-left{opacity:1}
+/* 封面层在压暗层之上，右侧压暗要画在封面自己身上；跟着 mask 一起淡出。 */
+.lyrics-view.is-background-lyrics .bg-cover-left::after{
+  content:'';position:absolute;inset:0;pointer-events:none;
+  background:linear-gradient(90deg,rgb(0 0 0 / 0) 0%,rgb(0 0 0 / .03) 42%,rgb(0 0 0 / .28) 70%,rgb(0 0 0 / .55) 100%);
+}
 .lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .lyrics-scrim{
-  background:linear-gradient(90deg,rgb(0 0 0 / .08) 0%,rgb(0 0 0 / .04) 42%,rgb(0 0 0 / .34) 66%,rgb(0 0 0 / .62) 100%);
+  /* 压在封面层之上、歌词框架之下：浅色封面时白字才不会糊成一片。 */
+  z-index:2;
+  background:linear-gradient(90deg,rgb(0 0 0 / .1) 0%,rgb(0 0 0 / .06) 38%,rgb(0 0 0 / .4) 64%,rgb(0 0 0 / .7) 100%);
 }
 .lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .lyrics-frame{padding:6vh 6vw 6vh 0;justify-content:flex-end}
 .lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .lyrics-right{flex:0 0 auto;width:clamp(560px,42vw,1500px)}
@@ -7296,9 +7303,8 @@ html.is-bg-lyrics-scene #app{display:none}
 .lyrics-view.is-background-lyrics .lyrics-right .lyrics-lines{
   transition:transform .54s cubic-bezier(.22,1.28,.36,1),opacity .2s ease;
 }
-.lyrics-view.is-background-lyrics .bg-cover-left{transition:opacity .32s ease}
-.lyrics-view.is-background-lyrics.is-bg-doc-switching .lyrics-right .lyrics-lines,
-.lyrics-view.is-background-lyrics.is-bg-doc-switching .bg-cover-left{opacity:0}
+.lyrics-view.is-background-lyrics .bg-cover-left{transition:opacity .46s ease}
+.lyrics-view.is-background-lyrics.is-bg-doc-switching .lyrics-right .lyrics-lines{opacity:0}
 /* 纯壁纸 ⇄ 封面在左：布局尺寸缓慢过渡 + 内容先压暗再淡回（backgroundLyrics.ts 的 applyCoverStyle）。 */
 .lyrics-view.is-background-lyrics:not(.is-lumiere) .lyrics-frame{transition:padding .32s ease}
 .lyrics-view.is-background-lyrics:not(.is-lumiere) .lyrics-right{transition:width .32s ease}
@@ -7315,10 +7321,10 @@ html.is-bg-lyrics-scene #app{display:none}
   position:absolute;inset:0;width:100%;display:block;padding:0;pointer-events:none;
 }
 .lyrics-view.is-cover-left:not(.is-background-lyrics):not(.is-lumiere) .lyrics-cover-wrap{
-  position:absolute;inset:0 auto 0 0;width:58%;height:100%;aspect-ratio:auto;
+  position:absolute;inset:0;width:100%;height:100%;aspect-ratio:auto;
   border-radius:0;box-shadow:none;animation:none;
-  -webkit-mask-image:linear-gradient(90deg,#000 0%,#000 55%,rgb(0 0 0 / .65) 82%,transparent 100%);
-  mask-image:linear-gradient(90deg,#000 0%,#000 55%,rgb(0 0 0 / .65) 82%,transparent 100%);
+  -webkit-mask-image:linear-gradient(90deg,#000 0%,#000 74%,rgb(0 0 0 / .88) 84%,rgb(0 0 0 / .55) 92%,rgb(0 0 0 / .2) 97%,transparent 100%);
+  mask-image:linear-gradient(90deg,#000 0%,#000 74%,rgb(0 0 0 / .88) 84%,rgb(0 0 0 / .55) 92%,rgb(0 0 0 / .2) 97%,transparent 100%);
 }
 .lyrics-view.is-cover-left:not(.is-background-lyrics):not(.is-lumiere) .lyrics-cover{
   aspect-ratio:auto;height:100%;
