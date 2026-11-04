@@ -5023,7 +5023,7 @@ export class App {
       if (!hostState.enabled) return { text: '未启用', kind: 'muted', title: '' };
       const item = hostState.items.find((entry) => sameAction(entry.action, action));
       if (!item) return { text: '已生效', kind: 'ok', title: '' };
-      const title = item.error ?? '';
+      const title = item.error ?? (item.fallback && item.applied ? '原组合被其他程序占用，已自动改用替代组合' : '');
       if (item.fallback && item.applied) {
         return { text: `已回落到 ${formatShortcutForDisplay(item.applied)}`, kind: 'warn', title };
       }

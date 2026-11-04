@@ -294,6 +294,10 @@ internal static class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool BringWindowToTop(IntPtr hWnd);
 
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsIconic(IntPtr hWnd);
+
     public const int SwRestore = 9;
 
     /// <summary>
@@ -308,7 +312,14 @@ internal static class NativeMethods
             return;
         }
 
-        ShowWindow(hwnd, SwRestore);
+        // 只对最小化的窗口走 SW_RESTORE：对最大化窗口调用会按系统的还原尺寸改窗口状态，
+        // 但 WPF 的 WindowState 仍停在 Maximized，最大化状态就错位了（单实例激活实测复现）。
+        // 调用方在进来前都已经 Show() 过窗口，所以非最小化时不需要 ShowWindow。
+        if (IsIconic(hwnd))
+        {
+            ShowWindow(hwnd, SwRestore);
+        }
+
         if (SetForegroundWindow(hwnd))
         {
             return;
