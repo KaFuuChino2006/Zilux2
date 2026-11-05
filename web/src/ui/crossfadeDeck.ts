@@ -1669,7 +1669,15 @@ function buildStructureCue(args: {
     nextVocalStartMs,
     track,
   } = args;
-  const bars = settings.bars === 'auto' ? (settings.preset === 'full' ? 8 : 4) : settings.bars;
+  // auto：full = 8 小节，fast = 2 小节，balanced = 4 小节（此前 fast 与 balanced 没区别）。
+  const bars =
+    settings.bars === 'auto'
+      ? settings.preset === 'full'
+        ? 8
+        : settings.preset === 'fast'
+          ? 2
+          : 4
+      : settings.bars;
   const meter = meterOf(analysis);
   // 结构混音的小节长按「cue-out 附近」的局部速度算：变速歌 / 跟拍覆盖都从这里生效。
   const cueOutBpm = tempoAtMs(track, analysis, typeof analysis.cueOutMs === 'number' && analysis.cueOutMs > 0 ? analysis.cueOutMs : fileAudibleEndMs);
@@ -2069,16 +2077,28 @@ function applySchedule(plan: ActivePlan, schedule: FadeSchedule): void {
   debug.gainTrimDb = schedule.gainTrimDb;
 }
 
+/** 还没等到 loadedmetadata 的 B 起始 seek：过渡取消/重排时要撤掉，避免元素复用时旧监听改位置。 */
+const pendingSeeks = new WeakMap<HTMLAudioElement, () => void>();
+
+function cancelPendingSeek(element: HTMLAudioElement): void {
+  const cancel = pendingSeeks.get(element);
+  if (!cancel) return;
+  pendingSeeks.delete(element);
+  cancel();
+}
+
 /** seek 到指定文件秒数；元数据还没到时挂一次性 loadedmetadata 兜底。 */
 function seekDeck(element: HTMLAudioElement, fileSeconds: number): boolean {
   const target = Math.max(0, fileSeconds);
+  // 同一个 B 元素可能在上一次取消后还挂着旧监听，先撤掉再排新的。
+  cancelPendingSeek(element);
   try {
     if (element.readyState >= 1) {
       element.currentTime = target;
       return true;
     }
     const apply = (): void => {
-      element.removeEventListener('loadedmetadata', apply);
+      cancelPendingSeek(element);
       try {
         element.currentTime = target;
       } catch {
@@ -2086,6 +2106,7 @@ function seekDeck(element: HTMLAudioElement, fileSeconds: number): boolean {
       }
     };
     element.addEventListener('loadedmetadata', apply);
+    pendingSeeks.set(element, () => element.removeEventListener('loadedmetadata', apply));
     return true;
   } catch (err) {
     logEvent('b-seek-failed', messageOf(err));
@@ -2403,6 +2424,7 @@ function startManualFade(plan: ActivePlan): void {
 /** 手动/循环过渡失败：恢复 A 的音量与速率，通知 player 回退硬切。 */
 function failManualFade(plan: ActivePlan, reason: string): void {
   if (activePlan !== plan) return;
+  cancelPendingSeek(plan.options.standby);
   if (plan.raf) {
     cancelAnimationFrame(plan.raf);
     plan.raf = 0;
@@ -2715,6 +2737,8 @@ export function cancelCrossfade(reason = 'manual'): void {
   const plan = activePlan;
   activePlan = null;
   if (!plan) return;
+  // 计划作废时 B 的起始 seek 监听也要撤掉，否则下次复用该元素会被旧目标改位置。
+  cancelPendingSeek(plan.options.standby);
   if (plan.raf) {
     cancelAnimationFrame(plan.raf);
     plan.raf = 0;

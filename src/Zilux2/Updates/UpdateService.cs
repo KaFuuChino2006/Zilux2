@@ -31,6 +31,7 @@ internal sealed class UpdateService : IDisposable
     internal const string StateUnavailable = "unavailable";
 
     private const string DefaultApiBase = "https://api.github.com";
+    private const string GitHubApiVersion = "2022-11-28";
     private const string RepoEnvironmentVariable = "ZILUX2_UPDATE_REPO";
     private const string ApiBaseEnvironmentVariable = "ZILUX2_UPDATE_API";
     private const string InstallDirEnvironmentVariable = "ZILUX2_UPDATE_INSTALL_DIR";
@@ -80,6 +81,7 @@ internal sealed class UpdateService : IDisposable
         _http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
         _http.DefaultRequestHeaders.UserAgent.ParseAdd($"Zilux2-Updater/{HostInfo.Version}");
         _http.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
+        _http.DefaultRequestHeaders.TryAddWithoutValidation("X-GitHub-Api-Version", GitHubApiVersion);
     }
 
     /// <summary>
@@ -99,6 +101,7 @@ internal sealed class UpdateService : IDisposable
             var direct = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
             direct.DefaultRequestHeaders.UserAgent.ParseAdd($"Zilux2-Updater/{HostInfo.Version}");
             direct.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
+            direct.DefaultRequestHeaders.TryAddWithoutValidation("X-GitHub-Api-Version", GitHubApiVersion);
             _httpDirect = direct;
             HostLog.Info("[update] using direct connection (system proxy bypassed)");
         }
@@ -495,17 +498,29 @@ internal sealed class UpdateService : IDisposable
                 expectedSize = _assetSize;
             }
 
+            // D-23：没有有效 sha256 摘要的资产一律拒绝，避免下载完成后才发现无法校验。
+            if (!TryParseSha256Digest(digest, out _))
+            {
+                throw new InvalidDataException("更新资产缺少有效的 sha256 摘要，已拒绝下载。");
+            }
+
             var directory = Path.Combine(HostFolders.Root, "updates");
             Directory.CreateDirectory(directory);
             var targetPath = Path.Combine(directory, assetName);
             partPath = targetPath + ".part";
 
             // 上次已经下完的安装包直接复用（校验大小/哈希）。
-            if (File.Exists(targetPath) && await VerifyFileAsync(targetPath, expectedSize, digest, cts.Token).ConfigureAwait(false))
+            if (File.Exists(targetPath))
             {
-                HostLog.Info($"[update] download reused path={targetPath}");
-                CompleteDownload(targetPath);
-                return;
+                var reuse = await VerifyFileAsync(targetPath, expectedSize, digest, cts.Token).ConfigureAwait(false);
+                if (reuse.Ok)
+                {
+                    HostLog.Info($"[update] download reused path={targetPath}");
+                    CompleteDownload(targetPath);
+                    return;
+                }
+
+                HostLog.Warn($"[update] existing package rejected path={targetPath} reason={reuse.Error}");
             }
 
             HostLog.Info($"[update] download start url={assetUrl} target={targetPath}");
@@ -565,12 +580,14 @@ internal sealed class UpdateService : IDisposable
                 throw new InvalidDataException($"安装包大小不符（期望 {expectedSize}，实际 {done}）");
             }
 
-            if (!await VerifyFileAsync(partPath, expectedSize, digest, cts.Token).ConfigureAwait(false))
+            var verified = await VerifyFileAsync(partPath, expectedSize, digest, cts.Token).ConfigureAwait(false);
+            if (!verified.Ok)
             {
-                throw new InvalidDataException("安装包 SHA-256 校验失败");
+                throw new InvalidDataException(verified.Error ?? "安装包 SHA-256 校验失败");
             }
 
             File.Move(partPath, targetPath, overwrite: true);
+            PruneOldInstallers(directory, targetPath);
             CompleteDownload(targetPath);
         }
         catch (OperationCanceledException)
@@ -671,46 +688,82 @@ internal sealed class UpdateService : IDisposable
         }
     }
 
-    private static async Task<bool> VerifyFileAsync(string path, long expectedSize, string? digest, CancellationToken token)
+    private static bool TryParseSha256Digest(string? digest, out string expected)
+    {
+        expected = string.Empty;
+        const string prefix = "sha256:";
+        if (string.IsNullOrWhiteSpace(digest) ||
+            !digest.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var value = digest[prefix.Length..].Trim();
+        if (value.Length != 64)
+        {
+            return false;
+        }
+
+        foreach (var ch in value)
+        {
+            if (!Uri.IsHexDigit(ch))
+            {
+                return false;
+            }
+        }
+
+        expected = value;
+        return true;
+    }
+
+    private static async Task<(bool Ok, string? Error)> VerifyFileAsync(
+        string path,
+        long expectedSize,
+        string? digest,
+        CancellationToken token)
     {
         try
         {
             if (!File.Exists(path))
             {
-                return false;
+                return (false, "安装包不存在。");
             }
 
-            if (expectedSize > 0 && new FileInfo(path).Length != expectedSize)
+            long length;
+            try
             {
-                return false;
+                length = new FileInfo(path).Length;
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                return (false, $"无法读取安装包大小：{exception.Message}");
             }
 
-            if (string.IsNullOrWhiteSpace(digest))
+            if (expectedSize > 0 && length != expectedSize)
             {
-                return true;
+                return (false, $"安装包大小不符（期望 {expectedSize}，实际 {length}）。");
             }
 
-            var prefix = "sha256:";
-            if (!digest.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            if (!TryParseSha256Digest(digest, out var expected))
             {
-                return true;
-            }
-
-            var expected = digest[prefix.Length..].Trim();
-            if (expected.Length == 0)
-            {
-                return true;
+                return (false, "更新资产缺少有效的 sha256 摘要，已拒绝安装。");
             }
 
             await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, useAsync: true);
             var hash = await SHA256.HashDataAsync(stream, token).ConfigureAwait(false);
             var actual = Convert.ToHexString(hash);
-            return string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase);
+            return string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase)
+                ? (true, null)
+                : (false, "安装包 SHA-256 校验失败。");
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
         {
             HostLog.Warn($"[update] verify failed path={path} err={exception.Message}");
-            return false;
+            return (false, $"校验安装包失败：{exception.Message}");
         }
     }
 
@@ -807,10 +860,43 @@ internal sealed class UpdateService : IDisposable
                 throw new InvalidOperationException("无法启动安装程序进程");
             }
 
-            // 安装器会先结束本进程再覆盖安装，给 UI 一点时间把 installing 状态推给页面。
+            // D-24：先观察安装器是否立刻失败（权限/杀软常见），失败时保留主程序并显示错误；
+            // 安装器需要先结束本进程才能覆盖文件，因此成功路径仍延迟退出。
             _ = Task.Run(async () =>
             {
-                await Task.Delay(1200).ConfigureAwait(false);
+                int? exitCode = null;
+                try
+                {
+                    if (process.WaitForExit(2000))
+                    {
+                        exitCode = process.ExitCode;
+                    }
+                }
+                catch (Exception exception)
+                {
+                    HostLog.Warn($"[update] wait installer failed: {exception.Message}");
+                }
+                finally
+                {
+                    process.Dispose();
+                }
+
+                if (exitCode is int code && code != 0)
+                {
+                    HostLog.Warn($"[update] installer exited with code {code}");
+                    lock (_gate)
+                    {
+                        _busy = false;
+                        _state = StateError;
+                        _error = $"安装程序启动失败（退出码 {code}），请检查安装权限或稍后重试。";
+                        _notice = null;
+                    }
+
+                    Post();
+                    return;
+                }
+
+                await Task.Delay(1000).ConfigureAwait(false);
                 _requestExit();
             });
         }
@@ -838,12 +924,20 @@ internal sealed class UpdateService : IDisposable
 
         try
         {
-            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(UninstallRegistryKey);
-            if (key?.GetValue("InstallLocation") is string location &&
-                !string.IsNullOrWhiteSpace(location) &&
-                File.Exists(Path.Combine(location, "Zilux2.exe")))
+            // D-26：同时支持 per-user（HKCU）和 per-machine（HKLM）安装。
+            foreach (var root in new[]
+                     {
+                         Microsoft.Win32.Registry.CurrentUser,
+                         Microsoft.Win32.Registry.LocalMachine,
+                     })
             {
-                return Path.GetFullPath(location);
+                using var key = root.OpenSubKey(UninstallRegistryKey);
+                if (key?.GetValue("InstallLocation") is string location &&
+                    !string.IsNullOrWhiteSpace(location) &&
+                    File.Exists(Path.Combine(location, "Zilux2.exe")))
+                {
+                    return Path.GetFullPath(location);
+                }
             }
         }
         catch (Exception exception)
@@ -906,8 +1000,8 @@ internal sealed class UpdateService : IDisposable
             _busy = false;
             _error = error;
             _notice = null;
-            _lastCheckUtc = DateTimeOffset.UtcNow;
-            _checkedAt = _lastCheckUtc;
+            // D-27：失败不写入 60 秒节流，用户点「重试」应立即重新检查。
+            _checkedAt = DateTimeOffset.UtcNow;
         }
 
         HostLog.Warn($"[update] error: {error}");
@@ -969,17 +1063,8 @@ internal sealed class UpdateService : IDisposable
             return configured.Trim();
         }
 
-        string? fromLock;
-        lock (_gate)
-        {
-            fromLock = _repo;
-        }
-
-        if (!string.IsNullOrWhiteSpace(fromLock))
-        {
-            return fromLock;
-        }
-
+        // D-39：不再沿用上一次检查的 _repo。用户把 repo 清空后应回到编译期默认值，
+        // 否则清空操作要等到重启才生效。
         return _buildRepo;
     }
 
@@ -1084,6 +1169,29 @@ internal sealed class UpdateService : IDisposable
 
     private static bool ReadBool(JsonElement parent, string name) =>
         parent.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.True;
+
+    /// <summary>D-20：updates 目录只保留当前安装包和最近 1 个旧版本，避免每个版本累积十几 MB。</summary>
+    private static void PruneOldInstallers(string directory, string keepPath)
+    {
+        try
+        {
+            var keepName = Path.GetFileName(keepPath);
+            var candidates = Directory
+                .EnumerateFiles(directory, SetupAssetPrefix + "*.exe")
+                .Where(path => !string.Equals(Path.GetFileName(path), keepName, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(File.GetLastWriteTimeUtc)
+                .Skip(1)
+                .ToList();
+            foreach (var path in candidates)
+            {
+                TryDelete(path);
+            }
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[update] prune installers failed: {exception.Message}");
+        }
+    }
 
     private static void TryDelete(string path)
     {

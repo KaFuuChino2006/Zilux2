@@ -60,6 +60,9 @@ export async function orderUpcomingByMix(): Promise<{ total: number; analyzed: n
   const state = playerState();
   const upcoming = state.queue.slice(state.index + 1);
   if (!state.track || upcoming.length < 2) return null;
+  const queueSignature = (snapshot: ReturnType<typeof playerState>): string =>
+    `${snapshot.index}|${snapshot.queue.map((track) => `${track.source}:${track.id}`).join(',')}`;
+  const beforeSignature = queueSignature(state);
   const head = await describe(state.track);
   const entries = await Promise.all(upcoming.slice(0, 40).map((track) => describe(track)));
   const analyzed = entries.filter((entry) => entry.known).length + (head.known ? 1 : 0);
@@ -83,6 +86,9 @@ export async function orderUpcomingByMix(): Promise<{ total: number; analyzed: n
     ordered.push(next.track);
     previous = next;
   }
+  const now = playerState();
+  // 分析期间用户切歌/换了队列：这次重排基于旧快照，放弃，避免覆盖新顺序。
+  if (queueSignature(now) !== beforeSignature || now.track?.id !== state.track.id) return null;
   reorderUpcoming([...ordered, ...upcoming.slice(40)]);
   return { total: upcoming.length, analyzed };
 }

@@ -52,6 +52,7 @@ internal sealed class AirPlayStreamer : IDisposable
     private readonly object _sync = new();
     private readonly List<ConnectionSlot> _connections = new();
     private IAirPlayAudioSource? _capture;
+    private bool _ownsSource;
     private StereoResampler? _resampler;
     private PcmRing? _pcm;
     private CancellationTokenSource? _cts;
@@ -130,13 +131,19 @@ internal sealed class AirPlayStreamer : IDisposable
         {
             var percent = Math.Clamp(value, 0, 100);
             Volatile.Write(ref _volumePercent, percent);
+
+            // Collect the connections under the lock but perform the RTSP round-trips outside it:
+            // the pump takes the same lock for every packet and must never wait on device I/O.
+            IAirPlayConnection[] connections;
             lock (_sync)
             {
-                foreach (var slot in _connections)
-                {
-                    try { slot.Connection.SetVolume(percent); }
-                    catch (Exception ex) { HostLog.Warn($"[airplay] volume failed for {slot.DeviceId}: {ex.GetType().Name}: {ex.Message}"); }
-                }
+                connections = _connections.Select(static slot => slot.Connection).ToArray();
+            }
+
+            foreach (var connection in connections)
+            {
+                try { connection.SetVolume(percent); }
+                catch (Exception ex) { HostLog.Warn($"[airplay] volume failed for {connection.TargetName}: {ex.GetType().Name}: {ex.Message}"); }
             }
         }
     }
@@ -153,24 +160,28 @@ internal sealed class AirPlayStreamer : IDisposable
         }
 
         percent = Math.Clamp(percent, 0, 100);
+        IAirPlayConnection? connection;
         lock (_sync)
         {
-            var slot = _connections.FirstOrDefault(entry => string.Equals(entry.DeviceId, deviceId, StringComparison.Ordinal));
-            if (slot is null)
-            {
-                return false;
-            }
+            connection = _connections
+                .FirstOrDefault(entry => string.Equals(entry.DeviceId, deviceId, StringComparison.Ordinal))
+                ?.Connection;
+        }
 
-            try
-            {
-                slot.Connection.SetVolume(percent);
-                return true;
-            }
-            catch (Exception ex)
-            {
-                HostLog.Warn($"[airplay] volume failed for {slot.DeviceId}: {ex.GetType().Name}: {ex.Message}");
-                return false;
-            }
+        if (connection is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            connection.SetVolume(percent);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            HostLog.Warn($"[airplay] volume failed for {deviceId}: {ex.GetType().Name}: {ex.Message}");
+            return false;
         }
     }
 
@@ -205,6 +216,7 @@ internal sealed class AirPlayStreamer : IDisposable
         if (connections.Count == 0) throw new ArgumentException("At least one connection is required.", nameof(connections));
 
         var ownsSource = audioSource is null;
+        _ownsSource = ownsSource;
         IAirPlayAudioSource capture;
         if (ownsSource)
         {
@@ -340,12 +352,44 @@ internal sealed class AirPlayStreamer : IDisposable
         HostLog.Info($"[airplay] receiver detached device={removed.DeviceId} receivers={ConnectionCount}");
     }
 
-    /// <summary>Stops streaming and tears every RAOP session down. Safe to call multiple times.</summary>
-    public void Stop()
+    /// <summary>
+    /// Sends FLUSH to every active receiver so buffered audio queued before a pause/seek/track
+    /// change is discarded. Runs off the caller's thread; failures are logged and never thrown.
+    /// </summary>
+    public Task FlushAllAsync()
     {
+        ConnectionSlot[] slots;
+        lock (_sync)
+        {
+            slots = _connections.ToArray();
+        }
+        if (slots.Length == 0)
+        {
+            return Task.CompletedTask;
+        }
+
+        return Task.Run(() =>
+        {
+            foreach (var slot in slots)
+            {
+                try
+                {
+                    slot.Connection.Flush();
+                }
+                catch (Exception ex)
+                {
+                    HostLog.Warn($"[airplay] flush failed device={slot.DeviceId}: {ex.GetType().Name}: {ex.Message}");
+                }
+            }
+        });
+    }
+
+    /// <summary>Stops streaming and tears every RAOP session down. Safe to call multiple times.</summary>
+    public void Stop()    {
         Thread? pump;
         Thread? captureThread;
         IAirPlayAudioSource? capture;
+        bool ownsSource;
         ConnectionSlot[] connections;
         CancellationTokenSource? cts;
 
@@ -357,12 +401,14 @@ internal sealed class AirPlayStreamer : IDisposable
             pump = _pump;
             captureThread = _captureThread;
             capture = _capture;
+            ownsSource = _ownsSource;
             connections = _connections.ToArray();
             _connections.Clear();
             _cts = null;
             _pump = null;
             _captureThread = null;
             _capture = null;
+            _ownsSource = false;
             _resampler = null;
             _pcm = null;
         }
@@ -372,7 +418,13 @@ internal sealed class AirPlayStreamer : IDisposable
         JoinThread(captureThread);
 
         cts?.Dispose();
-        capture?.Dispose();
+
+        // Only a capture this streamer created (system loopback) belongs to it; a supplied source
+        // (the page PCM tap owned by AirPlayService) must outlive one streaming session.
+        if (ownsSource)
+        {
+            capture?.Dispose();
+        }
 
         foreach (var slot in connections)
         {
@@ -525,7 +577,13 @@ internal sealed class AirPlayStreamer : IDisposable
                 ConnectionSlot[] targets;
                 lock (_sync)
                 {
-                    if (_connections.Count == 0) break;
+                    if (_connections.Count == 0)
+                    {
+                        // No receiver left: stop the capture thread too, otherwise it keeps draining
+                        // the page tap and encoding into a ring nobody consumes.
+                        _cts?.Cancel();
+                        break;
+                    }
                     targets = _connections.ToArray();
                 }
 
@@ -568,6 +626,16 @@ internal sealed class AirPlayStreamer : IDisposable
                             else
                             {
                                 slot.ConsecutiveFailures++;
+
+                                // SendAudioFrame reports most transport failures by returning false
+                                // instead of throwing. Treat a long run of refusals like a throwing
+                                // transport, otherwise a half-dead receiver keeps a slot (and an
+                                // "actives" entry) forever while producing silence.
+                                if (slot.ConsecutiveFailures >= MaxConsecutiveSendFailures)
+                                {
+                                    failures.Add((slot, new IOException(
+                                        $"audio send refused {slot.ConsecutiveFailures} consecutive packets for {slot.DeviceId}")));
+                                }
                             }
                         }
                         catch (Exception ex)

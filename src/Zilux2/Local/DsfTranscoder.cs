@@ -8,12 +8,11 @@ namespace Zilux2.Local;
 
 /// <summary>
 /// DSF（DSD Stream File）→ WAV 转码：用「按位求均值」的简易低通把 1-bit DSD 降采样成 88.2kHz PCM。
-/// 结果缓存在 %LOCALAPPDATA%\Zilux2\dsf-cache，同文件只转一次；页面拿到的是标准 WAV，可随意拖动进度。
+/// 结果缓存在 %LOCALAPPDATA%\Zilux2\dsf-cache，同一会话内同文件只转一次；页面拿到的是标准 WAV，可随意拖动进度。
+/// 缓存会在应用启动/退出时清空，避免长期占用 C 盘。
 /// </summary>
 internal static class DsfTranscoder
 {
-    private const string CacheFolderName = "dsf-cache";
-
     /// <summary>目标输出采样率；DSD64/128/256 都能整除到 88.2k。</summary>
     private const int OutputRate = 88200;
 
@@ -34,7 +33,7 @@ internal static class DsfTranscoder
                 return false;
             }
 
-            var cacheDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Zilux2", CacheFolderName);
+            var cacheDir = TranscodeCache.DsfDirectory;
             Directory.CreateDirectory(cacheDir);
             var stamp = $"{info.FullName}|{info.Length}|{info.LastWriteTimeUtc.Ticks}";
             var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(stamp))).ToLowerInvariant();
@@ -54,6 +53,7 @@ internal static class DsfTranscoder
 
             File.Move(temp, wavPath);
             stopwatch.Stop();
+            TranscodeCache.Prune(cacheDir);
             HostLog.Info($"[dsf] converted {Path.GetFileName(dsfPath)} → {Path.GetFileName(wavPath)} "
                 + $"({sourceRate}Hz/{channels}ch, {samples} samples, {stopwatch.ElapsedMilliseconds}ms)");
             return true;

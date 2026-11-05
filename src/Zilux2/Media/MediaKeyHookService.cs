@@ -106,7 +106,8 @@ internal sealed class MediaKeyHookService : IDisposable
             NativeMethods.VkMediaNextTrack => "next",
             NativeMethods.VkMediaPrevTrack => "prev",
             NativeMethods.VkMediaPlayPause => "togglePlay",
-            // 停止键（VK_MEDIA_STOP）和别的不在接管范围，交给系统/占用方。
+            NativeMethods.VkMediaStop => "stop",
+            // 停止键也接管（B29）；其余键交给系统/占用方。
             _ => null,
         };
 

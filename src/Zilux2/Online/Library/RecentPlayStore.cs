@@ -29,8 +29,15 @@ internal sealed class RecentPlayStore
                 _tracks = JsonSerializer.Deserialize<List<OnlineTrack>>(json) ?? [];
             }
         }
-        catch (Exception exception) when (exception is IOException or JsonException or UnauthorizedAccessException)
+        catch (JsonException exception)
         {
+            // D-12：损坏的文件不再静默清空，先备份再重建，避免用户历史无痕丢失。
+            BackupCorrupt(exception.Message);
+            _tracks = [];
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            OnlineHttp.Warn($"[recent] load failed: {exception.GetType().Name} {exception.Message}");
             _tracks = [];
         }
     }
@@ -51,14 +58,7 @@ internal sealed class RecentPlayStore
                 _tracks.RemoveRange(MaxEntries, _tracks.Count - MaxEntries);
             }
 
-            try
-            {
-                File.WriteAllText(_path, JsonSerializer.Serialize(_tracks));
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                OnlineHttp.Warn($"[recent] persist failed: {exception.GetType().Name}");
-            }
+            SaveLocked();
         }
     }
 
@@ -75,5 +75,102 @@ internal sealed class RecentPlayStore
 
             return items.Take(take).ToList();
         }
+    }
+
+    private void SaveLocked()
+    {
+        var temp = _path + ".tmp";
+        try
+        {
+            // D-12：落盘前剥掉封面代理 URL 里的回环 token，避免更新通道之外的临时凭据长期留在磁盘上。
+            var serializable = _tracks.Select(StripCoverToken).ToList();
+            File.WriteAllText(temp, JsonSerializer.Serialize(serializable));
+            if (File.Exists(_path))
+            {
+                File.Replace(temp, _path, null);
+            }
+            else
+            {
+                File.Move(temp, _path);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            OnlineHttp.Warn($"[recent] persist failed: {exception.GetType().Name}");
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(temp))
+                {
+                    File.Delete(temp);
+                }
+            }
+            catch
+            {
+                // 残留 .tmp 不影响下次启动；下次成功写入会覆盖。
+            }
+        }
+    }
+
+    private void BackupCorrupt(string reason)
+    {
+        try
+        {
+            var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+            var backup = _path + ".corrupt-" + stamp;
+            var index = 1;
+            while (File.Exists(backup))
+            {
+                backup = _path + ".corrupt-" + stamp + "-" + index;
+                index += 1;
+            }
+
+            File.Move(_path, backup);
+            OnlineHttp.Warn($"[recent] corrupt file backed up to {backup}: {reason}");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            OnlineHttp.Warn($"[recent] backup corrupt file failed: {exception.Message}");
+        }
+    }
+
+    /// <summary>只处理宿主自己的封面代理 URL；上游直链原样保留。</summary>
+    private static OnlineTrack StripCoverToken(OnlineTrack track)
+    {
+        var cover = track.Cover;
+        if (string.IsNullOrEmpty(cover) || !Uri.TryCreate(cover, UriKind.Absolute, out var uri))
+        {
+            return track;
+        }
+
+        if (!uri.AbsolutePath.EndsWith("/api/cover", StringComparison.OrdinalIgnoreCase))
+        {
+            return track;
+        }
+
+        var queryIndex = cover.IndexOf('?');
+        if (queryIndex < 0)
+        {
+            return track;
+        }
+
+        // 直接做字符串级删除，避免 UriBuilder 重新编码已转义的 key（例如 https%3A%2F%2F...）。
+        var prefix = cover[..queryIndex];
+        var parts = cover[(queryIndex + 1)..]
+            .Split('&', StringSplitOptions.RemoveEmptyEntries)
+            .Where(part => !part.StartsWith("token=", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        var originalCount = cover[(queryIndex + 1)..]
+            .Split('&', StringSplitOptions.RemoveEmptyEntries)
+            .Length;
+        if (parts.Length == originalCount)
+        {
+            return track;
+        }
+
+        var rebuilt = parts.Length > 0 ? prefix + "?" + string.Join("&", parts) : prefix;
+        return track with { Cover = rebuilt };
     }
 }

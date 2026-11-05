@@ -5,6 +5,7 @@ using Zilux2.AirPlay.Audio;
 using Zilux2.AirPlay.Discovery;
 using Zilux2.Audio;
 using Zilux2.DevTest.AirPlay;
+using Zilux2.Local;
 using Zilux2.Media;
 using Zilux2.Online;
 using Zilux2.Online.Account;
@@ -47,6 +48,8 @@ public partial class App : Application
     {
         base.OnStartup(e);
         HostLog.Info($"host.start version={HostInfo.Version} pid={Environment.ProcessId} exe={Environment.ProcessPath ?? "<unknown>"}");
+        // 转码缓存只是本次会话的临时派生文件，启动时清掉上次残留，避免 C 盘越积越多。
+        TranscodeCache.ClearAll("startup");
         InstallCrashGuards();
 
         // tools/account-selftest.ps1 executes the deterministic login checks inside this process:
@@ -156,6 +159,16 @@ public partial class App : Application
             window.ShowInTaskbar = false;
         }
 
+        // B19：--hidden 只决定“是否显示”，不改变 startMaximized 的语义。WindowState 必须在
+        // Show 之前设置：否则首帧先按还原态创建布局/WebView2，随后再最大化会在隐藏启动时
+        // 触发一次尺寸跳变。放在 Show 前，窗口第一次参与布局就是最大化边界；--hidden 仍会
+        // 在 Show 后立刻 HideToTray，用户看不到任何中间态。
+        if (Settings?.StartMaximized == true)
+        {
+            window.WindowState = WindowState.Maximized;
+            HostLog.Info("[settings] startMaximized applied");
+        }
+
         window.Show();
 
         // 托盘图标：失败只失去托盘入口（窗口仍在，但关闭会被隐藏到托盘后找不回来，所以
@@ -177,14 +190,6 @@ public partial class App : Application
             }
 
             window.Opacity = 1;
-        }
-
-        if (Settings?.StartMaximized == true)
-        {
-            // Contract §5: apply after the window exists. Setting WindowState before Show raises
-            // no StateChanged, so maximizing here keeps the state push (and margin fix) intact.
-            window.WindowState = WindowState.Maximized;
-            HostLog.Info("[settings] startMaximized applied");
         }
     }
 
@@ -382,6 +387,9 @@ public partial class App : Application
         {
             HostLog.Warn($"host.instance dispose failed: {exception.Message}");
         }
+
+        // 退出时清掉 ALAC/DSF 转码产生的整首歌 WAV 副本；源文件不受影响，下次播放会重新转码。
+        TranscodeCache.ClearAll("exit");
 
         HostLog.Info("host.exit");
         MarkShutdownFinished();

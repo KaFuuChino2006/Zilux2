@@ -292,7 +292,12 @@ public static class HapPairing
             .ConfigureAwait(false);
         var (_, m4) = ParseDeviceTlv(m4Response, 4);
         var serverProof = HapTlv.GetValue(m4, HapTlvType.Proof);
-        if (serverProof is not null && !srp.VerifyServerProof(serverProof))
+        // PIN 配对是用户可见的信任建立过程：设备必须证明自己知道 SRP 会话密钥，
+        // 缺失 Proof 与校验失败同样致命，不能静默接受（防 MITM/假接收端）。
+        if (serverProof is null)
+            throw new HapPairingException(HapPairingError.AuthenticationError,
+                "pair-setup M4 缺少服务器 SRP 证明；设备身份无法验证。");
+        if (!srp.VerifyServerProof(serverProof))
             throw new HapPairingException(HapPairingError.AuthenticationError,
                 $"pair-setup M4 服务器证明校验失败（期望 {CryptoPrimitives.ToHexUpper(srp.ExpectedServerProof)}，" +
                 $"实际 {CryptoPrimitives.ToHexUpper(serverProof)}）。");
@@ -480,17 +485,28 @@ public static class HapPairing
             var error = HapTlv.GetValue(m4, HapTlvType.Error);
             if (error is not null) throw DeviceError(error, m4, "transient pair-setup");
             var serverProof = HapTlv.GetValue(m4, HapTlvType.Proof);
-            if (serverProof is not null && !srp.VerifyServerProof(serverProof))
-                throw new HapPairingException(HapPairingError.AuthenticationError,
-                    "transient pair-setup M4：设备 SRP 证明校验失败（PIN 或协议路径不匹配）。");
-            trace?.Invoke("transient M4：设备 SRP 证明校验通过。");
+            if (serverProof is not null)
+            {
+                if (!srp.VerifyServerProof(serverProof))
+                    throw new HapPairingException(HapPairingError.AuthenticationError,
+                        "transient pair-setup M4：设备 SRP 证明校验失败（PIN 或协议路径不匹配）。");
+                trace?.Invoke("transient M4：设备 SRP 证明校验通过。");
+            }
+            else
+            {
+                // HomePod 等瞬态接收端不回 Proof（配对由固定 PIN 3939 保护、之后立刻加密）。
+                // 不能静默：明确记录为兼容路径，且仅瞬态配对允许缺失证明。
+                trace?.Invoke("transient M4：设备未返回 SRP 证明；按瞬态配对兼容路径继续（设备身份未验证）。");
+            }
         }
 
         // 瞬态：共享密钥 = SRP 会话密钥 K；之后控制通道密钥直接由 K 派生，无需 pair-verify。
         var sessionKey = srp.SessionKey;
         var (writeKey, readKey) = HapKeyDerivation.DeriveControlKeys(sessionKey);
-        trace?.Invoke($"transient 完成：K={CryptoPrimitives.ToHexUpper(sessionKey)}");
-        trace?.Invoke($"控制通道 writeKey={CryptoPrimitives.ToHexUpper(writeKey)} readKey={CryptoPrimitives.ToHexUpper(readKey)}");
+        // Never log key material: the trace sink is HostLog.Info in production. Record only
+        // lengths so a diagnosis can still confirm the derivation produced the expected sizes.
+        trace?.Invoke($"transient 完成：K={sessionKey.Length}B（值已省略）");
+        trace?.Invoke($"控制通道 writeKey={writeKey.Length}B readKey={readKey.Length}B（值已省略）");
 
         return new HapVerifyResult
         {

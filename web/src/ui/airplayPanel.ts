@@ -17,6 +17,7 @@ import {
   AIRPLAY_LATENCY_MIN,
   AIRPLAY_LATENCY_STEP,
   airplay,
+  forgetAirplayDeviceVolumes,
   rememberedAirplayDeviceVolume,
   rememberedAirplayVolume,
   rememberAirplayDeviceVolume,
@@ -53,8 +54,10 @@ const VOLUME_DEBOUNCE_MS = 150;
 let visiblePanels = 0;
 
 function beginScan(): void {
+  const alreadyScanning = visiblePanels > 0 && airplay.getSnapshot().state === 'scanning';
   visiblePanels += 1;
-  airplay.scan();
+  // 第二个面板打开时宿主已在扫描，不重复下发（避免重置 8 秒窗口/刷屏）。
+  if (!alreadyScanning) airplay.scan();
 }
 
 function endScan(): void {
@@ -234,10 +237,19 @@ export function createAirplayPanel(options: AirplayPanelOptions = {}): AirplayPa
         tone: 'is-warn',
       };
     }
-    if (current.state === 'error') {
-      const label = current.code ? AIRPLAY_ERROR_LABEL[current.code] : '投送出错';
+    // 第二台设备/单台失败时宿主保持 state='streaming'，只更新 code/error
+    // （AirPlayService.SetTransientError）。只在 error 态显示会让这类失败在 UI 上完全不可见。
+    if (current.error || current.code) {
+      const label = current.code
+        ? AIRPLAY_ERROR_LABEL[current.code]
+        : current.state === 'error'
+          ? '投送出错'
+          : '投送异常';
       const detail = current.error && current.error !== label ? `：${current.error}` : '';
-      return { text: `${label}${detail}`, tone: 'is-error' };
+      return {
+        text: `${label}${detail}`,
+        tone: current.state === 'error' ? 'is-error' : 'is-warn',
+      };
     }
     return null;
   };
@@ -252,14 +264,18 @@ export function createAirplayPanel(options: AirplayPanelOptions = {}): AirplayPa
     const activeIds = new Set(current.actives.map((entry) => entry.id));
     const volumeById = new Map(current.actives.map((entry) => [entry.id, entry.volume] as const));
     const connectingId = current.state === 'connecting' ? current.targetDeviceId ?? '' : '';
+    // signature 含单台音量（P2-50）：否则宿主回推音量变化时整个列表不更新。拖动中的滑块
+    // 不能重建 DOM，所以焦点在音量滑块上时先不更新 signature、延到下一次 render 再重建。
+    const volumeFocused =
+      document.activeElement instanceof HTMLInputElement &&
+      document.activeElement.dataset.airplayDeviceVolume !== undefined;
     const signature = [
       current.devices.map((device) => `${device.id}:${device.name}:${device.host}:${device.model}:${device.requiresPassword ? 1 : 0}:${device.airPlay2 ? 1 : 0}`).join('|'),
-      // 单台音量变化不重建列表（否则拖动滑块会被 innerHTML 打断），只同步数值
-      current.actives.map((entry) => entry.id).join('|'),
+      current.actives.map((entry) => `${entry.id}=${entry.volume}`).join('|'),
       connectingId,
       hostReady ? '1' : '0',
     ].join('#');
-    if (signature !== devicesSignature) {
+    if (signature !== devicesSignature && !volumeFocused) {
       devicesSignature = signature;
       if (!hostReady) {
         devicesEl.hidden = true;
@@ -333,8 +349,11 @@ export function createAirplayPanel(options: AirplayPanelOptions = {}): AirplayPa
   };
 
   /**
-   * 新连上的设备恢复到上次记住的音量（没有单独记录时退回记住的全局音量）。
-   * 只在每台设备第一次出现在 actives 里时下发一次，避免和宿主的音量回传互相覆盖。
+   * 新连上的设备恢复到上次记住的音量（P2-51）：
+   * - 有单台覆盖 → 用单台值；
+   * - 没有单台覆盖 → 沿用记住的全局值（全局滑杆的语义是「覆盖全部设备」）。
+   * 只在每台设备第一次出现在 actives 里时下发一次，避免和宿主的音量回传互相覆盖；
+   * 全局滑杆改动后会清掉单台覆盖（见 flushVolume），所以之后新接入的设备仍跟全局。
    */
   const restoreVolumes = (): void => {
     if (!airplay.hostAvailable()) return;
@@ -494,6 +513,8 @@ export function createAirplayPanel(options: AirplayPanelOptions = {}): AirplayPa
     volumeValueEl.textContent = `${clamped}%`;
     airplay.setVolume(clamped);
     rememberAirplayVolume(clamped);
+    // 全局覆盖生效：清掉各设备的单台记忆，避免下次恢复时被旧值拉回去（P2-51）。
+    forgetAirplayDeviceVolumes(current.actives.map((entry) => entry.id));
   };
 
   /* ---- 交互 ---- */
@@ -569,6 +590,9 @@ export function createAirplayPanel(options: AirplayPanelOptions = {}): AirplayPa
   passwordCancelBtn.addEventListener('click', () => {
     passwordDismissed = true;
     passwordInput.value = '';
+    // 取消连接而不是断开设备：握手还没成功，不应留下半开的会话。
+    const deviceId = current.passwordDeviceId ?? current.targetDeviceId;
+    if (deviceId) airplay.cancelConnect(deviceId);
     render();
   });
 
@@ -597,9 +621,9 @@ export function createAirplayPanel(options: AirplayPanelOptions = {}): AirplayPa
     pinDismissed = true;
     pinInput.value = '';
     pinForm.hidden = true;
-    // 契约没有「取消配对」动作：用 disconnect(deviceId) 让宿主中止这台设备的连接，
-    // 已投送的其它设备不受影响；宿主若忽略，它会在 120 s 后自行超时失败。
-    if (deviceId) airplay.disconnectDevice(deviceId);
+    // P2-54：取消配对只中止这次握手（cancelConnect），不调用 disconnect（那会把已投送的
+    // 其它设备也断开，且宿主对未知 id 可能误判）。若宿主忽略，120s 超时会自行收尾。
+    if (deviceId) airplay.cancelConnect(deviceId);
     render();
   });
 

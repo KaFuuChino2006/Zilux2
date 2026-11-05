@@ -34,6 +34,22 @@ function sanitizeName(value: string): string {
   return trimmed || '智能歌单';
 }
 
+function sanitizeCover(value: unknown): string {
+  if (typeof value !== 'string' || !value) return '';
+  try {
+    const url = new URL(value);
+    const loopback = url.hostname === '127.0.0.1' || url.hostname === 'localhost';
+    // D-32：快照会长期存在 localStorage，不能把宿主临时 token 一起写进去。
+    if (loopback && url.pathname.endsWith('/api/cover')) {
+      url.searchParams.delete('token');
+      return url.toString();
+    }
+  } catch {
+    // 非绝对 URL 原样保留。
+  }
+  return value;
+}
+
 function sanitizeTrack(raw: unknown): OnlineTrack | null {
   if (!raw || typeof raw !== 'object') return null;
   const record = raw as Record<string, unknown>;
@@ -48,7 +64,7 @@ function sanitizeTrack(raw: unknown): OnlineTrack | null {
     artist: typeof record.artist === 'string' ? record.artist : '',
     album: typeof record.album === 'string' ? record.album : '',
     durationMs: typeof record.durationMs === 'number' && record.durationMs > 0 ? record.durationMs : 0,
-    cover: typeof record.cover === 'string' ? record.cover : '',
+    cover: sanitizeCover(record.cover),
     playable: record.playable !== false,
     vip: record.vip === true ? true : null,
     ...(typeof record.startAt === 'number' && record.startAt > 0 ? { startAt: record.startAt } : {}),

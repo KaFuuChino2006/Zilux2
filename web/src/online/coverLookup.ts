@@ -7,6 +7,29 @@ import type { OnlineTrack } from './types';
 const cache = new Map<string, string | null>();
 const inflight = new Map<string, Promise<string | null>>();
 
+// D-46：无封面的本地曲目会按行触发查封面；这里做全局并发闸门（2 条），
+// 避免打开长列表时同时打几十上百条 /api/search。
+const MAX_CONCURRENT = 2;
+let active = 0;
+const waiters: Array<() => void> = [];
+
+function acquire(): Promise<void> {
+  if (active < MAX_CONCURRENT) {
+    active += 1;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => waiters.push(resolve));
+}
+
+function release(): void {
+  const next = waiters.shift();
+  if (next) {
+    next();
+    return;
+  }
+  active = Math.max(0, active - 1);
+}
+
 function keyOf(track: OnlineTrack): string {
   return `${track.source}:${track.id}`;
 }
@@ -44,22 +67,30 @@ export function lookupCover(track: OnlineTrack): Promise<string | null> {
   const query = artist && !title.includes(artist) ? `${title} ${artist}` : title;
 
   const task = (async (): Promise<string | null> => {
-    for (const source of sourceIds().filter((id) => sourceMeta(id).experimental !== true)) {
-      let tracks: OnlineTrack[] = [];
-      try {
-        tracks = (await searchOnline(source, query, 6)).tracks;
-      } catch {
-        continue;
+    await acquire();
+    try {
+      for (const source of sourceIds().filter((id) => sourceMeta(id).experimental !== true)) {
+        let tracks: OnlineTrack[] = [];
+        try {
+          tracks = (await searchOnline(source, query, 6)).tracks;
+        } catch {
+          continue;
+        }
+        const withCover = tracks.filter((item) => item.cover);
+        if (withCover.length === 0) continue;
+        // 优先标题+歌手都匹配，其次标题匹配；都没有时取第一个有封面的结果。
+        const byTitle = withCover.filter((item) => norm(item.title) === norm(title));
+        const exact =
+          byTitle.find((item) => artist && norm(item.artist) === norm(artist)) ?? byTitle[0];
+        const picked = exact ?? withCover[0]!;
+        cache.set(key, picked.cover);
+        return picked.cover;
       }
-      const withCover = tracks.filter((item) => item.cover);
-      if (withCover.length === 0) continue;
-      const exact = withCover.find((item) => norm(item.title) === norm(title));
-      const picked = exact ?? withCover[0]!;
-      cache.set(key, picked.cover);
-      return picked.cover;
+      cache.set(key, null);
+      return null;
+    } finally {
+      release();
     }
-    cache.set(key, null);
-    return null;
   })().finally(() => {
     inflight.delete(key);
   });

@@ -329,7 +329,6 @@ export interface Settings {
     theme: Theme;
     reduceMotion: boolean;
     glow: boolean;
-    heroAutoRotate: boolean;
     lyricsSize: LyricsSize;
     /** 窗口过渡：custom=应用内快照动画，native=交给 Windows 原生过渡。 */
     windowAnimation: WindowAnimation;
@@ -343,9 +342,7 @@ export interface Settings {
   playback: {
     defaultSource: OnlineSourceId;
     searchLimit: number;
-    lyricsAutoOpen: boolean;
     /** 空间里闲置（约 3 秒没动鼠标）且正在播放时，自动切到 3D 歌词界面，鼠标一动回磁贴 */
-    idleLyrics: boolean;
     /** 让 3D 画面随系统音频轻微呼吸；关闭后宿主停止推送音频特征（§10）。 */
     audioReactive: boolean;
     volume: number;
@@ -416,7 +413,6 @@ export const DEFAULT_SETTINGS: Settings = {
     theme: 'frost',
     reduceMotion: false,
     glow: true,
-    heroAutoRotate: true,
     lyricsSize: 'medium',
     windowAnimation: 'custom',
     playerBarExpanded: false,
@@ -426,8 +422,6 @@ export const DEFAULT_SETTINGS: Settings = {
   playback: {
     defaultSource: 'netease',
     searchLimit: 20,
-    lyricsAutoOpen: true,
-    idleLyrics: true,
     audioReactive: true,
     volume: 0.72,
     quality: 'high',
@@ -460,13 +454,26 @@ const UPDATE_MODES: readonly UpdateMode[] = ['auto', 'notify'];
 // 默认平台只校验非空字符串；具体可用平台由宿主 /api/sources 决定。
 const SEARCH_LIMITS = [10, 20, 30] as const;
 
-type Listener = (settings: Settings) => void;
+export type SettingsChangeOrigin = 'load' | 'local' | 'host' | 'reset';
+
+export interface SettingsChangeMeta {
+  origin: SettingsChangeOrigin;
+  previous: Settings;
+}
+
+type Listener = (settings: Settings, meta: SettingsChangeMeta) => void;
 
 let current: Settings = clone(DEFAULT_SETTINGS);
 const listeners = new Set<Listener>();
 let localSaveTimer = 0;
 let hostListenerBound = false;
 let pendingHostResolve: ((settings: Settings) => void) | null = null;
+/** 已发给宿主、但还没在宿主快照里回显的 patch：防止慢快照把本地刚改的值回滚。 */
+let pendingHostPatches: SettingsPatch[] = [];
+
+function settingsEqual(left: Settings, right: Settings): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -582,7 +589,6 @@ export function normalizeSettings(raw: unknown): Settings {
       theme: asEnum(appearance.theme, THEMES, DEFAULT_SETTINGS.appearance.theme),
       reduceMotion: asBool(appearance.reduceMotion, DEFAULT_SETTINGS.appearance.reduceMotion),
       glow: asBool(appearance.glow, DEFAULT_SETTINGS.appearance.glow),
-      heroAutoRotate: asBool(appearance.heroAutoRotate, DEFAULT_SETTINGS.appearance.heroAutoRotate),
       lyricsSize: asEnum(appearance.lyricsSize, LYRICS_SIZES, DEFAULT_SETTINGS.appearance.lyricsSize),
       windowAnimation: asEnum(appearance.windowAnimation, WINDOW_ANIMATIONS, DEFAULT_SETTINGS.appearance.windowAnimation),
       playerBarExpanded: asBool(appearance.playerBarExpanded, DEFAULT_SETTINGS.appearance.playerBarExpanded),
@@ -595,8 +601,6 @@ export function normalizeSettings(raw: unknown): Settings {
           ? playback.defaultSource
           : DEFAULT_SETTINGS.playback.defaultSource,
       searchLimit: asLimit(playback.searchLimit),
-      lyricsAutoOpen: asBool(playback.lyricsAutoOpen, DEFAULT_SETTINGS.playback.lyricsAutoOpen),
-      idleLyrics: asBool(playback.idleLyrics, DEFAULT_SETTINGS.playback.idleLyrics),
       audioReactive: asBool(playback.audioReactive, DEFAULT_SETTINGS.playback.audioReactive),
       volume: asVolume(playback.volume),
       quality: asEnum(playback.quality, STREAM_QUALITIES, DEFAULT_SETTINGS.playback.quality),
@@ -649,16 +653,21 @@ export function onSettingsChange(listener: Listener): () => void {
   return () => listeners.delete(listener);
 }
 
-/** 应用设置到文档（主题/减少动效/光晕/歌词字号）并广播。 */
-export function applySettings(next: Settings): void {
+/** 应用设置到文档（歌词字号/减少动效/光晕/播放条）并广播；origin 供界面判断是否需要整体回读。 */
+export function applySettings(next: Settings, origin: SettingsChangeOrigin = 'local'): void {
+  const previous = current;
   current = next;
   const root = document.documentElement;
-  root.dataset.theme = next.appearance.theme;
+  // 主题只由 ui/theme.ts 写 data-theme：这里再写一次会把 theme.ts 写入的 light/dark
+  // 覆盖成设置里的 'frost'，让 :root[data-theme='light'] 样式与 color-scheme 全部失效。
   root.dataset.lyricsSize = next.appearance.lyricsSize;
   root.classList.toggle('reduce-motion', next.appearance.reduceMotion);
   root.classList.toggle('no-glow', !next.appearance.glow);
   root.classList.toggle('is-pb-expanded', next.appearance.playerBarExpanded);
-  listeners.forEach((listener) => listener(next));
+  // 值没变化时不广播：宿主对本地 patch 的回执快照不会把已渲染的控件再刷一遍。
+  if (!settingsEqual(previous, next)) {
+    listeners.forEach((listener) => listener(next, { origin, previous }));
+  }
   // 播放引擎（player.ts / audioTap.ts）不订阅设置对象，避免循环依赖：这里广播音效偏好。
   window.dispatchEvent(
     new CustomEvent('zilux:playback-fx', {
@@ -707,8 +716,9 @@ function bindHostListener(): void {
     const next = normalizeSettings(msg.state);
     // 兼容还没下发 shortcuts 段的旧宿主：保留页面当前快捷键，别被默认值冲掉。
     if (!hasShortcutsSection(msg.state)) next.shortcuts = { ...current.shortcuts };
-    applySettings(next);
-    pendingHostResolve?.(next);
+    const state = pendingHostPatches.length > 0 ? applyPendingPatches(next) : next;
+    applySettings(state, 'host');
+    pendingHostResolve?.(state);
   });
 }
 
@@ -737,28 +747,56 @@ export async function loadSettings(): Promise<Settings> {
     });
   }
 
-  const state = raw ? normalizeSettings(raw) : readLocal();
+  // 契约：宿主 900 ms 内没回快照时用默认值启动；只有确认没有宿主时才读本地镜像。
+  const state = raw
+    ? normalizeSettings(raw)
+    : hostAvailable()
+      ? clone(DEFAULT_SETTINGS)
+      : readLocal();
   // 旧宿主快照没有 shortcuts 段时，优先保留本地镜像里的快捷键配置。
   if (raw && !hasShortcutsSection(raw)) {
     state.shortcuts = { ...readLocal().shortcuts };
   }
-  applySettings(state);
+  applySettings(state, 'load');
   return state;
+}
+
+function mergePatch(base: Settings, patch: SettingsPatch): Settings {
+  return {
+    version: 1,
+    general: { ...base.general, ...patch.general },
+    appearance: { ...base.appearance, ...patch.appearance },
+    playback: { ...base.playback, ...patch.playback },
+    shortcuts: { ...base.shortcuts, ...patch.shortcuts },
+    downloads: { ...base.downloads, ...patch.downloads },
+    updates: { ...base.updates, ...patch.updates },
+  };
+}
+
+/** 把尚未回显的本地 patch 叠加到宿主快照上；快照已经包含的 patch 直接淘汰。 */
+function applyPendingPatches(snapshot: Settings): Settings {
+  if (pendingHostPatches.length === 0) return snapshot;
+  const remaining: SettingsPatch[] = [];
+  let merged = snapshot;
+  for (const patch of pendingHostPatches) {
+    const next = mergePatch(merged, patch);
+    // 宿主可能拒绝了非法值并在快照里回落到合法值；按归一化后的结果判断，
+    // 否则同一条会被无限重放。
+    const normalized = normalizeSettings(next);
+    if (settingsEqual(merged, normalized)) continue;
+    remaining.push(patch);
+    merged = normalized;
+  }
+  pendingHostPatches = remaining;
+  return remaining.length > 0 ? normalizeSettings(merged) : snapshot;
 }
 
 /** 局部更新：立即应用；宿主在线走宿主持久化，否则写 localStorage 镜像。 */
 export function patchSettings(patch: SettingsPatch): Settings {
-  const merged: Settings = {
-    version: 1,
-    general: { ...current.general, ...patch.general },
-    appearance: { ...current.appearance, ...patch.appearance },
-    playback: { ...current.playback, ...patch.playback },
-    shortcuts: { ...current.shortcuts, ...patch.shortcuts },
-    downloads: { ...current.downloads, ...patch.downloads },
-    updates: { ...current.updates, ...patch.updates },
-  };
+  const merged = mergePatch(current, patch);
   const next = normalizeSettings(merged);
-  applySettings(next);
+  if (hostAvailable()) pendingHostPatches.push(patch);
+  applySettings(next, 'local');
   if (hostAvailable()) {
     host.patchSettings(patch);
   } else {
@@ -770,7 +808,8 @@ export function patchSettings(patch: SettingsPatch): Settings {
 /** 恢复默认值。 */
 export function resetSettings(): Settings {
   const next = clone(DEFAULT_SETTINGS);
-  applySettings(next);
+  pendingHostPatches = [];
+  applySettings(next, 'reset');
   if (hostAvailable()) {
     host.resetSettings();
   } else {

@@ -17,6 +17,8 @@ namespace Zilux2.AirPlay.Ap2;
 internal sealed class HapEncryptedTransport : IDisposable
 {
     private const int MaxHeaderBytes = 64 * 1024;
+    /// <summary>Defensive upper bound for a decrypted response body (info/SETUP plists are small).</summary>
+    private const int MaxResponseBodyBytes = 8 * 1024 * 1024;
 
     private readonly TcpClient _client;
     private readonly NetworkStream _stream;
@@ -209,9 +211,15 @@ internal sealed class HapEncryptedTransport : IDisposable
         }
 
         var contentLength = 0;
-        if (headers.TryGetValue("Content-Length", out var lengthText))
+        if (headers.TryGetValue("Content-Length", out var lengthText)
+            && !int.TryParse(lengthText, NumberStyles.Integer, CultureInfo.InvariantCulture, out contentLength))
         {
-            _ = int.TryParse(lengthText, NumberStyles.Integer, CultureInfo.InvariantCulture, out contentLength);
+            throw new InvalidDataException($"AP2 {method} invalid Content-Length: '{lengthText}'.");
+        }
+
+        if (contentLength < 0 || contentLength > MaxResponseBodyBytes)
+        {
+            throw new InvalidDataException($"AP2 {method} Content-Length {contentLength} out of range (0..{MaxResponseBodyBytes}).");
         }
 
         var bodyStart = headerEnd + 4;
@@ -220,11 +228,10 @@ internal sealed class HapEncryptedTransport : IDisposable
             ReadMore(method, uri);
         }
 
-        var all = _plaintextIn.GetBuffer();
         var body = new byte[contentLength];
         if (contentLength > 0)
         {
-            Buffer.BlockCopy(all, bodyStart, body, 0, contentLength);
+            Buffer.BlockCopy(_plaintextIn.GetBuffer(), bodyStart, body, 0, contentLength);
         }
 
         TrimConsumed(bodyStart + contentLength);

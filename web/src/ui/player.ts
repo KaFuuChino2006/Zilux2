@@ -381,6 +381,22 @@ function outgoingTrack(): OnlineTrack | null {
 let reportTimer = 0;
 let lastReportAt = 0;
 let rafId = 0;
+/** 连续失败跳过计数：成功起播即清零，避免一次坏队列让自动跳过永久失效。 */
+let skipGuard = 0;
+/** 「播完当前曲就停」一次性标记（睡眠定时 endOfTrack 模式）。 */
+let pauseAtTrackEnd = false;
+/** 是否正处在「暂停淡出」窗口内：此时按播放应撤销淡出恢复，而不是再叠一次暂停。 */
+let pauseFadePending = false;
+/** 曲末回调集合（自然播完时通知；无缝衔接会先禁用，见 setPauseAtTrackEnd）。 */
+const trackEndedListeners = new Set<(detail: TrackEndedDetail) => void>();
+
+/** 曲末事件详情。 */
+export interface TrackEndedDetail {
+  /** 刚播完的那首。 */
+  track: OnlineTrack | null;
+  index: number;
+  reason: 'natural';
+}
 
 function snapshot(): PlayerState {
   return { ...state, queue: state.queue.slice() };
@@ -494,6 +510,42 @@ export function onPlayer(listener: Listener): () => void {
   listeners.add(listener);
   listener(snapshot());
   return () => listeners.delete(listener);
+}
+
+/** 订阅「当前曲自然播完」（睡眠定时等宿主逻辑用）。返回取消订阅函数。 */
+export function onTrackEnded(listener: (detail: TrackEndedDetail) => void): () => void {
+  trackEndedListeners.add(listener);
+  return () => trackEndedListeners.delete(listener);
+}
+
+function emitTrackEnded(detail: TrackEndedDetail): void {
+  trackEndedListeners.forEach((fn) => {
+    try {
+      fn(detail);
+    } catch (err) {
+      console.warn('[player] track-ended listener failed', err);
+    }
+  });
+  window.dispatchEvent(new CustomEvent('zilux:track-ended', { detail }));
+}
+
+/**
+ * 睡眠定时「播完当前曲」：置位后放弃无缝衔接（否则 A 会在淡出中被提前收尾、ended 不触发），
+ * 当前曲自然播到 ended 时暂停并回到曲首，然后触发一次 onTrackEnded。
+ * 触发后自动清除；关闭定时器时传 false 会重新准备无缝衔接。
+ */
+export function setPauseAtTrackEnd(enabled: boolean): void {
+  pauseAtTrackEnd = enabled;
+  if (enabled) {
+    cancelSeamless('pause-at-track-end');
+  } else if (state.playing) {
+    prepareSeamlessNext();
+  }
+}
+
+/** 当前是否处于「播完当前曲就停」状态（调试/设置页用）。 */
+export function pauseAtTrackEndArmed(): boolean {
+  return pauseAtTrackEnd;
 }
 
 export function playerState(): PlayerState {
@@ -640,6 +692,25 @@ function onEnded(element: HTMLAudioElement): void {
   if (element !== audio) return;
   // 过渡进行中 A 先放完：直接收尾到 B，不要再 load 一次（自动/手动/单曲循环过渡同理）。
   if (crossfadeFinishNow('ended')) return;
+  // 睡眠定时「播完当前曲」：不走自动下一首，暂停在曲首，并把曲末事件交给宿主。
+  if (pauseAtTrackEnd) {
+    pauseAtTrackEnd = false;
+    cancelFade();
+    cancelSeamless('track-end');
+    audio.pause();
+    fadeScale = 1;
+    vocalHold = 0;
+    setVocalFade(0);
+    try {
+      audio.currentTime = startAt;
+    } catch {
+      /* 元数据尚未就绪时忽略 */
+    }
+    setState({ playing: false, positionMs: 0 });
+    applyPlaybackVolume(true);
+    emitTrackEnded({ track: state.track, index: state.index, reason: 'natural' });
+    return;
+  }
   // 自然播完：用准备阶段就选好的下一首（shuffle 的随机结果在切换时不再重算）。
   const planned = takePlannedNextIndex();
   cancelSeamless('ended');
@@ -669,13 +740,12 @@ function onError(element: HTMLAudioElement): void {
     return;
   }
   console.warn('[player] audio error', track.title, audio.error?.code, audio.error?.message);
-  // 自动跳过失败曲目（最多连续跳 3 首，避免整队列空转）
-  const guard = (window as unknown as { __ziluxSkip?: number }).__ziluxSkip ?? 0;
-  if (guard >= 3) {
-    (window as unknown as { __ziluxSkip?: number }).__ziluxSkip = 0;
+  // 自动跳过失败曲目（最多连续跳 3 首，避免整队列空转）；成功起播会清零。
+  if (skipGuard >= 3) {
+    skipGuard = 0;
     return;
   }
-  (window as unknown as { __ziluxSkip?: number }).__ziluxSkip = guard + 1;
+  skipGuard += 1;
   window.setTimeout(() => {
     if (state.track?.id === track.id) next();
   }, 240);
@@ -754,6 +824,8 @@ function load(index: number, autoplay = true, startMs = 0, skipFadeIn = false): 
           }
         }
         if (token !== fadeToken) return;
+        // 起播成功：清空连续失败计数，避免一次坏歌单让自动跳过在整段会话里失效。
+        skipGuard = 0;
         setState({ playing: true, loading: false });
         scheduleTick();
         void recordRecent(track);
@@ -914,8 +986,8 @@ export function playQueue(tracks: OnlineTrack[], index = 0, autoplay = true, sta
   if (tracks.length === 0) return;
   notifyQueueSwitch();
   const safeIndex = Math.max(0, Math.min(index, tracks.length - 1));
-  (window as unknown as { __ziluxSkip?: number }).__ziluxSkip = 0;
-  // 显式换队列：上一份续接器（私人漫游等）作废，普通歌单/搜索结果不会被无限续接。
+  // 显式换队列：连续失败跳过计数与上一份续接器（私人漫游等）一并作废。
+  skipGuard = 0;
   queueRefill = null;
   refillInFlight = false;
   state = { ...state, queue: tracks.slice() };
@@ -1099,6 +1171,9 @@ export function toggle(): void {
       return;
     }
     void startPlayback();
+  } else if (pauseFadePending) {
+    // 正在暂停淡出：按播放应撤销淡出直接恢复，而不是再排一次暂停（否则淡出结束后会被再按一次）。
+    void startPlayback();
   } else {
     pausePlayback();
   }
@@ -1109,6 +1184,7 @@ function startPlayback(): Promise<void> {
   cancelFade();
   // 恢复播放时重建无缝衔接计划（分析结果命中缓存，代价很小）。
   cancelSeamless('resume');
+  pauseFadePending = false;
   const token = fadeToken;
   const fade = fx.fadeEnabled ? Math.max(0, fx.fadeInMs) : 0;
   fadeScale = fade > 0 ? 0 : 1;
@@ -1128,6 +1204,8 @@ function startPlayback(): Promise<void> {
     .play()
     .then(() => {
       if (token !== fadeToken) return;
+      // 起播成功：清空连续失败计数，否则一次坏歌单会让自动跳过在整段会话里失效。
+      skipGuard = 0;
       setState({ playing: true });
       scheduleTick();
       prepareSeamlessNext();
@@ -1161,9 +1239,11 @@ function pausePlayback(): void {
   const fadeOut = fx.fadeEnabled ? Math.max(0, fx.fadeOutMs) : 0;
   const vocalTail = fx.fadeEnabled && fx.fadeVocal ? Math.max(0, fx.fadeVocalTailMs) : 0;
   const total = fadeOut + vocalTail;
+  pauseFadePending = total > 0;
   if (vocalTail > 0) ensureEqualizerGraph();
   const finish = (): void => {
     if (token !== fadeToken) return;
+    pauseFadePending = false;
     audio.pause();
     vocalHold = vocalTail > 0 ? 1 : 0;
     if (vocalHold === 0) setVocalFade(0);
@@ -1810,6 +1890,11 @@ function prepareSeamlessNext(): void {
     idlePrefetch();
     return;
   }
+  // 睡眠定时「播完当前曲」：不做无缝衔接，让当前曲自然播到 ended，由 onEnded 暂停并上报。
+  if (pauseAtTrackEnd) {
+    idlePrefetch();
+    return;
+  }
   if (!readCrossfadeSettings().enabled) {
     idlePrefetch();
     return;
@@ -2053,9 +2138,3 @@ onMediaControl((control: MediaControl) => {
 /* 退出前把最后状态落盘 */
 window.addEventListener('pagehide', persistNow);
 window.addEventListener('beforeunload', persistNow);
-
-/* 音量跟随设置 */
-window.addEventListener('zilux:volume', (event) => {
-  const detail = (event as CustomEvent<number>).detail;
-  if (typeof detail === 'number') setVolume(detail);
-});

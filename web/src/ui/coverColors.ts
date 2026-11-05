@@ -15,6 +15,18 @@ export interface CoverColors {
 
 const cache = new Map<string, CoverColors | null>();
 const inflight = new Map<string, Promise<CoverColors | null>>();
+/** 曲目缓存上限：长时间漫游会无限累积封面主色，超出后按插入顺序淘汰最旧的。 */
+const CACHE_LIMIT = 200;
+
+function remember(key: string, colors: CoverColors | null): void {
+  cache.delete(key);
+  cache.set(key, colors);
+  while (cache.size > CACHE_LIMIT) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+}
 
 function keyOf(track: OnlineTrack): string {
   return `${track.source}:${track.id}:${track.cover ?? ''}`;
@@ -235,7 +247,7 @@ export function coverColorsOf(track: OnlineTrack | null): Promise<CoverColors | 
       pixels = data ? data.length / 4 : 0;
       colors = data ? quantize(data) : null;
     }
-    cache.set(key, colors);
+    remember(key, colors);
     try {
       host.log(
         'info',

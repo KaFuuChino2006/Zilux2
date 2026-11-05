@@ -11,6 +11,7 @@
  */
 
 import { postMessage } from './bridge';
+import { bindAirplayMediaFlush, unbindAirplayMediaFlush } from '../airplay';
 
 /** 页面取流的固定目标采样率；宿主按同样格式重采样到 44.1k。 */
 const TARGET_RATE = 48000;
@@ -139,6 +140,8 @@ const VOCAL_FADE_MAX_DB = 36;
 export function attachAudioTap(element: HTMLAudioElement): void {
   const previous = audio;
   audio = element;
+  // 接收端缓冲里的旧音频必须靠 FLUSH 清掉；绑定是幂等的，换 deck 也不会重复监听。
+  bindAirplayMediaFlush(element);
   localVolume = Number.isFinite(element.volume) ? element.volume : 1;
   // 图已建立（EQ / 人声保留淡出 / 歌词页分析器已启用）时，新上场的 deck 也要接回图里：
   // 一是音量继续由本地 gain 接管，二是歌词页的频谱分析器能持续拿到声音。
@@ -573,18 +576,36 @@ export function playbackAnalyser(): AnalyserNode | null {
 }
 
 export async function startAudioTap(): Promise<void> {
+  // wantRunning is set before the async work starts: stopAudioTap may run while this call is
+  // awaiting the worklet/graph, and it must be able to cancel the startup (otherwise the local
+  // gain would be muted after the cast already failed).
+  wantRunning = true;
   if (running || pendingStart) return;
   pendingStart = true;
   try {
     const ctx = ensureContext();
-    if (!ctx || !buildLocalGraph(ctx)) return;
+    if (!ctx) {
+      reportCaptureFailure('AudioContext 不可用');
+      return;
+    }
+    if (!buildLocalGraph(ctx)) {
+      reportCaptureFailure('无法创建本地音频图');
+      return;
+    }
     const tapReady = await ensureTapGraph(ctx);
-    if (!tapReady) return;
+    if (!wantRunning) return;
+    if (!tapReady) {
+      reportCaptureFailure('AudioWorklet 与 ScriptProcessor 均不可用');
+      return;
+    }
     try {
       await ctx.resume();
     } catch {
       // 上下文被策略挂起时仍继续，下一次 resume 会补上。
     }
+    if (!wantRunning) return;
+    captureFailureReported = '';
+    captureRetryAttempts = 0;
     running = true;
     applyLocalGain();
     postMessage({ v: 1, type: 'audio', action: 'config', rate: ctx.sampleRate, channels: 2 });
@@ -593,11 +614,106 @@ export async function startAudioTap(): Promise<void> {
   }
 }
 
+let wantRunning = false;
+
+/** 取流失败只上报一次，避免每次重连都重复弹同一个错误。 */
+let captureFailureReported = '';
+
+/** 契约 §12.3：采集失败每 5s 重试；页面保持 wantRunning，宿主保持 connecting/streaming。 */
+const CAPTURE_RETRY_MS = 5000;
+const CAPTURE_MAX_RETRIES = 12;
+let captureRetryAttempts = 0;
+let captureRetryTimer = 0;
+
+function reportCaptureFailure(reason: string): void {
+  if (captureFailureReported !== reason) {
+    captureFailureReported = reason;
+    postMessage({ v: 1, type: 'audio', action: 'captureError', error: reason });
+  }
+  scheduleCaptureRetry();
+}
+
+function scheduleCaptureRetry(): void {
+  if (!wantRunning || running || captureRetryTimer !== 0) return;
+  if (captureRetryAttempts >= CAPTURE_MAX_RETRIES) {
+    console.warn('[audioTap] capture retry limit reached');
+    return;
+  }
+  captureRetryTimer = window.setTimeout(() => {
+    captureRetryTimer = 0;
+    if (!wantRunning || running) return;
+    captureRetryAttempts += 1;
+    void startAudioTap();
+  }, CAPTURE_RETRY_MS);
+}
+
 export function stopAudioTap(): void {
-  if (!running) return;
+  wantRunning = false;
+  captureRetryAttempts = 0;
+  if (captureRetryTimer !== 0) {
+    window.clearTimeout(captureRetryTimer);
+    captureRetryTimer = 0;
+  }
+  if (!running) {
+    // 起点可能停在半成品（worklet 已建、running 还没置 true），同样要拆掉节点。
+    teardownTapNodes();
+    return;
+  }
   running = false;
   applyLocalGain();
   postMessage({ v: 1, type: 'audio', action: 'reset' });
+  teardownTapNodes();
+}
+
+/**
+ * 拆掉取流支路（worklet / ScriptProcessor / 静音 gain）。
+ * Tear the tap branch down so the next start builds a fresh sampler against the live context.
+ * Leaving the nodes connected keeps the worklet/processor running for nothing.
+ */
+function teardownTapNodes(): void {
+  try {
+    workletNode?.disconnect();
+  } catch {
+    // already disconnected
+  }
+  workletNode = null;
+  if (processor) {
+    try {
+      processor.disconnect();
+    } catch {
+      // already disconnected
+    }
+    processor.onaudioprocess = null;
+    processor = null;
+  }
+  try {
+    silentGain?.disconnect();
+  } catch {
+    // already disconnected
+  }
+  silentGain = null;
+}
+
+/**
+ * 页面卸载时调用（P2-57）：取消在途启动与重试、停掉 worklet、解绑播放事件。
+ * 不关闭 AudioContext、也不拆本地 EQ/音量图——那些是页面级共享资源，由宿主页面生命周期决定。
+ * 重复调用安全；之后再次 startAudioTap() 会重新建取流支路。
+ */
+export function disposeAudioTap(): void {
+  wantRunning = false;
+  captureRetryAttempts = 0;
+  captureFailureReported = '';
+  if (captureRetryTimer !== 0) {
+    window.clearTimeout(captureRetryTimer);
+    captureRetryTimer = 0;
+  }
+  if (running) {
+    running = false;
+    applyLocalGain();
+    postMessage({ v: 1, type: 'audio', action: 'reset' });
+  }
+  teardownTapNodes();
+  if (audio) unbindAirplayMediaFlush(audio);
 }
 
 function ensureContext(): AudioContext | null {
@@ -643,7 +759,23 @@ function buildLocalGraph(ctx: AudioContext): boolean {
     deckMix = ctx.createGain();
     deckMix.gain.value = 1;
     const builtDeck = buildDeckChain(ctx, source);
-    if (!builtDeck) return false;
+    if (!builtDeck) {
+      // Roll the half-built graph back: leaving mediaSource set would make the next call skip
+      // construction (and stay silent forever); leaving audio.volume=1 would also lose local volume.
+      try {
+        source.disconnect();
+        localGain.disconnect();
+        deckMix.disconnect();
+      } catch {
+        // nodes may not be connected yet
+      }
+      mediaSource = null;
+      localGain = null;
+      deckMix = null;
+      deckNodes.clear();
+      audio.volume = localVolume;
+      return false;
+    }
     builtDeck.chain.gain.connect(deckMix);
     deckNodes.set(audio, { source, ...builtDeck.chain });
     // 均衡器始终串在 deckMix 与 localGain 之间：关闭时全部 0dB，等价直通。

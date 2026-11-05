@@ -28,6 +28,8 @@ internal sealed class SettingsService : IDisposable
     private SettingsModel _state;
     private JsonObject? _loadedDocument;
     private bool _dirty;
+    private bool _loadFailed;
+    private int _saveFailures;
     private bool _disposed;
 
     internal SettingsService(string? pathOverride = null)
@@ -108,6 +110,24 @@ internal sealed class SettingsService : IDisposable
             {
                 var general = _state.General;
                 return (general.DesktopLyrics, general.DesktopLyricsLocked, general.DesktopLyricsFontSize, general.DesktopLyricsTopmost, general.DesktopLyricsWeight, general.DesktopLyricsBackdropOpacity);
+            }
+        }
+    }
+
+    /// <summary>桌面歌词上次关闭位置；坐标不完整或没有记录时返回 null。</summary>
+    internal (double Left, double Top)? DesktopLyricsPosition
+    {
+        get
+        {
+            lock (_gate)
+            {
+                var general = _state.General;
+                if (general.DesktopLyricsLeft is double left && general.DesktopLyricsTop is double top)
+                {
+                    return (left, top);
+                }
+
+                return null;
             }
         }
     }
@@ -349,6 +369,25 @@ internal sealed class SettingsService : IDisposable
                 return;
             }
 
+            // 两套桌面歌词互斥：同时开启会创建两个歌词窗口并重复渲染。
+            // 以本次 patch 显式打开的那个为准；同一包同时打开时背景歌词优先。
+            var wantsBackgroundLyrics =
+                keys.Contains("general.backgroundLyrics") && _state.General.BackgroundLyrics;
+            var wantsDesktopLyrics =
+                keys.Contains("general.desktopLyrics") && _state.General.DesktopLyrics;
+            if (wantsBackgroundLyrics && _state.General.DesktopLyrics)
+            {
+                _state.General.DesktopLyrics = false;
+                keys.Add("general.desktopLyrics");
+                HostLog.Warn("[settings] desktopLyrics disabled because backgroundLyrics was enabled");
+            }
+            else if (wantsDesktopLyrics && _state.General.BackgroundLyrics)
+            {
+                _state.General.BackgroundLyrics = false;
+                keys.Add("general.backgroundLyrics");
+                HostLog.Warn("[settings] backgroundLyrics disabled because desktopLyrics was enabled");
+            }
+
             HostLog.Info($"[settings] patch keys={string.Join(",", keys)}");
             MarkDirtyLocked();
             shortcutsChanged = keys.Exists(key => key.StartsWith("shortcuts.", StringComparison.Ordinal));
@@ -378,7 +417,7 @@ internal sealed class SettingsService : IDisposable
             }
 
             _state = SettingsModel.CreateDefaults();
-            _loadedDocument = null;
+            // 保留 _loadedDocument，让 MergeUnknownKeys 继续写回未知顶层/内层键（契约 §2）。
             HostLog.Info("[settings] reset");
             MarkDirtyLocked();
         }
@@ -482,6 +521,14 @@ internal sealed class SettingsService : IDisposable
 
     private void SaveLocked()
     {
+        // 读取原文件失败且无法留副本时，宁可本次不保存，也不能用默认值覆盖用户文件（P1-01）。
+        if (_loadFailed && !TryPreserveUnreadableSettings())
+        {
+            HostLog.Warn("[settings] save skipped: settings file was unreadable and no backup could be made");
+            return;
+        }
+
+        _loadFailed = false;
         try
         {
             var document = JsonSerializer.SerializeToNode(_state, SettingsJsonContext.Default.SettingsModel)?.AsObject();
@@ -512,11 +559,20 @@ internal sealed class SettingsService : IDisposable
             }
 
             _dirty = false;
+            _saveFailures = 0;
             HostLog.Info("[settings] save ok");
         }
         catch (Exception exception)
         {
             HostLog.Error("[settings] save failed", exception);
+            TryDeleteTempFile();
+            _saveFailures++;
+            if (!_disposed && _saveFailures <= 3)
+            {
+                _dirty = true;
+                _saveTimer.Change(2000 * _saveFailures, Timeout.Infinite);
+                HostLog.Warn($"[settings] save retry scheduled attempt={_saveFailures}");
+            }
         }
     }
 
@@ -555,15 +611,16 @@ internal sealed class SettingsService : IDisposable
     {
         "general" => name is "splash" or "startMaximized" or "autoLaunch" or "autoStartHidden" or "watchLocalFolder"
             or "mediaSession" or "desktopLyrics" or "desktopLyricsLocked" or "desktopLyricsFontSize" or "desktopLyricsTopmost"
-            or "desktopLyricsWeight" or "desktopLyricsBackdropOpacity" or "backgroundLyrics",
-        "appearance" => name is "theme" or "reduceMotion" or "glow" or "heroAutoRotate" or "lyricsSize"
+            or "desktopLyricsWeight" or "desktopLyricsBackdropOpacity" or "backgroundLyrics"
+            or "desktopLyricsLeft" or "desktopLyricsTop",
+        "appearance" => name is "theme" or "reduceMotion" or "glow" or "lyricsSize"
             or "windowAnimation" or "playerBarExpanded" or "miniSize" or "miniAlwaysOnTop",
-        "playback" => name is "defaultSource" or "searchLimit" or "lyricsAutoOpen" or "volume" or "audioReactive"
+        "playback" => name is "defaultSource" or "searchLimit" or "volume" or "audioReactive" or "quality"
             or "eqEnabled" or "eqPreset" or "eqGains" or "fadeEnabled" or "fadeMs"
             or "fadeOutMs" or "fadeInMs" or "fadeCurve" or "fadeVocal" or "fadeVocalTailMs"
             or "sleepFadeSeconds" or "sleepAction",
         "downloads" => name is "directory" or "quality" or "maxConcurrent" or "fileNameTemplate" or "openFolderWhenDone",
-        "updates" => name is "autoCheck" or "mode" or "repo",
+        "updates" => name is "autoCheck" or "mode" or "repo" or "directConnection",
         "shortcuts" => name is "enabled" or "alwaysHandleMediaKeys" or "playPause" or "prev" or "next" or "toggleWindow"
             or "volumeUp" or "volumeDown" or "mute" or "like" or "mode" or "mini" or "desktopLyrics" or "crossfade",
         _ => false,
@@ -588,6 +645,8 @@ internal sealed class SettingsService : IDisposable
         catch (Exception exception)
         {
             HostLog.Warn($"[settings] load failed path={_path} err={exception.GetType().Name}: {exception.Message}");
+            // 读失败不等于文件损坏：先尽量留一份副本；副本也失败时整个会话拒绝覆盖原文件（P1-01）。
+            _loadFailed = !TryPreserveUnreadableSettings();
             return defaults;
         }
 
@@ -624,6 +683,7 @@ internal sealed class SettingsService : IDisposable
             }
 
             ApplyKnownValues(root, defaults);
+            EnforceLyricsExclusivity(defaults);
             loadedDocument = JsonNode.Parse(text) as JsonObject;
             HostLog.Info($"[settings] load path={_path} version={version}");
             return defaults;
@@ -666,6 +726,10 @@ internal sealed class SettingsService : IDisposable
                 state.General.DesktopLyricsBackdropOpacity, "general.desktopLyricsBackdropOpacity", keys);
             state.General.BackgroundLyrics = ReadBool(
                 general, "backgroundLyrics", state.General.BackgroundLyrics, "general.backgroundLyrics", keys);
+            state.General.DesktopLyricsLeft = ReadCoordinate(
+                general, "desktopLyricsLeft", state.General.DesktopLyricsLeft, "general.desktopLyricsLeft", keys);
+            state.General.DesktopLyricsTop = ReadCoordinate(
+                general, "desktopLyricsTop", state.General.DesktopLyricsTop, "general.desktopLyricsTop", keys);
         }
 
         if (TryGetObject(document, "appearance", out var appearance))
@@ -674,7 +738,6 @@ internal sealed class SettingsService : IDisposable
                 appearance, "theme", AppearanceSettings.Themes, state.Appearance.Theme, "appearance.theme", keys);
             state.Appearance.ReduceMotion = ReadBool(appearance, "reduceMotion", state.Appearance.ReduceMotion, "appearance.reduceMotion", keys);
             state.Appearance.Glow = ReadBool(appearance, "glow", state.Appearance.Glow, "appearance.glow", keys);
-            state.Appearance.HeroAutoRotate = ReadBool(appearance, "heroAutoRotate", state.Appearance.HeroAutoRotate, "appearance.heroAutoRotate", keys);
             state.Appearance.LyricsSize = ReadEnum(
                 appearance, "lyricsSize", AppearanceSettings.LyricsSizes, state.Appearance.LyricsSize, "appearance.lyricsSize", keys);
             state.Appearance.WindowAnimation = ReadEnum(
@@ -697,9 +760,10 @@ internal sealed class SettingsService : IDisposable
                 playback, "defaultSource", PlaybackSettings.Sources, state.Playback.DefaultSource, "playback.defaultSource", keys);
             state.Playback.SearchLimit = ReadAllowedInt(
                 playback, "searchLimit", PlaybackSettings.SearchLimits, state.Playback.SearchLimit, "playback.searchLimit", keys);
-            state.Playback.LyricsAutoOpen = ReadBool(playback, "lyricsAutoOpen", state.Playback.LyricsAutoOpen, "playback.lyricsAutoOpen", keys);
             state.Playback.Volume = ReadVolume(playback, "volume", state.Playback.Volume, "playback.volume", keys);
             state.Playback.AudioReactive = ReadBool(playback, "audioReactive", state.Playback.AudioReactive, "playback.audioReactive", keys);
+            state.Playback.Quality = ReadEnum(
+                playback, "quality", DownloadSettings.Qualities, state.Playback.Quality, "playback.quality", keys);
             if (playback.TryGetProperty("eqEnabled", out _))
             {
                 state.Playback.EqEnabled = ReadBool(playback, "eqEnabled", state.Playback.EqEnabled, "playback.eqEnabled", keys);
@@ -714,7 +778,8 @@ internal sealed class SettingsService : IDisposable
             if (playback.TryGetProperty("eqGains", out _))
             {
                 state.Playback.EqGains = ReadIntArray(
-                    playback, "eqGains", PlaybackSettings.EqBandCount, -12, 12, "playback.eqGains", keys);
+                    playback, "eqGains", PlaybackSettings.EqBandCount, -12, 12,
+                    state.Playback.EqGains, "playback.eqGains", keys);
             }
 
             state.Playback.FadeEnabled = ReadBool(playback, "fadeEnabled", state.Playback.FadeEnabled, "playback.fadeEnabled", keys);
@@ -729,10 +794,10 @@ internal sealed class SettingsService : IDisposable
             }
 
             state.Playback.FadeOutMs = playback.TryGetProperty("fadeOutMs", out _)
-                ? ReadIntInRange(playback, "fadeOutMs", 100, 5000, state.Playback.FadeOutMs, "playback.fadeOutMs", keys)
+                ? ReadIntInRange(playback, "fadeOutMs", 100, 3000, state.Playback.FadeOutMs, "playback.fadeOutMs", keys)
                 : (hasLegacyFadeMs ? legacyFadeMs : state.Playback.FadeOutMs);
             state.Playback.FadeInMs = playback.TryGetProperty("fadeInMs", out _)
-                ? ReadIntInRange(playback, "fadeInMs", 100, 5000, state.Playback.FadeInMs, "playback.fadeInMs", keys)
+                ? ReadIntInRange(playback, "fadeInMs", 100, 3000, state.Playback.FadeInMs, "playback.fadeInMs", keys)
                 : (hasLegacyFadeMs ? legacyFadeMs : state.Playback.FadeInMs);
             state.Playback.FadeCurve = ReadEnum(
                 playback, "fadeCurve", PlaybackSettings.FadeCurves, state.Playback.FadeCurve, "playback.fadeCurve", keys);
@@ -749,7 +814,8 @@ internal sealed class SettingsService : IDisposable
         {
             if (downloads.TryGetProperty("directory", out _))
             {
-                state.Downloads.Directory = ReadDirectory(downloads, "directory", "downloads.directory", keys);
+                state.Downloads.Directory = ReadDirectory(
+                    downloads, "directory", state.Downloads.Directory, "downloads.directory", keys);
             }
 
             state.Downloads.Quality = ReadEnum(
@@ -771,7 +837,7 @@ internal sealed class SettingsService : IDisposable
                 updates, "directConnection", state.Updates.DirectConnection, "updates.directConnection", keys);
             if (updates.TryGetProperty("repo", out _))
             {
-                state.Updates.Repo = ReadRepo(updates, "repo", "updates.repo", keys);
+                state.Updates.Repo = ReadRepo(updates, "repo", state.Updates.Repo, "updates.repo", keys);
             }
         }
 
@@ -945,84 +1011,106 @@ internal sealed class SettingsService : IDisposable
         int length,
         int min,
         int max,
+        int[] current,
         string key,
         List<string> keys)
     {
-        var fallback = new int[length];
+        // 缺省或整体结构不合法时保留当前值；单个元素非法时只回退该元素，
+        // 不把用户已经调好的其余频段一起清零（P3-04）。
+        var result = (int[])current.Clone();
         if (!parent.TryGetProperty(name, out var value))
         {
-            return fallback;
+            return result;
         }
 
         keys.Add(key);
         if (value.ValueKind != JsonValueKind.Array || value.GetArrayLength() != length)
         {
-            HostLog.Warn($"[settings] invalid key={key} expected=int[{length}] fallback=0");
-            return fallback;
+            HostLog.Warn($"[settings] invalid key={key} expected=int[{length}] fallback=<current>");
+            return result;
         }
 
-        var result = new int[length];
         var index = 0;
         foreach (var item in value.EnumerateArray())
         {
-            if (item.ValueKind != JsonValueKind.Number ||
-                !item.TryGetInt32(out var number) ||
-                number < min ||
-                number > max)
+            if (item.ValueKind == JsonValueKind.Number &&
+                item.TryGetInt32(out var number) &&
+                number >= min &&
+                number <= max)
             {
-                HostLog.Warn($"[settings] invalid key={key} expected=int[{min}..{max}] fallback=0");
-                return fallback;
+                result[index] = number;
+            }
+            else
+            {
+                HostLog.Warn($"[settings] invalid key={key} index={index} expected=int {min}..{max} fallback={result[index]}");
             }
 
-            result[index++] = number;
+            index++;
         }
 
         return result;
     }
 
-    private static string ReadDirectory(JsonElement parent, string name, string key, List<string> keys)
+    private static string ReadDirectory(
+        JsonElement parent,
+        string name,
+        string fallback,
+        string key,
+        List<string> keys)
     {
         if (!parent.TryGetProperty(name, out var value))
         {
-            return string.Empty;
+            return fallback;
         }
 
         keys.Add(key);
         if (value.ValueKind != JsonValueKind.String)
         {
-            HostLog.Warn($"[settings] invalid key={key} expected=string fallback=<default>");
-            return string.Empty;
+            HostLog.Warn($"[settings] invalid key={key} expected=absolute-path fallback={fallback}");
+            return fallback;
         }
 
-        var text = value.GetString() ?? string.Empty;
+        var text = (value.GetString() ?? string.Empty).Trim();
         if (text.Length == 0)
         {
             return string.Empty;
         }
 
+        // 下载目录必须是绝对路径：相对路径会随进程 CWD 漂移，导致同一设置在调试版/正式版指向不同目录。
+        if (!Path.IsPathFullyQualified(text))
+        {
+            HostLog.Warn($"[settings] invalid key={key} expected=absolute-path fallback={fallback} value={text}");
+            return fallback;
+        }
+
         try
         {
-            return Path.GetFullPath(text.Trim());
+            return Path.GetFullPath(text);
         }
         catch (Exception)
         {
-            HostLog.Warn($"[settings] invalid key={key} fallback=<default> value={text}");
-            return string.Empty;
+            HostLog.Warn($"[settings] invalid key={key} fallback={fallback} value={text}");
+            return fallback;
         }
     }
 
-    private static string ReadRepo(JsonElement parent, string name, string key, List<string> keys)
+    private static string ReadRepo(
+        JsonElement parent,
+        string name,
+        string fallback,
+        string key,
+        List<string> keys)
     {
         if (!parent.TryGetProperty(name, out var value))
         {
-            return string.Empty;
+            return fallback;
         }
 
         keys.Add(key);
         if (value.ValueKind != JsonValueKind.String)
         {
-            HostLog.Warn($"[settings] invalid key={key} expected=\"owner/repo\" fallback=<builtin>");
-            return string.Empty;
+            HostLog.Warn($"[settings] invalid key={key} expected=\"owner/repo\" fallback={fallback}");
+            return fallback;
         }
 
         var text = (value.GetString() ?? string.Empty).Trim();
@@ -1036,8 +1124,8 @@ internal sealed class SettingsService : IDisposable
             return text;
         }
 
-        HostLog.Warn($"[settings] invalid key={key} expected=\"owner/repo\" fallback=<builtin> value={text}");
-        return string.Empty;
+        HostLog.Warn($"[settings] invalid key={key} expected=\"owner/repo\" fallback={fallback} value={text}");
+        return fallback;
     }
 
     /// <summary>
@@ -1081,8 +1169,21 @@ internal sealed class SettingsService : IDisposable
     // GitHub owner/repo: exactly one slash, each side non-empty and made of safe slug characters.
     private static bool IsRepoSlug(string text)
     {
+        // GitHub 限制：owner ≤39、repo ≤100；这里用 140 覆盖 "owner/repo" 的总长度。
+        if (text.Length < 3 || text.Length > 140)
+        {
+            return false;
+        }
+
         var slash = text.IndexOf('/');
         if (slash <= 0 || slash == text.Length - 1 || text.IndexOf('/', slash + 1) >= 0)
+        {
+            return false;
+        }
+
+        var owner = text[..slash];
+        var repo = text[(slash + 1)..];
+        if (owner is "." or ".." || repo is "." or "..")
         {
             return false;
         }
@@ -1104,6 +1205,32 @@ internal sealed class SettingsService : IDisposable
         return true;
     }
 
+    // 桌面歌词位置：屏幕坐标可为负（多显示器），拒绝 NaN/Infinity 和明显越界的值。
+    private static double? ReadCoordinate(
+        JsonElement parent,
+        string name,
+        double? fallback,
+        string key,
+        List<string> keys)
+    {
+        if (!parent.TryGetProperty(name, out var value))
+        {
+            return fallback;
+        }
+
+        keys.Add(key);
+        if (value.ValueKind == JsonValueKind.Number &&
+            value.TryGetDouble(out var number) &&
+            double.IsFinite(number) &&
+            number is >= -200000 and <= 200000)
+        {
+            return number;
+        }
+
+        HostLog.Warn($"[settings] invalid key={key} expected=coordinate fallback={fallback?.ToString(CultureInfo.InvariantCulture) ?? "<null>"}");
+        return fallback;
+    }
+
     private static double ReadVolume(JsonElement parent, string name, double fallback, string key, List<string> keys)
     {
         if (!parent.TryGetProperty(name, out var value))
@@ -1120,6 +1247,59 @@ internal sealed class SettingsService : IDisposable
 
         HostLog.Warn($"[settings] invalid key={key} expected=number 0.0..1.0 fallback={fallback.ToString(CultureInfo.InvariantCulture)}");
         return fallback;
+    }
+
+    /// <summary>读取原文件失败时尽量复制一份 .unreadable-*；返回 false 表示无法保护原文件。</summary>
+    private bool TryPreserveUnreadableSettings()
+    {
+        try
+        {
+            var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
+            var backupPath = $"{_path}.unreadable-{stamp}";
+            var index = 1;
+            while (File.Exists(backupPath))
+            {
+                backupPath = $"{_path}.unreadable-{stamp}-{index.ToString(CultureInfo.InvariantCulture)}";
+                index++;
+            }
+
+            File.Copy(_path, backupPath);
+            HostLog.Warn($"[settings] unreadable backup path={backupPath}");
+            return true;
+        }
+        catch (Exception exception)
+        {
+            HostLog.Error("[settings] unreadable backup failed", exception);
+            return false;
+        }
+    }
+
+    private void TryDeleteTempFile()
+    {
+        try
+        {
+            var tempPath = _path + ".tmp";
+            if (File.Exists(tempPath))
+            {
+                File.Delete(tempPath);
+            }
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[settings] temp cleanup failed: {exception.Message}");
+        }
+    }
+
+    /// <summary>加载时两套桌面歌词同时为 true（手改文件/旧版本遗留）：背景歌词优先，避免同时开两个窗。</summary>
+    private static void EnforceLyricsExclusivity(SettingsModel state)
+    {
+        if (!state.General.BackgroundLyrics || !state.General.DesktopLyrics)
+        {
+            return;
+        }
+
+        state.General.DesktopLyrics = false;
+        HostLog.Warn("[settings] load: desktopLyrics disabled because backgroundLyrics was enabled");
     }
 
     private void BackupCorruptFile(string reason)

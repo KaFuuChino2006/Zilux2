@@ -88,6 +88,7 @@ internal sealed class RaopConnection : IAirPlayConnection
     private readonly int _controlPort;
     private readonly int _timingPort;
     private readonly IPAddress _localAddress;
+    private readonly IPAddress _deviceAddress;
     private readonly string _rtspUri;
     private readonly string _clientInstance;
     private readonly string _dacpId;
@@ -116,6 +117,26 @@ internal sealed class RaopConnection : IAirPlayConnection
     private bool _recordSent;
     private bool _disposed;
 
+    private static IPAddress ResolveDeviceAddress(string host)
+    {
+        if (IPAddress.TryParse(host, out var parsed))
+        {
+            return parsed;
+        }
+
+        try
+        {
+            var addresses = Dns.GetHostAddresses(host);
+            var address = addresses.FirstOrDefault(candidate => candidate.AddressFamily == AddressFamily.InterNetwork)
+                          ?? addresses.FirstOrDefault();
+            return address ?? throw new RaopException($"设备地址 {host} 没有可用的 IP。");
+        }
+        catch (SocketException ex)
+        {
+            throw new RaopException($"无法解析设备地址 {host}: {ex.Message}", ex);
+        }
+    }
+
     private RaopConnection(
         RaopTarget target,
         RaopOptions options,
@@ -140,8 +161,11 @@ internal sealed class RaopConnection : IAirPlayConnection
         _dacpId = RandomNumberGenerator.GetHexString(16, lowercase: true);
         _activeRemote = RandomNumberGenerator.GetInt32(10_000_000, 99_999_999).ToString(CultureInfo.InvariantCulture);
         _bufferSamples = Math.Max(SamplesPerFrame, (int)Math.Round(options.BufferLatencyMilliseconds / 1000.0 * SampleRate / SamplesPerFrame) * SamplesPerFrame);
-        _deviceAudioEndPoint = new IPEndPoint(IPAddress.Parse(target.Host), DefaultAudioPort);
-        _deviceControlEndPoint = new IPEndPoint(IPAddress.Parse(target.Host), DefaultAudioPort + 1);
+        // Discovery normally yields a literal IP, but the device may be cached by hostname. Parse
+        // once and fail with a clear error instead of an unhelpful FormatException.
+        _deviceAddress = ResolveDeviceAddress(target.Host);
+        _deviceAudioEndPoint = new IPEndPoint(_deviceAddress, DefaultAudioPort);
+        _deviceControlEndPoint = new IPEndPoint(_deviceAddress, DefaultAudioPort + 1);
 
         if (options.AesKey is { Length: 16 })
         {
@@ -503,13 +527,19 @@ internal sealed class RaopConnection : IAirPlayConnection
             }
 
             var total = RaopPackets.BuildResendResponse(stored, buffer);
-            var destination = new IPEndPoint(IPAddress.Parse(_target.Host), DefaultAudioPort);
-            _audioSocket.Send(buffer, total, destination);
+            // Reply to the exact endpoint that asked: devices may advertise a non-6000 control
+            // port, and the old fixed :6000 copy duplicated every resend.
             _audioSocket.Send(buffer, total, remote);
         }
     }
 
-    private RtspResponse Request(string method, string uri, IEnumerable<KeyValuePair<string, string>>? headers = null, byte[]? body = null, string? contentType = null)
+    private RtspResponse Request(
+        string method,
+        string uri,
+        IEnumerable<KeyValuePair<string, string>>? headers = null,
+        byte[]? body = null,
+        string? contentType = null,
+        bool retriedAfterAuth = false)
     {
         var list = new List<KeyValuePair<string, string>>
         {
@@ -551,7 +581,14 @@ internal sealed class RaopConnection : IAirPlayConnection
             return response;
         }
 
-        // Password-protected device: authenticate once, then retry the same request.
+        // Password-protected device: authenticate once, then retry the same request. A second
+        // 401 means the credentials were rejected; retrying again would recurse forever (the
+        // digest header does not change), so fail with a message MapError maps to passwordRequired.
+        if (retriedAfterAuth)
+        {
+            throw new RaopException($"{_target.Name}: {method} password rejected (401) — check the device password.");
+        }
+
         if (!RtspDigestChallenge.TryParse(response.Header("WWW-Authenticate"), out var challenge))
         {
             throw new RaopException($"{_target.Name}: {method} requires a password but no digest challenge was offered.");
@@ -559,7 +596,7 @@ internal sealed class RaopConnection : IAirPlayConnection
 
         _digestChallenge = challenge;
         _digestAuthorization = BuildDigest(uri, method);
-        return Request(method, uri, headers, body, contentType);
+        return Request(method, uri, headers, body, contentType, retriedAfterAuth: true);
     }
 
     private RtspDigestChallenge? _digestChallenge;
@@ -602,6 +639,8 @@ internal sealed class RaopConnection : IAirPlayConnection
             return;
         }
 
+        int? audioPort = null;
+        int? controlPort = null;
         foreach (var rawPart in transport.Split(';', StringSplitOptions.RemoveEmptyEntries))
         {
             var part = rawPart.Trim();
@@ -615,17 +654,29 @@ internal sealed class RaopConnection : IAirPlayConnection
             var value = part[(equals + 1)..].Trim();
             switch (key.ToLowerInvariant())
             {
-                case "server_port" when int.TryParse(value, out var audioPort):
-                    _deviceAudioEndPoint = new IPEndPoint(_deviceAudioEndPoint.Address, audioPort);
-                    _deviceControlEndPoint = new IPEndPoint(_deviceAudioEndPoint.Address, audioPort + 1);
+                case "server_port" when int.TryParse(value, out var parsedAudioPort):
+                    audioPort = parsedAudioPort;
                     break;
-                case "control_port" when int.TryParse(value, out var controlPort):
-                    _deviceControlEndPoint = new IPEndPoint(_deviceAudioEndPoint.Address, controlPort);
+                case "control_port" when int.TryParse(value, out var parsedControlPort):
+                    controlPort = parsedControlPort;
                     break;
-                case "timing_port" when int.TryParse(value, out var timingPort):
-                    _ = timingPort; // devices rarely use this; requests arrive on the control socket
+                case "timing_port":
+                    // devices rarely use this; requests arrive on the control socket
                     break;
             }
+        }
+
+        // Apply after parsing so header order cannot clobber an explicit control_port with the
+        // implicit audio_port+1 default.
+        if (audioPort is not null)
+        {
+            _deviceAudioEndPoint = new IPEndPoint(_deviceAudioEndPoint.Address, audioPort.Value);
+            _deviceControlEndPoint = new IPEndPoint(_deviceAudioEndPoint.Address, audioPort.Value + 1);
+        }
+
+        if (controlPort is not null)
+        {
+            _deviceControlEndPoint = new IPEndPoint(_deviceAudioEndPoint.Address, controlPort.Value);
         }
     }
 

@@ -135,6 +135,7 @@ public sealed class HapSessionCrypt : IDisposable
     private readonly ChaCha20Poly1305 _writeCipher;
     private readonly ChaCha20Poly1305 _readCipher;
     private readonly object _readLock = new();
+    private readonly object _writeLock = new();
 
     private ulong _writeCounter;
     private ulong _readCounter;
@@ -142,6 +143,7 @@ public sealed class HapSessionCrypt : IDisposable
     // 接收方向：未凑满一帧的密文留在缓冲区里，下次 Decrypt 继续消费。
     private byte[] _readBuffer = new byte[MaxPlaintextFrame + LengthFieldSize + TagSize];
     private int _readBufferLength;
+    private bool _readFailed;
     private bool _disposed;
 
     /// <summary>用写/读方向的 32 字节通道密钥创建会话。</summary>
@@ -182,6 +184,17 @@ public sealed class HapSessionCrypt : IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (plaintext.Length == 0) return Array.Empty<byte>();
 
+        // P2-59: the write counter and ChaCha20 state are shared. All current callers serialize
+        // through the transport lock, but make the guarantee local so a future second writer cannot
+        // reuse a nonce.
+        lock (_writeLock)
+        {
+            return EncryptLocked(plaintext);
+        }
+    }
+
+    private byte[] EncryptLocked(ReadOnlySpan<byte> plaintext)
+    {
         var frameCount = (plaintext.Length + MaxPlaintextFrame - 1) / MaxPlaintextFrame;
         var output = new byte[plaintext.Length + frameCount * (LengthFieldSize + TagSize)];
 
@@ -221,6 +234,12 @@ public sealed class HapSessionCrypt : IDisposable
 
         lock (_readLock)
         {
+            if (_readFailed)
+            {
+                // P2-60: once authentication failed, the stream is desynchronised. Keep failing
+                // explicitly instead of re-throwing on a stale frame forever.
+                throw new CryptographicException("HAP 读通道先前认证失败，连接已不可用（需要重新配对）。");
+            }
             EnsureBufferCapacity(_readBufferLength + ciphertext.Length);
             ciphertext.CopyTo(_readBuffer.AsSpan(_readBufferLength));
             _readBufferLength += ciphertext.Length;
@@ -232,7 +251,11 @@ public sealed class HapSessionCrypt : IDisposable
             {
                 var chunkLength = BinaryPrimitives.ReadUInt16LittleEndian(_readBuffer.AsSpan(offset, LengthFieldSize));
                 if (chunkLength > MaxPlaintextFrame)
+                {
+                    _readBufferLength = 0;
+                    _readFailed = true;
                     throw new CryptographicException($"HAP 帧长度非法：{chunkLength} 字节（上限 {MaxPlaintextFrame}）。");
+                }
 
                 var frameLength = LengthFieldSize + chunkLength + TagSize;
                 if (_readBufferLength - offset < frameLength) break; // 还有半帧，等下一次数据
@@ -248,6 +271,11 @@ public sealed class HapSessionCrypt : IDisposable
                 }
                 catch (CryptographicException ex)
                 {
+                    // P2-60: drop the undecryptable frame and poison the channel. The caller closes
+                    // the connection; keeping the bad bytes would make every later Decrypt fail with
+                    // the same misleading error.
+                    _readBufferLength = 0;
+                    _readFailed = true;
                     throw new CryptographicException(
                         "HAP 帧解密失败：通道密钥不匹配或数据被篡改（可能设备已重置配对）。", ex);
                 }

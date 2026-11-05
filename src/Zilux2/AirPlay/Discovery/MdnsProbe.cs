@@ -139,6 +139,7 @@ internal sealed class MdnsProbe : IDisposable
     private bool _packetInfo4;
     private bool _packetInfo6;
     private bool _disposed;
+    private string _interfaceSignature = string.Empty;
 
     public MdnsProbe(IEnumerable<string> serviceTypes, Action<string>? onError = null)
     {
@@ -192,6 +193,7 @@ internal sealed class MdnsProbe : IDisposable
         try
         {
             DiscoverInterfaces();
+            _interfaceSignature = ComputeNetworkSignature();
             if (_interfaces.Count == 0)
             {
                 Report("没有找到可用于 mDNS 的 IPv4 网络接口（需要已连接且支持组播的网卡，如以太网/WLAN）");
@@ -393,6 +395,12 @@ internal sealed class MdnsProbe : IDisposable
             return;
         }
         _disposed = true;
+        CloseSockets();
+    }
+
+    /// <summary>关闭并清空两个 mDNS socket（重建网络接口时复用）。</summary>
+    private void CloseSockets()
+    {
         try
         {
             _socket4?.Dispose();
@@ -411,6 +419,85 @@ internal sealed class MdnsProbe : IDisposable
         }
         _socket4 = null;
         _socket6 = null;
+    }
+
+    /// <summary>
+    /// 网络接口变化（Wi-Fi 切换、VPN 拨入、网线插拔）后重建 socket。只比对接口名与 IPv4 地址，
+    /// 不比较 IPv6 临时地址，避免隐私地址轮换导致每 30 秒重建一次。
+    /// </summary>
+    public bool ReopenIfNetworkChanged()
+    {
+        if (_disposed)
+        {
+            return false;
+        }
+
+        string current = ComputeNetworkSignature();
+        if (string.Equals(current, _interfaceSignature, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        CloseSockets();
+        _interfaces.Clear();
+        _localAddresses.Clear();
+        bool opened = Open();
+        if (!opened)
+        {
+            // 让下一次检查重试，而不是把失败的签名当成“已是最新”。
+            _interfaceSignature = string.Empty;
+        }
+        return opened;
+    }
+
+    /// <summary>参与 mDNS 的接口快照：名称 + 非链路本地 IPv4，排序后拼接。</summary>
+    private static string ComputeNetworkSignature()
+    {
+        try
+        {
+            var parts = new List<string>();
+            foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (ni.OperationalStatus != OperationalStatus.Up || !ni.SupportsMulticast)
+                {
+                    continue;
+                }
+                if (ni.NetworkInterfaceType is NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel or NetworkInterfaceType.Unknown)
+                {
+                    continue;
+                }
+
+                var addresses = new List<string>();
+                try
+                {
+                    foreach (var unicast in ni.GetIPProperties().UnicastAddresses)
+                    {
+                        if (unicast.Address.AddressFamily != AddressFamily.InterNetwork)
+                        {
+                            continue;
+                        }
+                        byte[] bytes = unicast.Address.GetAddressBytes();
+                        if (bytes.Length == 4 && bytes[0] == 169 && bytes[1] == 254)
+                        {
+                            continue;
+                        }
+                        addresses.Add(unicast.Address.ToString());
+                    }
+                }
+                catch
+                {
+                    // 单个接口读取失败不影响其余接口的签名。
+                }
+                addresses.Sort(StringComparer.Ordinal);
+                parts.Add($"{ni.Name}|{string.Join(",", addresses)}");
+            }
+            parts.Sort(StringComparer.Ordinal);
+            return string.Join(";", parts);
+        }
+        catch
+        {
+            return string.Empty;
+        }
     }
 
     // ---------------- 内部实现 ----------------
@@ -661,7 +748,10 @@ internal sealed class MdnsProbe : IDisposable
         bool packetInfo = socket.AddressFamily == AddressFamily.InterNetwork ? _packetInfo4 : _packetInfo6;
         EndPoint remoteTemplate = socket.AddressFamily == AddressFamily.InterNetwork ? _remoteTemplate4 : _remoteTemplate6;
 
-        while (true)
+        // Bound one drain slice: a multicast flood must not keep us inside this loop forever while
+        // the discovery thread is supposed to exit or publish.
+        var drained = 0;
+        while (drained++ < 256)
         {
             bool readable;
             try

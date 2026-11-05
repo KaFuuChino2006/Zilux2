@@ -88,11 +88,13 @@ internal static class Ap2Pairing
         string host,
         Func<CancellationToken, Task<string>> pinProvider,
         string? userAgent = null,
-        Action<string>? trace = null)
+        Action<string>? trace = null,
+        int port = 7000)
     {
         ArgumentException.ThrowIfNullOrEmpty(host);
         ArgumentNullException.ThrowIfNull(pinProvider);
-        return (channel, cancellationToken) => StoredPinAsync(host, channel, pinProvider, userAgent, trace, cancellationToken);
+        return (channel, cancellationToken) =>
+            StoredPinAsync(host, channel, pinProvider, userAgent, trace, cancellationToken, port);
     }
 
     /// <summary>pair-verify with stored credentials; falls back to PIN pair-setup when that fails.</summary>
@@ -102,7 +104,8 @@ internal static class Ap2Pairing
         Func<CancellationToken, Task<string>> pinProvider,
         string? userAgent = null,
         Action<string>? trace = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        int port = 7000)
     {
         ArgumentException.ThrowIfNullOrEmpty(host);
         ArgumentNullException.ThrowIfNull(channel);
@@ -129,7 +132,7 @@ internal static class Ap2Pairing
 
         // macOS sometimes ignores the pair-pin-start issued on the RTSP pairing socket but always
         // answers a plain HTTP POST, so prime the on-screen PIN on a throw-away connection first.
-        await PrimePinStartAsync(host, userAgent, trace, cancellationToken).ConfigureAwait(false);
+        await PrimePinStartAsync(host, port, userAgent, trace, cancellationToken).ConfigureAwait(false);
 
         var credentials = await HapPairing.SetupAsync(transport, pinProvider, cancellationToken, trace)
             .ConfigureAwait(false);
@@ -161,6 +164,7 @@ internal static class Ap2Pairing
     /// </summary>
     private static async Task PrimePinStartAsync(
         string host,
+        int port,
         string? userAgent,
         Action<string>? trace,
         CancellationToken cancellationToken)
@@ -168,7 +172,7 @@ internal static class Ap2Pairing
         try
         {
             using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
-            using var request = new HttpRequestMessage(HttpMethod.Post, $"http://{host}:7000/pair-pin-start")
+            using var request = new HttpRequestMessage(HttpMethod.Post, $"http://{host}:{port}/pair-pin-start")
             {
                 Content = new ByteArrayContent(Array.Empty<byte>()),
             };

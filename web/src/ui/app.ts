@@ -84,6 +84,7 @@ import {
   normalizeShortcutBinding,
   onSettingsChange,
   patchSettings,
+  resetSettings,
   SHORTCUT_ACTIONS,
   SHORTCUT_DEFAULTS,
   SHORTCUT_LABELS,
@@ -93,6 +94,7 @@ import {
   type DesktopLyricsWeight,
   type EqPreset,
   type FadeCurve,
+  type SettingsChangeMeta,
   type ShortcutAction,
   type SleepTimerAction,
 } from '../core/settings';
@@ -143,8 +145,8 @@ import {
 } from '../online/experimental';
 import { lookupCover } from '../online/coverLookup';
 import { h, icon, toast, fmtTime, Disposers } from './dom';
-import { airplay } from '../airplay';
-import { startAudioTap, stopAudioTap } from '../core/audioTap';
+import { airplay, disposeAirplaySubscription } from '../airplay';
+import { disposeAudioTap, startAudioTap, stopAudioTap } from '../core/audioTap';
 import { disposeMetronome } from '../core/metronome';
 import { createAirplayPanel, type AirplayPanelHandle } from './airplayPanel';
 import {
@@ -257,8 +259,10 @@ import {
   toggleHotCue,
   toggleLiked,
   type PlayerState,
+  onTrackEnded,
+  setPauseAtTrackEnd,
 } from './player';
-import { host, hostAvailable, getShortcutsState, onMiniMode, onShortcutsState, updateDesktopLyrics, type UpdateSnapshot } from '../core/bridge';
+import { host, hostAvailable, getSystemFonts, getWindowState, getShortcutsState, onMiniMode, onShortcutsState, onSystemFonts, onWindowState, updateDesktopLyrics, type UpdateSnapshot } from '../core/bridge';
 import { HomeView } from './home';
 import { DiscoverView } from './discover';
 import { fetchRadio, fetchRecommendedPlaylists } from '../online/discover';
@@ -282,6 +286,7 @@ import { openLyricPicker } from './lyricPicker';
 import { openTextSettingsSheet } from './textSettingsPanel';
 import { openRoomSettingsSheet } from './roomSettingsPanel';
 import { openVinylSettingsSheet } from './vinylSettingsPanel';
+import { openGeoSettingsSheet } from './geoSettingsPanel';
 import { readPosterLayout, writePosterLayout, type PosterLayout } from './posterLayout';
 import { ACCENT_PRESETS, applyAccentColor, readAccentColor, ui, writeAccentColor } from './theme';
 import { APP_BG_BLUR, APP_BG_POSITIONS, applyAppBgStyle, pickBackgroundImageFile, readAppBgBlur, readAppBgImage, readAppBgMode, readAppBgPosition, writeAppBgBlur, writeAppBgImage, writeAppBgMode, writeAppBgPosition, type AppBgMode } from './appBackground';
@@ -460,6 +465,16 @@ export class App {
   private sheet: SheetHandle | null = null;
   /** 设置弹窗内的订阅集合（换面板 / 关闭弹窗时统一清理）。 */
   private sheetScope: Disposers | null = null;
+  /** 设置弹窗当前页签；导入设置后按此页签重建面板。 */
+  private settingsPaneKey = 'general';
+  /** 快捷设置里常驻开关的刷新器：宿主/托盘/导入改了设置后同步回控件。 */
+  private quickSwitchRefreshers: Array<() => void> = [];
+  /** 设置弹窗里联动控件的刷新器：本地互斥/回读后同步显示。 */
+  private settingsPaneRefreshers: Array<() => void> = [];
+  /** 常驻定时器 id，destroy 时统一清理。 */
+  private intervalIds: number[] = [];
+  /** 分段控件增强的清理函数（控件从 DOM 移除时断开观察者）。 */
+  private segCleanups = new Map<HTMLElement, () => void>();
   /** 「推荐」整页的热门歌单缓存（重渲染时同步使用）。 */
   private recommendItems: LibraryPlaylist[] = [];
   /** 「我的歌单」整页里本地歌单的订阅（离开页面时清理）。 */
@@ -470,6 +485,11 @@ export class App {
   private accountDispose: (() => void) | null = null;
   private accountIssueDispose: (() => void) | null = null;
   private settingsDispose: (() => void) | null = null;
+  private windowStateDispose: (() => void) | null = null;
+  private fontDispose: (() => void) | null = null;
+  private readonly airplayUnsubscribers: Array<() => void> = [];
+  /** 桌面背景歌词开启时被自动关掉的软件内歌词页；关闭开关后恢复。 */
+  private backgroundLyricsSuppressedLyrics = false;
   /** 睡眠定时渐弱：当前渐弱到的音量（null 表示没有进行中的渐弱）。 */
   private sleepFadeVolume: number | null = null;
   /** 渐弱令牌：取消/重新触发时自增，用于中止上一次循环。 */
@@ -535,7 +555,6 @@ export class App {
   private quickResizeObserver: ResizeObserver | null = null;
   private quickPanelOpen = false;
   private quickModeBtn!: HTMLButtonElement;
-  private quickVolume!: HTMLInputElement;
   private quickThumb!: HTMLDivElement;
   private quickTabBtns: Record<string, HTMLButtonElement> = {};
   private quickTab: 'cover' | 'lyrics' | 'bgLyrics' | 'play' | 'sound' | 'preview' | 'transition' | 'airplay' | 'download' = 'cover';
@@ -546,6 +565,8 @@ export class App {
   private lastQualityKey = '';
   private downloadQuickView: DownloadQueueView | null = null;
   private hostCommandBound = false;
+  /** D-31：宿主下载根变化 notice 去重（同一句只提示一次，见 LocalMusicService._libraryNotice）。 */
+  private downloadNoticeSeen = new Set<string>();
   /** 迷你播放器（紧凑置顶小窗）：状态以宿主回推的 window/miniMode 事件为准。 */
   private miniMode = false;
   private miniBtn!: HTMLButtonElement;
@@ -681,7 +702,10 @@ export class App {
       toast(`${label} 登录已失效，请重新登录`, 'error');
       this.syncAccount();
     });
-    this.settingsDispose = onSettingsChange(() => this.syncSettingsUi());
+    this.settingsDispose = onSettingsChange((_settings, meta) => {
+      this.syncSettingsUi();
+      this.refreshOpenSettingsFromSettings(meta);
+    });
     // 睡眠定时：模块触发时先渐弱、再暂停，最后按设置收尾（不依赖设置弹窗是否还开着）。
     const onSleepFired = () => {
       void this.handleSleepTimerFired();
@@ -691,6 +715,8 @@ export class App {
     // 用户在渐弱过程中取消了定时：立刻恢复音量并停下渐弱。
     this.disposers.add(
       subscribeSleepTimer((timer) => {
+        // 「播完当前曲」交给播放器真实 ended 事件；这里只同步武装状态（P1-2）。
+        setPauseAtTrackEnd(timer.active && timer.mode === 'track-end');
         if (timer.active || this.sleepFadeVolume === null) return;
         this.sleepFadeToken += 1;
         setVolume(this.sleepFadeVolume);
@@ -699,18 +725,21 @@ export class App {
     );
     // AutoMix是临时模式：换了整套队列或手动点歌后，恢复点击前的模式图标。
     this.disposers.add(subscribeQueueSwitch(() => this.exitSmartMix('queue')));
-    // 「播完当前曲」：曲末前 300ms 触发；其余模式由睡眠定时模块自己计时。
-    window.setInterval(() => {
-      const timer = getSleepTimerState();
-      if (!timer.active || timer.mode !== 'track-end') return;
-      const state = playerState();
-      if (!state.playing || state.durationMs <= 0) return;
-      if (state.positionMs >= state.durationMs - 300) completeSleepTimer();
-    }, 500);
+    // 「播完当前曲」：由播放器在自然 ended 时报告，不再轮询预览态/曲末 300ms（P1-2）。
+    this.disposers.add(
+      onTrackEnded((detail) => {
+        if (detail.reason !== 'natural') return;
+        const timer = getSleepTimerState();
+        if (timer.active && timer.mode === 'track-end') completeSleepTimer();
+      }),
+    );
+    // 定时器取消/到点后撤销武装，恢复无缝衔接。
+    const initialSleepTimer = getSleepTimerState();
+    setPauseAtTrackEnd(initialSleepTimer.active && initialSleepTimer.mode === 'track-end');
     // 收听统计：按秒采样累计（onPlayer 只在播放状态变化时触发，不能靠它计时）。
-    window.setInterval(() => this.accumulateListening(playerState()), 1000);
+    this.intervalIds.push(window.setInterval(() => this.accumulateListening(playerState()), 1000));
     // 桌面歌词：每秒读一次当前句；只有句/翻译变了才发给宿主，避免桥消息刷屏。
-    window.setInterval(() => this.pushDesktopLyrics(), 1000);
+    this.intervalIds.push(window.setInterval(() => this.pushDesktopLyrics(), 1000));
     initLocalLibrary();
     void this.bootData();
   }
@@ -729,6 +758,17 @@ export class App {
     if (this.hostCommandBound) return;
     this.hostCommandBound = true;
     host.onMessage((message) => {
+      if (message.type === 'host' && message.event === 'localLibrary') {
+        // D-31：宿主切下载根后会在 localLibrary.notice 里带一句提示；只提示一次且不打断交互。
+        const payload = message.payload as { notice?: unknown } | undefined;
+        const notice = typeof payload?.notice === 'string' ? payload.notice.trim() : '';
+        if (notice && !this.downloadNoticeSeen.has(notice)) {
+          if (this.downloadNoticeSeen.size >= 64) this.downloadNoticeSeen.clear();
+          this.downloadNoticeSeen.add(notice);
+          toast(notice);
+        }
+        return;
+      }
       if (message.type !== 'command') return;
       const action = typeof message.action === 'string' ? message.action : '';
       if (action === 'togglePlay') toggle();
@@ -766,6 +806,14 @@ export class App {
         const next = !readCrossfadeSettings().enabled;
         writeCrossfadeSettings({ enabled: next });
         toast(next ? '已开启无缝衔接' : '已关闭无缝衔接');
+      } else if (action === 'stop') {
+        // 系统媒体「停止」：暂停并回到当前曲开头；不清队列（player.stop 会清空当前曲）。
+        if (playerState().playing) toggle();
+        if (playerState().track) seek(0);
+        toast('已停止播放');
+      } else if (action === 'openSettings') {
+        // P3-08：托盘「设置…」。宿主在发送前把主窗口恢复到前台；这里只负责打开设置页。
+        this.openSettingsSheet();
       } else return;
       host.log('info', `command ${action}`);
     });
@@ -857,6 +905,7 @@ export class App {
       this.closeAccountPanel();
     });
 
+    let maximizeBtn: HTMLButtonElement | null = null;
     const winBtns = h(
       'div',
       { class: 'win-btns' },
@@ -871,9 +920,26 @@ export class App {
           else if (kind === 'maximize') host.toggleMaximize();
           else host.close();
         });
+        if (kind === 'maximize') maximizeBtn = btn;
         return btn;
       }),
     );
+    // 最大化后按钮语义变成「还原」；状态由宿主 windowState/ready 推送，bridge 同时写 data-maximized。
+    const paintMaximizeBtn = (maximized: boolean): void => {
+      // 布局钩子：最大化时去掉窗口外缘的圆角/留白；具体数值由 CSS 变量决定。
+      this.root.classList.toggle('is-maximized', maximized);
+      if (!maximizeBtn) return;
+      maximizeBtn.title = maximized ? '还原' : '最大化';
+      maximizeBtn.dataset.state = maximized ? 'maximized' : 'normal';
+      maximizeBtn.setAttribute('aria-label', maximizeBtn.title);
+    };
+    paintMaximizeBtn(getWindowState() === true);
+    this.windowStateDispose?.();
+    this.windowStateDispose = onWindowState(paintMaximizeBtn);
+    this.disposers.add(() => {
+      this.windowStateDispose?.();
+      this.windowStateDispose = null;
+    });
 
     const topbar = h(
       'header',
@@ -952,13 +1018,15 @@ export class App {
     }
 
     // 投送：只把本软件音频送去 AirPlay（页面侧取流 + 本地静音），系统其他应用不受影响。
-    airplay.subscribe((snapshot) => {
-      if (snapshot.state === 'connecting' || snapshot.state === 'streaming') {
-        void startAudioTap();
-      } else {
-        stopAudioTap();
-      }
-    });
+    this.airplayUnsubscribers.push(
+      airplay.subscribe((snapshot) => {
+        if (snapshot.state === 'connecting' || snapshot.state === 'streaming') {
+          void startAudioTap();
+        } else {
+          stopAudioTap();
+        }
+      }),
+    );
     // 页面记住的接收端延迟（可自定义，见投送面板）启动时同步给宿主，宿主默认 300ms。
     airplay.syncLatency();
   }
@@ -2647,13 +2715,8 @@ export class App {
   ): HTMLDivElement {
     registerPreviewTrack(track);
     const coverImg = h('img', { src: onlineArtwork(track, 120), loading: 'lazy' });
-    if (!track.cover) {
-      void lookupCover(track).then((found) => {
-        if (!found) return;
-        track.cover = found;
-        coverImg.src = onlineArtwork(track, 120);
-      });
-    }
+    // D-46：列表可能一次挂几百行，只有滚到视口附近才联网补图。
+    if (!track.cover) observePosterCover(coverImg, track);
     const row = h(
       'div',
       { class: 'row', title: `${track.title} — ${track.artist}` },
@@ -2992,7 +3055,10 @@ export class App {
       body,
     );
     const root = h('div', { class: `sheet${centered ? ' is-center' : ''}` }, panel);
+    let escCleanup: (() => void) | null = null;
     const close = (): void => {
+      escCleanup?.();
+      escCleanup = null;
       if (this.sheet?.root === root) {
         this.sheet = null;
         this.sheetScope?.dispose();
@@ -3009,6 +3075,23 @@ export class App {
     document.body.append(root);
     this.sheet = { root, body, close };
     build(body);
+    // 弹层统一支持 Esc 关闭；确认框打开时交给 confirmDialog 处理。
+    const onSheetKey = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return;
+      if (!root.isConnected) {
+        document.removeEventListener('keydown', onSheetKey, true);
+        return;
+      }
+      if (document.querySelector('.ui-confirm-backdrop')) return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (target && target.closest('input, textarea, select, [contenteditable="true"]')) return;
+      event.preventDefault();
+      event.stopPropagation();
+      document.removeEventListener('keydown', onSheetKey, true);
+      close();
+    };
+    document.addEventListener('keydown', onSheetKey, true);
+    escCleanup = () => document.removeEventListener('keydown', onSheetKey, true);
   }
 
   /* ------------------------ 搜索：药丸展开 + 边打边搜 + 展开成墙 ------------------------ */
@@ -3386,13 +3469,8 @@ export class App {
       // 封面：与海报网格同一套补图逻辑——没有内嵌封面时先去线上找一张，
       // 找到后再回填，避免横条视图停在程序化渐变占位图上（网格会补、横条不补的 bug）。
       const coverImg = h('img', { src: onlineArtwork(track, 120), loading: 'lazy' });
-      if (!track.cover) {
-        void lookupCover(track).then((found) => {
-          if (!found) return;
-          track.cover = found;
-          coverImg.src = onlineArtwork(track, 120);
-        });
-      }
+      // D-46：曲库/下载混合列表同样按可见行补图，避免扫描完整目录后一次性请求全部封面。
+      if (!track.cover) observePosterCover(coverImg, track);
 
       const row = h(
         'div',
@@ -3810,6 +3888,7 @@ export class App {
     // 设置改用居中大弹窗（和效果设置一致的观感），其他 sheet 仍是右侧滑出。
     this.centerNextSheet = true;
     this.openSheet('设置', (body) => {
+      this.settingsPaneRefreshers = [];
       const settings = getSettings();
       const section = (title: string, ...children: HTMLElement[]): HTMLDivElement => {
         const wrap = h('div', { class: 'section' }, h('h3', { class: 'section-title', text: title }));
@@ -3845,10 +3924,27 @@ export class App {
       ): HTMLDivElement => {
         const valueLabel = h('span', { class: 'field-slider-value', text: format(value) });
         const input = h('input', { class: 'slider', type: 'range', min: String(min), max: String(max), step: String(step), value: String(value) });
+        // 拖动时 label 立即跟随；写入设置做 120 ms 尾随节流，避免一帧一条宿主 patch。
+        let commitTimer = 0;
+        let pendingValue: number | null = null;
+        const commit = (next: number): void => {
+          if (!input.isConnected) return;
+          onChange(next);
+        };
         input.addEventListener('input', () => {
           const next = Number(input.value);
           valueLabel.textContent = format(next);
-          onChange(next);
+          if (commitTimer) {
+            pendingValue = next;
+            return;
+          }
+          commit(next);
+          commitTimer = window.setTimeout(() => {
+            commitTimer = 0;
+            const latest = pendingValue;
+            pendingValue = null;
+            if (latest !== null) commit(latest);
+          }, 120);
         });
         return h(
           'div',
@@ -3857,6 +3953,23 @@ export class App {
           h('div', { class: 'field-slider-control' }, valueLabel, input),
         );
       };
+      // 条件子项禁用：父开关关闭时整行变灰并真正 disabled，避免「看起来能点、点了不生效」。
+      const setControlDisabled = (field: HTMLElement, disabled: boolean): void => {
+        field.classList.toggle('is-disabled', disabled);
+        field.querySelectorAll<HTMLButtonElement | HTMLInputElement>('button, input').forEach((node) => {
+          node.disabled = disabled;
+        });
+      };
+      const fieldByLabel = (root: HTMLElement, label: string): HTMLDivElement | null => {
+        for (const field of Array.from(root.querySelectorAll<HTMLDivElement>('.field'))) {
+          if (field.querySelector('.field-label')?.textContent === label) return field;
+        }
+        return null;
+      };
+
+      // 桌面歌词 / 桌面背景歌词互斥，两个开关都要能被设置回读刷新。
+      let desktopLyricsSwitch: { root: HTMLDivElement; setValue: (next: boolean) => void } | null = null;
+      let backgroundLyricsSwitch: { root: HTMLDivElement; setValue: (next: boolean) => void } | null = null;
 
       // 通用
       const general = section(
@@ -3903,25 +4016,46 @@ export class App {
             toast(value ? '已开启系统媒体控制' : '已关闭系统媒体控制');
           },
         ),
-        toggleField(
-          '桌面歌词',
-          '在桌面上放一个无边框歌词窗口，逐句显示正在唱的歌词和翻译；窗口上右键可以调字号、锁定（鼠标穿透）、置顶或关闭',
-          settings.general.desktopLyrics,
-          (value) => {
-            patchSettings({ general: { desktopLyrics: value } });
+        (() => {
+          const sw = this.pillSwitch(settings.general.desktopLyrics, (value) => {
+            // 与「桌面背景歌词」互斥：两个窗口都铺在桌面层，同时开只会打架。
+            patchSettings({ general: { desktopLyrics: value, ...(value ? { backgroundLyrics: false } : {}) } });
             toast(value ? '已打开桌面歌词' : '已关闭桌面歌词');
-          },
-        ),
-        segField(
-          '桌面歌词字号',
-          [
+          });
+          desktopLyricsSwitch = sw;
+          return h(
+            'div',
+            { class: 'field' },
+            h(
+              'div',
+              {},
+              h('div', { class: 'field-label', text: '桌面歌词' }),
+              h('div', {
+                class: 'field-hint',
+                text: '在桌面上放一个无边框歌词窗口，逐句显示正在唱的歌词和翻译；窗口上右键可以调字号、锁定（鼠标穿透）、置顶或关闭',
+              }),
+            ),
+            sw.root,
+          );
+        })(),
+        (() => {
+          const current = String(settings.general.desktopLyricsFontSize);
+          const options = [
             { value: '28', label: '小' },
             { value: '40', label: '中' },
             { value: '52', label: '大' },
-          ],
-          String(settings.general.desktopLyricsFontSize),
-          (value) => patchSettings({ general: { desktopLyricsFontSize: Number(value) } }),
-        ),
+          ];
+          // 宿主右键菜单可以 ±4 调字号，非预设值时补一档当前值，避免三段全灭。
+          if (!options.some((option) => option.value === current)) {
+            options.push({ value: current, label: `${current} px` });
+          }
+          return segField(
+            '桌面歌词字号',
+            options,
+            current,
+            (value) => patchSettings({ general: { desktopLyricsFontSize: Number(value) } }),
+          );
+        })(),
         segField(
           '桌面歌词粗细',
           [
@@ -3932,20 +4066,27 @@ export class App {
           settings.general.desktopLyricsWeight,
           (value) => patchSettings({ general: { desktopLyricsWeight: value as DesktopLyricsWeight } }),
         ),
-        segField(
-          '桌面歌词底色',
-          [
+        (() => {
+          const current = String(settings.general.desktopLyricsBackdropOpacity);
+          const options = [
             { value: '30', label: '浅' },
             { value: '40', label: '标准' },
             { value: '55', label: '深' },
             { value: '70', label: '更实' },
-          ],
-          String(settings.general.desktopLyricsBackdropOpacity),
-          (value) => patchSettings({ general: { desktopLyricsBackdropOpacity: Number(value) } }),
-        ),
+          ];
+          if (!options.some((option) => option.value === current)) {
+            options.push({ value: current, label: `${current}%` });
+          }
+          return segField(
+            '桌面歌词底色',
+            options,
+            current,
+            (value) => patchSettings({ general: { desktopLyricsBackdropOpacity: Number(value) } }),
+          );
+        })(),
         toggleField(
           '桌面歌词锁定',
-          '锁定后歌词窗口不再响应鼠标（点击穿透到下面的窗口），避免挡住桌面操作；右键歌词窗口或用设置页关掉这一项都能解锁',
+          '锁定后歌词窗口不再响应鼠标（点击穿透到下面的窗口），避免挡住桌面操作；从托盘菜单「解锁桌面歌词」或设置页关掉这一项都能解锁',
           settings.general.desktopLyricsLocked,
           (value) => {
             patchSettings({ general: { desktopLyricsLocked: value } });
@@ -3958,7 +4099,36 @@ export class App {
           settings.general.desktopLyricsTopmost,
           (value) => patchSettings({ general: { desktopLyricsTopmost: value } }),
         ),
+        (() => {
+          const sw = this.pillSwitch(settings.general.backgroundLyrics, (value) => {
+            patchSettings({ general: { backgroundLyrics: value, ...(value ? { desktopLyrics: false } : {}) } });
+            toast(value ? '已开启桌面背景歌词：歌词效果显示在壁纸层' : '已关闭桌面背景歌词：软件内歌词恢复');
+          });
+          backgroundLyricsSwitch = sw;
+          return h(
+            'div',
+            { class: 'field' },
+            h(
+              'div',
+              {},
+              h('div', { class: 'field-label', text: '桌面背景歌词' }),
+              h('div', {
+                class: 'field-hint',
+                text: '把歌词效果铺到桌面壁纸层；与「桌面歌词」互斥，开启时会关闭桌面歌词窗口。样式在快捷设置的「背景」页调整',
+              }),
+            ),
+            sw.root,
+          );
+        })(),
       );
+      if (desktopLyricsSwitch && backgroundLyricsSwitch) {
+        const desktop = desktopLyricsSwitch;
+        const background = backgroundLyricsSwitch;
+        this.settingsPaneRefreshers.push(() => {
+          desktop.setValue(getSettings().general.desktopLyrics);
+          background.setValue(getSettings().general.backgroundLyrics);
+        });
+      }
 
       // 外观
       const appearance = section(
@@ -4011,6 +4181,39 @@ export class App {
           settings.appearance.miniAlwaysOnTop,
           (value) => patchSettings({ appearance: { miniAlwaysOnTop: value } }),
         ),
+        (() => {
+          // B13：宿主枚举的系统字体供歌词/房间/唱片等设置面板使用；这里提供入口并回读结果。
+          const fontHint = h('div', { class: 'field-hint' });
+          const paintFonts = (families: string[]): void => {
+            fontHint.textContent = families.length > 0
+              ? `已检测到 ${families.length} 款系统字体，可在歌词、房间、唱片设置里选择。`
+              : '尚未读取到系统字体；可点「重新检测」，或等宿主就绪后再试。';
+          };
+          paintFonts(getSystemFonts());
+          this.fontDispose?.();
+          this.fontDispose = onSystemFonts(paintFonts);
+          this.sheetScope?.add(() => {
+            this.fontDispose?.();
+            this.fontDispose = null;
+          });
+          const scan = h('button', { class: 'btn', type: 'button', text: '重新检测' });
+          scan.addEventListener('click', () => {
+            host.requestFonts();
+            paintFonts(getSystemFonts());
+            toast('正在重新读取系统字体');
+          });
+          return h(
+            'div',
+            { class: 'field' },
+            h(
+              'div',
+              {},
+              h('div', { class: 'field-label', text: '系统字体' }),
+              fontHint,
+            ),
+            scan,
+          );
+        })(),
         this.buildAccentField(),
         this.buildPageBackgroundField(),
       );
@@ -4113,7 +4316,7 @@ export class App {
           '没有单独在快捷设置里选过音质的平台都用这个；平台/账号不支持时宿主自动降级。',
         ),
         ...autoPlayFields(),
-        sliderField('搜索结果条数', 10, 50, 5, settings.playback.searchLimit, (value) => {
+        sliderField('搜索结果条数', 10, 30, 10, settings.playback.searchLimit, (value) => {
           patchSettings({ playback: { searchLimit: value } });
         }, (value) => `${value} 条`),
         (() => {
@@ -4123,7 +4326,7 @@ export class App {
             'div',
             { class: 'field is-stacked' },
             h('div', { class: 'field-label', text: '睡眠定时' }),
-            h('div', { class: 'field-hint', text: '到点自动暂停；「播完当前曲」会在当前歌曲结束后停止。' }),
+            h('div', { class: 'field-hint', text: '到点按所选动作处理（暂停 / 暂停并最小化 / 退出应用）；「播完当前曲」会在当前歌曲结束后执行。' }),
             panel.element,
           );
         })(),
@@ -4155,6 +4358,14 @@ export class App {
         toggleField('播放/暂停渐变', '开启后暂停淡出、播放淡入；关闭则瞬时切换', settings.playback.fadeEnabled, (value) => {
           patchSettings({ playback: { fadeEnabled: value } });
         }),
+        toggleField(
+          '音频反应',
+          '采集播放音频做实时分析，驱动背景歌词与可视化；关闭后不再采集，效果会停在静态值。',
+          settings.playback.audioReactive,
+          (value) => {
+            patchSettings({ playback: { audioReactive: value } });
+          },
+        ),
         sliderField('暂停淡出时长', FADE_OUT_MS.min, FADE_OUT_MS.max, FADE_OUT_MS.step, settings.playback.fadeOutMs, (value) => {
           patchSettings({ playback: { fadeOutMs: value } });
         }, (value) => `${value} ms`),
@@ -4388,12 +4599,11 @@ export class App {
           const io = buildSettingsIOActions({
             getSettings,
             onImported: (result) => {
-              if (result.ok && result.settings) {
-                patchSettings(result.settings);
-                toast('设置已导入');
-              } else if (result.error) {
-                toast(`导入失败：${result.error}`, 'error');
-              }
+              if (!result.ok || !result.settings) return;
+              patchSettings(result.settings);
+              // 设置页是打开时的快照：导入后按当前页签重建，确保控件显示导入后的值。
+              // 成功/失败的轻提示由 settingsIO 统一发出，这里不再重复 toast。
+              this.openSettingsSheet(this.settingsPaneKey);
             },
             onCacheCleared: (result) => toast(`已清理 ${result.cleared.length} 项本地缓存`),
             confirmClear: (keyCount) =>
@@ -4421,7 +4631,6 @@ export class App {
       const experimental = section('实验功能');
       for (const info of Object.values(EXPERIMENTAL_SOURCES)) {
         const on = experimentalSourceEnabled(info.id);
-        const sw = this.pillSwitch(on, () => {});
         const apply = (next: boolean): void => {
           sw.setValue(next);
           setExperimentalSourceEnabled(info.id, next);
@@ -4429,25 +4638,22 @@ export class App {
           this.renderSearchTabs();
           toast(next ? `已开启实验来源「${info.label}」，搜索页可见` : `已关闭实验来源「${info.label}」`);
         };
-        const root = sw.root;
-        root.querySelectorAll('.pill-switch-btn').forEach((node, index) => {
-          node.addEventListener('click', () => {
-            const wantsOn = index === 1;
-            if (!wantsOn) {
-              if (experimentalSourceEnabled(info.id)) apply(false);
-              return;
-            }
-            if (experimentalSourceEnabled(info.id)) return;
-            void confirmDialog({
-              title: `启用「${info.label}」`,
-              message: '这是一个来自第三方站点的实验来源，接口可能随时失效、改动或被封禁。',
-              detail: info.confirm,
-              confirmText: '我已了解，开启',
-              tone: 'default',
-            }).then((ok) => {
-              if (!ok) sw.setValue(false);
-              else apply(true);
-            });
+        // 确认弹窗放在 pillSwitch 的 onChange 内：避免"自带 handler + 额外 click"两条路径各改一次状态。
+        const sw = this.pillSwitch(on, (next) => {
+          if (!next) {
+            apply(false);
+            return;
+          }
+          if (experimentalSourceEnabled(info.id)) return;
+          void confirmDialog({
+            title: `启用「${info.label}」`,
+            message: '这是一个来自第三方站点的实验来源，接口可能随时失效、改动或被封禁。',
+            detail: info.confirm,
+            confirmText: '我已了解，开启',
+            tone: 'default',
+          }).then((ok) => {
+            if (!ok) sw.setValue(false);
+            else apply(true);
           });
         });
         const head = h(
@@ -4564,6 +4770,28 @@ export class App {
         eqValueLabels[index].textContent = gain > 0 ? `+${gain}` : String(gain);
         if (eqSliders[index].value !== String(gain)) eqSliders[index].value = String(gain);
       };
+      // 拖动 EQ 滑块时先立即应用一次，之后 150 ms 合并写入；关闭面板前把尾随值补发。
+      let eqPatchTimer = 0;
+      let eqPatchPending = false;
+      const commitEqPatch = (): void => {
+        eqPatchPending = false;
+        patchSettings({ playback: { eqEnabled: true, eqGains: [...eqGains] } });
+      };
+      const scheduleEqPatch = (): void => {
+        eqPatchPending = true;
+        if (eqPatchTimer) return;
+        commitEqPatch();
+        eqPatchTimer = window.setTimeout(() => {
+          eqPatchTimer = 0;
+          if (eqPatchPending) commitEqPatch();
+        }, 150);
+      };
+      this.sheetScope?.add(() => {
+        if (!eqPatchTimer) return;
+        window.clearTimeout(eqPatchTimer);
+        eqPatchTimer = 0;
+        if (eqPatchPending) commitEqPatch();
+      });
       EQ_BAND_FREQS.forEach((freq, index) => {
         const initialGain = eqGains[index] ?? 0;
         const valueLabel = h('div', { class: 'eq-band-value', text: initialGain > 0 ? `+${initialGain}` : String(initialGain) });
@@ -4584,7 +4812,7 @@ export class App {
             eqEnabled = true;
             paintEqEnabled();
           }
-          patchSettings({ playback: { eqEnabled: true, eqGains: [...eqGains] } });
+          scheduleEqPatch();
         });
         eqValueLabels.push(valueLabel);
         eqSliders.push(slider);
@@ -4628,7 +4856,11 @@ export class App {
         presetSeg.querySelectorAll('.seg-btn').forEach((node) => {
           node.classList.toggle('is-on', node.getAttribute('data-preset') === 'flat');
         });
-        patchSettings({ playback: { eqPreset: 'flat', eqGains: [...eqGains] } });
+        if (!eqEnabled) {
+          eqEnabled = true;
+          paintEqEnabled();
+        }
+        patchSettings({ playback: { eqEnabled: true, eqPreset: 'flat', eqGains: [...eqGains] } });
       });
       paintEqEnabled();
       const eqSection = section(
@@ -4700,6 +4932,28 @@ export class App {
       const shortcutsSection = this.buildShortcutsSection(section);
       const updatesSection = this.buildUpdatesSection(section, toggleField, segField);
 
+      // 父开关 → 子项禁用：通用自启子项、桌面歌词 5 项、渐变 5 项、更新方式。
+      const syncConditionalFields = (): void => {
+        const state = getSettings();
+        const hideOnLaunch = fieldByLabel(general, '自启动时不显示窗口');
+        if (hideOnLaunch) setControlDisabled(hideOnLaunch, !state.general.autoLaunch);
+        for (const label of ['桌面歌词字号', '桌面歌词粗细', '桌面歌词底色', '桌面歌词锁定', '桌面歌词置顶']) {
+          const field = fieldByLabel(general, label);
+          if (field) setControlDisabled(field, !state.general.desktopLyrics);
+        }
+        for (const label of ['暂停淡出时长', '开始播放淡入时长', '渐变曲线', '人声保留淡出']) {
+          const field = fieldByLabel(sound, label);
+          if (field) setControlDisabled(field, !state.playback.fadeEnabled);
+        }
+        const vocalTail = fieldByLabel(sound, '人声尾音');
+        if (vocalTail) setControlDisabled(vocalTail, !state.playback.fadeEnabled || !state.playback.fadeVocal);
+        const updateMode = fieldByLabel(updatesSection, '更新方式');
+        if (updateMode) setControlDisabled(updateMode, !state.updates.autoCheck);
+      };
+      syncConditionalFields();
+      const unsubscribeConditional = onSettingsChange(syncConditionalFields);
+      this.sheetScope?.add(unsubscribeConditional);
+
       // 两栏设置：左侧导航 + 右侧内容（与快捷设置的 tab 选中样式一致）
       type SettingsEntry = { key: string; label: string; node: HTMLElement };
       const entries: SettingsEntry[] = [
@@ -4735,6 +4989,7 @@ export class App {
       };
       const activate = (key: string, animate = true): void => {
         navBtns.forEach((btn, name) => btn.classList.toggle('is-on', name === key));
+        this.settingsPaneKey = key;
         panes.forEach((pane, name) => {
           pane.hidden = name !== key;
         });
@@ -4753,6 +5008,22 @@ export class App {
         nav.append(btn);
       });
       body.append(h('div', { class: 'settings-layout' }, nav, content));
+      const resetAll = h('button', { class: 'btn is-danger', type: 'button', text: '恢复全部默认设置' });
+      resetAll.addEventListener('click', () => {
+        void confirmDialog({
+          title: '恢复全部默认设置？',
+          message: '所有设置会回到出厂默认值。',
+          detail: '本地曲库、已下载文件、歌单与账号不受影响；桌面歌词等窗口会按默认值重新应用。',
+          confirmText: '恢复默认',
+          tone: 'danger',
+        }).then((ok) => {
+          if (!ok) return;
+          resetSettings();
+          toast('已恢复全部默认设置');
+          // 重开面板由 resetSettings 的 'reset' 广播统一处理（保留当前页签）。
+        });
+      });
+      body.append(h('div', { class: 'settings-footer' }, resetAll));
       window.requestAnimationFrame(() => {
         const first = navBtns.get(initialKey);
         if (first) moveNavThumb(first, false);
@@ -4863,7 +5134,7 @@ export class App {
       }
     });
     const openBtn = h('button', { class: 'btn', title: '打开下载目录' }, icon('folder', 16), h('span', { text: '打开' }));
-    openBtn.addEventListener('click', () => host.openDownloadFolder(directory));
+    openBtn.addEventListener('click', () => host.openDownloadFolder(getSettings().downloads?.directory ?? ''));
     const hint = h(
       'div',
       { class: 'field-hint', text: '在线播放源会整首保存成音频文件；下载完成后会出现在「本地曲库」里。' },
@@ -4960,6 +5231,7 @@ export class App {
     let recordHint = '';
 
     function applyEnabled(value: boolean): void {
+      if (!value) stopRecording();
       patchSettings({ shortcuts: { enabled: value } });
       toast(value ? '已启用全局快捷键' : '已关闭全局快捷键');
       paint();
@@ -5051,6 +5323,8 @@ export class App {
         refs.key.textContent = display || '未设置';
         refs.key.classList.toggle('is-empty', !display);
         refs.row.classList.toggle('is-recording', recording === action);
+        refs.row.classList.toggle('is-disabled', !current.shortcuts.enabled);
+        refs.record.disabled = !current.shortcuts.enabled;
         refs.record.textContent = recording === action ? '按下新组合…（Esc 取消）' : '重新录制';
         if (recording === action) {
           refs.status.textContent = recordHint || '按下组合；Backspace / Delete 清除，Esc 取消';
@@ -5160,15 +5434,7 @@ export class App {
     });
     reset.addEventListener('click', () => {
       stopRecording();
-      patchSettings({
-        shortcuts: {
-          enabled: true,
-          playPause: SHORTCUT_DEFAULTS.playPause,
-          prev: SHORTCUT_DEFAULTS.prev,
-          next: SHORTCUT_DEFAULTS.next,
-          toggleWindow: SHORTCUT_DEFAULTS.toggleWindow,
-        },
-      });
+      patchSettings({ shortcuts: { ...SHORTCUT_DEFAULTS } });
       toast('已恢复默认快捷键');
     });
 
@@ -6302,13 +6568,15 @@ export class App {
     document.body.append(pop);
     this.airplayPopEl = pop;
     this.airplayPanel = panel;
-    airplay.subscribe((snapshot) => {
-      const streaming = snapshot.actives.length > 0;
-      if (streaming !== this.airplayStreaming) {
-        this.airplayStreaming = streaming;
-        this.railButtons.get('airplay')?.classList.toggle('is-streaming', streaming);
-      }
-    });
+    this.airplayUnsubscribers.push(
+      airplay.subscribe((snapshot) => {
+        const streaming = snapshot.actives.length > 0;
+        if (streaming !== this.airplayStreaming) {
+          this.airplayStreaming = streaming;
+          this.railButtons.get('airplay')?.classList.toggle('is-streaming', streaming);
+        }
+      }),
+    );
     document.addEventListener('pointerdown', (event) => {
       if (!this.airplayPopOpen) return;
       const target = event.target as Node | null;
@@ -6368,12 +6636,14 @@ export class App {
     const panel = createAirplayPanel({ variant: 'settings' });
     panel.element.classList.add('is-quick');
     this.airplayQuickPanel = panel;
-    airplay.subscribe((snapshot) => {
-      const streaming = snapshot.actives.length > 0;
-      if (streaming === this.airplayStreaming) return;
-      this.airplayStreaming = streaming;
-      this.railButtons.get('airplay')?.classList.toggle('is-streaming', streaming);
-    });
+    this.airplayUnsubscribers.push(
+      airplay.subscribe((snapshot) => {
+        const streaming = snapshot.actives.length > 0;
+        if (streaming === this.airplayStreaming) return;
+        this.airplayStreaming = streaming;
+        this.railButtons.get('airplay')?.classList.toggle('is-streaming', streaming);
+      }),
+    );
     return panel;
   }
 
@@ -6385,20 +6655,6 @@ export class App {
   }
 
   private buildQuickSettings(): void {
-    this.quickVolume = h('input', {
-      class: 'slider',
-      type: 'range',
-      min: '0',
-      max: '100',
-      step: '1',
-      value: String(Math.round(playerState().volume * 100)),
-    });
-    this.quickVolume.addEventListener('input', () => {
-      const value = Number(this.quickVolume.value) / 100;
-      setVolume(value);
-      patchSettings({ playback: { volume: value } });
-    });
-
     this.quickModeBtn = h('button', { class: 'quick-mode', title: '播放模式' }, icon('repeat', 15), h('span', { text: '列表循环' }));
     this.quickModeBtn.addEventListener('pointerdown', (event) => {
       event.preventDefault();
@@ -6577,6 +6833,8 @@ export class App {
   /** 面板内容按底部选项切换：封面放大预览 / 当前歌词 / 音量与模式 / 投送 / 下载。 */
   private renderQuickBody(): void {
     if (!this.quickBody) return;
+    // 快捷面板每次整块重建，旧节点上的回读闭包一并丢弃，避免数组随切页无限增长。
+    this.quickSwitchRefreshers = [];
     const current = playerState().track;
     this.quickRenderKey = `${this.quickTab}:${current ? `${current.source}:${current.id}` : ''}`;
     // 「下载」页需要把快捷面板加宽（见 download-queue-embed.css）。
@@ -6798,10 +7056,48 @@ export class App {
       const backgroundLyricsSwitch = this.pillSwitch(
         getSettings().general.backgroundLyrics,
         (next) => {
-          patchSettings({ general: { backgroundLyrics: next } });
+          patchSettings({ general: { backgroundLyrics: next, ...(next ? { desktopLyrics: false } : {}) } });
           toast(next ? '桌面背景歌词已开启：歌词效果显示在桌面壁纸层' : '桌面背景歌词已关闭：软件内歌词恢复显示');
+          syncBackgroundLyricsCells();
         },
       );
+      const bgStyleCell = cell(
+        '背景歌词样式',
+        true,
+        bgCoverControl,
+        h('div', { class: 'quick-hint', text: '播放效果为「关闭」时生效；封面在左：封面铺满并向右侧渐隐/模糊，歌词移到右半边' }),
+      );
+      const bgBlurCell = cell('封面模糊', true, bgBlurControl);
+      const bgFillCell = cell(
+        '封面之后',
+        true,
+        bgFillControl,
+        h('div', { class: 'quick-hint', text: '模糊铺满：右侧不再露出壁纸，整屏都是封面的模糊延伸' }),
+      );
+      // 三项目只对「播放效果=关闭」且「桌面背景歌词=开」生效：其它状态下禁用并给出原因，
+      // 避免用户点了没反应。
+      const syncBackgroundLyricsCells = (): void => {
+        const lyricsOn = getSettings().general.backgroundLyrics;
+        const lyricsMode = lyricsLumiereMode();
+        const available = lyricsOn && lyricsMode === 'off';
+        for (const node of [bgStyleCell, bgBlurCell, bgFillCell]) {
+          node.classList.toggle('is-disabled', !available);
+          node.setAttribute('aria-disabled', available ? 'false' : 'true');
+        }
+        const reason = !lyricsOn
+          ? '先开启「桌面背景歌词」'
+          : lyricsMode !== 'off'
+            ? '播放效果为「文字/房间/唱片」时，歌词画在效果层，背景歌词样式不生效；切到「关闭」后可用'
+            : '';
+        for (const node of [bgStyleCell, bgBlurCell, bgFillCell]) {
+          const hint = node.querySelector<HTMLElement>('.quick-hint');
+          if (!hint) continue;
+          const base = hint.dataset.baseHint ?? hint.textContent ?? '';
+          hint.dataset.baseHint = base;
+          hint.textContent = available ? base : `${base}（${reason}）`;
+        }
+      };
+      syncBackgroundLyricsCells();
       body.append(
         h(
           'div',
@@ -6812,14 +7108,9 @@ export class App {
             backgroundLyricsSwitch.root,
             h('div', { class: 'quick-hint', text: '开启后歌词效果显示在桌面壁纸层，软件内歌词页暂时关闭' }),
           ),
-          cell(
-            '背景歌词样式',
-            true,
-            bgCoverControl,
-            h('div', { class: 'quick-hint', text: '播放效果为「关闭」时生效；封面在左：封面铺满并向右侧渐隐/模糊，歌词移到右半边' }),
-          ),
-          cell('封面模糊', true, bgBlurControl),
-          cell('封面之后', true, bgFillControl, h('div', { class: 'quick-hint', text: '模糊铺满：右侧不再露出壁纸，整屏都是封面的模糊延伸' })),
+          bgStyleCell,
+          bgBlurCell,
+          bgFillCell,
         ),
       );
       return;
@@ -7082,6 +7373,10 @@ export class App {
           action: '唱片设置…',
           hint: '唱片：歌词字体/颜色/排布、盘面配色、转速、唱臂与尘埃',
         },
+        geo: {
+          action: '几何设置…',
+          hint: '几何：配色预设、字形字距、构图模板、逐字点亮、错版与网点颗粒',
+        },
       };
       const effectSettingsBtn = h('button', {
         class: 'quick-value quick-text-settings-btn',
@@ -7101,7 +7396,9 @@ export class App {
             ? openTextSettingsSheet
             : mode === 'room'
               ? openRoomSettingsSheet
-              : openVinylSettingsSheet;
+              : mode === 'geo'
+                ? openGeoSettingsSheet
+                : openVinylSettingsSheet;
         window.setTimeout(() => open(), 140);
       });
       const effectSettingsHint = h('span', { class: 'quick-cell-hint', text: '' });
@@ -7249,7 +7546,6 @@ export class App {
           growCell,
           cell('播放效果', true, effectControl),
           effectSettingsCell,
-          section('桌面背景歌词'),
         ),
       );
       return;
@@ -7318,6 +7614,11 @@ export class App {
       patchSettings({ playback: { eqEnabled: next } });
       quickEqCurve.setEnabled(next);
     });
+    this.quickSwitchRefreshers.push(() => {
+      const enabled = getSettings().playback.eqEnabled;
+      quickEqSwitch.setValue(enabled);
+      quickEqCurve.setEnabled(enabled);
+    });
     const quickPresetSeg = h('div', { class: 'quick-seg-slider quick-eq-presets' });
     const quickPresetBtns: HTMLButtonElement[] = [];
     const quickEqCurve = createEqCurve({
@@ -7355,9 +7656,11 @@ export class App {
     const quickFadeSwitch = this.pillSwitch(getSettings().playback.fadeEnabled, (next) => {
       patchSettings({ playback: { fadeEnabled: next } });
     });
+    this.quickSwitchRefreshers.push(() => quickFadeSwitch.setValue(getSettings().playback.fadeEnabled));
     const quickVocalSwitch = this.pillSwitch(getSettings().playback.fadeVocal, (next) => {
       patchSettings({ playback: { fadeVocal: next } });
     });
+    this.quickSwitchRefreshers.push(() => quickVocalSwitch.setValue(getSettings().playback.fadeVocal));
 
     // 主设置里常用、但没必要为此开整页的开关：直接放进快捷设置。
     // 播放速度复用音量的调节器（按钮粗调 0.05×、拖动细调 0.01×），不再用五档分段。
@@ -7377,15 +7680,22 @@ export class App {
       setLoudnessEnabled(next);
       this.applyLoudnessNow();
     });
+    this.quickSwitchRefreshers.push(() => quickLoudnessSwitch.setValue(loudnessEnabled()));
     const quickNightSwitch = this.pillSwitch(nightModeEnabled(), (next) => {
       setNightModeEnabled(next);
+      this.applyLoudnessNow();
     });
+    this.quickSwitchRefreshers.push(() => quickNightSwitch.setValue(nightModeEnabled()));
     const quickDesktopLyricsSwitch = this.pillSwitch(getSettings().general.desktopLyrics, (next) => {
-      patchSettings({ general: { desktopLyrics: next } });
+      // 与主设置页一致：桌面歌词窗和桌面背景歌词互斥，开启一个时关掉另一个。
+      patchSettings({ general: { desktopLyrics: next, ...(next ? { backgroundLyrics: false } : {}) } });
+      toast(next ? '已打开桌面歌词' : '已关闭桌面歌词');
     });
+    this.quickSwitchRefreshers.push(() => quickDesktopLyricsSwitch.setValue(getSettings().general.desktopLyrics));
     const quickMediaSessionSwitch = this.pillSwitch(getSettings().general.mediaSession, (next) => {
       patchSettings({ general: { mediaSession: next } });
     });
+    this.quickSwitchRefreshers.push(() => quickMediaSessionSwitch.setValue(getSettings().general.mediaSession));
 
     // 主设置里常用的分段控件：统一用快捷设置的白色滑块分段。
     const quickSeg = <T extends string>(
@@ -8068,17 +8378,13 @@ export class App {
   private openQuick(): void {
     if (this.quickPanelOpen) return;
     this.quickPanelOpen = true;
-    this.quickVolume.value = String(Math.round(playerState().volume * 100));
     primeLyrics(playerState().track);
     this.paintQuickMode(playerState().mode);
-    this.renderQuickBody();
     // 收起动画还没播完就又被点开：先取消收尾逻辑，再重新播展开动画
     this.quickCloseCleanup?.();
     this.quickRoot.classList.remove('is-closing');
     this.quickRoot.classList.add('is-open');
-    window.requestAnimationFrame(() => {
-      if (this.quickPanelOpen) this.setQuickTab(this.quickTab);
-    });
+    this.setQuickTab(this.quickTab);
   }
 
   private closeQuick(): void {
@@ -8300,10 +8606,14 @@ export class App {
         await new Promise((resolve) => window.setTimeout(resolve, (fadeSeconds * 1000) / steps));
       }
       if (token !== this.sleepFadeToken) return;
-      this.sleepFadeVolume = null;
-      setVolume(from);
     }
     if (playerState().playing) toggle();
+    // 暂停完成后再恢复原音量：先恢复再暂停会在渐弱末尾出现一瞬间满音量的突跳。
+    if (this.sleepFadeVolume !== null) {
+      const restore = this.sleepFadeVolume;
+      this.sleepFadeVolume = null;
+      setVolume(restore);
+    }
     if (action === 'minimize') {
       host.minimize();
       toast('睡眠定时已到，已暂停并最小化');
@@ -9022,8 +9332,43 @@ export class App {
     const settings = getSettings();
     this.volumeInput.value = String(Math.round(settings.playback.volume * 100));
     this.paintVolumeIcon(Math.round(settings.playback.volume * 100));
-    // 桌面背景歌词开启后，软件内歌词页让位（关闭开关后恢复）。
-    if (settings.general.backgroundLyrics && this.lyrics) this.closeLyrics();
+    // 只在面板真实打开时回读，避免向已卸载的旧节点写值。
+    if (this.quickPanelOpen) {
+      for (const refresh of this.quickSwitchRefreshers) refresh();
+    }
+    if (this.sheet?.body.querySelector('.settings-layout')) {
+      for (const refresh of this.settingsPaneRefreshers) refresh();
+    }
+    // 桌面背景歌词开启后，软件内歌词页让位；关闭开关时若此前是被它顶掉的，自动恢复。
+    if (settings.general.backgroundLyrics) {
+      if (this.lyrics) {
+        this.closeLyrics();
+        this.backgroundLyricsSuppressedLyrics = true;
+      }
+    } else if (this.backgroundLyricsSuppressedLyrics) {
+      this.backgroundLyricsSuppressedLyrics = false;
+      this.openLyrics();
+    }
+  }
+
+  /**
+   * 宿主回推 / 托盘 / 桌面歌词右键菜单等外部来源改了设置时，打开着的设置页与快捷面板
+   * 需要按新值重建，否则控件会停留在打开时的快照上。本地点击由控件自己反映，不重建。
+   */
+  private refreshOpenSettingsFromSettings(meta: SettingsChangeMeta): void {
+    if (meta.origin !== 'host' && meta.origin !== 'reset') return;
+    if (this.quickPanelOpen) {
+      const top = this.quickBody.scrollTop;
+      this.renderQuickBody();
+      this.quickBody.scrollTop = top;
+    }
+    const body = this.sheet?.body;
+    if (!body || !body.querySelector('.settings-layout')) return;
+    const content = body.querySelector<HTMLElement>('.settings-content');
+    const top = content?.scrollTop ?? 0;
+    this.openSettingsSheet(this.settingsPaneKey);
+    const nextContent = this.sheet?.body.querySelector<HTMLElement>('.settings-content');
+    if (nextContent) nextContent.scrollTop = top;
   }
 
   /* ------------------------------------------------------------------ */
@@ -9072,6 +9417,9 @@ export class App {
       for (const record of records) {
         for (const node of Array.from(record.addedNodes)) {
           if (node instanceof HTMLElement) this.enhanceSegs(node);
+        }
+        for (const node of Array.from(record.removedNodes)) {
+          this.releaseSegs(node);
         }
       }
     });
@@ -9126,13 +9474,10 @@ export class App {
     // 首次挂载时等一帧拿到布局尺寸再定位（不播动画）。
     requestAnimationFrame(() => requestAnimationFrame(() => place(false)));
     // 点击兜底：即使外部只改 class 不触发观察回调，也确保有滑动动画。
-    seg.addEventListener(
-      'click',
-      () => {
-        window.setTimeout(() => place(true), 0);
-      },
-      true,
-    );
+    const onClick = (): void => {
+      window.setTimeout(() => place(true), 0);
+    };
+    seg.addEventListener('click', onClick, true);
     const resize = new ResizeObserver(() => {
       // 选中项变了（可能先于观察回调发生）→ 触发滑动；否则只做无动画校正。
       const active = seg.querySelector<HTMLElement>('.seg-btn.is-on');
@@ -9142,9 +9487,33 @@ export class App {
     resize.observe(seg);
     const watcher = new MutationObserver(() => place(true));
     buttons.forEach((btn) => watcher.observe(btn, { attributes: true, attributeFilter: ['class'] }));
+    this.segCleanups.set(seg, () => {
+      resize.disconnect();
+      watcher.disconnect();
+      window.clearTimeout(animTimer);
+      seg.removeEventListener('click', onClick, true);
+      thumb.remove();
+      delete seg.dataset.segThumb;
+    });
+  }
+
+  private releaseSegs(root: Node): void {
+    if (root instanceof HTMLElement && root.classList.contains('seg')) this.releaseSeg(root);
+    if (root instanceof HTMLElement) root.querySelectorAll<HTMLElement>('.seg').forEach((seg) => this.releaseSeg(seg));
+  }
+
+  private releaseSeg(seg: HTMLElement): void {
+    const cleanup = this.segCleanups.get(seg);
+    if (!cleanup) return;
+    this.segCleanups.delete(seg);
+    cleanup();
   }
 
   destroy(): void {
+    this.segCleanups.forEach((cleanup) => cleanup());
+    this.segCleanups.clear();
+    for (const id of this.intervalIds) window.clearInterval(id);
+    this.intervalIds = [];
     this.segObserver?.disconnect();
     this.segObserver = undefined;
     this.quickResizeObserver?.disconnect();
@@ -9158,6 +9527,14 @@ export class App {
     this.upNextToast?.dispose();
     this.upNextToast = null;
     this.playerDispose?.();
+    for (const unsubscribe of this.airplayUnsubscribers) unsubscribe();
+    this.airplayUnsubscribers.length = 0;
+    disposeAirplaySubscription();
+    disposeAudioTap();
+    this.windowStateDispose?.();
+    this.windowStateDispose = null;
+    this.fontDispose?.();
+    this.fontDispose = null;
     this.localDispose?.();
     this.accountDispose?.();
     this.accountIssueDispose?.();

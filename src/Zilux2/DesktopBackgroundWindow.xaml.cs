@@ -48,10 +48,19 @@ public sealed partial class DesktopBackgroundWindow : Window
     private const int WmSpawnWorkerW = 0x052C;
     private const uint SmtoNormal = 0x0000;
 
+    // 与主 WebView2 通道保持一致的消息上限（host-contract §3.4：单条 ≤64KB）。
+    private const int MaxMessageChars = 64 * 1024;
+
     private readonly CoreWebView2Environment _environment;
     private readonly SettingsService _settings;
     private readonly WebContentPlan _plan;
     private bool _disposed;
+    private bool _browserDisposed;
+    // 最近一次 online 端点 JSON：场景页 ready 之前到达的消息会丢，ready 时补发一次（B04）。
+    private string? _onlineJson;
+
+    /// <summary>WebView2 初始化失败（窗口随之关闭）；宿主据此回滚 backgroundLyrics 开关（B09）。</summary>
+    internal event Action? InitFailed;
 
     internal DesktopBackgroundWindow(CoreWebView2Environment environment, SettingsService settings, WebContentPlan plan)
     {
@@ -97,6 +106,17 @@ public sealed partial class DesktopBackgroundWindow : Window
         catch (Exception exception)
         {
             HostLog.Error("[bgLyrics] webview init failed", exception);
+            // 初始化失败不能留一个空白壁纸窗；关闭并通知宿主回滚开关（B09）。
+            try
+            {
+                Close();
+            }
+            catch (Exception closeException)
+            {
+                HostLog.Warn($"[bgLyrics] close after init failure failed: {closeException.Message}");
+            }
+
+            InitFailed?.Invoke();
         }
     }
 
@@ -236,12 +256,40 @@ public sealed partial class DesktopBackgroundWindow : Window
 
     private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
+        // 第二个 WebView 的消息入口与主通道对齐：大小/来源/协议版本先校验，坏消息只记日志不抛（B08）。
+        if (string.IsNullOrEmpty(e.WebMessageAsJson))
+        {
+            return;
+        }
+
+        if (e.WebMessageAsJson.Length > MaxMessageChars)
+        {
+            HostLog.Warn($"[bgLyrics] message rejected: too large ({e.WebMessageAsJson.Length} chars)");
+            return;
+        }
+
+        if (!IsTrustedSource(e.Source))
+        {
+            HostLog.Warn($"[bgLyrics] message rejected: untrusted source={e.Source}");
+            return;
+        }
+
         try
         {
             using var document = JsonDocument.Parse(e.WebMessageAsJson);
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object)
             {
+                HostLog.Warn("[bgLyrics] message ignored: root is not an object");
+                return;
+            }
+
+            if (!root.TryGetProperty("v", out var versionElement) ||
+                versionElement.ValueKind != JsonValueKind.Number ||
+                !versionElement.TryGetInt32(out var version) ||
+                version != 1)
+            {
+                HostLog.Warn("[bgLyrics] message ignored: unsupported protocol version");
                 return;
             }
 
@@ -251,6 +299,12 @@ public sealed partial class DesktopBackgroundWindow : Window
             if (type == "ready")
             {
                 PostSnapshot();
+                // 场景页的 initOnline 在 ready 之前就已注册监听；把最近一次端点补发一次（B04）。
+                if (_onlineJson is not null)
+                {
+                    PostJson(_onlineJson);
+                }
+
                 return;
             }
 
@@ -268,6 +322,19 @@ public sealed partial class DesktopBackgroundWindow : Window
 
                     PostSnapshot();
                 }
+                else if (action == "reset")
+                {
+                    // 场景页恢复默认：清掉缓存的在线端点，再重置设置。Reset 会触发宿主
+                    // 按默认值重新应用背景歌词开关（默认关闭 → 本窗随关闭收尾，P3-14）。
+                    _onlineJson = null;
+                    _settings.Reset();
+                    if (!_disposed)
+                    {
+                        PostSnapshot();
+                    }
+
+                    HostLog.Info("[bgLyrics] settings reset by scene");
+                }
 
                 return;
             }
@@ -281,7 +348,10 @@ public sealed partial class DesktopBackgroundWindow : Window
                     ? messageElement.GetString()
                     : string.Empty;
                 HostLog.Info($"[bgLyrics:web] {level}: {message}");
+                return;
             }
+
+            HostLog.Warn($"[bgLyrics] message ignored: unknown type={type ?? "(null)"}");
         }
         catch (Exception exception)
         {
@@ -289,9 +359,43 @@ public sealed partial class DesktopBackgroundWindow : Window
         }
     }
 
+    // 场景页与主页面走同一个来源（虚拟域名或 dev URL）；空 source 与主通道一致按不可信拒绝（B18）。
+    private bool IsTrustedSource(string? source)
+    {
+        if (string.IsNullOrEmpty(source))
+        {
+            return false;
+        }
+
+        try
+        {
+            var sourceUri = new Uri(source, UriKind.Absolute);
+            var pageUri = new Uri(_plan.NavigationUrl, UriKind.Absolute);
+            return string.Equals(sourceUri.Scheme, pageUri.Scheme, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(sourceUri.Host, pageUri.Host, StringComparison.OrdinalIgnoreCase)
+                && sourceUri.Port == pageUri.Port;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private void PostSnapshot()
     {
         PostJson(_settings.CreateSnapshotJson());
+    }
+
+    /// <summary>主页面收到的 online 端点转给场景；ready 前到达的会缓存，ready 时补发（B04）。</summary>
+    internal void PostOnlineInfo(string? json)
+    {
+        if (string.IsNullOrEmpty(json))
+        {
+            return;
+        }
+
+        _onlineJson = json;
+        PostJson(json);
     }
 
     internal void PostJson(string json)
@@ -332,6 +436,12 @@ public sealed partial class DesktopBackgroundWindow : Window
     /// </summary>
     internal void DisposeBrowser()
     {
+        if (_browserDisposed)
+        {
+            return;
+        }
+
+        _browserDisposed = true;
         try
         {
             Browser.Dispose();

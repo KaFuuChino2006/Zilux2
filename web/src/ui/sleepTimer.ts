@@ -6,6 +6,7 @@
  *   （由 Lead 接「暂停播放」）。「播完当前曲」模式由 Lead 在曲目结束时调用 completeSleepTimer()。
  * - 剩余时间始终基于 Date.now() 计算，页面隐藏（rAF 节流）也不会漂移。
  */
+import { getSettings, onSettingsChange } from '../core/settings';
 import { h, icon, toast } from './dom';
 
 export const SLEEP_TIMER_STORAGE_KEY = 'zilux2.sleepTimer';
@@ -466,10 +467,7 @@ export function buildSleepTimerPanel(options: SleepTimerPanelOptions = {}): Slee
   });
 
   const actions = h('div', { class: 'st-actions' }, trackBtn, cancelBtn);
-  const hint = h('div', {
-    class: 'st-hint',
-    text: '到时会暂停播放；窗口最小化或页面在后台时仍然计时。',
-  });
+  const hint = h('div', { class: 'st-hint' });
 
   const rootClass = options.className ? `st ${options.className}` : 'st';
   const element = h('div', { class: rootClass, 'data-qa': 'sleep-timer' }, head, presetsRow, customRow, actions, hint);
@@ -505,9 +503,18 @@ export function buildSleepTimerPanel(options: SleepTimerPanelOptions = {}): Slee
       current.active && current.mode === 'track-end' ? 'true' : 'false',
     );
     cancelBtn.hidden = !current.active;
+    // 文案跟随「播放 → 到点后」的真实行为，避免面板说暂停、实际最小化/退出。
+    const action = getSettings().playback.sleepAction;
+    hint.textContent =
+      action === 'minimize'
+        ? '到时会最小化窗口并暂停播放；窗口最小化或页面在后台时仍然计时。'
+        : action === 'exit'
+          ? '到时会退出 Zilux2 并停止播放；窗口最小化或页面在后台时仍然计时。'
+          : '到时会暂停播放；窗口最小化或页面在后台时仍然计时。';
   }
 
   const unsubscribe = subscribeSleepTimer(refresh);
+  const unsubscribeSettings = onSettingsChange(() => refresh());
   refresh();
 
   return {
@@ -517,6 +524,7 @@ export function buildSleepTimerPanel(options: SleepTimerPanelOptions = {}): Slee
       if (disposed) return;
       disposed = true;
       unsubscribe();
+      unsubscribeSettings();
       element.remove();
     },
   };

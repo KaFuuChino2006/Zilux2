@@ -410,7 +410,10 @@ internal sealed class AirPlayTxtInfo
         string? versionMajorText = First(txt, "vs", "srcvers");
         int versionMajor = ParseVersionMajor(versionMajorText);
 
-        bool supportsAirPlay2 = !string.IsNullOrWhiteSpace(vv) || versionMajor >= 130;
+        // vv 出现在 AirPlay TXT 里，表示 AirPlay 2 版本；不能只看"非空"（vv=0 表示不支持）。
+        bool supportsAirPlay2 =
+            (int.TryParse(vv, NumberStyles.Integer, CultureInfo.InvariantCulture, out var vvNumber) && vvNumber >= 1)
+            || versionMajor >= 130;
 
         string? featuresText = First(txt, "ft", "features");
         ulong? features = TryParseFeatureFlags(featuresText, out var parsedFeatures) ? parsedFeatures : null;
@@ -500,7 +503,8 @@ internal sealed class AirPlayTxtInfo
         {
             return false;
         }
-        features = low | (high << 32);
+        // Apple 用两个 32 位数拼 64 位；高位必须左移 32，低位只取低 32 位（防止脏 TXT 溢出污染高位）。
+        features = (low & 0xFFFF_FFFFUL) | (high << 32);
         return true;
     }
 

@@ -86,7 +86,10 @@ export function parseLrc(raw: string, baseOffsetMs = 0): LyricLine[] {
     if (meta) {
       if (meta[1]?.toLowerCase() === 'offset') {
         const value = Number(meta[2]?.trim());
-        if (Number.isFinite(value)) offset = value;
+        // LRC 规范（Wikipedia / MobileRead / KDE Elisa）的 [offset:+N] 表示歌词整体「提前」N 毫秒，
+        // 即时间戳要减去 N；旧实现是加，正负语义正好相反。这里按规范取负，并夹在 ±30s
+        // 以防个别文件写入异常值把整首歌推到边界。
+        if (Number.isFinite(value)) offset = Math.max(-30_000, Math.min(30_000, -value));
       }
       continue;
     }
@@ -107,10 +110,17 @@ export function parseLrc(raw: string, baseOffsetMs = 0): LyricLine[] {
     const display = wordSegments ? text.replace(WORD_TAG, '').trim() : text;
     for (const timeMs of stamps) {
       const entry: LyricLine = {
+        // offset 已在解析 [offset:] 时换成「加到时间戳上的量」（正值=推迟），baseOffsetMs 也沿用同一约定。
         timeMs: Math.max(0, timeMs + offset),
         text: display,
       };
-      if (wordSegments) entry.words = wordSegments.words;
+      if (wordSegments) {
+        // D-47：逐字时间也必须应用同一个 [offset:] 位移，否则行级正确、逐字高亮整段偏移。
+        entry.words = wordSegments.words.map((word) => ({
+          ...word,
+          startMs: Math.max(0, word.startMs + offset),
+        }));
+      }
       lines.push(entry);
     }
   }

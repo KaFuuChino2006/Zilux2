@@ -181,6 +181,7 @@ internal sealed class WebContentPlan
 internal sealed class WebViewHost : IDisposable
 {
     private const int MaxMessageChars = 64 * 1024;
+    private const int MaxAirPlayMessageChars = 8 * 1024;
 
     // Contract 3.2: keep Chromium from throttling a mostly-static, occasionally occluded window.
     private const string BrowserArguments =
@@ -361,7 +362,8 @@ internal sealed class WebViewHost : IDisposable
     /// </summary>
     public void PostCommand(string action)
     {
-        if (action is not ("togglePlay" or "prev" or "next"))
+        if (action is not ("togglePlay" or "prev" or "next" or "volumeUp" or "volumeDown" or "mute" or "like"
+            or "mode" or "mini" or "desktopLyrics" or "crossfade" or "stop" or "openSettings"))
         {
             HostLog.Warn($"command.post ignored action={action}");
             return;
@@ -486,6 +488,8 @@ internal sealed class WebViewHost : IDisposable
         try
         {
             _webView.Dispose();
+            // HwndHost 终结器在 controller 句柄失效后会抛 COM 异常并带走进程（B25）。
+            GC.SuppressFinalize(_webView);
         }
         catch (Exception exception)
         {
@@ -536,6 +540,13 @@ internal sealed class WebViewHost : IDisposable
             }
 
             var type = ReadString(root, "type");
+            // 契约 §12：AirPlay 单条消息 ≤8KB（整体 64KB 上限保留给 local 等批量通道）。
+            if (string.Equals(type, "airplay", StringComparison.Ordinal) && json.Length > MaxAirPlayMessageChars)
+            {
+                HostLog.Warn($"webview2.message rejected: airplay too large ({json.Length} chars, limit {MaxAirPlayMessageChars})");
+                return;
+            }
+
             switch (type)
             {
                 case "ready":
@@ -757,6 +768,13 @@ internal sealed class WebViewHost : IDisposable
         {
             HostLog.Error("[settings] backgroundLyrics apply failed", exception);
         }
+
+        // 非页面发起的设置改动（旧桌面歌词窗右键关闭、宿主侧写入等）也要补推快照：
+        // 页面靠它回读，否则设置页/快捷面板显示与真实值分叉，下一次点击会用旧值覆盖。
+        if (_pageReady)
+        {
+            PostSettingsSnapshot();
+        }
     }
 
     /// <summary>本地标签写入成功：让曲库刷新该文件（回调来自 HTTP 线程，必须切回 UI）。</summary>
@@ -969,7 +987,11 @@ internal sealed class WebViewHost : IDisposable
 
             StopOnlineRetry();
             var message = new HostOnlineMessage { Payload = online.BuildEventPayload() };
-            PostJson(JsonSerializer.Serialize(message, OnlineJsonContext.Default.HostOnlineMessage));
+            var json = JsonSerializer.Serialize(message, OnlineJsonContext.Default.HostOnlineMessage);
+            PostJson(json);
+            // 背景歌词是第二个 WebView，主页面通道收不到 online；同一份 JSON 转给背景窗，
+            // 场景页 initOnline 才会拿到端口/token（B04）。窗口未开时由 MainWindow 缓存待发。
+            _window.ForwardOnlineToBackgroundLyrics(json);
             HostLog.Info(
                 $"[online] endpoint sent to page port={online.Endpoint.Port} " +
                 $"tokenLen={online.Endpoint.Token.Length} sources={string.Join(",", online.Endpoint.Sources)}");
@@ -1045,6 +1067,9 @@ internal sealed class WebViewHost : IDisposable
         {
             PostJson(snapshot);
         }
+
+        // appearance.miniSize / miniAlwaysOnTop 没有独立事件：每次设置消息后让迷你态原地重排（P3-12）。
+        _window.ApplyMiniSettingsIfActive();
     }
 
     private void HandleMediaMessage(JsonElement root)
@@ -1071,6 +1096,8 @@ internal sealed class WebViewHost : IDisposable
             payload.TryGetProperty("playing", out var playing) && playing.ValueKind == JsonValueKind.True);
 
         _media.Update(state);
+        // 页面播放状态变化 → 托盘菜单文案同步（B23）；消息入口已在 UI 线程。
+        _window.NotifyPlaybackState(state.Playing);
     }
 
     private void PostSettingsSnapshot()
@@ -1200,6 +1227,12 @@ internal sealed class WebViewHost : IDisposable
             case "push":
                 HandleAudioPush(airplay, root);
                 break;
+
+            case "captureError":
+                // The page could not start its audio tap: the receiver is connected but would
+                // only ever get silence. End the session and surface the documented code.
+                airplay.ReportCaptureFailure(ReadString(root, "error"));
+                break;
         }
     }
 
@@ -1299,7 +1332,17 @@ internal sealed class WebViewHost : IDisposable
             case "volume":
             {
                 var volumeDeviceId = ReadString(root, "deviceId");
-                var percent = ReadInt(root, "percent", 0);
+                if (!root.TryGetProperty("percent", out var percentElement) || percentElement.ValueKind == JsonValueKind.Null)
+                {
+                    HostLog.Warn("[airplay] volume ignored: missing percent (keep current)");
+                    return;
+                }
+
+                if (!percentElement.TryGetInt32(out var percent))
+                {
+                    percent = _airplay.Status.VolumePercent;
+                    HostLog.Warn($"[airplay] volume invalid: fallback to {percent}");
+                }
                 if (string.IsNullOrWhiteSpace(volumeDeviceId))
                 {
                     _airplay.SetVolume(percent);
@@ -1311,6 +1354,25 @@ internal sealed class WebViewHost : IDisposable
 
                 break;
             }
+
+            case "cancelConnect":
+            {
+                var cancelDeviceId = ReadString(root, "deviceId");
+                if (string.IsNullOrWhiteSpace(cancelDeviceId))
+                {
+                    HostLog.Warn("[airplay] cancelConnect ignored: missing deviceId");
+                    return;
+                }
+
+                HostLog.Info($"[airplay] action cancelConnect device={cancelDeviceId}");
+                _ = CancelConnectAirPlayAsync(cancelDeviceId);
+                break;
+            }
+
+            case "flush":
+                // pause/seek/trackchange：丢弃接收端已排队的音频（P1-25）；不阻塞 UI。
+                _ = FlushAirPlayAsync();
+                break;
 
             case "latency":
             {
@@ -1326,6 +1388,46 @@ internal sealed class WebViewHost : IDisposable
             default:
                 HostLog.Warn($"[airplay] action ignored: {action ?? "<missing>"}");
                 break;
+        }
+    }
+
+    /// <summary>AirPlay FLUSH：Fire-and-forget，异常只记 Warn，不能阻塞 UI 线程。</summary>
+    private async Task FlushAirPlayAsync()
+    {
+        var airplay = _airplay;
+        if (airplay is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await airplay.FlushAsync().ConfigureAwait(false);
+            HostLog.Info("[airplay] action flush");
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[airplay] flush failed: {exception.Message}");
+        }
+    }
+
+    /// <summary>AirPlay 取消配对：Fire-and-forget，异常只记 Warn，不能阻塞 UI 线程。</summary>
+    private async Task CancelConnectAirPlayAsync(string deviceId)
+    {
+        var airplay = _airplay;
+        if (airplay is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await airplay.CancelConnectAsync(deviceId).ConfigureAwait(false);
+            HostLog.Info($"[airplay] cancelConnect done device={deviceId}");
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[airplay] cancelConnect failed: {exception.Message}");
         }
     }
 
@@ -1361,7 +1463,7 @@ internal sealed class WebViewHost : IDisposable
             var status = airplay.Status;
 
             var devices = new JsonArray();
-            foreach (var device in status.Devices.Take(32))
+            foreach (var device in status.Devices.OrderBy(device => device.Name, StringComparer.OrdinalIgnoreCase).Take(32))
             {
                 devices.Add(new JsonObject
                 {
@@ -1377,11 +1479,21 @@ internal sealed class WebViewHost : IDisposable
             JsonObject? active = null;
             if (status.ActiveDeviceId is { Length: > 0 } activeId)
             {
+                var activeVolume = status.VolumePercent;
+                foreach (var item in status.Actives)
+                {
+                    if (string.Equals(item.Id, activeId, StringComparison.Ordinal))
+                    {
+                        activeVolume = item.VolumePercent;
+                        break;
+                    }
+                }
+
                 active = new JsonObject
                 {
                     ["id"] = activeId,
                     ["name"] = status.ActiveDeviceName ?? string.Empty,
-                    ["volume"] = status.VolumePercent,
+                    ["volume"] = activeVolume,
                 };
             }
 
@@ -1496,9 +1608,8 @@ internal sealed class WebViewHost : IDisposable
     {
         if (string.IsNullOrEmpty(source))
         {
-            // Some synthetic documents do not report a source; the navigation allow-list still
-            // guarantees only our content can ever reach this handler.
-            return true;
+            // 合成文档可能不报 source；主通道只接受带来源的消息，避免空来源绕过 allow-list（B18）。
+            return false;
         }
 
         return MatchesOrigin(source);

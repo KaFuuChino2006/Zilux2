@@ -113,6 +113,7 @@ internal static class Ap2SharedPtp
             return;
         }
 
+        IAp2PtpMaster? previous = null;
         lock (Gate)
         {
             if (!Leases.Remove(lease))
@@ -122,26 +123,35 @@ internal static class Ap2SharedPtp
 
             if (Leases.Count == 0)
             {
-                var previous = _master;
+                previous = _master;
                 _master = null;
                 _localIp = null;
-                try
-                {
-                    previous?.Dispose();
-                }
-                catch (Exception ex)
-                {
-                    HostLog.Warn(
-                        $"[airplay] AP2 PTP shared: dispose failed: {ex.GetType().Name}: {ex.Message}");
-                }
-
-                HostLog.Info("[airplay] AP2 PTP shared: clock released (no active connections)");
-                return;
             }
-
-            ApplyPeersLocked();
-            LogLocked("release");
+            else
+            {
+                ApplyPeersLocked();
+                LogLocked("release");
+            }
         }
+
+        if (previous is null)
+        {
+            return;
+        }
+
+        // Dispose outside Gate: the master's Dispose joins its worker (up to ~2 s) and other
+        // connections' NowNs/ClockId getters must not block behind that join.
+        try
+        {
+            previous.Dispose();
+        }
+        catch (Exception ex)
+        {
+            HostLog.Warn(
+                $"[airplay] AP2 PTP shared: dispose failed: {ex.GetType().Name}: {ex.Message}");
+        }
+
+        HostLog.Info("[airplay] AP2 PTP shared: clock released (no active connections)");
     }
 
     /// <summary>Active receiver addresses (never the local address), sorted for stable logging/SETPEERS.</summary>
@@ -158,10 +168,14 @@ internal static class Ap2SharedPtp
     {
         lock (Gate)
         {
-            var endpoints = new List<string>(Leases.Count + 1) { localIp };
+            // The master binds to whichever local address the first connection used. A second
+            // connection may resolve a different NIC, but SETPEERS must advertise the master's
+            // actual source address or the receiver maps its clock to an endpoint that never sends.
+            string masterIp = string.IsNullOrEmpty(_localIp) ? localIp : _localIp;
+            var endpoints = new List<string>(Leases.Count + 1) { masterIp };
             foreach (var peer in SnapshotPeersLocked())
             {
-                if (!string.Equals(peer, localIp, StringComparison.OrdinalIgnoreCase))
+                if (!string.Equals(peer, masterIp, StringComparison.OrdinalIgnoreCase))
                 {
                     endpoints.Add(peer);
                 }

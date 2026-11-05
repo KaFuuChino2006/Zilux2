@@ -86,6 +86,49 @@ E:\Zilux2开发\
 
 约定：未知 `type` 忽略；单条消息 ≤ 64KB；不使用 `AddHostObjectToScript`；页面在非 WebView2 环境（浏览器直开）必须也能工作（`bridge.ts` 自动降级）。
 
+#### 3.4.1 消息类型索引（v1 补全）
+
+`type` 是页面 → 宿主的一级分发键；`window` / `airplay` / `local` / `update` 再用 `action` 做二级分发。完整字段以对应专节为准。
+
+页面 → 宿主：
+
+| type | action / 关键字段 | 说明 |
+| --- | --- | --- |
+| `ready` | — | 页面初始化完成；宿主回 `ready` / `online` / `settings` / `shortcuts` 等 |
+| `settings` | `request` / `patch`（`patch` 必须是对象）/ `reset` | 见 `docs/zilux2-settings-contract.md` |
+| `window` | `minimize` / `toggleMaximize` / `close` / `chromeColor`（`color` 为颜色字符串）/ `miniMode`（`enabled`、可选 `width`/`height`） | `chromeColor` 给无边框边条上色；mini 见 §15 |
+| `drag` | — | 无边框标题区按下时发；宿主等待手势明确后进入系统拖拽 |
+| `resize` | `edge = left｜right｜top｜bottom` | 其它值忽略；边条拖拽缩放 |
+| `log` | `level = info｜warn｜error`、`message` | 页面日志落 `host.log`（`web:` 前缀） |
+| `media` | `payload`（曲目/封面/进度/播放态） | §11 |
+| `audio` | `action = config｜reset｜push｜captureError` | 音频特征流 §10 |
+| `airplay` | `scan` / `stopScan` / `connect` / `disconnect` / `pin` / `volume`（可带 `deviceId`）/ `flush` / `cancelConnect` / `latency` | §12；`latency` 见 §12.1 |
+| `fonts` | — | 请求系统字体族；宿主回 `fonts` |
+| `local` | `pick` / `rescan` / `restore`（`folder`）/ `restoreMany`（`folders`）/ `pickAdd` / `openDownloadDir`（`folder`）/ `delete`（`rels`）/ `reveal`（`rel`）/ `openFolder` / `writeTags` | 本地曲库与标签；标签写入见 §16 |
+| `lyrics` | `now`、`translation` | 桌面歌词当前句/翻译；开关/字号等由设置驱动 |
+| `update` | `check`（可选 `force`）/ `download` / `install` / `cancel` / `openReleasePage` | §13 |
+
+宿主 → 页面（统一 `{v:1,type:"host",event:...}`）：
+
+| event | 关键字段 | 说明 |
+| --- | --- | --- |
+| `ready` | `version`、`maximized` | 页面 ready 的第一条回包 |
+| `windowState` | `maximized` | 最大化/还原变化 |
+| `miniMode` | `enabled` | 迷你态切换完成 |
+| `settings` | `state` | 设置快照（设置契约） |
+| `shortcuts` | `state.enabled`、`state.items[]` | 热键注册结果（设置契约） |
+| `online` | `payload.port`、`payload.token`、`payload.sources` | 在线服务回环端口/token；见 online 文档 |
+| `fonts` | `payload.families[]` | 系统字体族（排序后） |
+| `localLibrary` | `payload.folder/name/tracks/lyrics/error/notice` | 本地曲库快照/错误 |
+| `localResult` | `payload.action/ok/message` | 删除/打开目录/写标签等动作结果 |
+| `localCancel` | — | 用户取消文件夹选择 |
+| `command` | `action = togglePlay｜prev｜next｜volumeUp｜volumeDown｜mute｜like｜mode｜mini｜desktopLyrics｜crossfade｜stop` | 托盘/全局热键的瞬时播放控制 |
+| `mediaControl` | `payload.action`、可选 `positionMs` | §11.2 |
+| `audio` | `payload.bins/bands/level/peak/beat` | §10 |
+| `airplay` | `payload.state/devices/actives/active/code/error/latencyMs` | §12.2 |
+| `update` | 完整更新快照 | §13 |
+| `account` | 账号列表（含 `expired`/`reason`） | 登录失效主动提醒；字段见 online 文档 |
+
 ### 3.5 日志
 
 - 位置 `%LOCALAPPDATA%\Zilux2\logs\host.log`（追加，带时间戳）。
@@ -206,6 +249,10 @@ WinRT 不可用或初始化失败时记一次 `[smtc] unavailable: <类型>: <�
 {"v":1,"type":"airplay","action":"disconnect","deviceId":"<id>"}
 {"v":1,"type":"airplay","action":"pin","deviceId":"<id>","value":"1234"}
 {"v":1,"type":"airplay","action":"volume","percent":0-100}
+{"v":1,"type":"airplay","action":"volume","deviceId":"<id>","percent":0-100}
+{"v":1,"type":"airplay","action":"flush"}
+{"v":1,"type":"airplay","action":"cancelConnect","deviceId":"<id>"}
+{"v":1,"type":"airplay","action":"latency","value":300}
 ```
 
 - `deviceId`：设备发现返回的 `id` 原样回传；未知 id 忽略并记 `[airplay] connect ignored: unknown device`。
@@ -213,7 +260,10 @@ WinRT 不可用或初始化失败时记一次 `[smtc] unavailable: <类型>: <�
 - `disconnect` 不带 `deviceId` 断开全部；带 `deviceId` 只断开那一台，其余继续播放。
 - `password`：可选。设备需要密码但未提供时，宿主以 `state:"error"` + `code:"passwordRequired"` 回报，页面弹密码输入后带 `password` 重发 `connect`。
 - `pin`：可选。macOS「隔空播放接收器」要求 HAP PIN 配对（拒绝瞬态配对）：宿主连接时以 `state:"connecting"` + `code:"pinRequired"` 回报，Mac 屏幕同时显示 4 位数字；页面收集后发 `pin`，宿主用它完成配对并继续连接。等待超过 120 秒自动失败（`code:"network"`）。首次配对成功后凭据落盘，后续连接走 pair-verify，不再弹 PIN。
-- `volume`：0–100 的整数，超出范围钳制，作用于所有正在投送的设备；未连接时忽略并记日志。
+- `volume`：`percent` 为 0–100 的整数，超出范围钳制；带 `deviceId` 时只作用于该设备，省略时作用于所有正在投送的设备；未连接时忽略并记日志。
+- `flush`：暂停/seek/切歌时丢弃接收端已排队的音频；fire-and-forget，不阻塞 UI，失败只记 Warn。
+- `cancelConnect`：带 `deviceId`，取消该设备正在进行的连接/配对（含等待 PIN），回到 `idle`；缺少 `deviceId` 忽略并记 Warn；对已 `streaming` 的设备不发此 action（请用 `disconnect`）。宿主的取消是异步 fire-and-forget，完成后回推一次 `airplay` 状态。
+- `latency`：接收端缓冲毫秒数，`value` 为整数，宿主钳到 100–600，缺省/非法值按 300；只对**下一次** AirPlay 2 连接生效（已连接会话保持协商值），设置后立刻回推一次 `airplay` 状态。
 - 未知 action 忽略；`payload` 缺失按空对象处理。
 
 ### 12.2 宿主 → 页面：`airplay`
@@ -225,7 +275,8 @@ WinRT 不可用或初始化失败时记一次 `[smtc] unavailable: <类型>: <�
   "actives":[{"id":"...","name":"客厅 HomePod","volume":70}],
   "active":{"id":"...","name":"客厅 HomePod","volume":70},
   "code":"passwordRequired|pinRequired|unsupported|busy|network|capture|internal",
-  "error":"人类可读的错误描述"
+  "error":"人类可读的错误描述",
+  "latencyMs":300
 }}
 ```
 
@@ -233,6 +284,7 @@ WinRT 不可用或初始化失败时记一次 `[smtc] unavailable: <类型>: <�
 - `actives`：当前所有正在投送的设备（`streaming` 时非空，多设备同时投送时长度 > 1），最多 32 台。`volume` 为全局音量的 0–100。
 - `active`：`actives` 的第一个元素，保留给只理解单设备字段的旧页面；`streaming` 时为对象，`idle`/`error` 时为 `null`。
 - `code`：在 `state:"error"` 时出现（`passwordRequired`/`unsupported`/`network`/`capture`/`internal`），也在 `state:"connecting"` + `code:"pinRequired"` 时出现（macOS 接收器等待 4 位配对码）；页面据此决定提示文案/是否显示密码框或配对码输入框；`error` 为中文可读文本（≤200 字），可直接展示。多设备投送时第二台失败也走 `error` 字段但 `state` 保持 `streaming`，页面据 `devices`/`actives` 差异提示即可。
+- `latencyMs`：下一次 AirPlay 2 连接将请求的接收端缓冲毫秒数（100–600，默认 300），与 `action:"latency"` 的 `value` 同源；页面可据此回显滑块。
 - 推送时机：`scan` 后进入 `scanning`（设备变化时推送，最多 5 次/秒）；`connect` 成功 → `streaming`（同一会话再次 `connect` 另一台设备只追加 `actives`）；断开/失败 → `idle`/`error`；`volume` 改变后回推一次。
 - 单条消息 ≤ 8 KB。
 
@@ -248,6 +300,26 @@ WinRT 不可用或初始化失败时记一次 `[smtc] unavailable: <类型>: <�
 - 采集失败（无默认输出设备 / WASAPI 错误）→ `code:"capture"`，每 5 s 重试一次，应用不退出。
 - 窗口最小化/页面关闭时停止投送并 TEARDOWN，避免设备端残留会话；退出应用前 `AirPlay` 服务先于 `Settings` 释放。
 - 日志前缀 `[airplay]`：`scan start` / `scan stop` / `found N` / `connect <host>` / `streaming started` / `volume <dB>` / `teardown` / `error: <...>`。
+### 12.4 音频旁路通道（`audio`，v1）
+
+AirPlay 投送的是**页面自己音频图的 PCM**，不走 WASAPI 回环。页面接管播放器增益后把采样推给宿主；宿主只在 AirPlay 服务可用时处理，其它情况忽略。
+
+页面 → 宿主：
+
+```jsonc
+{"v":1,"type":"audio","action":"config","rate":48000,"channels":2}
+{"v":1,"type":"audio","action":"push","data":"<base64 little-endian int16>","rate":48000,"channels":2}
+{"v":1,"type":"audio","action":"reset"}
+{"v":1,"type":"audio","action":"captureError","error":"人类可读原因"}
+```
+
+- `config`：声明采样率/声道数；`rate` 缺省 48000，`channels` 缺省 2。
+- `push`：`data` 是小端 int16 交错 PCM 的 base64；空串/非法 base64 直接忽略。宿主按 `rate`/`channels` 重采样/映射后交给 AirPlay 编码器。
+- `reset`：页面停止/切歌时清空旁路缓冲，避免旧采样在下一曲开头重放。
+- `captureError`：页面无法启动音频图（如 `AudioContext` 被策略阻止）时上报；宿主结束当前投送并以 `state:"error"` + `code:"capture"` 回推，页面据此提示。
+- `audio` 是**页面 → 宿主**的旁路通道（`type:"audio"`）；宿主 → 页面的音频特征事件是另一个方向（`type:"host"`、`event:"audio"`，§10），二者同名但方向与 payload 不同，互不复用。
+- 单条消息 ≤ 64KB；超过按 `log` 警告丢弃。页面在非 WebView2 环境不要启动旁路。
+
 ## 13. 附加：更新通道（update 命令 & update event v1）
 
 页面 → 宿主：
@@ -325,7 +397,8 @@ WinRT 不可用或初始化失败时记一次 `[smtc] unavailable: <类型>: <�
 {"v":1,"type":"window","action":"miniMode","enabled":false}
 ```
 
-- `enabled` 必填（布尔）；`width` / `height` 可选（DIP 浮点，缺省 420×120；宽度钳到 360–1600，高度 100–900）。
+- `enabled` 必填（布尔）；`width` / `height` 可选（DIP 浮点）。
+- `width` / `height` 的 **0、负数、缺省或非有限值**统一表示「使用设置 `appearance.miniSize` 的预设尺寸」：`compact=360×100`、`standard=420×120`（默认）、`wide=520×150`；不是「保持当前尺寸」。有效值再分别钳到宽度 360–1600、高度 100–900。
 - 开启：宿主保存当前窗口 rect / WindowState / Topmost / MinWidth / MinHeight，切到紧凑尺寸（临时把 MinWidth 降到 360）、置顶、吸附到当前显示器工作区右下角（安全边距 12 DIP），保持无边框圆角与 6 px 可缩放边条。
 - 关闭：按保存值精确还原尺寸/位置/最大化状态/Topmost，并恢复原 MinWidth/MinHeight。
 - 切换成功后宿主 → 页面：

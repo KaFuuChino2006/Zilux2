@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http;
 using System.Text;
@@ -35,9 +36,11 @@ internal sealed class Mvmp3Provider : IOnlineMusicProvider
     private static readonly Regex AlbumPattern = new(@"<span>\s*专辑[:：]\s*(?<album>[^<]*)</span>", RegexOptions.Compiled);
     private static readonly Regex LrcMetaPattern = new(@"(?im)^\[[0-9:.]+\][^\r\n]*mvmp3\.com[^\r\n]*\r?\n?", RegexOptions.Compiled);
 
+    private const int MaxPlayCacheEntries = 128;
+
     private readonly CookieContainer _cookies = new();
     private readonly SemaphoreSlim _verifyLock = new(1, 1);
-    private readonly Dictionary<string, PlayResult> _playCache = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, PlayResult> _playCache = new(StringComparer.Ordinal);
     private readonly HttpClient _client;
 
     private DateTimeOffset _verifiedAt = DateTimeOffset.MinValue;
@@ -205,8 +208,40 @@ internal sealed class Mvmp3Provider : IOnlineMusicProvider
 
         var result = ParsePlay(id, text);
         _playCache[id] = result;
+        TrimPlayCache(id);
         OnlineHttp.Info($"GET mvmp3/play id={id} url={(string.IsNullOrEmpty(result.Url) ? "none" : "ok")} lrc={result.Lrc?.Length ?? 0}");
         return result;
+    }
+
+    /// <summary>缓存上限：并发请求只读/写 ConcurrentDictionary；超过上限时先清过期项，再按任意顺序淘汰。</summary>
+    private void TrimPlayCache(string keepId)
+    {
+        if (_playCache.Count <= MaxPlayCacheEntries)
+        {
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        foreach (var pair in _playCache)
+        {
+            if (pair.Value.ExpiresAt <= now && pair.Key != keepId)
+            {
+                _playCache.TryRemove(pair.Key, out _);
+            }
+        }
+
+        foreach (var pair in _playCache)
+        {
+            if (_playCache.Count <= MaxPlayCacheEntries)
+            {
+                break;
+            }
+
+            if (!string.Equals(pair.Key, keepId, StringComparison.Ordinal))
+            {
+                _playCache.TryRemove(pair.Key, out _);
+            }
+        }
     }
 
     private static PlayResult ParsePlay(string id, string text)

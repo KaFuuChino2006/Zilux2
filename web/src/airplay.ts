@@ -148,6 +148,11 @@ function emptySnapshot(): AirplaySnapshot {
 let snapshot: AirplaySnapshot = emptySnapshot();
 const listeners = new Set<(snapshot: AirplaySnapshot) => void>();
 let listening = false;
+/**
+ * 页面卸载/路由销毁后置 true：bridge.onMessage 没有 remove API，无法真正摘掉监听，
+ * 但可以让残留回调变成空操作，等下次 subscribe 时再恢复。
+ */
+let subscriptionDisposed = false;
 
 function emit(): void {
   const current = snapshot;
@@ -258,6 +263,7 @@ function parseCode(raw: unknown): AirplayErrorCode | null {
 }
 
 function onHostMessage(message: HostMessage): void {
+  if (subscriptionDisposed) return;
   if (message.type !== 'host' || message.event !== 'airplay') return;
   const payload = message.payload;
   if (!isRecord(payload)) return;
@@ -288,10 +294,19 @@ function onHostMessage(message: HostMessage): void {
   }
   const active = actives[0] ?? null;
 
-  const code = state === 'error' ? parseCode(payload.code) : null;
+  // 宿主在 second device / transient failure 时会保持 state='streaming' 但带 code/error
+  // （见 AirPlayService.SetTransientError）；只解析 error 态会把这些失败完全丢掉。
+  // connecting+pinRequired 归 PIN 表单所有，不当作错误提示。
+  const pinSignal = state === 'connecting' && payload.code === 'pinRequired';
+  const code = pinSignal ? null : parseCode(payload.code);
   let error: string | null = null;
-  if (state === 'error') {
-    error = readText(payload.error, MAX_ERROR_LENGTH) || (code ? AIRPLAY_ERROR_LABEL[code] : '投送出错');
+  if (pinSignal) {
+    error = null;
+  } else {
+    error = readText(payload.error, MAX_ERROR_LENGTH);
+    if (!error && state === 'error') {
+      error = code ? AIRPLAY_ERROR_LABEL[code] : '投送出错';
+    }
   }
 
   // 密码重试：宿主错误里不带 deviceId，用最近一次 connect 的目标来定位输入框
@@ -301,7 +316,6 @@ function onHostMessage(message: HostMessage): void {
   // macOS 配对码：契约 §12.1 规定宿主用 state:'connecting' + code:'pinRequired' 索要 Mac 屏幕上的
   // 4 位 PIN（§12.2 又写 code「只在 error 时出现」，两处不一致——这里以 §12.1 为准，两种状态都识别，
   // 但只有 connecting 才进入「等用户输入」形态；error+pinRequired 表示配对已失败）。
-  const pinSignal = state === 'connecting' && payload.code === 'pinRequired';
   const pinRequired = pinSignal;
   const pinDeviceId = pinSignal ? snapshot.targetDeviceId : null;
   const pinMessage = pinSignal
@@ -309,6 +323,9 @@ function onHostMessage(message: HostMessage): void {
     : null;
 
   // 任何宿主推送都复位「已提交」：宿主重新要码时输入框随之重新可用。
+  // 但同一次 PIN 请求会伴随多条状态推送（设备列表/音量），不能把用户刚输入的码又解锁。
+  const samePinRequest =
+    pinSignal && snapshot.pinRequired && snapshot.pinMessage === pinMessage;
   commit({
     state,
     devices,
@@ -320,11 +337,17 @@ function onHostMessage(message: HostMessage): void {
     pinRequired,
     pinDeviceId,
     pinMessage,
-    pinSubmitted: false,
+    pinSubmitted: samePinRequest ? snapshot.pinSubmitted : false,
   });
 
-  // 宿主推送了新状态：不再处于「连接中」就解锁（同一时刻只允许一台握手，见 connectAirplay）。
-  if (state !== 'connecting') clearConnectGuard();
+  // 只有目标设备真正连上（出现在 actives）、或明确失败/空闲时才解锁。
+  // 多设备投送时，另一台的 volume/设备列表推送同样是 state='streaming'，
+  // 不能因此提前放行下一台握手（宿主会 CancelConnect 掉当前握手）。
+  const targetConnected =
+    state === 'streaming' &&
+    (snapshot.targetDeviceId === null ||
+      actives.some((entry) => entry.id === snapshot.targetDeviceId));
+  if (state === 'idle' || state === 'error' || targetConnected) clearConnectGuard();
 }
 
 /** 当前状态快照（只读；每次变化是整体替换的新对象）。 */
@@ -334,12 +357,28 @@ export function getAirplaySnapshot(): AirplaySnapshot {
 
 /** 订阅状态变化；立即回调一次当前状态。返回取消函数。 */
 export function subscribeAirplay(listener: (snapshot: AirplaySnapshot) => void): () => void {
+  subscriptionDisposed = false;
   ensureListening();
   listeners.add(listener);
   listener(snapshot);
   return () => {
     listeners.delete(listener);
   };
+}
+
+/**
+ * 页面卸载时调用（P2-88）：清空订阅者、解绑媒体事件、让 bridge 上的残留回调失效。
+ * bridge 没有 offMessage API，所以监听器本身无法移除；这里保证它不再改写状态。
+ * 重复调用安全；再次 subscribe 会自动恢复（subscriptionDisposed 置回 false）。
+ */
+export function disposeAirplaySubscription(): void {
+  subscriptionDisposed = true;
+  listeners.clear();
+  clearConnectGuard();
+  for (const element of mediaFlushHandlers.keys()) {
+    unbindAirplayMediaFlush(element);
+  }
+  mediaFlushHandlers.clear();
 }
 
 /**
@@ -363,6 +402,52 @@ export function stopAirplayScan(): boolean {
   const sent = send('stopScan');
   if (sent && snapshot.state === 'scanning') commit({ state: 'idle' });
   return sent;
+}
+
+/* ------------------------------------------------------------------ */
+/* 播放事件 → FLUSH                                                    */
+/* ------------------------------------------------------------------ */
+
+const FLUSH_THROTTLE_MS = 250;
+let lastFlushAt = 0;
+/** 媒体元素 → 已绑定的事件处理函数；dispose 时需要逐个 removeEventListener（P2-88）。 */
+const mediaFlushHandlers = new Map<HTMLAudioElement, Array<[string, () => boolean]>>();
+
+/**
+ * 让接收端丢弃已排队的音频：暂停/seek/切歌后旧缓冲仍会继续播放
+ * （AP2 ~300ms、RAOP ~2s），必须发 FLUSH。
+ */
+export function flushAirplay(reason = 'media'): boolean {
+  if (!hostAvailable()) return false;
+  const now = Date.now();
+  if (now - lastFlushAt < FLUSH_THROTTLE_MS) return false;
+  lastFlushAt = now;
+  return send('flush', { reason });
+}
+
+/**
+ * 绑定播放器的暂停/seek/切歌事件。由 audioTap.attachAudioTap 调用（<audio> 只在那里可见），
+ * 不依赖 app.ts；重复 attach 同一元素只绑定一次。
+ */
+export function bindAirplayMediaFlush(element: HTMLAudioElement): void {
+  if (mediaFlushHandlers.has(element)) return;
+  const handlers: Array<[string, () => boolean]> = [
+    ['pause', () => flushAirplay('pause')],
+    ['seeking', () => flushAirplay('seek')],
+    ['emptied', () => flushAirplay('trackchange')],
+    ['loadstart', () => flushAirplay('trackchange')],
+    ['ended', () => flushAirplay('trackchange')],
+  ];
+  for (const [type, handler] of handlers) element.addEventListener(type, handler);
+  mediaFlushHandlers.set(element, handlers);
+}
+
+/** 解绑由 bindAirplayMediaFlush 添加的播放事件（P2-57/88，页面销毁时调用）。 */
+export function unbindAirplayMediaFlush(element: HTMLAudioElement): void {
+  const handlers = mediaFlushHandlers.get(element);
+  if (!handlers) return;
+  for (const [type, handler] of handlers) element.removeEventListener(type, handler);
+  mediaFlushHandlers.delete(element);
 }
 
 /* ------------------------------------------------------------------ */
@@ -500,8 +585,32 @@ export function disconnectAirplayDevice(deviceId?: string): boolean {
 }
 
 /**
+ * 取消某台设备正在进行的握手（P2-54）：只中止 connect，不碰已经投送中的其它设备。
+ * 契约新增 action:'cancelConnect'，宿主实现为 AirPlayService.CancelConnectAsync(deviceId)。
+ */
+export function cancelAirplayConnect(deviceId?: string): boolean {
+  if (!hostAvailable()) return false;
+  const id = typeof deviceId === 'string' ? deviceId.trim() : '';
+  if (!id) return false;
+  const sent = send('cancelConnect', { deviceId: id });
+  if (!sent) return false;
+  clearConnectGuard();
+  commit({
+    code: null,
+    error: null,
+    passwordDeviceId: null,
+    pinRequired: false,
+    pinDeviceId: null,
+    pinMessage: null,
+    pinSubmitted: false,
+  });
+  return true;
+}
+
+/**
  * 设置投送音量（0–100 整数，超范围钳制）。
- * 契约：未连接时宿主会忽略，这里直接不发送；多设备共用同一音量，乐观更新全部 actives.volume。
+ * 语义（P2-51）：全局滑杆覆盖所有正在投送的设备，并清除单台覆盖；
+ * 之后新接入的设备沿用这条全局值。单台滑杆只影响该设备并单独记忆。
  */
 export function setAirplayVolume(percent: number): boolean {
   if (!hostAvailable()) return false;
@@ -611,6 +720,24 @@ export function rememberAirplayDeviceVolume(deviceId: string, percent: number): 
 }
 
 /**
+ * 忘记若干设备的单台音量覆盖（P2-51）：全局滑杆生效后调用，
+ * 让这些设备下次按全局值恢复，而不是被旧的单台值拉回去。
+ */
+export function forgetAirplayDeviceVolumes(deviceIds: readonly string[]): void {
+  if (deviceIds.length === 0) return;
+  const memory = readVolumeMemory();
+  let changed = false;
+  for (const deviceId of deviceIds) {
+    const id = typeof deviceId === 'string' ? deviceId.trim() : '';
+    if (id && Object.prototype.hasOwnProperty.call(memory.devices, id)) {
+      delete memory.devices[id];
+      changed = true;
+    }
+  }
+  if (changed) writeVolumeMemory(memory);
+}
+
+/**
  * 清空本地状态（不向宿主发任何指令，仅测试/调试或宿主重启时用）。
  */
 export function resetAirplayState(): void {
@@ -628,7 +755,7 @@ const LATENCY_KEY = 'zilux2.airplayLatencyMs';
 /** 与宿主默认值一致：300ms 能吸收 WiFi 抖动（120ms 会偶发爆音）。 */
 const LATENCY_DEFAULT_MS = 300;
 /** AP2 SETUP 允许的范围（宿主侧同样钳制 100–600ms）。 */
-export const AIRPLAY_LATENCY_MIN = 120;
+export const AIRPLAY_LATENCY_MIN = 100;
 export const AIRPLAY_LATENCY_MAX = 600;
 /** 每次点击 ± 的步进。 */
 export const AIRPLAY_LATENCY_STEP = 20;
@@ -680,6 +807,7 @@ export const airplay = {
   scan: scanAirplay,
   stopScan: stopAirplayScan,
   connect: connectAirplay,
+  cancelConnect: cancelAirplayConnect,
   submitPin: submitAirplayPin,
   disconnect: disconnectAirplay,
   disconnectDevice: disconnectAirplayDevice,
@@ -689,4 +817,5 @@ export const airplay = {
   setLatency: setAirplayLatency,
   syncLatency: syncAirplayLatency,
   reset: resetAirplayState,
+  dispose: disposeAirplaySubscription,
 };

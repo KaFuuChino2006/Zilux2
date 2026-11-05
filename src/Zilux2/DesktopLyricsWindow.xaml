@@ -12,13 +12,13 @@
         Height="150"
         WindowStartupLocation="Manual">
     <Border x:Name="Shell"
-            Background="#66000000"
-            CornerRadius="999"
-            Padding="30,12"
-            BorderThickness="1"
-            BorderBrush="#26FFFFFF"
-            MouseLeftButtonDown="OnShellMouseDown"
-            MouseRightButtonUp="OnShellRightClick">
+        Background="#66000000"
+        CornerRadius="999"
+        Padding="30,12"
+        BorderThickness="1"
+        BorderBrush="#26FFFFFF"
+        MouseLeftButtonDown="OnShellMouseDown"
+        MouseRightButtonUp="OnShellRightClick">
         <Border.Effect>
             <DropShadowEffect BlurRadius="28" ShadowDepth="0" Opacity="0.35" Color="Black" />
         </Border.Effect>

@@ -45,11 +45,16 @@ internal sealed class RtspResponse
 internal sealed class RtspTransport : IDisposable
 {
     private const int MaxHeaderBytes = 64 * 1024;
+    /// <summary>Defensive upper bound for a response body (RTSP bodies here are tiny SDP/plist blobs).</summary>
+    private const int MaxBodyBytes = 8 * 1024 * 1024;
 
     private readonly TcpClient _client;
     private readonly NetworkStream _stream;
     private readonly MemoryStream _inbound = new(4096);
     private readonly byte[] _readBuffer = new byte[4096];
+    // One request/response exchange at a time: volume/flush/sync can race from different threads,
+    // and interleaved writes or two readers on the same stream would corrupt the RTSP conversation.
+    private readonly object _sendLock = new();
     private int _scanFrom;
     private bool _disposed;
 
@@ -77,6 +82,9 @@ internal sealed class RtspTransport : IDisposable
         var task = client.ConnectAsync(host, port);
         if (!task.Wait(timeout))
         {
+            // Observe the abandoned task: disposing the client faults it, and an unobserved
+            // exception would otherwise surface on the finalizer thread.
+            _ = task.ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
             client.Dispose();
             throw new TimeoutException($"RTSP connect to {host}:{port} timed out.");
         }
@@ -89,6 +97,14 @@ internal sealed class RtspTransport : IDisposable
     /// Content-Length is added automatically when a body is supplied and the caller did not set it.
     /// </summary>
     public RtspResponse Send(string method, string uri, IEnumerable<KeyValuePair<string, string>>? headers = null, byte[]? body = null)
+    {
+        lock (_sendLock)
+        {
+            return SendLocked(method, uri, headers, body);
+        }
+    }
+
+    private RtspResponse SendLocked(string method, string uri, IEnumerable<KeyValuePair<string, string>>? headers, byte[]? body)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
@@ -179,9 +195,15 @@ internal sealed class RtspTransport : IDisposable
         }
 
         var contentLength = 0;
-        if (headers.TryGetValue("Content-Length", out var lengthText))
+        if (headers.TryGetValue("Content-Length", out var lengthText)
+            && !int.TryParse(lengthText, NumberStyles.Integer, CultureInfo.InvariantCulture, out contentLength))
         {
-            _ = int.TryParse(lengthText, NumberStyles.Integer, CultureInfo.InvariantCulture, out contentLength);
+            throw new InvalidDataException($"RTSP {method} invalid Content-Length: '{lengthText}'.");
+        }
+
+        if (contentLength < 0 || contentLength > MaxBodyBytes)
+        {
+            throw new InvalidDataException($"RTSP {method} Content-Length {contentLength} out of range (0..{MaxBodyBytes}).");
         }
 
         var bodyStart = headerEnd + 4;
@@ -193,7 +215,8 @@ internal sealed class RtspTransport : IDisposable
         var body = new byte[contentLength];
         if (contentLength > 0)
         {
-            Array.Copy(all, bodyStart, body, 0, contentLength);
+            // GetBuffer may have been replaced by ReadMore's growth: re-read it after the loop.
+            Array.Copy(_inbound.GetBuffer(), bodyStart, body, 0, contentLength);
         }
 
         TrimConsumed(bodyStart + contentLength);

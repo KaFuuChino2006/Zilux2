@@ -111,8 +111,8 @@ export class AnalysisError extends Error {
   }
 }
 
-/** 宿主分析可能很慢（在线曲目要现下载），给 2 分钟。 */
-const ANALYSIS_TIMEOUT_MS = 120_000;
+/** D-44：宿主在线分析预算 = 下载 120s + 分析 60s，前端必须留足余量。 */
+const ANALYSIS_TIMEOUT_MS = 200_000;
 
 interface AnalysisResponse {
   v?: number;

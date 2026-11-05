@@ -157,7 +157,8 @@ export interface DiscoverCollections {
 /* 请求 + 缓存                                                         */
 /* ------------------------------------------------------------------ */
 
-const TIMEOUT_MS = 12000;
+// D-44：宿主发现页上游 12s/15s，留出序列化与慢网余量。
+const TIMEOUT_MS = 25_000;
 const CACHE_TTL_MS = 60_000;
 
 interface CacheEntry {

@@ -51,6 +51,8 @@ export function installCoverFallback(): void {
       delete target.dataset.coverRetrying;
       delete target.dataset.coverRebased;
       delete target.dataset.coverSrc;
+      // 也清掉「已用渐变兜底」标记：img 复用换新地址后仍能重新走重试/兜底流程。
+      delete target.dataset.coverFallback;
     },
     true,
   );

@@ -15,11 +15,11 @@ internal sealed class Ap2Feedback : IDisposable
     private readonly HapEncryptedTransport _transport;
     private readonly TimeSpan _interval;
     private readonly Timer _timer;
-    private readonly object _gate = new();
     private int _count;
     private int _lastStatus;
     private string? _lastError;
-    private bool _disposed;
+    private int _inFlight;
+    private int _disposed;
 
     public Ap2Feedback(HapEncryptedTransport transport, TimeSpan? interval = null, string userAgent = "iTunes/12.12.10 (Windows; Microsoft Windows 10 x64)")
     {
@@ -48,55 +48,53 @@ internal sealed class Ap2Feedback : IDisposable
 
     private void OnTick(object? state)
     {
-        lock (_gate)
+        if (Volatile.Read(ref _disposed) != 0 || Interlocked.Exchange(ref _inFlight, 1) != 0)
         {
-            if (_disposed)
-            {
-                return;
-            }
+            return;
+        }
 
-            try
+        try
+        {
+            var body = Bplist.Encode(new Dictionary<string, object?>(StringComparer.Ordinal)
             {
-                var body = Bplist.Encode(new Dictionary<string, object?>(StringComparer.Ordinal)
-                {
-                    ["streams"] = Array.Empty<object?>(),
-                });
+                ["streams"] = Array.Empty<object?>(),
+            });
 
-                var headers = new List<KeyValuePair<string, string>>(2)
-                {
-                    new("Content-Type", Ap2Setup.ContentType),
-                    new("User-Agent", UserAgent),
-                };
-
-                var response = _transport.Send("POST", "/feedback", headers, body);
-                Volatile.Write(ref _lastStatus, response.StatusCode);
-                _ = Interlocked.Increment(ref _count);
-                if (response.StatusCode != 200)
-                {
-                    Volatile.Write(ref _lastError, $"feedback returned {response.StatusCode} {response.Reason}");
-                }
-                else
-                {
-                    Volatile.Write(ref _lastError, null);
-                }
-            }
-            catch (Exception ex)
+            var headers = new List<KeyValuePair<string, string>>(2)
             {
-                Volatile.Write(ref _lastError, $"{ex.GetType().Name}: {ex.Message}");
+                new("Content-Type", Ap2Setup.ContentType),
+                new("User-Agent", UserAgent),
+            };
+
+            // No lock around the blocking RTSP round-trip: Dispose/Stop must not wait up to a full
+            // ReceiveTimeout just because a keep-alive is in flight.
+            var response = _transport.Send("POST", "/feedback", headers, body);
+            Volatile.Write(ref _lastStatus, response.StatusCode);
+            _ = Interlocked.Increment(ref _count);
+            if (response.StatusCode != 200)
+            {
+                Volatile.Write(ref _lastError, $"feedback returned {response.StatusCode} {response.Reason}");
             }
+            else
+            {
+                Volatile.Write(ref _lastError, null);
+            }
+        }
+        catch (Exception ex)
+        {
+            Volatile.Write(ref _lastError, $"{ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            Volatile.Write(ref _inFlight, 0);
         }
     }
 
     public void Dispose()
     {
-        lock (_gate)
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
-            if (_disposed)
-            {
-                return;
-            }
-
-            _disposed = true;
+            return;
         }
 
         _timer.Change(Timeout.Infinite, Timeout.Infinite);

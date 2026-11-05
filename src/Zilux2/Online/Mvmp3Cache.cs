@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
@@ -17,6 +17,8 @@ internal static class Mvmp3Cache
 {
     private const long MinValidBytes = 64 * 1024;
     private const long MaxCacheBytes = 200L * 1024 * 1024;
+    private const long MaxTotalCacheBytes = 1024L * 1024 * 1024;
+    private static readonly SemaphoreSlim PrefetchSlots = new(2, 2);
 
     private static readonly object Gate = new();
     private static readonly HashSet<string> Storing = new(StringComparer.OrdinalIgnoreCase);
@@ -33,33 +35,10 @@ internal static class Mvmp3Cache
         return client;
     }
 
-    /// <summary>缓存根目录的来源（宿主启动时指向设置里的下载目录；为空则用本机数据目录）。</summary>
+    /// <summary>缓存根目录：固定在本机数据目录，避免清缓存时误删下载目录里的用户曲目（D-15）。</summary>
     public static Func<string>? DirectoryProvider { get; set; }
 
-    public static string Dir
-    {
-        get
-        {
-            string root;
-            try
-            {
-                root = DirectoryProvider?.Invoke() ?? string.Empty;
-            }
-            catch
-            {
-                root = string.Empty;
-            }
-
-            if (string.IsNullOrWhiteSpace(root))
-            {
-                // 没有设置下载目录时与「下载服务」保持同一个默认值（Windows 音乐目录），
-                // 这样缓存文件也落在本地曲库的扫描范围里。
-                root = Environment.GetFolderPath(Environment.SpecialFolder.MyMusic);
-            }
-
-            return Path.Combine(root, "mvmp3-cache");
-        }
-    }
+    public static string Dir => Path.Combine(HostFolders.Root, "mvmp3-cache");
 
     public static string PathFor(string id) => Path.Combine(Dir, id + ".mp3");
 
@@ -179,8 +158,12 @@ internal static class Mvmp3Cache
 
     private static async Task DownloadAsync(string id, string url, IReadOnlyDictionary<string, string> headers)
     {
+        await PrefetchSlots.WaitAsync().ConfigureAwait(false);
         var part = PartPathFor(id);
         var completed = false;
+        // D-45：预取与播放解耦，但必须有上限；否则切歌后仍会整首下载，且无超时。
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var token = timeout.Token;
         try
         {
             Directory.CreateDirectory(Dir);
@@ -203,7 +186,7 @@ internal static class Mvmp3Cache
             }
 
             using var response = await DownloadClient
-                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead)
+                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token)
                 .ConfigureAwait(false);
             if (response.StatusCode is not (HttpStatusCode.OK or HttpStatusCode.PartialContent))
             {
@@ -231,17 +214,17 @@ internal static class Mvmp3Cache
 
             await using (var file = new FileStream(part, append ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.Read, 81920, true))
             {
-                await using var body = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+                await using var body = await response.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
                 var buffer = new byte[81920];
                 while (true)
                 {
-                    var read = await body.ReadAsync(buffer).ConfigureAwait(false);
+                    var read = await body.ReadAsync(buffer, token).ConfigureAwait(false);
                     if (read <= 0)
                     {
                         break;
                     }
 
-                    await file.WriteAsync(buffer.AsMemory(0, read)).ConfigureAwait(false);
+                    await file.WriteAsync(buffer.AsMemory(0, read), token).ConfigureAwait(false);
                     existing += read;
                     if (existing > MaxCacheBytes)
                     {
@@ -266,6 +249,7 @@ internal static class Mvmp3Cache
         }
         finally
         {
+            PrefetchSlots.Release();
             FinishStore(id, completed);
         }
     }
@@ -306,6 +290,7 @@ internal static class Mvmp3Cache
                 {
                     File.Move(part, PathFor(id), overwrite: true);
                     HostLog.Info($"[mvmp3] cached {id} {length}B");
+                    TrimCache();
                 }
                 else
                 {
@@ -339,6 +324,57 @@ internal static class Mvmp3Cache
         }
     }
 
+    /// <summary>D-15：缓存总量超过 1GB 时按最后访问时间淘汰最旧的文件。</summary>
+    private static void TrimCache()
+    {
+        try
+        {
+            if (!Directory.Exists(Dir))
+            {
+                return;
+            }
+
+            var files = new List<FileInfo>();
+            long total = 0;
+            foreach (var path in Directory.EnumerateFiles(Dir, "*.mp3"))
+            {
+                var info = new FileInfo(path);
+                files.Add(info);
+                total += info.Length;
+            }
+
+            if (total <= MaxTotalCacheBytes)
+            {
+                return;
+            }
+
+            files.Sort((a, b) => a.LastWriteTimeUtc.CompareTo(b.LastWriteTimeUtc));
+            foreach (var file in files)
+            {
+                if (total <= MaxTotalCacheBytes)
+                {
+                    break;
+                }
+
+                try
+                {
+                    total -= file.Length;
+                    file.Delete();
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    // 正在播放时删不掉，留给下次。
+                }
+            }
+
+            HostLog.Info($"[mvmp3] cache trimmed to {total / (1024 * 1024)} MB");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            HostLog.Warn($"[mvmp3] cache trim failed: {exception.Message}");
+        }
+    }
+
     public static (int Count, long Bytes) Stat()
     {
         var count = 0;
@@ -366,6 +402,7 @@ internal static class Mvmp3Cache
 
     public static void Clear()
     {
+        var trash = string.Empty;
         try
         {
             if (!Directory.Exists(Dir))
@@ -373,12 +410,33 @@ internal static class Mvmp3Cache
                 return;
             }
 
+            // D-15：清缓存不再直接删除，先移到可恢复的回收目录；失败的文件退化为删除。
+            trash = Path.Combine(
+                HostFolders.Root,
+                "mvmp3-cache-trash",
+                DateTime.Now.ToString("yyyyMMdd-HHmmss"));
+            Directory.CreateDirectory(trash);
             foreach (var file in Directory.EnumerateFiles(Dir))
             {
-                File.Delete(file);
+                var name = Path.GetFileName(file);
+                try
+                {
+                    File.Move(file, Path.Combine(trash, name), overwrite: true);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    try
+                    {
+                        File.Delete(file);
+                    }
+                    catch (Exception deleteError) when (deleteError is IOException or UnauthorizedAccessException)
+                    {
+                        HostLog.Warn($"[mvmp3] cache delete failed {name}: {deleteError.Message}");
+                    }
+                }
             }
 
-            HostLog.Info("[mvmp3] cache cleared");
+            HostLog.Info($"[mvmp3] cache cleared (trash={trash})");
         }
         catch (Exception exception)
         {

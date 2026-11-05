@@ -16,6 +16,8 @@ internal sealed class NeteaseProvider : IOnlineMusicProvider
     private static readonly TimeSpan SearchTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan StreamTimeout = TimeSpan.FromSeconds(8);
     private static readonly TimeSpan LyricTimeout = TimeSpan.FromSeconds(10);
+    // D-44：搜索后的补封面/会员态是「尽力而为」步骤，不能用完整搜索超时。
+    private static readonly TimeSpan EnrichmentTimeout = TimeSpan.FromSeconds(3);
 
     private readonly AccountService? _accounts;
 
@@ -289,7 +291,7 @@ internal sealed class NeteaseProvider : IOnlineMusicProvider
         try
         {
             var upstream = await OnlineHttp
-                .FetchTextAsync(url, RefererUrl, SearchTimeout, cancellationToken, cookie: AccountCookie)
+                .FetchTextAsync(url, RefererUrl, EnrichmentTimeout, cancellationToken, cookie: AccountCookie)
                 .ConfigureAwait(false);
             using var document = JsonDocument.Parse(upstream.Body);
             var covers = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -350,7 +352,7 @@ internal sealed class NeteaseProvider : IOnlineMusicProvider
             var ids = string.Join(",", candidates.Select(track => track.Id));
             var url = $"{PlayerUrlEndpoint}?ids={Uri.EscapeDataString("[" + ids + "]")}&br=320000";
             var upstream = await OnlineHttp
-                .FetchTextAsync(url, RefererUrl, StreamTimeout, cancellationToken, cookie: AccountCookie)
+                .FetchTextAsync(url, RefererUrl, EnrichmentTimeout, cancellationToken, cookie: AccountCookie)
                 .ConfigureAwait(false);
             using var document = JsonDocument.Parse(upstream.Body);
             var playable = ParsePlayableIds(document.RootElement);

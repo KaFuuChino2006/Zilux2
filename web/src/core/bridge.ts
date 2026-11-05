@@ -275,10 +275,133 @@ export const host = {
     wv.addEventListener('message', (e) => {
       const data = e.data;
       if (!data || typeof data !== 'object') return;
+      const version = (data as { v?: unknown }).v;
+      if (typeof version === 'number' && version !== 1) {
+        console.warn('[bridge] host message ignored: unsupported version', version);
+        return;
+      }
       handler(data as HostMessage);
     });
   },
 };
+
+/* ---- 窗口状态（windowState v1）与系统字体（fonts v1）：宿主已推送的通道 ---- */
+
+export interface WindowState {
+  maximized: boolean;
+}
+
+const windowStateHandlers = new Set<(maximized: boolean) => void>();
+let windowStateBound = false;
+let lastWindowState: boolean | null = null;
+
+function applyWindowState(maximized: boolean): void {
+  lastWindowState = maximized;
+  try {
+    document.documentElement.dataset.maximized = maximized ? 'true' : 'false';
+  } catch {
+    // 非 DOM 环境（测试）忽略。
+  }
+  windowStateHandlers.forEach((listener) => {
+    try {
+      listener(maximized);
+    } catch (err) {
+      console.warn('[bridge] windowState handler failed', err);
+    }
+  });
+}
+
+function bindWindowState(): void {
+  if (windowStateBound) return;
+  windowStateBound = true;
+  host.onMessage((message) => {
+    if (message.type !== 'host') return;
+    // ready 与 windowState 都带 maximized；两者都消费，页面首次加载就能拿到当前状态。
+    if ((message.event === 'ready' || message.event === 'windowState') && typeof message.maximized === 'boolean') {
+      applyWindowState(message.maximized);
+    }
+  });
+}
+
+/** 订阅宿主窗口最大化状态（ready 时推一次，之后每次变化推一次）。 */
+export function onWindowState(handler: (maximized: boolean) => void): () => void {
+  windowStateHandlers.add(handler);
+  bindWindowState();
+  if (lastWindowState !== null) {
+    try {
+      handler(lastWindowState);
+    } catch (err) {
+      console.warn('[bridge] windowState handler failed', err);
+    }
+  }
+  return () => {
+    windowStateHandlers.delete(handler);
+  };
+}
+
+/** 最近一次窗口最大化状态；还没收到过为 null。 */
+export function getWindowState(): boolean | null {
+  return lastWindowState;
+}
+
+const systemFontHandlers = new Set<(families: string[]) => void>();
+let systemFontsBound = false;
+let lastSystemFonts: string[] = [];
+
+function bindSystemFonts(): void {
+  if (systemFontsBound) return;
+  systemFontsBound = true;
+  host.onMessage((message) => {
+    if (message.type !== 'host' || message.event !== 'fonts') return;
+    const payload = message.payload;
+    if (!payload || typeof payload !== 'object') return;
+    const raw = (payload as { families?: unknown }).families;
+    const families = Array.isArray(raw) ? raw.filter((item): item is string => typeof item === 'string') : [];
+    lastSystemFonts = families;
+    systemFontHandlers.forEach((listener) => {
+      try {
+        listener(families);
+      } catch (err) {
+        console.warn('[bridge] fonts handler failed', err);
+      }
+    });
+  });
+  // 宿主只在收到 fonts 请求后枚举（B13）；模块加载时请求一次，避免通道空转。
+  // 背景歌词场景不需要系统字体，跳过以免重复枚举。
+  try {
+    if (!location.search.includes('scene=backgroundLyrics')) {
+      host.requestFonts();
+    }
+  } catch {
+    // 非浏览器环境（测试）跳过。
+  }
+}
+
+/** 订阅宿主枚举的系统字体（先调用 host.requestFonts()）。 */
+export function onSystemFonts(handler: (families: string[]) => void): () => void {
+  systemFontHandlers.add(handler);
+  bindSystemFonts();
+  if (lastSystemFonts.length > 0) {
+    try {
+      handler(lastSystemFonts);
+    } catch (err) {
+      console.warn('[bridge] fonts handler failed', err);
+    }
+  }
+  return () => {
+    systemFontHandlers.delete(handler);
+  };
+}
+
+/** 最近一次系统字体列表；还没收到过为空数组。 */
+export function getSystemFonts(): string[] {
+  return lastSystemFonts;
+}
+
+// 模块加载即开始消费：windowState 直接写 <html data-maximized>，fonts 缓存最近一次枚举结果，
+// 不再依赖 app.ts 主动订阅（B13/B14 死通道）。
+bindWindowState();
+bindSystemFonts();
 
 /* ---- 迷你播放器（window v1：miniMode 指令/事件） ---- */
 
@@ -595,7 +718,7 @@ function normalizeShortcutItem(raw: unknown): ShortcutReportItem | null {
   const action = shortcutText(item.action);
   if (!action) return null;
   return {
-    id: shortcutText(item.id),
+    id: typeof item.id === 'number' ? String(item.id) : shortcutText(item.id),
     action,
     configured: shortcutText(item.configured),
     applied: shortcutText(item.applied),
