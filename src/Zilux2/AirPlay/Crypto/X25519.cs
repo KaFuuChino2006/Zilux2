@@ -94,7 +94,27 @@ public static class X25519
 
     /// <summary>计算共享密钥：X25519(ownPrivate, peerPublic)。</summary>
     public static byte[] ComputeSharedSecret(ReadOnlySpan<byte> ownPrivateKey, ReadOnlySpan<byte> peerPublicKey)
-        => ScalarMult(ownPrivateKey, peerPublicKey);
+    {
+        var shared = ScalarMult(ownPrivateKey, peerPublicKey);
+        // RFC 7748 §6.1: reject an all-zero shared secret (low-order peer public key).
+        var nonZero = false;
+        foreach (var b in shared)
+        {
+            if (b != 0)
+            {
+                nonZero = true;
+                break;
+            }
+        }
+
+        if (!nonZero)
+        {
+            throw new System.Security.Cryptography.CryptographicException(
+                "X25519：共享密钥全零（对端公钥为低阶点）");
+        }
+
+        return shared;
+    }
 
     /// <summary>RFC 7748 decodeScalar25519：清低 3 位、清最高位、置次高位。</summary>
     private static BigInteger DecodeScalar(ReadOnlySpan<byte> input)

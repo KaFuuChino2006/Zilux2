@@ -90,7 +90,11 @@ internal sealed class Ap2AudioConnection : IAirPlayConnection
             ? Ap2Pairing.CreateTransientHandler(trace: trace)
             // macOS remembers this controller after the first PIN, so later connects pair-verify
             // silently and only a fresh/reset pairing shows the 4-digit code again.
-            : Ap2Pairing.CreateStoredPinHandler(target.Host, pinProvider, trace: trace);
+            : Ap2Pairing.CreateStoredPinHandler(
+                target.Host,
+                pinProvider,
+                trace: trace,
+                port: target.Port > 0 ? target.Port : 7000);
 
         return new Ap2AudioConnection(Ap2Connection.Connect(ap2Target, ap2Options, pairing));
     }

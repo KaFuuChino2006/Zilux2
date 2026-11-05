@@ -105,6 +105,37 @@
   min-height: 0;
 }
 
+.field.is-disabled,
+.shortcut-row.is-disabled {
+  opacity: .55;
+}
+
+.field.is-disabled .pill-switch,
+.field.is-disabled .seg,
+.field.is-disabled .slider,
+.field.is-disabled input {
+  pointer-events: none;
+}
+
+.settings-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  flex: none;
+  padding-top: 12px;
+  margin-top: 4px;
+  border-top: 1px solid rgb(var(--overlay-rgb) / .08);
+}
+
+.settings-footer .btn.is-danger {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 42%, transparent);
+}
+
+.settings-footer .btn.is-danger:hover {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+}
+
 .settings-nav {
   position: relative;
   width: 164px;
@@ -116,6 +147,7 @@
   border-radius: 14px;
   background: rgb(var(--overlay-rgb) / .05);
   overflow: auto;
+  scrollbar-gutter: stable;
 }
 
 .settings-nav-thumb {
@@ -159,6 +191,8 @@
   flex: 1;
   min-width: 0;
   overflow: auto;
+  /* 长/短页切换时预留滚动条槽位，避免正文与分段滑块横向跳动。 */
+  scrollbar-gutter: stable;
   padding: 4px 6px 24px 2px;
 }
 

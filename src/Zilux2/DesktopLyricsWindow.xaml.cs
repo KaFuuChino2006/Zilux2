@@ -1,17 +1,19 @@
 using System;
-using System.Runtime.InteropServices;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using Zilux2.Interop;
+using Zilux2.Settings;
 
 namespace Zilux2;
 
 /// <summary>
 /// 桌面歌词：无边框、置顶、半透明的一个小窗口，拖动窗口本体即可移动。
-/// 锁定后加 WS_EX_TRANSPARENT 让鼠标穿透（游戏/其它窗口点得穿），右键菜单可解锁。
+/// 锁定后整窗加 WS_EX_TRANSPARENT 让鼠标真正穿透到其它应用；解锁入口只有
+/// 托盘菜单「解锁桌面歌词」和设置页（锁定态右键菜单同样点不到）。
 /// </summary>
 public partial class DesktopLyricsWindow : Window
 {
@@ -19,12 +21,14 @@ public partial class DesktopLyricsWindow : Window
     private const int WsExTransparent = 0x20;
     private const int WsExNoActivate = 0x08000000;
 
+    private readonly SettingsService? _settings;
     private int _fontSize = 40;
     private bool _locked;
     private bool _topmost = true;
 
-    public DesktopLyricsWindow()
+    internal DesktopLyricsWindow(SettingsService? settings = null)
     {
+        _settings = settings;
         InitializeComponent();
         SourceInitialized += (_, _) => ApplyClickThrough();
         Closed += (_, _) => ClosedByUser?.Invoke();
@@ -92,6 +96,8 @@ public partial class DesktopLyricsWindow : Window
         var style = NativeMethods.GetWindowLong(handle, GwlExStyle);
         if (_locked)
         {
+            // 锁定态整窗 WS_EX_TRANSPARENT：鼠标完全穿透，不吞其它应用的点击；
+            // 解锁只能走托盘菜单或设置页（P2-03 方案 A）。
             style |= WsExTransparent | WsExNoActivate;
         }
         else
@@ -147,17 +153,54 @@ public partial class DesktopLyricsWindow : Window
         _fontSize = Math.Clamp(_fontSize + delta, 28, 64);
         NowText.FontSize = _fontSize;
         TranslationText.FontSize = Math.Max(12, Math.Round(_fontSize * 0.45));
+        PersistStyle();
+    }
+
+    /// <summary>外部解除锁定：锁定时窗口鼠标穿透，右键菜单点不到，只能从托盘或设置页进入（P2-03）。</summary>
+    internal void SetLocked(bool locked)
+    {
+        if (_locked == locked)
+        {
+            return;
+        }
+
+        _locked = locked;
+        ApplyClickThrough();
+        PersistStyle();
     }
 
     private void ToggleLocked()
     {
-        _locked = !_locked;
-        ApplyClickThrough();
+        SetLocked(!_locked);
     }
 
     private void ToggleTopmost()
     {
         _topmost = !_topmost;
         Topmost = _topmost;
+        PersistStyle();
+    }
+
+    /// <summary>右键菜单改样式后写回设置，宿主的下一轮 ApplyStyle 才不会把它覆盖掉（B07）。</summary>
+    private void PersistStyle()
+    {
+        if (_settings is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var json =
+                $"{{\"general\":{{\"desktopLyricsFontSize\":{_fontSize}," +
+                $"\"desktopLyricsLocked\":{(_locked ? "true" : "false")}," +
+                $"\"desktopLyricsTopmost\":{(_topmost ? "true" : "false")}}}}}";
+            using var document = JsonDocument.Parse(json);
+            _settings.Patch(document.RootElement);
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[lyrics] persist style failed: {exception.Message}");
+        }
     }
 }

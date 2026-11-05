@@ -41,10 +41,14 @@ interface ClickAnchor {
   /** performance.now() 锚点时刻 */
   at: number;
   trackKey: string;
+  /** 锚点时的播放倍速：推算文件时间要按倍速走，否则变速播放会越打越偏。 */
+  rate: number;
 }
 
 interface PendingClick {
   osc: OscillatorNode;
+  /** 包络节点：只断开 osc 的话它会一直挂在 master 上，节点会累积。 */
+  env: GainNode;
   at: number;
 }
 
@@ -192,7 +196,7 @@ function scheduleClick(delaySeconds: number, downbeat: boolean): void {
   env.connect(master);
   osc.start(at);
   osc.stop(at + CLICK_DECAY_S + 0.01);
-  pending.push({ osc, at });
+  pending.push({ osc, env, at });
 }
 
 /** 停掉所有已排但还没响的 click（暂停/拖动/切歌/关闭）。 */
@@ -208,6 +212,11 @@ function cancelPending(): void {
     } catch (_err) {
       /* 忽略 */
     }
+    try {
+      click.env.disconnect();
+    } catch (_err) {
+      /* 忽略 */
+    }
   }
   pending = [];
 }
@@ -218,6 +227,11 @@ function prunePending(now: number): void {
     if (click.at >= now - 0.25) return true;
     try {
       click.osc.disconnect();
+    } catch (_err) {
+      /* 忽略 */
+    }
+    try {
+      click.env.disconnect();
     } catch (_err) {
       /* 忽略 */
     }
@@ -279,7 +293,7 @@ function runSchedule(): void {
   }
   const key = trackKey(state);
   if (!anchor || anchor.trackKey !== key) {
-    anchor = { fileMs: fileTimeMs(state), at: now, trackKey: key };
+    anchor = { fileMs: fileTimeMs(state), at: now, trackKey: key, rate: state.rate > 0 ? state.rate : 1 };
     lastScheduledBeatMs = anchor.fileMs - interval;
     cancelPending();
   }
@@ -310,7 +324,8 @@ function runSchedule(): void {
 
 function predictedFileMs(now: number): number {
   if (!anchor) return fileTimeMs(playerState());
-  return anchor.fileMs + (now - anchor.at);
+  const rate = anchor.rate > 0 ? anchor.rate : 1;
+  return anchor.fileMs + (now - anchor.at) * rate;
 }
 
 /** 当前播放位置的「文件内时间」；本地 CUE 分轨要补上 startAt 偏移。 */
@@ -334,8 +349,15 @@ function handlePlayer(state: PlayerState): void {
   const now = performance.now();
   const fileMs = fileTimeMs(state);
   const key = trackKey(state);
-  if (!anchor || anchor.trackKey !== key || Math.abs(fileMs - predictedFileMs(now)) > JUMP_MS) {
-    anchor = { fileMs, at: now, trackKey: key };
+  const rate = state.rate > 0 ? state.rate : 1;
+  // 倍速切换也要重锚：否则 predictedFileMs 用旧倍速推算，click 会逐渐偏移。
+  if (
+    !anchor ||
+    anchor.trackKey !== key ||
+    Math.abs(rate - anchor.rate) > 0.001 ||
+    Math.abs(fileMs - predictedFileMs(now)) > JUMP_MS
+  ) {
+    anchor = { fileMs, at: now, trackKey: key, rate };
     cancelPending();
     lastScheduledBeatMs = fileMs - (cachedAnalysis(state.track)?.analysis.beatIntervalMs ?? 0);
   }

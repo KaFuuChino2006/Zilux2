@@ -578,7 +578,8 @@ internal sealed partial class LocalMusicService : IDisposable
             var index = _folderTracks.FindIndex(track => string.Equals(track.Rel, dto.Rel, StringComparison.OrdinalIgnoreCase));
             if (index >= 0)
             {
-                _folderTracks[index] = dto;
+                // D-03：增量构建的 DTO 不含 DurationMs/StartMs/Cue，不能整体替换，否则时长和 CUE 分轨信息会丢。
+                _folderTracks[index] = MergeTrack(_folderTracks[index], dto);
                 added += 1;
                 continue;
             }
@@ -820,7 +821,8 @@ internal sealed partial class LocalMusicService : IDisposable
             var index = extra.Tracks.FindIndex(track => string.Equals(track.Rel, dto.Rel, StringComparison.OrdinalIgnoreCase));
             if (index >= 0)
             {
-                extra.Tracks[index] = dto;
+                // D-03：同主目录，增量 upsert 按 Rel 合并，保留时长/CUE 起点等扫描字段。
+                extra.Tracks[index] = MergeTrack(extra.Tracks[index], dto);
                 added += 1;
                 continue;
             }
@@ -1056,6 +1058,23 @@ internal sealed partial class LocalMusicService : IDisposable
         PostMergedTracks();
     }
 
+    /// <summary>
+    /// 增量 DTO 只带 Rel/Name/Title/Artist/Size/HasCover；把它合并到已有条目，保留扫描时算出的
+    /// DurationMs/StartMs/Cue 等字段（D-03）。
+    /// </summary>
+    private static LocalTrackDto MergeTrack(LocalTrackDto existing, LocalTrackDto update) => new()
+    {
+        Rel = update.Rel,
+        Name = string.IsNullOrEmpty(update.Name) ? existing.Name : update.Name,
+        Title = string.IsNullOrEmpty(update.Title) ? existing.Title : update.Title,
+        Artist = string.IsNullOrEmpty(update.Artist) ? existing.Artist : update.Artist,
+        Size = update.Size > 0 ? update.Size : existing.Size,
+        HasCover = update.HasCover,
+        StartMs = existing.StartMs,
+        DurationMs = existing.DurationMs,
+        Cue = existing.Cue,
+    };
+
     private static LocalTrackDto? TryBuildTrack(string fullPath, string relative)
     {
         try
@@ -1199,22 +1218,6 @@ internal sealed partial class LocalMusicService : IDisposable
         {
             return false;
         }
-    }
-
-    private static bool IsUnderRoot(string root, string path)
-    {
-        if (path.Length <= root.Length + 1)
-        {
-            return false;
-        }
-
-        if (!path.StartsWith(root, StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        var next = path[root.Length];
-        return next == Path.DirectorySeparatorChar || next == Path.AltDirectorySeparatorChar;
     }
 
     private static string ToRelative(string root, string path)

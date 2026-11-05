@@ -44,7 +44,7 @@ internal sealed class AirPlayDiscovery : IAirPlayDeviceDiscovery
     private static readonly string[] DefaultServiceTypes = { RaopServiceType, AirPlayServiceType };
 
     private readonly object _sync = new();
-    private readonly ManualResetEventSlim _stopEvent = new(false);
+    private ManualResetEventSlim? _stopEvent;
     private readonly MdnsServiceResolver _resolver = new();
     private readonly string[] _serviceTypes;
 
@@ -56,6 +56,7 @@ internal sealed class AirPlayDiscovery : IAirPlayDeviceDiscovery
     private volatile bool _running;
     private volatile bool _disposed;
     private int _refreshRequested;
+    private int _generation;
 
     public AirPlayDiscovery()
         : this(DefaultServiceTypes)
@@ -104,10 +105,26 @@ internal sealed class AirPlayDiscovery : IAirPlayDeviceDiscovery
     public bool IsRunning => _running;
 
     /// <summary>重复查询周期，默认 5 秒。mDNS 是通知驱动的，这个值主要影响"设备刚上线多久被发现"。</summary>
-    public TimeSpan QueryInterval { get; set; } = TimeSpan.FromSeconds(5);
+    public TimeSpan QueryInterval
+    {
+        get => _queryInterval;
+        set => _queryInterval = value < MinQueryInterval ? MinQueryInterval : value;
+    }
 
     /// <summary>单次接收阻塞切片，默认 250ms；决定 Stop/Refresh 的响应延迟与快照刷新节奏。</summary>
-    public TimeSpan ReceiveSlice { get; set; } = TimeSpan.FromMilliseconds(250);
+    public TimeSpan ReceiveSlice
+    {
+        get => _receiveSlice;
+        set => _receiveSlice = value < MinReceiveSlice ? MinReceiveSlice
+            : value > MaxReceiveSlice ? MaxReceiveSlice
+            : value;
+    }
+
+    private static readonly TimeSpan MinQueryInterval = TimeSpan.FromMilliseconds(500);
+    private static readonly TimeSpan MinReceiveSlice = TimeSpan.FromMilliseconds(20);
+    private static readonly TimeSpan MaxReceiveSlice = TimeSpan.FromSeconds(5);
+    private TimeSpan _queryInterval = TimeSpan.FromSeconds(5);
+    private TimeSpan _receiveSlice = TimeSpan.FromMilliseconds(250);
 
     /// <summary>本次浏览的服务类型。</summary>
     public IReadOnlyList<string> ServiceTypes => _serviceTypes;
@@ -159,52 +176,101 @@ internal sealed class AirPlayDiscovery : IAirPlayDeviceDiscovery
                 return;
             }
 
+            // A previous Stop may have timed out while the old thread is still winding down.
+            // Refuse to start a second thread (two sockets sharing one resolver) until it exits.
+            if (_thread is not null)
+            {
+                if (_thread.IsAlive)
+                {
+                    ReportError("AirPlayDiscovery 上一个发现线程仍在退出，稍后重试");
+                    return;
+                }
+                _thread = null;
+                _stopEvent?.Dispose();
+                _stopEvent = null;
+            }
+
             _onDevicesChanged = onDevicesChanged;
             _resolver.Clear();
             _publishedSignature = null;
             _snapshot = Array.Empty<AirPlayDevice>();
             _refreshRequested = 0;
-            _stopEvent.Reset();
+
+            var stopEvent = new ManualResetEventSlim(false);
+            int generation = ++_generation;
+            _stopEvent = stopEvent;
             _running = true;
-            _thread = new Thread(RunLoop)
+            var thread = new Thread(() => RunLoop(stopEvent, generation))
             {
                 IsBackground = true,
                 Name = "Zilux2.AirPlay.mDNS",
             };
-            _thread.Start();
+            _thread = thread;
+            try
+            {
+                thread.Start();
+            }
+            catch (Exception ex)
+            {
+                // Roll the state back: a failed Start must not leave _running=true forever.
+                _running = false;
+                _thread = null;
+                _stopEvent = null;
+                stopEvent.Dispose();
+                ReportError($"AirPlay 设备发现启动失败：{ex.GetType().Name}: {ex.Message}");
+            }
         }
     }
 
     /// <summary>停止发现并等待后台线程退出（最多 3 秒）。可在任意线程调用，回调里调用也不会自锁。</summary>
     public void Stop()
     {
+        ManualResetEventSlim? stopEvent;
         Thread? thread;
         lock (_sync)
         {
             _running = false;
             _onDevicesChanged = null;
-            _stopEvent.Set();
+            stopEvent = _stopEvent;
             thread = _thread;
+            stopEvent?.Set();
         }
 
-        if (thread is not null && thread != Thread.CurrentThread)
+        bool joined = thread is null || thread == Thread.CurrentThread;
+        if (!joined)
         {
             try
             {
-                thread.Join(TimeSpan.FromSeconds(3));
+                joined = thread!.Join(TimeSpan.FromSeconds(3));
             }
             catch
             {
                 // 忽略 join 异常（线程已退出等）。
             }
+            if (!joined)
+            {
+                // Keep the thread/event so Start can refuse to launch a second worker sharing the
+                // resolver. The old worker will clear them in its own finally block.
+                ReportError("AirPlay 设备发现线程 3 秒内未退出，本次停止未完成");
+                return;
+            }
         }
 
         lock (_sync)
         {
-            if (_thread == thread)
+            if (_thread == thread && (thread is null || !thread.IsAlive))
             {
                 _thread = null;
+                if (ReferenceEquals(_stopEvent, stopEvent))
+                {
+                    _stopEvent = null;
+                }
             }
+        }
+
+        if (thread is null || !thread.IsAlive)
+        {
+            stopEvent?.Dispose();
         }
     }
 
@@ -226,13 +292,22 @@ internal sealed class AirPlayDiscovery : IAirPlayDeviceDiscovery
         }
         Stop();
         _disposed = true;
-        _stopEvent.Dispose();
+        lock (_sync)
+        {
+            // Only dispose the event when no worker can still touch it; a worker that outlived
+            // Stop owns its event and releases it in RunLoop's finally block.
+            if (_thread is null)
+            {
+                _stopEvent?.Dispose();
+                _stopEvent = null;
+            }
+        }
         _resolver.Clear();
     }
 
     // ---------------- 后台线程 ----------------
 
-    private void RunLoop()
+    private void RunLoop(ManualResetEventSlim stopEvent, int generation)
     {
         MdnsProbe? probe = null;
         try
@@ -241,17 +316,38 @@ internal sealed class AirPlayDiscovery : IAirPlayDeviceDiscovery
             probe = new MdnsProbe(_serviceTypes, ReportError) { DebugTrace = Trace, CaptureRawBytes = TraceRawPackets };
             if (!probe.Open())
             {
-                ReportError("AirPlay 设备发现无法启动：mDNS socket 未能打开");
-                return;
+                // 启动瞬间没有可用网卡（Wi-Fi 正在重连、VPN 尚未建立）不应该让发现永久失效：
+                // 每 5 秒重试一次，直到停止或 socket 打开成功。
+                ReportError("AirPlay 设备发现暂时无法打开 mDNS socket，将每 5 秒重试");
+                bool opened = false;
+                while (!stopEvent.IsSet)
+                {
+                    stopEvent.Wait(TimeSpan.FromSeconds(5));
+                    if (stopEvent.IsSet)
+                    {
+                        break;
+                    }
+                    if (probe.Open())
+                    {
+                        opened = true;
+                        break;
+                    }
+                }
+                if (!opened)
+                {
+                    return;
+                }
+                Trace("[discovery] mDNS socket 重试后已打开");
             }
             Trace($"[discovery] 本机参与组播的网卡:\n{probe.DescribeInterfaces()}");
 
             var packets = new List<MdnsProbePacket>(8);
             DateTimeOffset lastQuery = DateTimeOffset.MinValue;
             DateTimeOffset lastSnapshot = DateTimeOffset.MinValue;
+            DateTimeOffset lastNetworkCheck = DateTimeOffset.UtcNow;
             bool firstCycle = true;
 
-            while (!_stopEvent.IsSet)
+            while (!stopEvent.IsSet)
             {
                 DateTimeOffset now = DateTimeOffset.UtcNow;
                 bool forced = Interlocked.Exchange(ref _refreshRequested, 0) != 0;
@@ -260,6 +356,19 @@ internal sealed class AirPlayDiscovery : IAirPlayDeviceDiscovery
                     probe.SendQueries();
                     lastQuery = now;
                     firstCycle = false;
+                }
+
+                // Wi-Fi/VPN/网线切换后继续在旧网卡上收包会让扫描永久为空；每 30 秒比对一次
+                // 网卡签名，变化时重建 socket（mDNS 无状态，重开后立即补发查询）。
+                if (now - lastNetworkCheck >= TimeSpan.FromSeconds(30))
+                {
+                    lastNetworkCheck = now;
+                    if (probe.ReopenIfNetworkChanged())
+                    {
+                        Trace("[discovery] 网络接口变化，已重建 mDNS socket");
+                        probe.SendQueries();
+                        lastQuery = now;
+                    }
                 }
 
                 int received = probe.Receive(ReceiveSlice, packets);
@@ -277,7 +386,7 @@ internal sealed class AirPlayDiscovery : IAirPlayDeviceDiscovery
                 {
                     var devices = _resolver.Snapshot(DateTimeOffset.UtcNow);
                     lastSnapshot = DateTimeOffset.UtcNow;
-                    Publish(devices);
+                    Publish(devices, generation);
                 }
             }
         }
@@ -289,7 +398,19 @@ internal sealed class AirPlayDiscovery : IAirPlayDeviceDiscovery
         finally
         {
             probe?.Dispose();
-            _running = false;
+            lock (_sync)
+            {
+                if (_generation == generation)
+                {
+                    _running = false;
+                }
+                if (ReferenceEquals(_stopEvent, stopEvent))
+                {
+                    _stopEvent = null;
+                    _thread = null;
+                }
+            }
+            stopEvent.Dispose();
             Trace("[discovery] 已停止");
         }
     }
@@ -350,11 +471,17 @@ internal sealed class AirPlayDiscovery : IAirPlayDeviceDiscovery
         return false;
     }
 
-    private void Publish(IReadOnlyList<AirPlayDevice> devices)
+    private void Publish(IReadOnlyList<AirPlayDevice> devices, int generation)
     {
         Action<IReadOnlyList<AirPlayDevice>>? callback;
         lock (_sync)
         {
+            // A worker from a previous Start must never publish into the new session (its callback
+            // closure may belong to a different UI surface).
+            if (_generation != generation)
+            {
+                return;
+            }
             string signature = BuildSignature(devices);
             if (string.Equals(_publishedSignature, signature, StringComparison.Ordinal))
             {
@@ -470,6 +597,10 @@ internal sealed class MdnsServiceResolver
     };
 
     private const int MaxCacheEntries = 4096;
+    // 单个 owner 名下的记录上限。MaxCacheEntries 只限制 owner 数量，不限制每个 owner 下
+    // 可追加的唯一 RData 条目；恶意/异常设备可用大量唯一 TXT/SRV 把内存与每秒重算成本推高。
+    private const int MaxPtrRecordsPerOwner = 128;
+    private const int MaxRecordsPerOwner = 16;
 
     private readonly Dictionary<string, List<CacheEntry>> _byOwner = new(StringComparer.OrdinalIgnoreCase);
 
@@ -543,6 +674,24 @@ internal sealed class MdnsServiceResolver
                 entry.SourceAddress = source;
                 entry.InterfaceIndex = interfaceIndex;
                 return;
+            }
+        }
+
+        int perOwnerLimit = record.Type == DnsRecordType.Ptr ? MaxPtrRecordsPerOwner : MaxRecordsPerOwner;
+        if (entries.Count >= perOwnerLimit)
+        {
+            entries.RemoveAll(e => e.ExpiresAt <= now);
+            while (entries.Count >= perOwnerLimit)
+            {
+                int oldest = 0;
+                for (int i = 1; i < entries.Count; i++)
+                {
+                    if (entries[i].ExpiresAt < entries[oldest].ExpiresAt)
+                    {
+                        oldest = i;
+                    }
+                }
+                entries.RemoveAt(oldest);
             }
         }
 

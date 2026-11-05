@@ -258,7 +258,7 @@ internal sealed class LocalMusicServer : IDisposable
                 "/api/account/verify" => isGet ? await HandleAccountVerifyAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/library/overview" => isGet ? await HandleLibraryOverviewAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/library/playlist" => isGet ? await HandleLibraryPlaylistAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
-                "/api/library/feed" => isGet ? await HandleLibraryFeedAsync(context, CancellationToken.None).ConfigureAwait(false) : MethodNotAllowed(context),
+                "/api/library/feed" => isGet ? await HandleLibraryFeedAsync(context, _shutdown.Token).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/library/recent/merged" => isGet ? await HandleRecentMergedAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/library/recent" => isGet
                     ? HandleRecentList(context)
@@ -266,7 +266,7 @@ internal sealed class LocalMusicServer : IDisposable
                         ? await HandleRecentRecordAsync(context).ConfigureAwait(false)
                         : MethodNotAllowed(context),
                 "/api/library/refresh" => isGet ? HandleLibraryRefresh(context) : MethodNotAllowed(context),
-                "/api/library/liked" => isGet ? await HandleLibraryLikedAsync(context, CancellationToken.None).ConfigureAwait(false) : MethodNotAllowed(context),
+                "/api/library/liked" => isGet ? await HandleLibraryLikedAsync(context, _shutdown.Token).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/library/like" => isPost ? await HandleLibraryLikeAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/library/unlike" => isPost ? await HandleLibraryUnlikeAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 // Discover API v1 (research/discover-api.md).
@@ -284,6 +284,12 @@ internal sealed class LocalMusicServer : IDisposable
                 "/api/discover/song" => isGet ? await HandleDiscoverSongAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 _ => WriteError(context, 404, "not-found", "未知接口"),
             };
+        }
+        catch (Exception exception) when (exception is IOException or HttpListenerException or ObjectDisposedException)
+        {
+            // 页面关闭/切换时客户端会先断开；此时响应可能已提交，再写 500 只会产生
+            // "response has been submitted" 噪音（WebView2 刷新时每个封面请求都会触发）。
+            OnlineHttp.Warn($"request aborted {method} {path}: {exception.GetType().Name}");
         }
         catch (Exception exception)
         {
@@ -1257,10 +1263,8 @@ internal sealed class LocalMusicServer : IDisposable
     private int WriteMvmp3CacheStat(HttpListenerContext context)
     {
         var (count, bytes) = Mvmp3Cache.Stat();
-        WriteJson(
-            context,
-            200,
-            $"{{\"count\":{count},\"bytes\":{bytes},\"dir\":\"{Mvmp3Cache.Dir.Replace("\\", "\\\\")}\"}}");
+        // D-36：用序列化器生成 JSON，避免手工拼路径时转义不全。
+        WriteJson(context, 200, JsonSerializer.Serialize(new { count, bytes, dir = Mvmp3Cache.Dir }));
         return 200;
     }
 
@@ -1268,7 +1272,7 @@ internal sealed class LocalMusicServer : IDisposable
     {
         Mvmp3Cache.Clear();
         var (count, bytes) = Mvmp3Cache.Stat();
-        WriteJson(context, 200, $"{{\"count\":{count},\"bytes\":{bytes}}}");
+        WriteJson(context, 200, JsonSerializer.Serialize(new { count, bytes }));
         return 200;
     }
 
@@ -1666,15 +1670,21 @@ internal sealed class LocalMusicServer : IDisposable
             return WriteError(context, 400, "bad-request", "limit 参数非法");
         }
 
-        var tracks = _recent.List(source, limit);
+        // D-12：持久化时已剥离封面 URL 的 token，读回后按当前进程的端口/token 重建。
+        var tracks = _recent.List(source, limit).Select(RebindStoredTrack).ToList();
         WriteJson(context, 200, JsonSerializer.Serialize(new { source, tracks }));
         return 200;
     }
 
     private async Task<int> HandleRecentRecordAsync(HttpListenerContext context)
     {
-        using var reader = new StreamReader(context.Request.InputStream, Encoding.UTF8);
-        var body = await reader.ReadToEndAsync().ConfigureAwait(false);
+        // D-28：最近播放上报的 body 同样限制大小，避免无 Content-Length 的流吃内存。
+        var body = await ReadBodyAsync(context.Request, 32 * 1024).ConfigureAwait(false);
+        if (body is null)
+        {
+            return WriteError(context, 413, "payload-too-large", "请求体过大或为空");
+        }
+
         try
         {
             using var document = JsonDocument.Parse(body);
@@ -2127,7 +2137,16 @@ internal sealed class LocalMusicServer : IDisposable
             }
 
             StoreCover(cacheKey, bytes, contentType);
-            WriteBinary(context, 200, bytes, contentType);
+            try
+            {
+                WriteBinary(context, 200, bytes, contentType);
+            }
+            catch (Exception writeException) when (writeException is IOException or HttpListenerException or ObjectDisposedException or InvalidOperationException)
+            {
+                // 封面已取到并缓存，但页面在响应写一半时断开：不升级为 500，也不影响缓存。
+                OnlineHttp.Warn($"GET cover client gone source={source}: {writeException.GetType().Name}");
+                return 200;
+            }
             OnlineHttp.Info($"GET cover source={source} ok {bytes.Length}B {upstream.TookMs}ms{(thumbnailWidth > 0 ? $" w={thumbnailWidth}" : string.Empty)}");
             return 200;
         }
@@ -2337,12 +2356,22 @@ internal sealed class LocalMusicServer : IDisposable
             return WriteError(context, 400, "bad-request", "缺少 id");
         }
 
-        var ok = action switch
+        bool ok;
+        if (string.Equals(action, "cancel", StringComparison.Ordinal))
         {
-            "pause" => service.Pause(jobId),
-            "resume" => service.Resume(jobId),
-            _ => service.Cancel(jobId),
-        };
+            // D-44/cancel：等待 RunAsync 清理 .part 后再返回，页面 abort/关闭面板后不留半成品。
+            ok = await service.CancelDownloadAsync(jobId).ConfigureAwait(false);
+        }
+        else
+        {
+            ok = action switch
+            {
+                "pause" => service.Pause(jobId),
+                "resume" => service.Resume(jobId),
+                _ => false,
+            };
+        }
+
         if (!ok)
         {
             return WriteError(context, 404, "not-found", "找不到该下载任务或任务已结束");
@@ -2692,12 +2721,25 @@ internal sealed class LocalMusicServer : IDisposable
             return key;
         }
 
-        var host = key.ToLowerInvariant();
-        var knownCoverHost = host.Contains(".music.126.net") ||
-                             host.Contains(".qq.com") ||
-                             host.Contains(".qpic.cn") ||
-                             host.Contains(".gtimg.cn") ||
-                             host.Contains(".gtimg.com");
+        // D-34：按 host 边界判断，不能用 Contains（evil-music.126.net.evil.com 会被误判）。
+        if (!Uri.TryCreate(key, UriKind.Absolute, out var parsed) ||
+            !string.Equals(parsed.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
+        {
+            return key;
+        }
+
+        var host = parsed.Host;
+        var knownCoverHost =
+            host.Equals("music.126.net", StringComparison.OrdinalIgnoreCase) ||
+            host.EndsWith(".music.126.net", StringComparison.OrdinalIgnoreCase) ||
+            host.Equals("qq.com", StringComparison.OrdinalIgnoreCase) ||
+            host.EndsWith(".qq.com", StringComparison.OrdinalIgnoreCase) ||
+            host.Equals("qpic.cn", StringComparison.OrdinalIgnoreCase) ||
+            host.EndsWith(".qpic.cn", StringComparison.OrdinalIgnoreCase) ||
+            host.Equals("gtimg.cn", StringComparison.OrdinalIgnoreCase) ||
+            host.EndsWith(".gtimg.cn", StringComparison.OrdinalIgnoreCase) ||
+            host.Equals("gtimg.com", StringComparison.OrdinalIgnoreCase) ||
+            host.EndsWith(".gtimg.com", StringComparison.OrdinalIgnoreCase);
         return knownCoverHost ? "https://" + key["http://".Length..] : key;
     }
 
@@ -2733,9 +2775,11 @@ internal sealed class LocalMusicServer : IDisposable
         }
 
         var host = uri.Host;
-        return host.EndsWith("imge.kugou.com", StringComparison.OrdinalIgnoreCase) ||
-               host.EndsWith(".kgimg.com", StringComparison.OrdinalIgnoreCase) ||
-               host.EndsWith("kgimg.com", StringComparison.OrdinalIgnoreCase);
+        // D-33：必须按 host 边界匹配，不能放行 evilkgimg.com / evilimge.kugou.com。
+        return host.Equals("imge.kugou.com", StringComparison.OrdinalIgnoreCase) ||
+               host.EndsWith(".kugou.com", StringComparison.OrdinalIgnoreCase) ||
+               host.Equals("kgimg.com", StringComparison.OrdinalIgnoreCase) ||
+               host.EndsWith(".kgimg.com", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>历史记录里存的封面是本机代理 URL，端口/token 每次启动都会变，重建一次。</summary>
@@ -2809,7 +2853,15 @@ internal sealed class LocalMusicServer : IDisposable
 
     private static string UpgradeQqCoverSize(string url, string size)
     {
-        return Regex.Replace(url, @"R\d+x\d+", "R" + size);
+        var replaced = Regex.Replace(url, @"R\d+x\d+", "R" + size);
+        if (!string.Equals(replaced, url, StringComparison.Ordinal))
+        {
+            return replaced;
+        }
+
+        // D-41：部分 QQ 封面 URL 没有 R{w}x{h} 段（如 T002M000...），补一段再请求，
+        // 避免高清参数在正则不匹配时静默失效。
+        return Regex.Replace(url, @"(T002)(R\d+x\d+)?(M000)", "$1R" + size + "$3");
     }
 
     private static bool IsAllowedQqCoverUrl(string value)

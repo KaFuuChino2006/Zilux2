@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Text;
@@ -87,6 +88,9 @@ internal readonly record struct UpstreamBytes(byte[] Bytes, string? ContentType,
 // Shared upstream plumbing: one pooled HttpClient, per-call timeouts, contract-style log lines.
 internal static class OnlineHttp
 {
+    private const int MaxTextResponseBytes = 8 * 1024 * 1024;
+    private const long MaxBinaryResponseBytes = 32L * 1024 * 1024;
+
     internal const string UserAgent =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
         "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
@@ -150,14 +154,38 @@ internal static class OnlineHttp
         using var response = await Client
             .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeoutSource.Token)
             .ConfigureAwait(false);
-        var body = await response.Content.ReadAsStringAsync(timeoutSource.Token).ConfigureAwait(false);
-        stopwatch.Stop();
         var status = (int)response.StatusCode;
         if (!response.IsSuccessStatusCode)
         {
             throw new OnlineUpstreamException($"upstream HTTP {status}", status);
         }
 
+        // D-22：上游响应必须有上限，避免异常/恶意大响应把宿主内存打满。
+        if (response.Content.Headers.ContentLength is > MaxTextResponseBytes)
+        {
+            throw new OnlineUpstreamException("上游响应过大", 502);
+        }
+
+        string body;
+        await using (var stream = await response.Content.ReadAsStreamAsync(timeoutSource.Token).ConfigureAwait(false))
+        using (var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true))
+        {
+            var builder = new StringBuilder();
+            var buffer = new char[8192];
+            int read;
+            while ((read = await reader.ReadAsync(buffer.AsMemory(0, buffer.Length), timeoutSource.Token).ConfigureAwait(false)) > 0)
+            {
+                builder.Append(buffer, 0, read);
+                if (builder.Length > MaxTextResponseBytes)
+                {
+                    throw new OnlineUpstreamException("上游响应过大", 502);
+                }
+            }
+
+            body = builder.ToString();
+        }
+
+        stopwatch.Stop();
         return new UpstreamText(body, status, stopwatch.ElapsedMilliseconds);
     }
 
@@ -175,14 +203,38 @@ internal static class OnlineHttp
         using var response = await Client
             .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeoutSource.Token)
             .ConfigureAwait(false);
-        var bytes = await response.Content.ReadAsByteArrayAsync(timeoutSource.Token).ConfigureAwait(false);
-        stopwatch.Stop();
         var status = (int)response.StatusCode;
         if (!response.IsSuccessStatusCode)
         {
             throw new OnlineUpstreamException($"upstream HTTP {status}", status);
         }
 
+        // D-22：封面字节流同样设上限。
+        if (response.Content.Headers.ContentLength is > MaxBinaryResponseBytes)
+        {
+            throw new OnlineUpstreamException("上游响应过大", 502);
+        }
+
+        byte[] bytes;
+        await using (var stream = await response.Content.ReadAsStreamAsync(timeoutSource.Token).ConfigureAwait(false))
+        using (var memory = new MemoryStream())
+        {
+            var buffer = new byte[81920];
+            int read;
+            while ((read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), timeoutSource.Token).ConfigureAwait(false)) > 0)
+            {
+                if (memory.Length + read > MaxBinaryResponseBytes)
+                {
+                    throw new OnlineUpstreamException("上游响应过大", 502);
+                }
+
+                memory.Write(buffer, 0, read);
+            }
+
+            bytes = memory.ToArray();
+        }
+
+        stopwatch.Stop();
         return new UpstreamBytes(bytes, response.Content.Headers.ContentType?.ToString(), status, stopwatch.ElapsedMilliseconds);
     }
 

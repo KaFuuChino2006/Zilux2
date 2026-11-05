@@ -120,8 +120,11 @@ function errorText(err: unknown): string {
 /**
  * 解析设置 JSON 文本（兼容导出信封和裸设置对象），失败返回 `{ ok: false, error }`。
  * 成功后 `settings` 一定经过 `normalizeSettings`，非法字段回落默认值。
+ *
+ * `base` 是缺失段 / 缺失字段的兜底：默认 `DEFAULT_SETTINGS`；界面导入时应传当前设置，
+ * 这样只含部分段的文件不会把用户其它设置重置为默认值。
  */
-export function parseSettingsJson(text: string): ImportSettingsResult {
+export function parseSettingsJson(text: string, base: Settings = DEFAULT_SETTINGS): ImportSettingsResult {
   const result = emptyImportResult();
   const trimmed = text.trim();
   if (!trimmed) {
@@ -147,6 +150,18 @@ export function parseSettingsJson(text: string): ImportSettingsResult {
   const raw: Record<string, unknown> = nested ?? root;
   const envelopeVersion: unknown = nested ? root.version : null;
 
+  // 有信封时校验来源与类型，避免把别的应用/别的备份文件当设置导入。
+  if (nested) {
+    if (typeof root.app === 'string' && root.app !== SETTINGS_EXPORT_APP) {
+      result.error = `不是 Zilux2 的设置文件（app=${root.app}）`;
+      return result;
+    }
+    if (typeof root.kind === 'string' && root.kind !== SETTINGS_EXPORT_KIND) {
+      result.error = `文件类型是 ${root.kind}，不是 ${SETTINGS_EXPORT_KIND}`;
+      return result;
+    }
+  }
+
   const sectionCount = SETTINGS_SECTIONS.filter((section) => asRecord(raw[section]) !== null).length;
   if (sectionCount === 0) {
     result.error = `文件里没有可识别的设置段（${SETTINGS_SECTIONS.join(' / ')}）`;
@@ -163,7 +178,7 @@ export function parseSettingsJson(text: string): ImportSettingsResult {
     if (asRecord(raw[section]) === null) result.missingSections.push(section);
   }
   if (result.missingSections.length > 0) {
-    result.warnings.push(`缺少 ${result.missingSections.join('、')} 段，已用默认值补齐`);
+    result.warnings.push(`缺少 ${result.missingSections.join('、')} 段，已保留当前设置`);
   }
 
   for (const section of SETTINGS_SECTIONS) {
@@ -178,13 +193,20 @@ export function parseSettingsJson(text: string): ImportSettingsResult {
     result.warnings.push(`已忽略 ${result.ignoredFields.length} 个未知字段`);
   }
 
+  // 以当前设置为底逐段合并：文件里缺失的段 / 字段保留当前值，而不是回落默认值。
+  const merged: Record<string, unknown> = {};
+  for (const section of SETTINGS_SECTIONS) {
+    const current = base[section] as unknown as Record<string, unknown>;
+    merged[section] = { ...current, ...(asRecord(raw[section]) ?? {}) };
+  }
+
   result.ok = true;
-  result.settings = normalizeSettings(raw);
+  result.settings = normalizeSettings(merged);
   return result;
 }
 
 /** 打开文件选择框并读取 / 解析设置文件；用户取消时返回 `{ ok: false, canceled: true }`。 */
-export function importSettingsFromFile(): Promise<ImportSettingsResult> {
+export function importSettingsFromFile(base?: Settings): Promise<ImportSettingsResult> {
   return new Promise((resolve) => {
     const input = document.createElement('input');
     input.type = 'file';
@@ -221,7 +243,7 @@ export function importSettingsFromFile(): Promise<ImportSettingsResult> {
       }
       file
         .text()
-        .then((text) => finish(parseSettingsJson(text)))
+        .then((text) => finish(parseSettingsJson(text, base)))
         .catch((err) => {
           const failed = emptyImportResult();
           failed.error = `读取文件失败：${errorText(err)}`;
@@ -386,7 +408,7 @@ export function buildSettingsIOActions(options: SettingsIOActionsOptions): Setti
     if (disposed) return;
     let result: ImportSettingsResult;
     try {
-      result = await importSettingsFromFile();
+      result = await importSettingsFromFile(options.getSettings());
     } catch (err) {
       notify(`导入失败：${errorText(err)}`, 'error');
       return;

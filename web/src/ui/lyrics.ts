@@ -18,14 +18,16 @@ import { onlineArtwork } from '../online/artwork';
 import { fetchLocalLrc, lrcOf } from './local';
 import { fmtTime, h, icon } from './dom';
 import { onPlayer, playerState, seek, type PlayerState } from './player';
+import { getSettings, onSettingsChange } from '../core/settings';
 import { matchMinScore, matchTranslation, matchWordLyrics, setMatchMinScore, type LyricMatchResult } from './lyricMatch';
 import { coverColorsOf, fallbackColors } from './coverColors';
 import { createLumiereStage, lumiereMode, lumiereThemeForCover, setLumiereMode, type LumiereMode, type LumiereSongInput, type LumiereStage } from './lumiere';
 import { createRoomStage, setRoomLyricTintProvider, type RoomStage } from './room';
 import { createVinylStage, setVinylLyricTintProvider, type VinylStage } from './vinyl';
+import { createGeoStage, setGeoLyricTintProvider, type GeoStage } from './geo';
 import type { Theme } from './lumiere-folia/types';
 import type { LyricTextSettings } from './lumiereSettings';
-import { LYRIC_STYLES, lyricStyle, lyricStyleNeedsCharTiming, onLyricStyle } from './lyricStyle';
+import { LYRIC_STYLES, lyricStyle, lyricStyleNeedsCharTiming, onLyricStyle, reloadLyricStyle } from './lyricStyle';
 import { BG_BLUR_PX, BG_COVER_EVENT, bgLyricsBlurLevel, effectiveBgLyricsCoverStyle, lumiereEffectOn } from './bgLyricsCover';
 
 /** 歌词页播放效果（纯字）；导出给快捷设置用。 */
@@ -104,6 +106,13 @@ setVinylLyricTintProvider(() => {
   if (lyricsBgMode === 'solid') {
     return { mode: 'solid', palette: ['#c9a068', '#e8d4ae', '#ffcf8a'] };
   }
+  return { mode: lyricsBgMode, palette: lumierePaletteNow ? [...lumierePaletteNow] : [] };
+});
+
+// 几何档：强调色与两路错版色也跟着「歌词颜色」走（纯色档不回落到固定色，
+// 交给几何自己的配色预设——那几组印刷配色比单色更适合这套版式）。
+setGeoLyricTintProvider(() => {
+  if (lyricsBgMode === 'solid') return null;
   return { mode: lyricsBgMode, palette: lumierePaletteNow ? [...lumierePaletteNow] : [] };
 });
 let activeLyricsView: LyricsView | null = null;
@@ -513,6 +522,11 @@ function startLyricMatch(track: OnlineTrack, base: LyricDoc): void {
 }
 let lastDoc: LyricDoc | null = null;
 
+/** 当前窗口已解析好的歌词文档（背景歌词发布器用它判断同一首是否从「无歌词」变成「有歌词」）。 */
+export function currentLyricDoc(): LyricDoc | null {
+  return lastDoc;
+}
+
 /** 桌面背景歌词场景：跳过网络拉歌，歌词文档由主窗口经共享 localStorage 送进来。 */
 let externalLyricMode = false;
 
@@ -543,6 +557,24 @@ export function setLyricOffset(ms: number, trackKey: string): void {
   if (value === 0) delete lyricOffsets[trackKey];
   else lyricOffsets[trackKey] = value;
   writeOffsets();
+}
+
+/**
+ * 从 localStorage 重读所有共享歌词外观（背景/未播放颜色/纯色/动效档位/偏移/播放样式）。
+ *
+ * 这些值原本都是模块级变量、只在窗口加载时读一次；桌面背景歌词是第二个窗口，
+ * 主窗口改了设置后它只收到 storage 事件，必须重读一遍才能真正用上新值。
+ * 只更新模块变量，重绘由调用方（LyricsView.refreshSharedStyle）负责。
+ */
+export function reloadSharedLyricSettings(): void {
+  lyricsBgMode = readLyricsBgMode();
+  lyricUnsungColorValue = readLyricUnsungColor();
+  lyricSolidColorValue = readLyricSolidColor();
+  lyricGrow = readLyricGrowMode();
+  const offsets = readOffsets();
+  for (const key of Object.keys(lyricOffsets)) delete lyricOffsets[key];
+  Object.assign(lyricOffsets, offsets);
+  reloadLyricStyle();
 }
 
 /** 打开快捷设置/歌词页之前先把歌词拉下来，这样来源与当前句立刻可见。 */
@@ -1072,14 +1104,49 @@ export class LyricsView {
   private roomStage: RoomStage | null = null;
   /** 播放效果（唱片）舞台：暖褐聆听室 + 33⅓ 转黑胶 + 黄铜唱臂，歌词压在唱片下方。 */
   private vinylStage: VinylStage | null = null;
+  /** 播放效果（几何）舞台：文字 PV 排版，一句一种构图 + 错版叠印 + 网点颗粒。 */
+  private geoStage: GeoStage | null = null;
   /** 进页时等画布第一次出像的监听（见 watchStagePaint）。 */
   private stageObserver: MutationObserver | null = null;
   /** 默认歌词页的播放样式（见 lyricStyle.ts）：只切 root 上的 lyric-style-<id> class，动画全在 CSS 里。 */
   private styleUnsub: (() => void) | null = null;
   /** 「封面在左」样式与桌面背景歌词共用，快捷设置里改了要当场切换。 */
   private coverStyleUnsub: (() => void) | null = null;
+  /** 设置面板改歌词字号：不重开歌词页也要立刻换行高。 */
+  private settingsUnsub: (() => void) | null = null;
   private coverStyleInitialized = false;
   private coverSwitchTimer = 0;
+  /** 封面切换代次：连续切歌/换图时，上一次预载的回调会因代次不符而作废，避免旧封面写回。 */
+  private coverSwapToken = 0;
+  /** 已写入背景层的封面 URL：播放器每 100ms 推一次进度，URL 没变就不必重写 style。 */
+  private bannerUrl = '';
+  /** 已按封面取过色的曲目 key：同一首歌重复推送进度时不再重跑取色。 */
+  private tintKey = '';
+  /** 上次逐字配色写入时间：长歌词时限到 ~15fps，避免 60fps 重写整行 span。 */
+  private tintPaintAt = 0;
+  /** 上一次交给播放效果舞台的歌词快照，用于挡掉高频重复的 setSong。 */
+  private lumiereSongKey = '';
+  private lumiereSongDoc: LyricDoc | null = null;
+  private lumiereSongDuration = 0;
+  /** 长歌词的行偏移/行高缓存：同步时只读缓存，避免每帧对活动行读 offsetTop 强制布局。 */
+  private lineMetrics: Array<{ top: number; height: number }> = [];
+  private resizeTimer = 0;
+  private lyricsSizeApplied = '';
+  /** 逐字状态的上一行与缓存：同一行内只 toggle 发生变化的 span。 */
+  private charStateLine = -1;
+  private charStateCache: number[] = [];
+
+  /** 窗口尺寸变化：字号是 vw 夹取、封面请求宽度也跟窗口走，去抖后重测并换更高分辨率封面。 */
+  private readonly onWindowResize = (): void => {
+    window.clearTimeout(this.resizeTimer);
+    this.resizeTimer = window.setTimeout(() => {
+      if (this.disposed) return;
+      this.lineMetrics = [];
+      this.applyLyricsSizeSetting();
+      this.refreshCoverResolution();
+      this.measureLines();
+    }, 180);
+  };
 
   constructor(private readonly onClose: () => void) {
     this.bgEl = h('div', { class: 'lyrics-bg' });
@@ -1105,6 +1172,7 @@ export class LyricsView {
     this.lumiereText = createLumiereStage({ textOnly: true });
     this.roomStage = createRoomStage();
     this.vinylStage = createVinylStage();
+    this.geoStage = createGeoStage();
 
     this.root = h(
       'div',
@@ -1114,6 +1182,7 @@ export class LyricsView {
       this.lumiereText.root,
       this.roomStage.root,
       this.vinylStage.root,
+      this.geoStage.root,
       closeBtn,
       h(
         'div',
@@ -1138,7 +1207,19 @@ export class LyricsView {
     this.applyLumiereMode();
     this.applyLyricStyle();
     this.applyLyricUnsungColor();
-    this.styleUnsub = onLyricStyle(() => this.applyLyricStyle());
+    this.applyLyricsSizeSetting();
+    this.styleUnsub = onLyricStyle(() => {
+      // 样式切换可能改变字号/行高，行缓存先作废。
+      this.lineMetrics = [];
+      this.applyLyricStyle();
+    });
+    window.addEventListener('resize', this.onWindowResize);
+    this.settingsUnsub = onSettingsChange(() => {
+      const before = this.lyricsSizeApplied;
+      this.applyLyricsSizeSetting();
+      // 字号变了：行高缓存已作废，暂停时也立刻按新字号重新居中一次。
+      if (before !== this.lyricsSizeApplied) this.syncProgress(true);
+    });
 
     // 「封面在左」：软件内歌词页和桌面背景歌词保持一致，共用 bgLyricsCover 里的样式选择。
     this.applyCoverStyle();
@@ -1170,6 +1251,7 @@ export class LyricsView {
   }
 
   private syncTrack(): void {
+    this.applyLyricsSizeSetting();
     const track = this.state?.track ?? null;
     const key = trackKeyOf(track);
     const coverUrl = track ? onlineArtwork(track, this.coverRequestWidth()) : '';
@@ -1181,8 +1263,14 @@ export class LyricsView {
       this.bgEl.classList.add('is-switching');
       window.setTimeout(() => this.bgEl.classList.remove('is-switching'), 620);
     }
-    this.bgEl.style.backgroundImage = coverUrl ? `url("${coverUrl}")` : 'none';
-    void this.applyTextTint();
+    if (coverUrl !== this.bannerUrl) {
+      this.bannerUrl = coverUrl;
+      this.bgEl.style.backgroundImage = coverUrl ? `url("${coverUrl}")` : 'none';
+    }
+    if (key !== this.tintKey) {
+      this.tintKey = key;
+      void this.applyTextTint();
+    }
     if (changed) {
       this.swapCoverWithFade(coverUrl);
       this.metaEl.classList.remove('is-switching');
@@ -1206,9 +1294,11 @@ export class LyricsView {
    */
   private swapCoverWithFade(url: string): void {
     const previous = this.coverEl.getAttribute('src') ?? '';
+    // 每次切图都换一个代次：旧图预载完成得晚（或 700ms 兜底才到）时不再把旧封面写回去。
+    const token = ++this.coverSwapToken;
     let swapped = false;
     const swap = (): void => {
-      if (this.disposed || swapped) return;
+      if (this.disposed || swapped || token !== this.coverSwapToken) return;
       swapped = true;
       if (previous) this.spawnCoverGhost(previous);
       this.coverEl.src = url;
@@ -1264,6 +1354,35 @@ export class LyricsView {
     if (this.coverBlurEl.style.backgroundImage !== blurImage) {
       this.coverBlurEl.style.backgroundImage = blurImage;
     }
+  }
+
+  /**
+   * 歌词字号设置：样式表已经按 `:root[data-lyrics-size]` 定义 --lyric-line-size，
+   * 这里只负责在档位变化时作废行度量并重测（字号变了行高/偏移就变了）。
+   */
+  private applyLyricsSizeSetting(): void {
+    const size = getSettings().appearance.lyricsSize;
+    if (size === this.lyricsSizeApplied) return;
+    this.lyricsSizeApplied = size;
+    this.lineMetrics = [];
+    // 字号变化会改行高：立即重测一次，避免后续每帧回落实读 offsetTop。
+    this.measureLines();
+  }
+
+  /** 缓存每一行的相对偏移与高度；渲染/字号变化/窗口尺寸变化后各测一次。 */
+  private measureLines(): void {
+    if (this.disposed || this.lineEls.length === 0) {
+      this.lineMetrics = [];
+      return;
+    }
+    this.lineMetrics = this.lineEls.map((el) => ({ top: el.offsetTop, height: el.offsetHeight }));
+  }
+
+  /** 取某行的偏移/高度：缓存缺失或高度为 0（行被隐藏）时回落实读，保证不会被顶到错误位置。 */
+  private metricOf(index: number, el: HTMLElement | undefined): { top: number; height: number } {
+    const cached = this.lineMetrics[index];
+    if (cached && cached.height > 0) return cached;
+    return el ? { top: el.offsetTop, height: el.offsetHeight } : { top: 0, height: 0 };
   }
 
   /** 封面模糊强度（和桌面背景歌词共用设置）：只改 root 上的 CSS 变量与开关类。 */
@@ -1339,7 +1458,8 @@ export class LyricsView {
     const textOn = mode === 'text';
     const roomOn = mode === 'room';
     const vinylOn = mode === 'vinyl';
-    const anyOn = textOn || roomOn || vinylOn;
+    const geoOn = mode === 'geo';
+    const anyOn = textOn || roomOn || vinylOn || geoOn;
     // 纯字 / 房间 / 唱片都由 canvas 画歌词，DOM 歌词与封面栏让位；什么时候藏由 CSS 的 is-painted 门槛决定，
     // 画布还没出像时默认歌词页仍然可见，不会闪灰。
     this.root.classList.toggle('is-lumiere', anyOn);
@@ -1347,6 +1467,7 @@ export class LyricsView {
     this.root.classList.toggle('is-lumiere-pure', textOn);
     this.root.classList.toggle('is-room', roomOn);
     this.root.classList.toggle('is-vinyl', vinylOn);
+    this.root.classList.toggle('is-geo', geoOn);
     // 播放效果开启/关闭会改变「封面在左」是否生效，切完模式立即重算一次。
     if (this.coverEl) {
       this.applyCoverStyle();
@@ -1370,8 +1491,14 @@ export class LyricsView {
       if (vinylOn) vinyl.activate();
       else vinyl.deactivate();
     }
+    const geo = this.geoStage;
+    if (geo) {
+      geo.setMode(geoOn ? 'geo' : 'off');
+      if (geoOn) geo.activate();
+      else geo.deactivate();
+    }
     // 刚进歌词页时先别露默认封面：等画布第一次出像再撤 is-lumiere-fresh（进页那一瞬是暗场 + 加载提示）。
-    const stageRoot = roomOn ? room?.root : vinylOn ? vinyl?.root : stage?.root;
+    const stageRoot = roomOn ? room?.root : vinylOn ? vinyl?.root : geoOn ? geo?.root : stage?.root;
     const painted = stageRoot ? stageRoot.classList.contains('is-painted') : false;
     const failed = stageRoot ? stageRoot.classList.contains('is-failed') : false;
     if (anyOn && stageRoot && !painted && !failed) {
@@ -1386,9 +1513,13 @@ export class LyricsView {
   /** 应用默认歌词页的播放样式；切换后立即生效、不重载歌词（动画定义全在 app.css 的 lyric-style-* 段）。 */
   private applyLyricStyle(): void {
     if (this.disposed) return;
+    // 播放样式会改变字号/行高/字距，行缓存先作废，syncProgress 会回落实读并等下次重测。
+    this.lineMetrics = [];
     const style = lyricStyle();
     for (const item of LYRIC_STYLES) this.root.classList.remove(`lyric-style-${item.id}`);
     this.root.classList.add(`lyric-style-${style}`);
+    // 样式切换会改行高，重测后再按新布局居中，别让自动滚动停在上一个样式的偏移上。
+    this.measureLines();
     // 需要逐字时机的样式（上浮/摇曳/打字机）切过来后立刻补算当前句的逐字状态，不等下一帧。
     if (this.state) this.syncProgress();
   }
@@ -1454,10 +1585,21 @@ export class LyricsView {
 
   /** 把当前歌词文档交给播放效果舞台（整首歌词）。 */
   private syncLumiereSong(): void {
+    const track = this.state?.track ?? null;
+    const key = this.doc.trackKey || trackKeyOf(track);
+    const duration = this.state?.durationMs || track?.durationMs || 0;
+    // onPlayer 在背景场景是 100ms 一次：曲目/歌词/时长都没变就不必重编译整首歌。
+    if (key === this.lumiereSongKey && this.doc === this.lumiereSongDoc && duration === this.lumiereSongDuration) {
+      return;
+    }
+    this.lumiereSongKey = key;
+    this.lumiereSongDoc = this.doc;
+    this.lumiereSongDuration = duration;
     const input = this.buildLumiereSong();
     this.lumiereText?.setSong(input);
     this.roomStage?.setSong(input);
     this.vinylStage?.setSong(input);
+    this.geoStage?.setSong(input);
   }
 
 
@@ -1722,18 +1864,28 @@ export class LyricsView {
   /** 背景场景：另一窗口改了共享设置（样式/背景/偏移）后重新取本地设置并重绘。 */
   refreshSharedStyle(): void {
     if (this.disposed) return;
+    // 背景窗口的模块变量只在加载时读过一次；跨窗口 storage 事件后必须先重读本地存储，
+    // 否则下面几个 apply* 读到的仍是旧值（典型：改了播放样式/纯色/偏移，背景歌词不跟）。
+    reloadSharedLyricSettings();
     this.bgMode = lyricsBgMode;
     void this.applyTextTint();
     this.applyLumiereMode();
     this.applyLyricStyle();
     this.applyLyricUnsungColor();
+    this.applyLyricsSizeSetting();
     this.render();
+    this.applyLyricSolidColor();
+    // 「文字设置」也是导入时读一次：背景窗口在运行时改字号/字重也要重放一遍调参。
+    this.applyLumiereTextSettings();
   }
 
   private render(): void {
     this.linesEl.textContent = '';
     this.lineEls = [];
     this.charEls = [];
+    this.lineMetrics = [];
+    this.charStateLine = -1;
+    this.charStateCache = [];
     this.activeIndex = -1;
     this.linesEl.style.transform = 'translateY(0px)';
     this.linesEl.style.transition = 'none';
@@ -1781,6 +1933,7 @@ export class LyricsView {
       this.charEls.push(chars);
       this.linesEl.append(lineEl);
     }
+    this.measureLines();
     this.syncProgress(true);
     window.requestAnimationFrame(() => {
       if (!this.disposed) this.linesEl.style.transition = '';
@@ -1818,6 +1971,9 @@ export class LyricsView {
         // 上一行唱完后必须清掉逐字状态，否则最后一个字的 is-hot 会一直亮着
         this.charEls[prev]?.forEach((span) => span.classList.remove('is-sung', 'is-hot'));
       }
+      // 换行后逐字状态缓存属于上一行，直接作废。
+      this.charStateLine = -1;
+      this.charStateCache = [];
       this.lineEls.forEach((el, index) => {
         el.classList.toggle('is-active', index === nextIndex);
         el.classList.toggle('is-near', index === nextIndex - 1 || index === nextIndex + 1);
@@ -1827,8 +1983,10 @@ export class LyricsView {
       if (activeEl) {
         activeEl.style.setProperty('--p', '0');
         if (changed) activeEl.style.setProperty('--grow', '0');
-        // .lyrics-lines 自身就是 offsetParent（position:absolute），offsetTop 直接是行内偏移。
-        this.autoOffset = -(activeEl.offsetTop + activeEl.offsetHeight / 2);
+        // .lyrics-lines 自身就是 offsetParent（position:absolute），行内偏移来自渲染后缓存；
+        // 缓存缺失（例如刚切字号还没重测）才回落实读。
+        const metric = this.metricOf(nextIndex, activeEl);
+        this.autoOffset = -(metric.top + metric.height / 2);
         if (!this.browsing()) this.applyOffset(true);
       }
     }
@@ -1855,18 +2013,34 @@ export class LyricsView {
     if (activeLine && activeLine.words.length > 0) {
       const states = charStates(activeLine, lyricPos);
       const spans = this.charEls[this.activeIndex] ?? [];
-      states.forEach((value, index) => {
-        const span = spans[index];
-        if (!span) return;
+      // 同一行内状态大多不变：只 toggle 与上一帧不同的 span，避免每帧重写整行 class。
+      const cachePrev = this.charStateLine === this.activeIndex ? this.charStateCache : [];
+      const count = Math.max(states.length, cachePrev.length);
+      const nextStates: number[] = [];
+      for (let i = 0; i < count; i += 1) {
+        const value = states[i] ?? 0;
+        nextStates[i] = value;
+        if (cachePrev[i] === value) continue;
+        const span = spans[i];
+        if (!span) continue;
         span.classList.toggle('is-sung', value >= 1);
         span.classList.toggle('is-hot', value === 2);
-      });
+      }
+      this.charStateLine = this.activeIndex;
+      this.charStateCache = nextStates;
     } else if (activeLine) {
       // 没有逐字数据的歌词行：只有「上浮/摇曳/打字机」这类需要逐字时机的样式才合成逐字状态
       // （按句内进度均匀铺开），普通 LRC 也能跟着演唱逐字动；其它样式保持经典式的整行状态。
+      this.charStateLine = -1;
+      this.charStateCache = [];
       this.syncPlainCharStates(activeLine, lyricPos);
     }
-    this.paintActiveLineTint();
+    // 逐字配色只影响样式：换行时立即刷，其余时候限到 ~15fps（长歌词一行几百个 span）。
+    const now = performance.now();
+    if (this.activeIndex !== this.tintedIndex || now - this.tintPaintAt >= 66) {
+      this.tintPaintAt = now;
+      this.paintActiveLineTint();
+    }
   }
 
   /** 普通 LRC 行的合成逐字状态（charTiming 样式专用）；切到别的样式时把残留状态清掉。 */
@@ -1902,7 +2076,7 @@ export class LyricsView {
   private lumiereCoversLyrics(): boolean {
     const mode = lumiereMode();
     if (mode === 'off') return false;
-    const stage = mode === 'room' ? this.roomStage : mode === 'vinyl' ? this.vinylStage : this.lumiereText;
+    const stage = mode === 'room' ? this.roomStage : mode === 'vinyl' ? this.vinylStage : mode === 'geo' ? this.geoStage : this.lumiereText;
     if (!stage) return false;
     const classes = stage.root.classList;
     return classes.contains('is-on') && classes.contains('is-painted');
@@ -2049,7 +2223,9 @@ export class LyricsView {
       const index = this.lineEls.indexOf(lineEl as HTMLDivElement);
       const line = this.doc.lines[index];
       if (line) {
-        seek(line.timeMs);
+        // 偏移语义是「正数=歌词提前」：显示位置要换算回播放位置，否则点行会偏 offset 毫秒。
+        const offset = lyricOffsetOf(this.doc.trackKey || this.lastTrackKey);
+        seek(Math.max(0, line.timeMs - offset));
         this.resumeAuto();
       }
     });
@@ -2061,13 +2237,19 @@ export class LyricsView {
     }
     currentLyricText = '';
     this.disposed = true;
+    // 作废还在途中的封面预载回调。
+    this.coverSwapToken += 1;
     this.unsubscribe?.();
     this.unsubscribe = null;
     this.matchUnsub?.();
     this.matchUnsub = null;
     this.coverStyleUnsub?.();
     this.coverStyleUnsub = null;
+    this.settingsUnsub?.();
+    this.settingsUnsub = null;
     window.clearTimeout(this.coverSwitchTimer);
+    window.clearTimeout(this.resizeTimer);
+    window.removeEventListener('resize', this.onWindowResize);
     if (this.rafId) window.cancelAnimationFrame(this.rafId);
     window.clearTimeout(this.manualTimer);
     if (this.manualRaf) {
@@ -2080,6 +2262,8 @@ export class LyricsView {
     this.roomStage = null;
     this.vinylStage?.dispose();
     this.vinylStage = null;
+    this.geoStage?.dispose();
+    this.geoStage = null;
     this.stageObserver?.disconnect();
     this.stageObserver = null;
     this.styleUnsub?.();

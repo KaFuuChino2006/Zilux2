@@ -126,12 +126,13 @@ internal static class Ap2PtpLink
         var addresses = new List<IPAddress>(peers.Count);
         foreach (var peer in peers)
         {
-            if (!IPAddress.TryParse(peer, out var address))
+            // P2-21: one hostname/mDNS name must not wipe out the whole peer list. Skip entries we
+            // cannot parse as literals and keep the resolvable ones; an empty result still means
+            // "no peers" rather than "all peers dropped because of one bad entry".
+            if (IPAddress.TryParse(peer, out var address))
             {
-                return [];
+                addresses.Add(address);
             }
-
-            addresses.Add(address);
         }
 
         return [.. addresses];

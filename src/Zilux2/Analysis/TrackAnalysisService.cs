@@ -49,6 +49,56 @@ internal sealed class TrackAnalysisService : IDisposable
         {
             HostLog.Warn($"analysis.cache-unavailable: {exception.Message}");
         }
+
+        // 音频副本只为一次分析服务，上次会话残留的整首歌缓存直接清掉。
+        ClearCachedAudio("startup");
+    }
+
+    /// <summary>
+    /// 在线曲目的分析音频只是临时下载；启动时清掉上次残留，
+    /// 单次分析解码结束后也会立即删除，避免 C 盘长期保存整首歌副本。
+    /// </summary>
+    private static void ClearCachedAudio(string stage)
+    {
+        try
+        {
+            if (!Directory.Exists(AudioCacheDirectory))
+            {
+                return;
+            }
+
+            var removed = 0;
+            long bytes = 0;
+            foreach (var path in Directory.EnumerateFiles(AudioCacheDirectory))
+            {
+                var name = Path.GetFileName(path);
+                if (!name.EndsWith(".audio", StringComparison.OrdinalIgnoreCase)
+                    && !name.EndsWith(".part", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    bytes += new FileInfo(path).Length;
+                    File.Delete(path);
+                    removed++;
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    // 文件可能正被另一次分析读取，下次启动再清。
+                }
+            }
+
+            if (removed > 0)
+            {
+                HostLog.Info($"analysis.cache-audio.cleared stage={stage} removed={removed} bytes={bytes}");
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            HostLog.Warn($"analysis.cache-audio.clear-failed stage={stage}: {exception.Message}");
+        }
     }
 
     private static string CacheRoot { get; } = Path.Combine(HostFolders.Root, "analysis");
@@ -134,6 +184,7 @@ internal sealed class TrackAnalysisService : IDisposable
             string artist = string.Empty;
             var trackId = string.Empty;
             var rel = string.Empty;
+            var downloadedAudio = false;
             string cacheKey;
 
             if (string.Equals(source, "local", StringComparison.OrdinalIgnoreCase))
@@ -201,10 +252,16 @@ internal sealed class TrackAnalysisService : IDisposable
                     }
 
                     await DownloadAudioAsync(resolution, audioPath, flightKey).ConfigureAwait(false);
+                    downloadedAudio = true;
                 }
             }
 
             var decoded = await DecodeAsync(audioPath, flightKey).ConfigureAwait(false);
+            if (downloadedAudio)
+            {
+                // 解码完成后源副本就没用了；分析结果在 JSON 缓存里，下次不必重新下载。
+                TryDelete(audioPath);
+            }
             if (decoded is null)
             {
                 return Fail(flightKey, "decode-failed", "系统解码器无法解析该音频");

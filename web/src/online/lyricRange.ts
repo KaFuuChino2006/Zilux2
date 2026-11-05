@@ -11,7 +11,7 @@
  * 这些行；过滤只影响「衔接判断」，不影响歌词页显示。
  */
 
-import { parseCharLyric, parseLrc } from './lrc';
+import { extractQrcPayload, parseCharLyric, parseLrc, parseQrcLyric } from './lrc';
 
 export interface SingingRange {
   /** 第一句人声开始时间（曲内毫秒） */
@@ -172,6 +172,21 @@ function rangeFromCharLyric(raw: string | null | undefined): SingingRange | null
   return { firstMs, lastStartMs, lastEndMs: Math.round(lastStartMs + duration) };
 }
 
+/** QQ 逐字（QRC）：正文藏在 LyricContent 载荷里，行时间与末句时长同样是精确值。 */
+function rangeFromQrc(raw: string | null | undefined): SingingRange | null {
+  if (!raw) return null;
+  const payload = extractQrcPayload(raw);
+  if (!payload) return null;
+  const lines = parseQrcLyric(payload).filter((line) => isSingingLine(line.text));
+  if (lines.length === 0) return null;
+  const first = lines[0]!;
+  const last = lines[lines.length - 1]!;
+  const firstMs = Math.max(0, Math.round(first.timeMs));
+  const lastStartMs = Math.max(0, Math.round(last.timeMs));
+  const duration = Number.isFinite(last.durationMs) && last.durationMs > 0 ? last.durationMs : 4_000;
+  return { firstMs, lastStartMs, lastEndMs: Math.round(lastStartMs + duration) };
+}
+
 /** 普通 LRC：第一句人声；最后一句结束时间用最后几声间隔的中位数估算（夹在 1.5–9 秒）。 */
 function rangeFromLrc(raw: string | null | undefined): SingingRange | null {
   if (!raw) return null;
@@ -195,9 +210,9 @@ function rangeFromLrc(raw: string | null | undefined): SingingRange | null {
  * 从一份歌词（YRC 优先、LRC 兜底）里取人声区间；都取不到返回 null。
  * 逐字歌词有时间精确的结束时间；LRC 只能估算最后一句时长。
  */
-export function singingRangeFromLyric(lyric: { lrc?: string | null; yrc?: string | null } | null | undefined): SingingRange | null {
+export function singingRangeFromLyric(lyric: { lrc?: string | null; yrc?: string | null; qrc?: string | null } | null | undefined): SingingRange | null {
   if (!lyric) return null;
-  return rangeFromCharLyric(lyric.yrc) ?? rangeFromLrc(lyric.lrc);
+  return rangeFromCharLyric(lyric.yrc) ?? rangeFromQrc(lyric.qrc) ?? rangeFromLrc(lyric.lrc);
 }
 
 /** 只有普通 LRC 文本时（本地同名 .lrc）用这个。 */

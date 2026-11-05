@@ -19,7 +19,7 @@ import {
   effectiveBgLyricsCoverStyle,
   lumiereEffectOn,
 } from './bgLyricsCover';
-import { LyricsView, loadLyricDoc, setExternalLyricMode, type LyricDoc } from './lyrics';
+import { currentLyricDoc, LyricsView, loadLyricDoc, reloadSharedLyricSettings, setExternalLyricMode, type LyricDoc } from './lyrics';
 import { applyExternalPlayback, onPlayer, playerState } from './player';
 
 /** 主窗口解析好的歌词文档快照键（含曲目与逐字时间轴）。 */
@@ -106,6 +106,10 @@ let publishedEmpty = true;
 let retryAfterPublish = false;
 /** 空歌词自动补发的次数（避免无歌词的纯音乐无限重试）。 */
 let emptyRetries = 0;
+/** 补发次数用完、已确认没有歌词的曲目：播放器每帧回调不再重复拉取/写快照。 */
+let settledEmptyKey = '';
+/** 上一次写入快照的内容签名（不含 savedAt）：内容没变就不重复写 localStorage。 */
+let publishedSignature = '';
 
 /**
  * 主窗口启动时调用：开关打开期间，跟随播放曲目把歌词文档写进共享快照。
@@ -121,6 +125,8 @@ export function installBackgroundLyricsPublisher(): void {
 function publishCurrent(force = false): void {
   if (!getSettings().general.backgroundLyrics) {
     publishedKey = '';
+    settledEmptyKey = '';
+    publishedSignature = '';
     return;
   }
 
@@ -128,14 +134,55 @@ function publishCurrent(force = false): void {
   if (!track) return;
 
   const key = trackKey(track);
-  if (key !== publishedKey) emptyRetries = 0;
-  // 空歌词要允许重发：启动早期歌词接口还没就绪，之后在线端点到达要补一次。
-  if (!force && key === publishedKey && !publishedEmpty) return;
+  if (key !== publishedKey) {
+    emptyRetries = 0;
+    settledEmptyKey = '';
+  }
+  // 非空歌词：同一首只发一次，播放器的每帧回调直接跳过。
+  // 空歌词：补发次数还没用完时继续尝试；确认没有歌词后也不再每帧重拉。
+  if (!force && key === publishedKey) {
+    if (!publishedEmpty) return;
+    if (settledEmptyKey === key) {
+      // 确认无歌词后主窗口又匹配到了歌词（手动选源/逐字翻译匹配）：直接补发同一份文档，不再发请求。
+      const doc = currentLyricDoc();
+      if (!doc || doc.trackKey !== key || doc.lines.length === 0) return;
+      writeSnapshotIfChanged(track, key, doc);
+      publishedEmpty = false;
+      emptyRetries = 0;
+      settledEmptyKey = '';
+      return;
+    }
+    // 还没确认的空歌词（首拉进行中或等待定时补发）：交给 1.5s/3s/4.5s 的定时器，
+    // 不能在播放器每帧回调里重发，否则会和发布互斥锁叠加成连续请求。
+    return;
+  }
   publishedKey = key;
-  void publishDoc(track);
+  void publishDoc(track, key);
 }
 
-async function publishDoc(track: OnlineTrack): Promise<void> {
+/** 快照内容签名（不含 savedAt）：歌词/封面没变时跳过写入，避免背景窗口反复重绘。 */
+function docSignature(key: string, doc: LyricDoc, cover: string): string {
+  let hash = 2166136261;
+  for (const line of doc.lines) {
+    const text = `${line.timeMs}|${line.durationMs}|${line.text}|${line.translation}|${line.words.length}\n`;
+    for (let index = 0; index < text.length; index += 1) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 16777619) >>> 0;
+    }
+  }
+  return `${key}|${doc.kind}|${doc.lines.length}|${hash}|${cover}`;
+}
+
+/** 内容没变就不写 localStorage；只有真正写入才让背景窗口收到 storage 事件。 */
+function writeSnapshotIfChanged(track: OnlineTrack, key: string, doc: LyricDoc): void {
+  const cover = freshCoverUrl(track) || track.cover;
+  const signature = docSignature(key, doc, cover);
+  if (signature === publishedSignature) return;
+  writeSnapshot({ ...track, cover }, doc);
+  publishedSignature = signature;
+}
+
+async function publishDoc(track: OnlineTrack, key: string): Promise<void> {
   if (publishing) {
     retryAfterPublish = true;
     return;
@@ -143,11 +190,21 @@ async function publishDoc(track: OnlineTrack): Promise<void> {
   publishing = true;
   try {
     const doc = await loadLyricDoc(track);
+    // 拉取期间切了歌：这份结果已经过期，丢弃并在结束后补发当前曲目，避免旧歌词盖住新快照。
+    if (key !== publishedKey) {
+      retryAfterPublish = true;
+      return;
+    }
     // 快照里的封面必须是当前宿主的回环地址：上次播放持久化的是旧端口，背景窗口拿不到在线端点，
     // 只能由主窗口在发布时用当前端点重拼，否则重启后封面一直是裂图。
-    writeSnapshot({ ...track, cover: freshCoverUrl(track) || track.cover }, doc);
+    writeSnapshotIfChanged(track, key, doc);
     publishedEmpty = doc.lines.length === 0;
-    if (!publishedEmpty) emptyRetries = 0;
+    if (!publishedEmpty) {
+      emptyRetries = 0;
+      settledEmptyKey = '';
+    } else if (emptyRetries >= 3) {
+      settledEmptyKey = key;
+    }
   } catch (err) {
     publishedEmpty = true;
     console.warn('[bgLyrics] publish failed', err);
@@ -160,6 +217,9 @@ async function publishDoc(track: OnlineTrack): Promise<void> {
       // 启动早期歌词接口可能还没就绪：隔一会儿补发，直到拿到非空歌词或重试次数用完。
       emptyRetries += 1;
       window.setTimeout(() => publishCurrent(true), 1500 * emptyRetries);
+    } else if (publishedEmpty) {
+      // 确认这首没有歌词：记下来，之后的每帧回调不再重拉。
+      settledEmptyKey = publishedKey;
     }
   }
 }
@@ -173,6 +233,7 @@ const STYLE_KEYS = new Set([
   'zilux2.lyricStyle',
   'zilux2.lyricGrow',
   'zilux2.lyricUnsung',
+  'zilux2.lyricSolid',
   'zilux2.lyricText',
   'zilux2.lyricOffsets',
   'zilux2.lyricManual',
@@ -191,6 +252,8 @@ export async function bootBackgroundLyricsScene(): Promise<void> {
   // 背景页也要拿到宿主的在线源端点：封面是回环绝对地址，重启后端口会变，需要按当前端点重拼。
   initOnline();
   await loadSettings();
+  // 模块级样式/偏移变量在导入时只读过一次；启动时重读一遍，保证背景窗口和主窗口一致。
+  reloadSharedLyricSettings();
 
   const view = new LyricsView(() => undefined);
   view.root.classList.add('is-background-lyrics');
@@ -384,8 +447,11 @@ export async function bootBackgroundLyricsScene(): Promise<void> {
   const clock = { positionMs: 0, durationMs: 0, playing: false, syncedAt: performance.now() };
   let pushedPositionMs = 0;
   let lastTrackKeyPushed = '';
+  let lastPushedSignature = '';
 
   const pushClock = (): void => {
+    // 窗口被遮住/最小化时不需要每 100ms 让歌词页全量重算一遍。
+    if (document.hidden) return;
     const elapsed = clock.playing ? performance.now() - clock.syncedAt : 0;
     let position = clock.positionMs + elapsed;
     if (clock.durationMs > 0) position = Math.min(position, clock.durationMs);
@@ -393,6 +459,10 @@ export async function bootBackgroundLyricsScene(): Promise<void> {
     // 所以播放中只允许向前（真的 seek 由下面的跳变判断放行）。
     if (clock.playing) position = Math.max(position, pushedPositionMs);
     pushedPositionMs = position;
+    // 暂停且位置/时长都没变时跳过：重复推同一帧只会触发一次没有任何变化的整页同步。
+    const signature = `${clock.playing ? 1 : 0}|${Math.round(position)}|${Math.round(clock.durationMs)}`;
+    if (signature === lastPushedSignature) return;
+    lastPushedSignature = signature;
     applyExternalPlayback({ positionMs: position, durationMs: clock.durationMs, playing: clock.playing });
   };
 

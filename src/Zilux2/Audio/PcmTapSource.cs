@@ -81,6 +81,9 @@ internal sealed class PcmTapSource : IAirPlayAudioSource
         {
             var capacity = Math.Max(_channels, MaxBufferedMilliseconds * _rate / 1000 * _channels);
             var overflow = _queue.Count + samples.Length - capacity;
+            // Drop whole frames only: dropping a single sample would swap L/R for everything after.
+            var frame = Math.Max(1, _channels);
+            overflow -= overflow % frame;
             while (overflow-- > 0 && _queue.Count > 0)
             {
                 _queue.Dequeue();

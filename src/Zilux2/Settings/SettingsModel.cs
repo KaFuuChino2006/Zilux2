@@ -49,7 +49,7 @@ internal sealed class GeneralSettings
 
     public bool DesktopLyricsLocked { get; set; }
 
-    // 32..64，默认 40（副行按 0.45 倍字号跟随）。
+    // 28..64，默认 40（副行按 0.45 倍字号跟随；契约与窗口 ApplyStyle 使用同一范围）。
     public int DesktopLyricsFontSize { get; set; } = 40;
 
     public bool DesktopLyricsTopmost { get; set; } = true;
@@ -73,6 +73,12 @@ internal sealed class GeneralSettings
     // 桌面背景歌词：把歌词页的播放效果镜像到桌面壁纸层（第二个 WebView2 窗口挂在 WorkerW 下），
     // 打开期间软件内的歌词页不再显示歌词，关掉后恢复。追加在最后，保证旧 settings.json 字段顺序不变。
     public bool BackgroundLyrics { get; set; }
+
+    // 桌面歌词上次关闭时的位置（屏幕坐标，可为负；null=尚未记录，使用默认位置）。
+    // 由 MainWindow 在窗口关闭时 patch 回设置，启动时优先恢复。追加在最后，旧文件顺序不变。
+    public double? DesktopLyricsLeft { get; set; }
+
+    public double? DesktopLyricsTop { get; set; }
 }
 
 internal sealed class AppearanceSettings
@@ -91,13 +97,12 @@ internal sealed class AppearanceSettings
 
     internal static readonly string[] WindowAnimations = { WindowAnimationCustom, WindowAnimationNative };
 
+    // 仅兼容旧数据：v1.1 起界面固定白色磨砂（frost），宿主只持久化/回传该值，不再驱动主题切换。
     public string Theme { get; set; } = ThemeDark;
 
     public bool ReduceMotion { get; set; }
 
     public bool Glow { get; set; } = true;
-
-    public bool HeroAutoRotate { get; set; } = true;
 
     public string LyricsSize { get; set; } = LyricsSizeMedium;
 
@@ -126,8 +131,11 @@ internal sealed class PlaybackSettings
 {
     public const string SourceNetease = "netease";
     public const string SourceQq = "qq";
+    // 实验源（无名音乐）：只有用户在实验功能里开启后才出现在页面；仍允许设为默认平台，
+    // 否则设置页选中它会被宿主白名单拒绝并静默回退（默认平台选项来自 sourceIds()）。
+    public const string SourceMvmp3 = "mvmp3";
 
-    internal static readonly string[] Sources = { SourceNetease, SourceQq };
+    internal static readonly string[] Sources = { SourceNetease, SourceQq, SourceMvmp3 };
 
     internal static readonly int[] SearchLimits = { 10, 20, 30 };
 
@@ -135,13 +143,15 @@ internal sealed class PlaybackSettings
 
     public int SearchLimit { get; set; } = 20;
 
-    public bool LyricsAutoOpen { get; set; } = true;
-
     public double Volume { get; set; } = 0.72;
 
     // Visualizer source: host-side WASAPI features. Not in the frozen settings contract yet -
     // appended after volume so the persisted layout stays stable for older files.
     public bool AudioReactive { get; set; } = true;
+
+    /// <summary>在线播放音质偏好（standard/high/lossless）。宿主只负责持久化与回传快照，
+    /// 真正的音质协商由页面请求 /api/stream 时完成；与下载音质共用同一组取值。</summary>
+    public string Quality { get; set; } = DownloadSettings.QualityHigh;
 
     // 10 段均衡器（页面侧 Web Audio peaking 滤波器）：默认关闭、全 0dB，
     // 保证旧 settings.json 行为不变。EqGains 顺序对应前端 EQ_BAND_FREQS。
@@ -172,10 +182,10 @@ internal sealed class PlaybackSettings
     // 旧版单一渐变时长；新版本分别使用 FadeOutMs / FadeInMs，读取旧配置时作为两者缺省值。
     public int FadeMs { get; set; } = 450;
 
-    /// <summary>暂停淡出时长（毫秒，100..5000）。</summary>
+    /// <summary>暂停淡出时长（毫秒，100..3000）。</summary>
     public int FadeOutMs { get; set; } = 450;
 
-    /// <summary>开始播放淡入时长（毫秒，100..5000）。</summary>
+    /// <summary>开始播放淡入时长（毫秒，100..3000）。</summary>
     public int FadeInMs { get; set; } = 450;
 
     public const string FadeCurveSmooth = "smooth";

@@ -254,6 +254,7 @@ internal sealed class QqLibraryProvider
             total = ReadInt(dirinfo, "songnum");
         }
 
+        var totalKnown = total > 0;
         var songs = FindArray(data, "songlist", "songs");
         var tracks = new List<OnlineTrack>();
         foreach (var song in songs)
@@ -267,19 +268,28 @@ internal sealed class QqLibraryProvider
 
         tracks = await EnrichTracksAsync(tracks, cancellationToken).ConfigureAwait(false);
 
+        // D-18：total 缺失时至少用「已取到的条数」做下界，并根据当前页是否满页推断 hasMore，
+        // 不能把 Count 写成 tracks.Count 后直接结束分页。
+        if (!totalKnown)
+        {
+            total = offset + tracks.Count;
+        }
+
         var meta = new LibraryPlaylist
         {
             Source = Name,
             Id = id,
             Title = dirinfo.ValueKind == JsonValueKind.Object ? FallbackTitle(ReadString(dirinfo, "title")) : "QQ 歌单",
-            Count = total > 0 ? total : tracks.Count,
+            Count = total,
             Creator = dirinfo.ValueKind == JsonValueKind.Object ? ReadNestedString(dirinfo, "creator", "nick") : string.Empty,
             CoverKey = dirinfo.ValueKind == JsonValueKind.Object
                 ? TryNormalizeCover(ReadString(dirinfo, "picurl", "picUrl"))
                 : string.Empty,
         };
 
-        var hasMore = ReadInt(data, "hasmore") == 1 || offset + tracks.Count < meta.Count;
+        var hasMore = ReadInt(data, "hasmore") == 1
+            || tracks.Count >= limit
+            || (totalKnown && offset + tracks.Count < meta.Count);
         OnlineHttp.Info($"GET qq/library playlist id={id} ok {tracks.Count}/{meta.Count} tracks offset={offset}");
         return new LibraryDetail(meta, tracks, hasMore);
     }

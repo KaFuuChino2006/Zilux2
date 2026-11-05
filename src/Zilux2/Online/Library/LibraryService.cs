@@ -86,6 +86,8 @@ internal sealed class LibraryService : IDisposable
         var fingerprint = Fingerprint(source);
         lock (_gate)
         {
+            // D-16：过期条目和超量条目及时清理，避免长期浏览不同 offset/limit 时无限增长。
+            PruneDetailsLocked();
             if (_details.TryGetValue(key, out var entry) && entry.ExpiresAt > DateTimeOffset.UtcNow && entry.Fingerprint == fingerprint)
             {
                 HostLog.Info($"[library] playlist cache hit source={source} id={providerId} offset={offset} limit={limit}");
@@ -107,6 +109,37 @@ internal sealed class LibraryService : IDisposable
         }
 
         return detail;
+    }
+
+    private void PruneDetailsLocked()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var expired = new List<string>();
+        foreach (var pair in _details)
+        {
+            if (pair.Value.ExpiresAt <= now)
+            {
+                expired.Add(pair.Key);
+            }
+        }
+
+        foreach (var key in expired)
+        {
+            _details.Remove(key);
+        }
+
+        const int maxEntries = 256;
+        if (_details.Count <= maxEntries)
+        {
+            return;
+        }
+
+        var oldest = new List<KeyValuePair<string, DetailEntry>>(_details);
+        oldest.Sort((a, b) => a.Value.ExpiresAt.CompareTo(b.Value.ExpiresAt));
+        for (var index = 0; index < oldest.Count - maxEntries; index++)
+        {
+            _details.Remove(oldest[index].Key);
+        }
     }
 
     public void Refresh(string? source)

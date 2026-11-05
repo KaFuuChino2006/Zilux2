@@ -24,7 +24,10 @@ export const LUMIERE_KEY = 'zilux2.lumiere';
 export function lumiereEffectOn(): boolean {
   try {
     const raw = window.localStorage.getItem(LUMIERE_KEY);
-    return raw !== null && raw !== 'off';
+    // 与 lumiereMode() 同一套归一化：'off' 与旧版 'lightfield' 都算关闭，
+    // 其它非空值（text/room/vinyl/未来效果）都算开启。两处判定必须一致，
+    // 否则旧存档升级后会出现「封面在左被禁用、却没有任何播放效果」。
+    return raw !== null && raw !== '' && raw !== 'off' && raw !== 'lightfield';
   } catch {
     return false;
   }

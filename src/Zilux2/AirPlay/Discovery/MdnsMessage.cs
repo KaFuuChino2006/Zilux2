@@ -176,6 +176,9 @@ internal sealed class DnsMessage
     /// <summary>单段记录数上限。正常 mDNS 响应远小于此值。</summary>
     public const int MaxRecords = 512;
 
+    /// <summary>问题段上限（qdcount 可被伪造，压缩指针会放大解析量）。</summary>
+    public const int MaxQuestions = 64;
+
     public ushort TransactionId { get; private set; }
 
     public ushort Flags { get; private set; }
@@ -262,6 +265,9 @@ internal sealed class DnsMessage
         int authorityCount = BinaryPrimitives.ReadUInt16BigEndian(data.Slice(8));
         int additionalCount = BinaryPrimitives.ReadUInt16BigEndian(data.Slice(10));
 
+        // qdcount is attacker-controlled; each question can amplify through compression pointers,
+        // so cap it like the RR counts instead of trusting the 16-bit value.
+        questionCount = Math.Min(questionCount, MaxQuestions);
         int offset = HeaderSize;
         for (int i = 0; i < questionCount; i++)
         {
@@ -290,9 +296,19 @@ internal sealed class DnsMessage
         {
             if (offset >= data.Length)
             {
-                throw new FormatException($"记录段需要 {count} 条，但报文在 {offset} 字节处结束");
+                // 截断的记录段：保留已经解析的记录，不再让一条坏记录吞掉后续段。
+                return;
             }
-            into.Add(ReadRecord(data, ref offset));
+
+            try
+            {
+                into.Add(ReadRecord(data, ref offset));
+            }
+            catch (FormatException)
+            {
+                // 单条 RR 畸形：停止本段，调用方保留先前结果（P2-71）。
+                return;
+            }
         }
     }
 
@@ -345,6 +361,10 @@ internal sealed class DnsMessage
             {
                 int inner = rdataStart;
                 record.PtrTarget = ReadName(data, ref inner);
+                if (inner > rdataEnd)
+                {
+                    throw new FormatException($"PTR 名称越过 RDATA 边界（{inner} > {rdataEnd}）");
+                }
                 break;
             }
 
@@ -359,6 +379,10 @@ internal sealed class DnsMessage
                 record.SrvPort = BinaryPrimitives.ReadUInt16BigEndian(data.Slice(rdataStart + 4));
                 int inner = rdataStart + 6;
                 record.SrvTarget = ReadName(data, ref inner);
+                if (inner > rdataEnd)
+                {
+                    throw new FormatException($"SRV target 越过 RDATA 边界（{inner} > {rdataEnd}）");
+                }
                 break;
             }
 

@@ -176,7 +176,9 @@ function normalize(payload: LocalLibraryPayload): LocalLibrary {
 export function initLocalLibrary(): () => void {
   const off = onLocalLibrary((payload) => {
     library = normalize(payload);
-    rememberFolder(payload.folder);
+    // D-49：宿主对「文件夹不存在」也会回推 folder；只有成功载入时才记住路径，
+    // 否则失效目录会被写进 localStorage，下次启动反复恢复并报错。
+    if (!payload.error) rememberFolder(payload.folder);
     notify();
   });
   const offCancel = onLocalCancel(() => {

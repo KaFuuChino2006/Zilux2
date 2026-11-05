@@ -75,6 +75,14 @@ let current: LyricStyle = readLyricStyle();
 
 const listeners = new Set<() => void>();
 
+/**
+ * 从 localStorage 重新读一遍当前样式（背景歌词窗口收到跨窗口 storage 事件后调用）。
+ * 只更新值、不通知监听者：调用方随后会自己重绘。
+ */
+export function reloadLyricStyle(): void {
+  current = readLyricStyle();
+}
+
 /** 当前歌词播放样式（快捷设置里展示用）。 */
 export function lyricStyle(): LyricStyle {
   return current;

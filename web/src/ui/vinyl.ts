@@ -14,6 +14,7 @@
  */
 
 import { playbackAnalyser } from '../core/audioTap';
+import { getSettings } from '../core/settings';
 import { onPlayer, playerState } from './player';
 import type { LumiereMode, LumiereSongInput } from './lumiere';
 import type { RoomLyricTint } from './roomScene';
@@ -58,11 +59,25 @@ export interface VinylStage {
  * 但内容其实几乎不变。这里用签名挡掉重复的 setSong —— 场景重建歌词 DOM 不便宜，
  * 不挡住会让整机卡顿。
  */
+/** 歌词正文摘要：同曲换源/补翻译时行数与首末时间可能不变，签名必须带上正文。 */
+function lyricsTextDigest(lines: LumiereSongInput['lines']): string {
+  if (lines.length === 0) return '0';
+  let hash = 0x811c9dc5;
+  for (const line of lines) {
+    const text = `${line.text}\u0000${line.translation}`;
+    for (let index = 0; index < text.length; index += 1) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+  }
+  return `${lines.length}:${hash.toString(16)}`;
+}
+
 function songSignature(input: LumiereSongInput | null): string {
   if (!input) return '';
   const first = input.lines[0];
   const last = input.lines[input.lines.length - 1];
-  return `${input.trackKey}|${input.title}|${input.artist}|${input.durationMs}|${input.lyricOffsetMs}|${input.lines.length}|${first?.timeMs ?? 0}|${last?.timeMs ?? 0}|${input.coverUrl ?? ''}`;
+  return `${input.trackKey}|${input.title}|${input.artist}|${input.durationMs}|${input.lyricOffsetMs}|${input.lines.length}|${first?.timeMs ?? 0}|${last?.timeMs ?? 0}|${input.coverUrl ?? ''}|${lyricsTextDigest(input.lines)}`;
 }
 
 /** 把歌词导出的数据结构转成场景输入（结构一致，只是把类型换成场景自己的）。 */
@@ -113,6 +128,8 @@ export function createVinylStage(): VinylStage {
   });
 
   const updateAudio = (): number => {
+    // 「视觉随音乐」关闭：不读频谱，场景保持静态（能量恒 0）。
+    if (!getSettings().playback.audioReactive) return 0;
     try {
       if (!analyser) analyser = playbackAnalyser();
       if (!analyser) return 0;

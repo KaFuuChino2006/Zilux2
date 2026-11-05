@@ -188,7 +188,12 @@ public sealed class SrpClient
 
         _salt = salt.ToArray();
         _serverPublicKey = CryptoPrimitives.FromBigEndian(serverPublicKey);
-        if (_serverPublicKey.IsZero || _serverPublicKey % _n == BigInteger.Zero)
+        if (_serverPublicKey < 2 || _serverPublicKey >= _n)
+        {
+            // SRP-6a: B must be in [2, N-1]; 0/1/N-1 等小值会使共享密钥可预测。
+            throw new CryptographicException("SRP：设备公钥 B 超出合法范围 [2, N-1]");
+        }
+        if (_serverPublicKey % _n == BigInteger.Zero)
         {
             // SRP 规范要求 B % N != 0，否则是恶意/错误输入
             throw new CryptographicException("SRP：设备公钥 B 非法（B mod N == 0）");

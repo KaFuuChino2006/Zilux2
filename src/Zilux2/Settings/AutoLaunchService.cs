@@ -9,9 +9,21 @@ namespace Zilux2.Settings;
 // touches the registry, and every failure only costs this one feature (never the window).
 internal static class AutoLaunchService
 {
-    internal const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+    internal const string DefaultRunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+
+    // 自测用隔离：settings-selftest.ps1 指向临时子键，避免测试删/写用户真实的开机自启项。
+    internal const string RunKeyPathEnvironmentVariable = "ZILUX2_AUTOLAUNCH_RUN_KEY";
 
     internal const string ValueName = "Zilux2";
+
+    private static string RunKeyPath
+    {
+        get
+        {
+            var overridden = Environment.GetEnvironmentVariable(RunKeyPathEnvironmentVariable);
+            return string.IsNullOrWhiteSpace(overridden) ? DefaultRunKeyPath : overridden;
+        }
+    }
 
     /// <summary>
     /// 把目标状态幂等地写进 HKCU Run；返回是否已经生效（失败返回 false，只记日志）。
@@ -37,19 +49,22 @@ internal static class AutoLaunchService
             return true;
         }
 
-        if (!enabled && current is null)
-        {
-            HostLog.Info("[autolaunch] unchanged enabled=false");
-            return true;
-        }
-
         try
         {
-            using var key = Registry.CurrentUser.CreateSubKey(RunKeyPath, writable: true);
+            // 关闭时只打开已有键，避免在没有 Run 键的机器上凭空创建空键。
+            using var key = enabled
+                ? Registry.CurrentUser.CreateSubKey(RunKeyPath, writable: true)
+                : Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true);
             if (key is null)
             {
-                HostLog.Warn("[autolaunch] apply failed: Run key unavailable");
-                return false;
+                if (enabled)
+                {
+                    HostLog.Warn("[autolaunch] apply failed: Run key unavailable");
+                    return false;
+                }
+
+                HostLog.Info("[autolaunch] unregistered");
+                return true;
             }
 
             if (enabled)

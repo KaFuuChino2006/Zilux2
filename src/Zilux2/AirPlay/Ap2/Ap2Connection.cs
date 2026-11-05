@@ -145,6 +145,14 @@ internal sealed class Ap2Connection : IDisposable
     private string _serverName = "AirTunes/980.77.2";
     private int _sessionIdValue;
     private string _timingProtocol = "NTP";
+
+    /// <summary>
+    /// True only when this session actually owns/locks a PTP master. When <see cref="Ap2SharedPtp"/>
+    /// cannot provide one we must not advertise PTP (ClockID 0) and must run the NTP sync path.
+    /// </summary>
+    private bool _usingPtp;
+    /// <summary>Stable PTP peer identity for this session (same ClockID must not move between IDs).</summary>
+    private readonly string _timingPeerId = Guid.NewGuid().ToString("D");
     private TcpClient? _eventClient;
     private HapSessionCrypt? _eventCryptor;
 
@@ -266,6 +274,7 @@ internal sealed class Ap2Connection : IDisposable
             target.Port,
             TimeSpan.FromMilliseconds(options.ConnectTimeoutMilliseconds));
 
+        Ap2Connection? connection = null;
         try
         {
             byte[] sharedSecret = [];
@@ -276,13 +285,24 @@ internal sealed class Ap2Connection : IDisposable
                 sharedSecret = pairingResult.SharedSecret;
             }
 
-            var connection = new Ap2Connection(transport, target, options, sharedSecret);
+            connection = new Ap2Connection(transport, target, options, sharedSecret);
             connection.Handshake();
             return connection;
         }
         catch
         {
-            transport.Dispose();
+            // A failed Handshake must release the PTP lease and the three UdpClients created before
+            // the failure; disposing only the transport leaks them and keeps the receiver as a peer.
+            if (connection is null)
+            {
+                transport.Dispose();
+            }
+            else
+            {
+                try { connection.Dispose(); }
+                catch (Exception cleanup) { HostLog.Warn($"[airplay] AP2 cleanup after failed handshake: {cleanup.GetType().Name}: {cleanup.Message}"); }
+            }
+
             throw;
         }
     }
@@ -333,12 +353,20 @@ internal sealed class Ap2Connection : IDisposable
         if (_options.TimingProtocolPtp)
         {
             _ptp = Ap2SharedPtp.Acquire(localAddress, [Target.Host]);
+            if (_ptp is null)
+            {
+                // Never advertise a PTP session with ClockID 0: receivers accept the SETUP but stay
+                // silent. Fall back to the NTP timing path (SETUP carries timingPort, sync is 20 B).
+                HostLog.Warn("[airplay] PTP master unavailable; falling back to NTP timing for this session");
+            }
         }
+
+        _usingPtp = _options.TimingProtocolPtp && _ptp is not null;
 
         SendAuthSetup();
 
         // Phase 1: connection-level SETUP (no "streams"); the receiver replies with an eventPort.
-        _timingProtocol = _options.TimingProtocolPtp ? "PTP" : "NTP";
+        _timingProtocol = _usingPtp ? "PTP" : "NTP";
         var sessionBody = Ap2Setup.BuildSessionBody(new Ap2SessionSetupOptions
         {
             DeviceId = _options.DeviceId,
@@ -347,9 +375,9 @@ internal sealed class Ap2Connection : IDisposable
             TimingPort = LocalTimingPort,
             TimingProtocol = _timingProtocol,
             Name = _options.Name,
-            TimingPeerId = _options.TimingProtocolPtp ? Guid.NewGuid().ToString("D") : null,
-            TimingPeerClockId = _ptp?.ClockId ?? 0,
-            TimingPeerAddresses = _options.TimingProtocolPtp
+            TimingPeerId = _usingPtp ? _timingPeerId : null,
+            TimingPeerClockId = _usingPtp ? (_ptp?.ClockId ?? 0) : 0,
+            TimingPeerAddresses = _usingPtp
                 ? Ap2SharedPtp.CurrentEndpoints(localAddress)
                 : null,
             // Reference (airflash session.rs setup dict): "groupContainsGroupLeader" is always
@@ -385,7 +413,7 @@ internal sealed class Ap2Connection : IDisposable
         // only needs the receiver addresses (it must NOT send Sync to our own address); the RTSP
         // SETPEERS body, on the other hand, lists every active receiver followed by our local
         // address so each device knows the full gPTP endpoint set (multi-device delivery).
-        if (_options.TimingProtocolPtp)
+        if (_usingPtp)
         {
             _ptp?.SetPeers([Target.Host]);
             var activeEndpoints = Ap2SharedPtp.CurrentEndpoints(localAddress);
@@ -489,6 +517,10 @@ internal sealed class Ap2Connection : IDisposable
         Exception? last = null;
         for (var attempt = 1; attempt <= 5; attempt++)
         {
+            if (_disposed)
+            {
+                return;
+            }
             try
             {
                 var client = new TcpClient { NoDelay = true };
@@ -548,7 +580,8 @@ internal sealed class Ap2Connection : IDisposable
                 ProcessEventRequests(stream, cryptor, pending);
             }
         }
-        catch (Exception ex) when (ex is IOException or ObjectDisposedException or SocketException)
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException or SocketException
+                                       or System.Security.Cryptography.CryptographicException)
         {
             HostLog.Warn($"[airplay] AP2 event channel ended: {ex.GetType().Name}");
         }
@@ -679,7 +712,9 @@ internal sealed class Ap2Connection : IDisposable
         // carries an NTP instant anchored once at stream start plus framesSent.
         _startNtp = NtpNow();
         SendSyncPacket(first: true);
-        var syncPeriod = _options.TimingProtocolPtp ? 100 : 1_000;
+        // PTP grandmaster sends Sync every 125 ms (8 packets/s, the AirPlay 2 cadence); the old
+        // 100 ms drifted against the master's own Sync interval.
+        var syncPeriod = _usingPtp ? 125 : 1_000;
         _syncTimer = new Timer(
             static state => ((Ap2Connection)state!).SendSyncPacket(first: false),
             this,
@@ -704,18 +739,22 @@ internal sealed class Ap2Connection : IDisposable
 
         try
         {
+            // P2-13: _timestamp is the NEXT packet's RTP time. The sync mapping describes the
+            // sample that is already on the wire, so subtract one frame once anything was sent;
+            // otherwise an idle pump would keep advertising a timestamp that never played.
+            var rtpTimestamp = PacketsSent > 0 ? _timestamp - (uint)SamplesPerFrame : _timestamp;
             byte[] packet;
-            if (_options.TimingProtocolPtp)
+            if (_usingPtp)
             {
                 var nowNs = _ptp?.NowNs ?? Ap2Sync.WallClockUnixNanoseconds();
                 var clockId = _ptp?.ClockId ?? 0;
-                packet = Ap2Sync.BuildPtp(first, _latencyFrames, _timestamp, nowNs, clockId);
+                packet = Ap2Sync.BuildPtp(first, _latencyFrames, rtpTimestamp, nowNs, clockId);
             }
             else
             {
                 var framesSent = (uint)(PacketsSent * SamplesPerFrame);
                 var ntp = _startNtp + ((ulong)framesSent << 32) / SampleRate;
-                packet = Ap2Sync.BuildNtp(first, _latencyFrames, _timestamp, ntp);
+                packet = Ap2Sync.BuildNtp(first, _latencyFrames, rtpTimestamp, ntp);
             }
 
             _ = _controlSocket.Send(packet, packet.Length, Target.Host, DeviceControlPort);
@@ -884,6 +923,9 @@ internal sealed class Ap2Connection : IDisposable
         }
 
         _streaming = false;
+        // Stop the 0xD7 sync timer as well: leaving it running after TEARDOWN keeps a receiver's
+        // clock mapped to a session that no longer exists (and fires during Dispose).
+        _syncTimer?.Change(Timeout.Infinite, Timeout.Infinite);
         if (_feedback is not null)
         {
             _feedback.Stop();
@@ -923,6 +965,15 @@ internal sealed class Ap2Connection : IDisposable
 
         Teardown();
         _disposed = true;
+
+        // Wake the event-channel loop out of its blocking Read: closing the TcpClient makes the
+        // NetworkStream throw, which the loop already treats as an orderly shutdown. Without this
+        // the loop, its socket and its thread leak for the lifetime of the process.
+        try { _eventClient?.Close(); }
+        catch (Exception ex) { HostLog.Warn($"[airplay] event channel close failed: {ex.GetType().Name}: {ex.Message}"); }
+        _eventClient = null;
+        _eventCryptor = null;
+
         _syncTimer?.Dispose();
         _syncTimer = null;
         _feedback?.Dispose();
@@ -1045,7 +1096,16 @@ internal sealed class Ap2Connection : IDisposable
                 cached = _audioHistory[sequence & (ResendHistorySize - 1)];
             }
 
-            if (cached is null)
+            if (cached is null || cached.Length < 4)
+            {
+                _ = Interlocked.Increment(ref _missingResendPackets);
+                continue;
+            }
+
+            // The history is a 1024-slot ring: a request for a packet older than the ring aliases a
+            // newer entry. Replaying it would splice wrong audio into the receiver, so only answer
+            // when the cached RTP header still carries the requested sequence number.
+            if (BinaryPrimitives.ReadUInt16BigEndian(cached.AsSpan(2)) != sequence)
             {
                 _ = Interlocked.Increment(ref _missingResendPackets);
                 continue;
@@ -1079,8 +1139,10 @@ internal sealed class Ap2Connection : IDisposable
             return;
         }
 
-        var now = _options.TimingProtocolPtp
-            ? Ap2Sync.UnixNanosecondsToNtp(_ptp?.NowNs ?? Ap2Sync.WallClockUnixNanoseconds())
+        // PTP mode keeps the raw Unix-epoch nanosecond domain used by the sync packets; converting
+        // it to NTP here would make the receiver's correlation differ by the 1900/1970 epoch gap.
+        var now = _usingPtp
+            ? (_ptp?.NowNs ?? Ap2Sync.WallClockUnixNanoseconds())
             : NtpNow();
         var response = new byte[32];
         response[0] = request[0];

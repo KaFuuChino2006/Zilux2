@@ -119,10 +119,15 @@ function baseUrl(): string {
   return info.port === 0 ? 'http://127.0.0.1:0' : `http://127.0.0.1:${info.port}`;
 }
 
+// D-44：宿主搜索链路最坏可达 30s 以上（Netease 搜索+补封面+会员态；QQ 主备端点），
+// 默认超时必须高于宿主预算，否则前端先超时、宿主仍在跑，重试会叠加请求。
+const DEFAULT_TIMEOUT_MS = 30_000;
+const SEARCH_TIMEOUT_MS = 45_000;
+
 export async function api<T>(
   path: string,
   params: Record<string, string> = {},
-  timeoutMs = 12_000,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
   method = 'GET',
   payload?: unknown,
 ): Promise<T> {
@@ -168,7 +173,11 @@ export async function searchOnline(
 ): Promise<OnlineSearchResult> {
   const keyword = query.trim();
   if (!keyword) return { source, query: '', tracks: [] };
-  return api<OnlineSearchResult>('/api/search', { source, q: keyword, limit: String(limit) });
+  return api<OnlineSearchResult>(
+    '/api/search',
+    { source, q: keyword, limit: String(limit) },
+    SEARCH_TIMEOUT_MS,
+  );
 }
 
 /** 宿主侧封面取色结果（页面 canvas 取不到像素时的可靠路径）。 */
@@ -289,14 +298,28 @@ export async function removeLikedTrack(source: OnlineSource, id: string): Promis
   if (!current) throw new OnlineError('not-ready', '在线源尚未就绪');
   const query = new URLSearchParams({ source, id, token: current.token });
   const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), 12_000);
+  const timer = window.setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
   try {
     const resp = await fetch(`${baseUrl()}/api/library/unlike?${query.toString()}`, {
       method: 'POST',
       signal: controller.signal,
       cache: 'no-store',
     });
-    if (!resp.ok) throw new OnlineError('unlike-failed', `取消收藏失败（HTTP ${resp.status}）`);
+    const type = resp.headers.get('content-type') ?? '';
+    if (!type.includes('application/json')) {
+      throw new OnlineError(`http-${resp.status}`, `取消收藏失败（HTTP ${resp.status}）`);
+    }
+    const body = (await resp.json()) as { error?: string; message?: string };
+    if (!resp.ok) {
+      // D-48：与 addLikedTrack 一致，优先显示宿主返回的中文错误，而不是裸 HTTP 状态码。
+      throw new OnlineError(body.error ?? `http-${resp.status}`, body.message ?? '取消收藏失败');
+    }
+  } catch (err) {
+    if (err instanceof OnlineError) throw err;
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new OnlineError('timeout', '请求超时，请稍后重试');
+    }
+    throw new OnlineError('network', '无法连接在线源，请确认宿主已启动');
   } finally {
     window.clearTimeout(timer);
   }

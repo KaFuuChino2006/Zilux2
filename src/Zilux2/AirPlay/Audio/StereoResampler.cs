@@ -10,6 +10,7 @@ internal sealed class StereoResampler
 {
     private const int DefaultTaps = 32;
     private readonly double _step;
+    private readonly double _kernelScale;
     private readonly int _taps;
     private readonly int _half;
     private readonly int _inputRate;
@@ -34,6 +35,8 @@ internal sealed class StereoResampler
         _inputRate = inputRate;
         _outputRate = outputRate;
         _step = (double)inputRate / outputRate;
+        // Anti-alias cutoff: keep the kernel's first-null at the output Nyquist when downsampling.
+        _kernelScale = _step > 1.0 ? 1.0 / _step : 1.0;
         _taps = Math.Max(8, taps % 2 == 0 ? taps : taps + 1);
         _half = _taps / 2;
     }
@@ -68,7 +71,9 @@ internal sealed class StereoResampler
         while (true)
         {
             var position = _nextOutputIndex * _step;      // position in absolute input frames
-            var center = (int)Math.Floor(position);
+            // Keep absolute positions in long: at 44.1 kHz an int would wrap after ~13.5 hours
+            // of continuous streaming and the negative center would silence the resampler.
+            var center = (long)Math.Floor(position);
             var firstNeeded = center - _half + 1;          // absolute input frame indexes required
             var lastNeeded = center + _half;
             var available = _consumedFrames + _left.Count;
@@ -79,6 +84,7 @@ internal sealed class StereoResampler
 
             var left = 0.0;
             var right = 0.0;
+            var weightSum = 0.0;
             for (var tap = 0; tap < _taps; tap++)
             {
                 var absolute = firstNeeded + tap;
@@ -87,10 +93,20 @@ internal sealed class StereoResampler
                     continue;
                 }
 
-                var weight = Kernel(position - absolute);
+                // Downsampling needs a narrower kernel cutoff; without it the 44.1↔48 kHz
+                // near-unity ratios alias slightly. Normalising by the realised weight sum keeps
+                // the passband level flat independent of phase/step (otherwise ±0.7 dB ripple).
+                var weight = Kernel((position - absolute) * _kernelScale) * _kernelScale;
                 var index = (int)(absolute - _consumedFrames);
                 left += _left[index] * weight;
                 right += _right[index] * weight;
+                weightSum += weight;
+            }
+
+            if (weightSum > 1e-9)
+            {
+                left /= weightSum;
+                right /= weightSum;
             }
 
             output[produced * 2] = (float)left;
@@ -106,17 +122,17 @@ internal sealed class StereoResampler
     /// <summary>Drops input frames that no future output sample can reference.</summary>
     private void DropConsumedHistory()
     {
-        var nextCenter = (int)Math.Floor(_nextOutputIndex * _step);
+        var nextCenter = (long)Math.Floor(_nextOutputIndex * _step);
         var keepFrom = nextCenter - _half;
-        var drop = keepFrom - (int)_consumedFrames;
+        var drop = keepFrom - _consumedFrames;
         if (drop <= 0)
         {
             return;
         }
 
         drop = Math.Min(drop, _left.Count);
-        _left.RemoveRange(0, drop);
-        _right.RemoveRange(0, drop);
+        _left.RemoveRange(0, (int)drop);
+        _right.RemoveRange(0, (int)drop);
         _consumedFrames += drop;
     }
 

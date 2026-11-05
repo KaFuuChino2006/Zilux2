@@ -1,18 +1,26 @@
-#Requires -Version 7.0
+#Requires -Version 5.1
 <#
     Host-side self-test for docs/zilux2-settings-contract.md.
 
-    Covers contract §7 checks 1-7:
+    Covers contract §7 checks 1-11 plus regression checks:
       1. first launch without a settings file -> default snapshot, no error
       2. patch -> ACK snapshot with new values + valid JSON on disk
       3. restart -> request returns the persisted values
       4. invalid value types -> fall back to defaults, host stays alive
-      5. reset -> file and snapshot are defaults again
+      5. reset -> file and snapshot are defaults again, unknown keys preserved
       6. corrupt JSON -> defaults, .corrupt-* backup, `load failed` log
       7. settings messages do not break ready / windowState / online service
+      8. shortcuts re-register / disabled / invalid keeps last / reset
+      9. autoLaunch Run value (isolated test key) + autoStartHidden command
+     10. watchLocalFolder disables/restarts the watcher logs
+     11. alwaysHandleMediaKeys flips without restart (snapshot/log proof)
+     12. loading both lyrics flags true keeps only backgroundLyrics
+     13. unreadable settings file is not overwritten by defaults
 
-    Every launch uses ZILUX2_SETTINGS_PATH under tools/_out so the real
-    %LOCALAPPDATA%\Zilux2\settings.json is never touched.
+    Runs on Windows PowerShell 5.1 and PowerShell 7+. Every launch uses
+    ZILUX2_SETTINGS_PATH under tools/_out and an isolated auto-launch Run key,
+    so the real %LOCALAPPDATA%\Zilux2\settings.json and the user's real Run
+    value are never touched.
 #>
 [CmdletBinding()]
 param(
@@ -22,6 +30,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# 测试模式：主窗口收到 WM_CLOSE 直接退出，而不是隐藏到托盘（P2-02）。
+$env:ZILUX2_SELFTEST = '1'
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $script:ExePath = Join-Path $RepoRoot "src\Zilux2\bin\$Configuration\net10.0-windows10.0.19041.0\Zilux2.exe"
@@ -34,6 +45,7 @@ $script:CurlExe = Join-Path $env:SystemRoot 'System32\curl.exe'
 $script:Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 $script:FixedToken = '0123456789abcdef0123456789abcdef'
 $script:WmClose = 0x0010
+$script:TestRunKey = 'Software\Zilux2\SettingsSelfTest\Run'
 
 $script:Passed = 0
 $script:Failed = 0
@@ -131,9 +143,46 @@ function Get-SnapshotState([string]$Text, [int]$Index) {
     try { return ($json | ConvertFrom-Json) } catch { return $null }
 }
 
-function New-ScenarioPage([string]$Scenario) {
+function Get-ShortcutState([string]$Text) {
+    if (-not $Text) { return $null }
+    $state = $null
+    foreach ($line in ($Text -split "`r?`n")) {
+        if ($line -match 'settingsprobe hostmsg (\{.*\})\s*$') {
+            try { $message = $Matches[1] | ConvertFrom-Json } catch { continue }
+            if ($message.type -eq 'host' -and $message.event -eq 'shortcuts') {
+                $state = $message.state
+            }
+        }
+    }
+    return $state
+}
+
+function Get-AllSnapshotStates([string]$Text) {
+    $states = @()
+    if (-not $Text) { return $states }
+    foreach ($line in ($Text -split "`r?`n")) {
+        if ($line -match 'settingsprobe snapshot #\d+ (\{.*\})\s*$') {
+            try { $states += ($Matches[1] | ConvertFrom-Json) } catch { }
+        }
+    }
+    return $states
+}
+
+function Get-ShortcutItem($State, [string]$Action) {
+    if ($null -eq $State -or $null -eq $State.items) { return $null }
+    return @($State.items | Where-Object { $_.action -eq $Action })[0]
+}
+
+function New-ScenarioPage([string]$Scenario, [string]$ExtraScript = '') {
     $template = [System.IO.File]::ReadAllText($script:ProbeTemplatePath)
     $page = $template.Replace('__SCENARIO__', '"' + $Scenario + '"')
+    if ($ExtraScript) {
+        # Inject inside the probe's existing <script> so the helper can reuse `bridge`/`log`.
+        $close = $page.LastIndexOf('</script>')
+        if ($close -ge 0) {
+            $page = $page.Insert($close, "`r`n    " + $ExtraScript + "`r`n")
+        }
+    }
     $dir = Join-Path $script:PagesDir $Scenario
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     [System.IO.File]::WriteAllText((Join-Path $dir 'index.html'), $page, $script:Utf8NoBom)
@@ -155,6 +204,9 @@ function Start-SettingsHost([string]$PageDir, [string]$SettingsPath) {
     $env:ZILUX2_WEB_DIR = $PageDir
     $env:ZILUX2_SETTINGS_PATH = $SettingsPath
     $env:ZILUX2_ONLINE_TOKEN = $script:FixedToken
+    $env:ZILUX2_AUTOLAUNCH_RUN_KEY = $script:TestRunKey
+    # The cleanup above removes every ZILUX2_* variable, including the test-mode flag.
+    $env:ZILUX2_SELFTEST = '1'
 
     $offset = Get-LogLength
     $proc = Start-Process -FilePath $script:ExePath -PassThru
@@ -223,15 +275,32 @@ function Assert-DefaultValues([string]$Name, $Json) {
     $ok = ($Json.version -eq 1) -and
         ($Json.general.splash -eq $true) -and
         ($Json.general.startMaximized -eq $false) -and
+        ($Json.general.autoLaunch -eq $false) -and
+        ($Json.general.autoStartHidden -eq $true) -and
+        ($Json.general.watchLocalFolder -eq $true) -and
+        ($Json.general.mediaSession -eq $true) -and
+        ($Json.general.desktopLyrics -eq $false) -and
+        ($Json.general.backgroundLyrics -eq $false) -and
         ($Json.appearance.theme -eq 'dark') -and
         ($Json.appearance.reduceMotion -eq $false) -and
         ($Json.appearance.glow -eq $true) -and
-        ($Json.appearance.heroAutoRotate -eq $true) -and
         ($Json.appearance.lyricsSize -eq 'medium') -and
+        ($Json.appearance.windowAnimation -eq 'custom') -and
+        ($Json.appearance.miniSize -eq 'standard') -and
         ($Json.playback.defaultSource -eq 'netease') -and
         ($Json.playback.searchLimit -eq 20) -and
-        ($Json.playback.lyricsAutoOpen -eq $true) -and
-        ([double]$Json.playback.volume -eq 0.72)
+        ($Json.playback.audioReactive -eq $true) -and
+        ($Json.playback.quality -eq 'high') -and
+        ($Json.playback.eqEnabled -eq $false) -and
+        ($Json.playback.fadeOutMs -eq 450) -and
+        ($Json.playback.fadeInMs -eq 450) -and
+        ($Json.playback.sleepFadeSeconds -eq 15) -and
+        ($Json.playback.sleepAction -eq 'pause') -and
+        ([double]$Json.playback.volume -eq 0.72) -and
+        ($Json.updates.autoCheck -eq $true) -and
+        ($Json.updates.mode -eq 'auto') -and
+        ($Json.shortcuts.enabled -eq $true) -and
+        ($Json.shortcuts.alwaysHandleMediaKeys -eq $true)
     Assert $Name $ok
 }
 
@@ -265,6 +334,63 @@ $patchPage = New-ScenarioPage 'patch'
 $invalidPage = New-ScenarioPage 'invalid'
 $resetPage = New-ScenarioPage 'reset'
 $startMaxPage = New-ScenarioPage 'startmax'
+
+$s8Extra = @'
+    if (scenario === 'shortcuts') {
+      const sendShortcutPatch = (payload, delay) => setTimeout(() => {
+        log('settingsprobe patch ' + JSON.stringify(payload));
+        bridge.postMessage({ v: 1, type: 'settings', action: 'patch', patch: payload });
+      }, delay);
+      sendShortcutPatch({ shortcuts: { enabled: false } }, 400);
+      sendShortcutPatch({ shortcuts: { enabled: true, playPause: 'Ctrl+Alt+Shift+F12' } }, 1400);
+      sendShortcutPatch({ shortcuts: { playPause: 'Ctrl+Alt+NotAKey' } }, 2400);
+      sendShortcutPatch({ shortcuts: { playPause: 'Ctrl+Alt+Shift+F11' } }, 3400);
+      setTimeout(() => {
+        log('settingsprobe reset sent');
+        bridge.postMessage({ v: 1, type: 'settings', action: 'reset' });
+      }, 4400);
+    }
+'@
+$shortcutPage = New-ScenarioPage 'shortcuts' $s8Extra
+
+$s9Extra = @'
+    if (scenario === 'autolaunch') {
+      const sendAutoLaunch = (value, delay) => setTimeout(() => {
+        const patch = { general: { autoLaunch: value, autoStartHidden: true } };
+        log('settingsprobe patch ' + JSON.stringify(patch));
+        bridge.postMessage({ v: 1, type: 'settings', action: 'patch', patch: patch });
+      }, delay);
+      sendAutoLaunch(true, 500);
+      sendAutoLaunch(false, 1900);
+    }
+'@
+$autoLaunchPage = New-ScenarioPage 'autolaunch' $s9Extra
+
+$s10Extra = @'
+    if (scenario === 'watch') {
+      const sendWatch = (value, delay) => setTimeout(() => {
+        const patch = { general: { watchLocalFolder: value } };
+        log('settingsprobe patch ' + JSON.stringify(patch));
+        bridge.postMessage({ v: 1, type: 'settings', action: 'patch', patch: patch });
+      }, delay);
+      sendWatch(false, 500);
+      sendWatch(true, 1700);
+    }
+'@
+$watchPage = New-ScenarioPage 'watch' $s10Extra
+
+$s11Extra = @'
+    if (scenario === 'mediakeys') {
+      const sendAlways = (value, delay) => setTimeout(() => {
+        const patch = { shortcuts: { alwaysHandleMediaKeys: value } };
+        log('settingsprobe patch ' + JSON.stringify(patch));
+        bridge.postMessage({ v: 1, type: 'settings', action: 'patch', patch: patch });
+      }, delay);
+      sendAlways(false, 500);
+      sendAlways(true, 1700);
+    }
+'@
+$mediaKeysPage = New-ScenarioPage 'mediakeys' $s11Extra
 
 # ---------------------------------------------------------------- S1: defaults
 Write-Host '--- S1 first launch: default snapshot before ready, online/window flow intact'
@@ -388,6 +514,15 @@ if (Test-Path -LiteralPath $s4Settings) {
 # ---------------------------------------------------------------- S5: reset
 Write-Host '--- S5 reset: snapshot and file back to defaults'
 $s5Settings = Get-ProfilePath 's5'
+$s5Json = @'
+{
+  "version": 1,
+  "general": { "customKeep": "general-unknown" },
+  "appearance": { "futureLook": "appearance-unknown" },
+  "futureTop": { "keep": 42 }
+}
+'@
+[System.IO.File]::WriteAllText($s5Settings, $s5Json, $script:Utf8NoBom)
 $s5 = Start-SettingsHost $resetPage $s5Settings
 $s5Text = Wait-LogMatch $s5.Offset '\[settings\] reset' 40 'S5 reset log'
 if ($s5Text) {
@@ -403,6 +538,9 @@ Assert 'S5 exit code 0' ($s5Exit -eq 0)
 if (Test-Path -LiteralPath $s5Settings) {
     $s5File = Read-SettingsFile $s5Settings
     Assert-DefaultValues 'S5 file reset to defaults' $s5File.Json
+    Assert 'S5 reset preserves unknown general key' ($s5File.Json.general.customKeep -eq 'general-unknown')
+    Assert 'S5 reset preserves unknown appearance key' ($s5File.Json.appearance.futureLook -eq 'appearance-unknown')
+    Assert 'S5 reset preserves unknown top-level key' ($s5File.Json.futureTop.keep -eq 42)
 } else {
     Fail 'S5 settings file exists' 'missing after exit'
 }
@@ -430,8 +568,8 @@ $s7Json = @'
 {
   "version": 1,
   "general": { "splash": true, "startMaximized": true },
-  "appearance": { "theme": "dark", "reduceMotion": false, "glow": true, "heroAutoRotate": true, "lyricsSize": "medium" },
-  "playback": { "defaultSource": "netease", "searchLimit": 20, "lyricsAutoOpen": true, "volume": 0.72 }
+  "appearance": { "theme": "dark", "reduceMotion": false, "glow": true, "lyricsSize": "medium", "windowAnimation": "custom" },
+  "playback": { "defaultSource": "netease", "searchLimit": 20, "audioReactive": true, "volume": 0.72 }
 }
 '@
 [System.IO.File]::WriteAllText($s7Settings, $s7Json, $script:Utf8NoBom)
@@ -455,7 +593,174 @@ if ($s7Text) {
 $s7Exit = Close-SettingsHost $s7 'S7'
 Assert 'S7 exit code 0' ($s7Exit -eq 0)
 
+# ------------------------------------------------- S8: shortcuts lifecycle
+Write-Host '--- S8 shortcuts: re-register / disabled / invalid keeps last / reset'
+$s8Settings = Get-ProfilePath 's8'
+$s8 = Start-SettingsHost $shortcutPage $s8Settings
+$s8Disabled = Wait-LogMatch $s8.Offset 'hotkey\.apply enabled=false count=0 reason=settings' 40 'S8 shortcuts disabled'
+if ($s8Disabled) {
+    Start-Sleep -Milliseconds 250
+    $s8State = Get-ShortcutState (Read-LogFrom $s8.Offset)
+    $s8Item = Get-ShortcutItem $s8State 'playPause'
+    Assert 'S8 disabled state event' ($null -ne $s8State -and $s8State.enabled -eq $false)
+    Assert 'S8 disabled item is not active' ($null -ne $s8Item -and $s8Item.ok -eq $false -and $s8Item.error -eq 'disabled')
+}
+
+$s8CustomKey = 'Ctrl+Alt+Shift+F12'
+$s8Custom = Wait-LogMatch $s8.Offset ([regex]::Escape("hotkey.register id=1 ok action=playPause key=$s8CustomKey")) 30 'S8 custom re-register'
+if ($s8Custom) {
+    Start-Sleep -Milliseconds 250
+    $s8State = Get-ShortcutState (Read-LogFrom $s8.Offset)
+    $s8Item = Get-ShortcutItem $s8State 'playPause'
+    Assert 'S8 custom shortcut applied' ($null -ne $s8Item -and $s8Item.configured -eq $s8CustomKey -and $s8Item.applied -eq $s8CustomKey -and $s8Item.ok -eq $true -and $s8Item.fallback -eq $false)
+}
+
+$s8Invalid = Wait-LogMatch $s8.Offset ([regex]::Escape('hotkey.configured action=playPause value=Ctrl+Alt+NotAKey invalid: keep previous registration')) 30 'S8 invalid keeps previous'
+if ($s8Invalid) {
+    Start-Sleep -Milliseconds 250
+    $s8State = Get-ShortcutState (Read-LogFrom $s8.Offset)
+    $s8Item = Get-ShortcutItem $s8State 'playPause'
+    Assert 'S8 invalid shortcut fallback=true' ($null -ne $s8Item -and $s8Item.configured -eq 'Ctrl+Alt+NotAKey' -and $s8Item.applied -eq $s8CustomKey -and $s8Item.ok -eq $true -and $s8Item.fallback -eq $true)
+}
+
+$s8NextKey = 'Ctrl+Alt+Shift+F11'
+$s8Next = Wait-LogMatch $s8.Offset ([regex]::Escape("hotkey.register id=1 ok action=playPause key=$s8NextKey")) 30 'S8 next re-register'
+if ($s8Next) {
+    Start-Sleep -Milliseconds 250
+    $s8State = Get-ShortcutState (Read-LogFrom $s8.Offset)
+    $s8Item = Get-ShortcutItem $s8State 'playPause'
+    Assert 'S8 new shortcut applied' ($null -ne $s8Item -and $s8Item.configured -eq $s8NextKey -and $s8Item.applied -eq $s8NextKey -and $s8Item.ok -eq $true)
+}
+
+$s8Reset = Wait-LogMatch $s8.Offset '\[settings\] reset' 30 'S8 reset'
+if ($s8Reset) {
+    Start-Sleep -Milliseconds 500
+    $s8State = Get-ShortcutState (Read-LogFrom $s8.Offset)
+    $s8Item = Get-ShortcutItem $s8State 'playPause'
+    Assert 'S8 reset restores default shortcut' ($null -ne $s8Item -and $s8Item.configured -eq 'Ctrl+Alt+Space' -and $s8Item.ok -eq $true -and $s8Item.applied.Length -gt 0)
+}
+$s8Exit = Close-SettingsHost $s8 'S8'
+Assert 'S8 exit code 0' ($s8Exit -eq 0)
+
+# ------------------------------------------------------- S9: autoLaunch Run
+Write-Host '--- S9 autoLaunch: isolated Run value and --hidden command'
+$s9Settings = Get-ProfilePath 's9'
+$s9 = Start-SettingsHost $autoLaunchPage $s9Settings
+$s9Registered = Wait-LogMatch $s9.Offset '\[autolaunch\] registered command=' 40 'S9 autolaunch registered'
+if ($s9Registered) {
+    $s9.Offset = Get-LogLength
+    $s9Key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($script:TestRunKey)
+    $s9Value = $null
+    if ($null -ne $s9Key) {
+        $s9Value = $s9Key.GetValue('Zilux2')
+        $s9Key.Dispose()
+    }
+    $s9Expected = '"' + $script:ExePath + '" --hidden'
+    Assert 'S9 Run command has quoted exe + --hidden' ($s9Value -eq $s9Expected) ("value=$s9Value")
+
+    $s9Unregistered = Wait-LogMatch $s9.Offset '\[autolaunch\] unregistered' 20 'S9 autolaunch unregistered'
+    Assert 'S9 disable removes Run value' ($null -ne $s9Unregistered)
+    $s9Key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($script:TestRunKey)
+    $s9Value = $null
+    if ($null -ne $s9Key) {
+        $s9Value = $s9Key.GetValue('Zilux2')
+        $s9Key.Dispose()
+    }
+    Assert 'S9 Run value is gone' ($null -eq $s9Value)
+}
+$s9Exit = Close-SettingsHost $s9 'S9'
+Assert 'S9 exit code 0' ($s9Exit -eq 0)
+
+# ------------------------------------------------------- S10: watch switch
+Write-Host '--- S10 watchLocalFolder: stop and restart logs'
+$s10Settings = Get-ProfilePath 's10'
+$s10 = Start-SettingsHost $watchPage $s10Settings
+$s10Disabled = Wait-LogMatch $s10.Offset '\[local\] watch disabled by settings' 40 'S10 watch disabled'
+Assert 'S10 watch disabled log' ($null -ne $s10Disabled)
+if ($s10Disabled) {
+    $s10.Offset = Get-LogLength
+    $s10Enabled = Wait-LogMatch $s10.Offset '\[local\] watch enabled by settings' 20 'S10 watch enabled'
+    Assert 'S10 watch enabled log' ($null -ne $s10Enabled)
+}
+$s10Exit = Close-SettingsHost $s10 'S10'
+Assert 'S10 exit code 0' ($s10Exit -eq 0)
+
+# ------------------------------------------------ S11: alwaysHandleMediaKeys
+Write-Host '--- S11 alwaysHandleMediaKeys: flips without restart'
+$s11Settings = Get-ProfilePath 's11'
+$s11 = Start-SettingsHost $mediaKeysPage $s11Settings
+$s11Off = Wait-LogMatch $s11.Offset 'settingsprobe patch .*alwaysHandleMediaKeys":false' 40 'S11 off patch'
+if ($s11Off) {
+    Start-Sleep -Milliseconds 400
+    $s11States = @(Get-AllSnapshotStates (Read-LogFrom $s11.Offset))
+    $s11SnapOff = @($s11States | Where-Object { $null -ne $_.shortcuts -and $_.shortcuts.alwaysHandleMediaKeys -eq $false })[0]
+    Assert 'S11 snapshot reports alwaysHandleMediaKeys=false' ($null -ne $s11SnapOff)
+
+    $s11On = Wait-LogMatch $s11.Offset 'settingsprobe patch .*alwaysHandleMediaKeys":true' 20 'S11 on patch'
+    if ($s11On) {
+        Start-Sleep -Milliseconds 400
+        $s11States = @(Get-AllSnapshotStates (Read-LogFrom $s11.Offset))
+        $s11SnapOn = @($s11States | Where-Object { $null -ne $_.shortcuts -and $_.shortcuts.alwaysHandleMediaKeys -eq $true })[0]
+        Assert 'S11 snapshot reports alwaysHandleMediaKeys=true' ($null -ne $s11SnapOn)
+    }
+}
+$s11Exit = Close-SettingsHost $s11 'S11'
+Assert 'S11 exit code 0' ($s11Exit -eq 0)
+
+# ------------------------------------------- S12: lyrics flags mutual exclusion
+Write-Host '--- S12 load: both lyrics flags true keeps background only'
+$s12Settings = Get-ProfilePath 's12'
+$s12Json = @'
+{
+  "version": 1,
+  "general": { "splash": true, "desktopLyrics": true, "backgroundLyrics": true }
+}
+'@
+[System.IO.File]::WriteAllText($s12Settings, $s12Json, $script:Utf8NoBom)
+$s12 = Start-SettingsHost $baselinePage $s12Settings
+$s12Text = Wait-LogMatch $s12.Offset '\[settings\] load: desktopLyrics disabled because backgroundLyrics was enabled' 40 'S12 load mutual exclusion'
+if ($s12Text) {
+    $s12Snap = Get-SnapshotState $s12Text 1
+    Assert 'S12 load disables desktopLyrics' ($null -ne $s12Snap -and $s12Snap.general.desktopLyrics -eq $false)
+    Assert 'S12 load keeps backgroundLyrics' ($null -ne $s12Snap -and $s12Snap.general.backgroundLyrics -eq $true)
+}
+$s12Exit = Close-SettingsHost $s12 'S12'
+Assert 'S12 exit code 0' ($s12Exit -eq 0)
+
+# --------------------------------- S13: unreadable file must not be overwritten
+Write-Host '--- S13 unreadable settings: defaults used, original file preserved'
+$s13Settings = Get-ProfilePath 's13'
+$s13Json = @'
+{
+  "version": 1,
+  "general": { "splash": true },
+  "appearance": { "theme": "dark" },
+  "playback": { "volume": 0.42 }
+}
+'@
+[System.IO.File]::WriteAllText($s13Settings, $s13Json, $script:Utf8NoBom)
+$s13Original = [System.IO.File]::ReadAllText($s13Settings)
+$s13Lock = [System.IO.File]::Open($s13Settings, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+try {
+    $s13 = Start-SettingsHost $patchPage $s13Settings
+    $s13Text = Wait-LogMatch $s13.Offset '\[settings\] save skipped: settings file was unreadable' 45 'S13 save skipped'
+    Assert 'S13 unreadable load does not overwrite' ($null -ne $s13Text)
+    $s13Exit = Close-SettingsHost $s13 'S13'
+    Assert 'S13 exit code 0' ($s13Exit -eq 0)
+} finally {
+    $s13Lock.Dispose()
+}
+$s13Final = [System.IO.File]::ReadAllText($s13Settings)
+Assert 'S13 original bytes unchanged' ($s13Final -eq $s13Original)
+$s13File = Read-SettingsFile $s13Settings
+Assert 'S13 original volume still 0.42' ([double]$s13File.Json.playback.volume -eq 0.42)
+
 # -------------------------------------------------------------- final checks
+try {
+    [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($script:TestRunKey, $false)
+} catch {
+    # test key may not exist; nothing to clean.
+}
 Get-Process -Name Zilux2 -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 $leftovers = @(Get-Process -Name Zilux2 -ErrorAction SilentlyContinue)
 Assert 'no leftover Zilux2 process' ($leftovers.Count -eq 0)

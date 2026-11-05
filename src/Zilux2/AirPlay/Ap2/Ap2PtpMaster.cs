@@ -236,7 +236,18 @@ internal sealed class Ap2PtpMaster : IDisposable
         var socket = new Socket(address.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
         try
         {
-            socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            if (OperatingSystem.IsWindows())
+            {
+                // On Windows SO_REUSEADDR lets a second bind silently succeed (the old master keeps
+                // receiving), which would run two grandmasters on the same ports. Exclusive bind is
+                // the only way to make the second acquisition fail loudly.
+                socket.ExclusiveAddressUse = true;
+            }
+            else
+            {
+                socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            }
+
             socket.Blocking = false;
             socket.Bind(new IPEndPoint(address, port));
             return socket;

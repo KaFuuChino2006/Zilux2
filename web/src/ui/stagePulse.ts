@@ -1,4 +1,5 @@
 import { cachedAnalysis } from '../online/analysis';
+import { getSettings } from '../core/settings';
 import { playerState } from './player';
 
 const SECTION_GLOW: Record<string, number> = {
@@ -10,24 +11,30 @@ const SECTION_GLOW: Record<string, number> = {
 /**
  * 结构驱动的舞台光效：用宿主分析出的段落（intro/climax/outro）和强拍位置，
  * 让背景光晕随「歌曲结构」变化，而不是只跟着音量抖。
+ *
+ * 返回卸载函数：调用后停止 rAF、移除监听与节点（歌词页反复打开/关闭时不会叠加循环）。
  */
-export function installStagePulse(target: HTMLElement): void {
+export function installStagePulse(target: HTMLElement): () => void {
   const el = document.createElement('div');
   el.className = 'stage-pulse';
   target.append(el);
 
   let frame = 0;
+  let disposed = false;
   let lastPaint = 0;
   let currentKey = '';
   let barMs = 2400;
 
   const paint = (time: number): void => {
+    if (disposed) return;
     frame = requestAnimationFrame(paint);
     if (time - lastPaint < 33) return; // ~30fps
     lastPaint = time;
 
     const state = playerState();
     const analysis = state.track ? cachedAnalysis(state.track)?.analysis : null;
+    // 「视觉随音乐」关闭：结构光保留静态亮度，但不再做强拍脉冲。
+    const reactive = getSettings().playback.audioReactive;
     const key = state.track ? `${state.track.source}:${state.track.id}` : '';
     if (key !== currentKey) {
       currentKey = key;
@@ -39,7 +46,7 @@ export function installStagePulse(target: HTMLElement): void {
       document.documentElement.dataset.stage = 'idle';
       return;
     }
-    document.documentElement.dataset.stage = 'live';
+    document.documentElement.dataset.stage = reactive ? 'live' : 'static';
 
     let base = 0.18;
     const section = (analysis.sections ?? []).find(
@@ -50,7 +57,7 @@ export function installStagePulse(target: HTMLElement): void {
     // 强拍脉冲：距最近强拍越近越亮，随小节内位置衰减。
     let pulse = 0;
     const downbeats = analysis.downbeats ?? [];
-    if (downbeats.length > 0) {
+    if (reactive && downbeats.length > 0) {
       let lo = 0;
       let hi = downbeats.length - 1;
       let at = -1;
@@ -73,6 +80,22 @@ export function installStagePulse(target: HTMLElement): void {
     el.style.opacity = glow.toFixed(3);
   };
 
+  const onBeforeUnload = (): void => {
+    if (frame) cancelAnimationFrame(frame);
+    frame = 0;
+  };
+  window.addEventListener('beforeunload', onBeforeUnload);
   frame = requestAnimationFrame(paint);
-  window.addEventListener('beforeunload', () => cancelAnimationFrame(frame));
+
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    if (frame) cancelAnimationFrame(frame);
+    frame = 0;
+    window.removeEventListener('beforeunload', onBeforeUnload);
+    el.remove();
+    if (document.documentElement.dataset.stage === 'live' || document.documentElement.dataset.stage === 'static') {
+      document.documentElement.dataset.stage = 'idle';
+    }
+  };
 }

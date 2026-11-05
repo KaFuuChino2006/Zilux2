@@ -6,8 +6,9 @@
  *   与 web/src/ui/local.ts:64 `trackOf()`、local.ts:89 `relOf()` 使用的 rel 完全一致；
  * - CUE 分轨：同一镜像文件会被拆成多首，用 `${rel}#<起始毫秒>` 区分，
  *   起始毫秒 = LocalEntry.startAt（秒）× 1000，见 web/src/ui/local.ts:136。
- *   宿主给的 startMs 是整数，round 后不会因浮点误差抖动；Windows 文件名不允许 `#`，
- *   所以该分隔符不会与真实 rel 冲突。
+ *   宿主给的 startMs 是整数，round 后不会因浮点误差抖动；`#` 在 NTFS 文件名里合法，
+ *   所以非 CUE 曲目若自身 rel 结尾形如 `#123`，parseLocalTrackKey 会先按 CUE 解释，
+ *   entryOfTrackKey 再回退成「整串就是普通 rel」的候选（见 D-13）。
  *
  * 数据示例（localStorage `zilux2.localPlaylists`）：
  * [{"id":"pl_lq3k9x_a1b2c3","name":"深夜歌单","trackKeys":["专辑/01.flac","专辑/02.flac#125000"],"createdAt":1761300000000}]
@@ -86,11 +87,23 @@ export function entryOfTrackKey(key: string): LocalEntry | null {
   const library = localLibrary();
   if (!parts || !library) return null;
   const startAtMs = Math.round(parts.startAtMs);
-  return (
-    library.entries.find(
-      (entry) => entry.rel === parts.rel && Math.round(entry.startAt * 1000) === startAtMs,
-    ) ?? null
+  const matched = library.entries.find(
+    (entry) => entry.rel === parts.rel && Math.round(entry.startAt * 1000) === startAtMs,
   );
+  if (matched) return matched;
+
+  // D-13：普通（非 CUE）文件名本身可能以 `#数字` 结尾。这种 key 没有真正的 CUE 后缀，
+  // 上面按「rel + startMs」查不到时，回退成整串 rel、start=0 再找一次。
+  if (startAtMs > 0) {
+    const raw = key.trim();
+    return (
+      library.entries.find(
+        (entry) => entry.rel === raw && Math.round(entry.startAt * 1000) === 0,
+      ) ?? null
+    );
+  }
+
+  return null;
 }
 
 /** trackKey → 统一曲目对象（可用现有行组件/播放器；映射也会登记 rel，供 relOf 使用）。 */

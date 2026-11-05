@@ -47,6 +47,8 @@ internal sealed class MediaSessionService : IDisposable
     // 「当前媒体会话」跟随：媒体键接管（MediaKeyHookService）只在 Zilux2 是当前会话时吞键，
     // 这样别的程序（QQ 音乐等）在放歌时媒体键仍然归它们，贴近系统原生行为。
     private GlobalSystemMediaTransportControlsSessionManager? _sessionManager;
+    // RequestAsync 可能跨一次 Disable→Enable：用代次丢弃过期的续体，避免旧管理器被重新挂上（B11）。
+    private int _sessionManagerGeneration;
     private string? _lastCurrentSessionId;
     private bool _lastCurrentSessionOurs;
     private bool _currentSessionLogged;
@@ -145,12 +147,31 @@ internal sealed class MediaSessionService : IDisposable
         }
 
         SystemMediaTransportControls? controls;
+        GlobalSystemMediaTransportControlsSessionManager? manager;
         lock (_gate)
         {
             controls = _controls;
             _controls = null;
             _pending = null;
             _coalesceScheduled = false;
+            manager = _sessionManager;
+            _sessionManager = null;
+            _sessionManagerGeneration++;
+            _isCurrentSession = false;
+        }
+
+        // 重新 Enable 时会创建新的会话管理器；旧管理器必须解绑，否则 Disable→Enable 会让
+        // 同一个 CurrentSessionChanged 挂上两个处理器（B11，重复刷新/泄漏）。
+        if (manager is not null)
+        {
+            try
+            {
+                manager.CurrentSessionChanged -= OnCurrentSessionChanged;
+            }
+            catch (Exception exception)
+            {
+                HostLog.Warn($"[smtc] session manager detach failed: {Describe(exception)}");
+            }
         }
 
         _coverCts?.Cancel();
@@ -186,13 +207,28 @@ internal sealed class MediaSessionService : IDisposable
     {
         try
         {
+            // 代次在 await 前捕获：Disable→Enable 期间旧请求可能后完成，必须丢弃，
+            // 否则旧管理器被重新挂上、新管理器的订阅被覆盖，形成重复订阅（B11）。
+            var generation = _sessionManagerGeneration;
             var manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
             if (_disposed)
             {
                 return;
             }
 
-            _sessionManager = manager;
+            // RequestAsync 期间可能已被 Disable（_controls 被清空）：此时不能再挂管理器，
+            // 否则会留下一个永远不会被解绑的订阅（B11）。Enable/Disable 都跑在 UI 线程，
+            // 续体不会与 Disable 交错，这里的判断足够。
+            lock (_gate)
+            {
+                if (_controls is null || generation != _sessionManagerGeneration)
+                {
+                    return;
+                }
+
+                _sessionManager = manager;
+            }
+
             manager.CurrentSessionChanged += OnCurrentSessionChanged;
             RefreshCurrentSession();
         }

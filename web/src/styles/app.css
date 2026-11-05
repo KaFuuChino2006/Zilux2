@@ -32,6 +32,9 @@ img{display:block}
 .win-btn:hover{background:rgb(var(--overlay-rgb) / .1);color:var(--text)}
 .win-btn.is-close:hover{background:#e5484d;color:#fff}
 .win-btn svg{width:14px;height:14px}
+/* 最大化（bridge windowState → app.is-maximized）：窗口贴边后窗口控制组改用与窗口一致的克制圆角。 */
+.app.is-maximized .win-btns{border-radius:var(--radius-sm)}
+.app.is-maximized .win-btn{border-radius:var(--radius-sm)}
 .account-btn{width:44px;height:44px;border-radius:50%;overflow:hidden;border:1px solid var(--line);background:var(--surface-strong);backdrop-filter:blur(18px);display:grid;place-items:center;color:var(--text-soft);transition:border-color .2s var(--ease),transform .2s var(--ease)}
 .account-btn:hover{border-color:var(--line-strong);transform:translateY(-1px)}
 .account-btn img{width:100%;height:100%;object-fit:cover}
@@ -131,12 +134,14 @@ img{display:block}
 .lyrics-artist{margin-top:3px;font-size:12px;color:rgb(var(--overlay-rgb) / .6)}
 .lyrics-body{position:relative;z-index:2;flex:1;min-height:0;overflow:hidden;display:flex;align-items:center;justify-content:center;padding:0 8vw}
 .lyrics-lines{width:min(1080px,100%);display:flex;flex-direction:column;align-items:center;gap:8px;transition:transform .55s var(--ease)}
-.lyric-line{width:100%;text-align:center;font-size:clamp(26px,2.6vw,40px);font-weight:700;letter-spacing:-.03em;line-height:1.24;color:rgb(var(--overlay-rgb) / .32);transition:color .4s var(--ease),opacity .4s var(--ease),transform .5s var(--ease),filter .4s var(--ease);transform:scale(.94);filter:blur(.6px)}
+.lyric-line{width:100%;text-align:center;font-size:var(--lyric-line-size,clamp(26px,2.6vw,40px));font-weight:700;letter-spacing:-.03em;line-height:1.24;color:rgb(var(--overlay-rgb) / .32);transition:color .4s var(--ease),opacity .4s var(--ease),transform .5s var(--ease),filter .4s var(--ease);transform:scale(.94);filter:blur(.6px)}
 .lyric-line.is-near{color:rgb(var(--overlay-rgb) / .5);filter:none}
 .lyric-line.is-active{color:#fff;transform:scale(1);filter:none;text-shadow:0 10px 44px rgb(var(--overlay-rgb) / .12)}
 .lyric-char{color:rgb(var(--overlay-rgb) / .34);transition:color .2s linear}
 .lyric-line.is-active .lyric-char.is-sung{color:#fff;text-shadow:0 0 26px rgb(var(--overlay-rgb) / .28)}
 .lyric-line.is-active .lyric-char.is-hot{color:#ffe6b0;text-shadow:0 0 30px rgba(255,214,140,.55)}
+:root[data-lyrics-size="small"]{--lyric-line-size:clamp(22px,2.2vw,34px);--lyric-line-size-side:clamp(17px,1.7vw,26px)}
+:root[data-lyrics-size="large"]{--lyric-line-size:clamp(30px,3.1vw,47px);--lyric-line-size-side:clamp(23px,2.4vw,36px)}
 .lyrics-empty{color:var(--muted);font-size:15px;text-align:center;line-height:2}
 .sheet{position:fixed;inset:0;z-index:120;display:flex;justify-content:flex-end;background:rgb(var(--ink-rgb) / .5);backdrop-filter:blur(6px);animation:fade-in .24s var(--ease)}
 .sheet-panel{width:min(460px,92vw);height:100%;background:var(--panel-solid);border-left:1px solid var(--line);display:flex;flex-direction:column;animation:slide-in .32s var(--ease)}
@@ -236,6 +241,11 @@ to{opacity:1;transform:translateY(0);letter-spacing:.14em}
 .lyric-trans{margin-left:.55em;font-size:.54em;font-weight:500;color:rgb(var(--overlay-rgb) / .42);letter-spacing:0}
 .lyric-line.is-active .lyric-trans{color:rgb(var(--overlay-rgb) / .6)}
 .login-source .btn{width:100%;justify-content:center}
+/* 设置里的「减少动效」与系统偏好同效：命中后关闭过渡与循环动画。 */
+.reduce-motion *,.reduce-motion *::before,.reduce-motion *::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important;scroll-behavior:auto!important}
+/* 设置里的「光晕」关闭：去掉歌词辉光与封面氛围光，不影响布局。 */
+.no-glow .lyric-char,.no-glow .lyric-line{text-shadow:none!important}
+.no-glow .mood-cover .mood-glow{display:none}
 @media(prefers-reduced-motion:reduce){*{animation-duration:.001ms!important;transition-duration:.001ms!important}
 }
 .upnext{position:fixed;right:22px;bottom:calc(var(--player-h) + 16px);z-index:8;display:flex;flex-direction:column;align-items:flex-end;gap:10px;max-width:min(360px,92vw)}
@@ -604,7 +614,7 @@ to{opacity:1;transform:none}
 .lyrics-meta .lyrics-artist{margin-top:6px;font-size:13px;color:rgb(var(--overlay-rgb) / .58)}
 .lyrics-right{position:relative;flex:1 1 auto;min-width:0;align-self:stretch;display:flex;align-items:center;overflow:hidden;-webkit-mask-image:linear-gradient(180deg,transparent,#000 14%,#000 86%,transparent);mask-image:linear-gradient(180deg,transparent,#000 14%,#000 86%,transparent)}
 .lyrics-right .lyrics-lines{width:100%;align-items:flex-start;gap:16px}
-.lyrics-right .lyric-line{width:100%;text-align:left;font-size:clamp(20px,2.05vw,31px);font-weight:600;line-height:1.52;letter-spacing:.01em;color:rgb(var(--overlay-rgb) / .32);transform-origin:0% 50%;transition:color var(--dur-mid) var(--ease),opacity var(--dur-mid) var(--ease)}
+.lyrics-right .lyric-line{width:100%;text-align:left;font-size:var(--lyric-line-size-side,clamp(20px,2.05vw,31px));font-weight:600;line-height:1.52;letter-spacing:.01em;color:rgb(var(--overlay-rgb) / .32);transform-origin:0% 50%;transition:color var(--dur-mid) var(--ease),opacity var(--dur-mid) var(--ease)}
 .lyrics-right .lyric-line.is-near{color:rgb(var(--overlay-rgb) / .5)}
 .lyrics-right .lyric-line.is-active{color:var(--text)}
 .lyrics-right .lyric-trans{display:block;margin-top:7px;font-size:.56em;font-weight:500;color:rgb(var(--overlay-rgb) / .52)}
@@ -876,6 +886,8 @@ to{opacity:1;transform:none}
 .quick-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 10px}
 .quick-cell{display:flex;flex-direction:column;gap:6px;min-width:0;padding:8px 9px;border-radius:12px;background:var(--surface)}
 .quick-cell.is-wide{grid-column:span 2}
+.quick-cell.is-disabled{opacity:.55}
+.quick-cell.is-disabled .quick-seg-slider,.quick-cell.is-disabled .seg,.quick-cell.is-disabled .pill-switch{pointer-events:none}
 .quick-cell-hint{font-size:11px;line-height:1.45;color:var(--muted);opacity:.82;letter-spacing:.01em}
 .quick-cell.is-reveal{animation:quick-cell-in .3s cubic-bezier(.22,1.28,.36,1) both}
 .quick-cell.is-collapsing{opacity:0;transform:translateY(-4px);transition:opacity .13s ease,transform .13s ease;pointer-events:none}
@@ -3513,11 +3525,11 @@ body,
   color: #fff3dc;
 }
 
-/* 快捷设置里的播放效果档位：7 个按钮要挤进一行 */
+/* 快捷设置里的播放效果档位：5 个按钮（关闭/纯字/房间/唱片/几何）挤进一行 */
 .quick-effect-seg .quick-seg-btn {
-  font-size: 11px;
-  padding: 0 1px;
-  letter-spacing: -0.02em;
+  font-size: 11.5px;
+  padding: 0 2px;
+  letter-spacing: -0.01em;
 }
 
 /* 快捷设置里的歌词样式档位：6 个按钮（经典/上浮/波浪/摇曳/打字机/旋入）也要挤进一行 */
@@ -4101,12 +4113,74 @@ body,
   color: #ffffff;
 }
 
+/* ── 播放效果 · 几何（文字 PV 排版：一句一种构图 + 错版叠印 + 网点颗粒） ──
+   场景本体在 ui/geoScene.ts 里自己画（2D canvas：底色、半调网点、颗粒、网格、版面元素与八种排版），
+   舞台沿用 .lyrics-stage 的绝对定位与淡入规则，这里补落底色和周边控件配色。
+   几何档的底色可以是深（暗夜/蓝晒）也可以是浅（纸本/酸绿/孔版），所以控件一律用深色半透明药丸，
+   在两种底色上都读得清。 */
+.lyrics-stage.is-geo {
+  background: #0a0b0e;
+}
+.lyrics-stage.is-geo .zl-geo-scene {
+  position: absolute;
+  inset: 0;
+}
+.lyrics-stage.is-geo canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.lyrics-view.is-geo .lyrics-scrim {
+  background: transparent;
+}
+.lyrics-view.is-geo .lyrics-bg {
+  opacity: 0;
+  visibility: hidden;
+}
+.lyrics-view.is-geo .lyrics-close {
+  color: #f5f1e8;
+  background: rgb(10 10 12 / 0.42);
+  border-color: rgb(255 255 255 / 0.26);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.32);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+.lyrics-view.is-geo .lyrics-close:hover {
+  background: rgb(10 10 12 / 0.62);
+}
+.lyrics-view.is-geo .lyrics-title {
+  color: #f7f3ea;
+}
+.lyrics-view.is-geo .lyrics-artist,
+.lyrics-view.is-geo .lyrics-source,
+.lyrics-view.is-geo .lyrics-progress-time {
+  color: rgb(247 243 234 / 0.66) !important;
+}
+.lyrics-view.is-geo .lyrics-progress-track {
+  background: rgb(255 255 255 / 0.18);
+}
+.lyrics-view.is-geo .lyrics-bg-control {
+  background: rgb(10 10 12 / 0.38);
+  border-color: rgb(255 255 255 / 0.26);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+.lyrics-view.is-geo .lyrics-bg-btn {
+  color: rgb(247 243 234 / 0.66);
+}
+.lyrics-view.is-geo .lyrics-bg-btn.is-on {
+  color: #ffffff;
+}
+
 /* 进页提示的同优先级覆盖要写在通用规则之后，否则会被「纯字 · 准备中」压掉 */
 .lyrics-view.is-room.is-lumiere-fresh::after {
   content: '房间 · 准备中';
 }
 .lyrics-view.is-vinyl.is-lumiere-fresh::after {
   content: '唱片 · 准备中';
+}
+.lyrics-view.is-geo.is-lumiere-fresh::after {
+  content: '几何 · 排版中';
 }
 
 /* ====================================================================== */

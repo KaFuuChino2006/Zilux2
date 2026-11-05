@@ -20,6 +20,8 @@ internal sealed class QqProvider : IOnlineMusicProvider
     private static readonly TimeSpan SearchTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan StreamTimeout = TimeSpan.FromSeconds(8);
     private static readonly TimeSpan LyricTimeout = TimeSpan.FromSeconds(10);
+    // D-44：登录后的会员态探测是尽力而为步骤，不能占用完整搜索预算。
+    private static readonly TimeSpan EnrichmentTimeout = TimeSpan.FromSeconds(3);
 
     // Contract §4.2: any stable 10-digit number works; one per host run is enough.
     private readonly string _guid = Random.Shared.Next(1000000000, 2000000000).ToString(CultureInfo.InvariantCulture);
@@ -277,7 +279,28 @@ internal sealed class QqProvider : IOnlineMusicProvider
                 return StreamResolution.NotPlayable("该歌曲需要 QQ 音乐会员或已下架");
             }
 
-            var audioUrl = purl.StartsWith("http", StringComparison.OrdinalIgnoreCase) ? purl : sip + purl;
+            string audioUrl;
+            if (purl.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+            {
+                audioUrl = purl;
+            }
+            else if (!string.IsNullOrWhiteSpace(sip))
+            {
+                // D-42：sip 与相对 purl 拼接时只保留一个斜杠，且结果必须是绝对 http(s) URL。
+                audioUrl = sip.TrimEnd('/') + "/" + purl.TrimStart('/');
+            }
+            else
+            {
+                OnlineHttp.Warn($"POST qq/vkey id={id} quality={quality} missing sip purl={purl}");
+                return StreamResolution.NotPlayable("QQ 音乐没有返回可用的播放地址，请稍后重试");
+            }
+
+            if (!Uri.TryCreate(audioUrl, UriKind.Absolute, out var audioUri) ||
+                (audioUri.Scheme != Uri.UriSchemeHttp && audioUri.Scheme != Uri.UriSchemeHttps))
+            {
+                OnlineHttp.Warn($"POST qq/vkey id={id} quality={quality} invalid url sip={sip} purl={purl}");
+                return StreamResolution.NotPlayable("QQ 音乐返回的播放地址无效，请稍后重试");
+            }
             var ext = purl.Contains(".flac", StringComparison.OrdinalIgnoreCase) ? "flac"
                 : purl.Contains(".m4a", StringComparison.OrdinalIgnoreCase) ? "m4a"
                 : purl.Contains(".mp3", StringComparison.OrdinalIgnoreCase) ? "mp3"
@@ -387,7 +410,7 @@ internal sealed class QqProvider : IOnlineMusicProvider
             var upstream = await OnlineHttp.FetchTextAsync(
                     VkeyEndpoint,
                     RefererUrl,
-                    StreamTimeout,
+                    EnrichmentTimeout,
                     cancellationToken,
                     HttpMethod.Post,
                     body,

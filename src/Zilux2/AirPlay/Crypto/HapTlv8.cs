@@ -173,7 +173,19 @@ public static class HapTlv
         byte? state = null;
         foreach (var item in items)
         {
-            if (item.Type == HapTlvType.State && item.Value.Length == 1) state = item.Value[0];
+            if (item.Type != HapTlvType.State) continue;
+            // P2-65: State 必须恰好 1 字节且只能出现一次；多字节/重复值以前会被静默忽略或
+            // 由最后一个覆盖，可能把畸形响应当成合法状态推进。
+            if (item.Value.Length != 1)
+            {
+                throw new HapPairingException(HapPairingError.TlvError,
+                    $"State 字段长度非法：{item.Value.Length} 字节（应为 1）。");
+            }
+            if (state is not null)
+            {
+                throw new HapPairingException(HapPairingError.TlvError, "响应里出现重复的 State 字段。");
+            }
+            state = item.Value[0];
         }
 
         if (state is null) throw new HapPairingException(HapPairingError.TlvError, "响应里缺少 State");

@@ -28,6 +28,7 @@ import {
 } from './lumiere-folia/types';
 import { MotionValue } from './lumiere-folia/shims/framer-motion';
 import { playbackAnalyser } from '../core/audioTap';
+import { getSettings } from '../core/settings';
 import { onPlayer, playerState } from './player';
 import { lyricTextSettings, textSettingsToTuning, type LyricTextSettings } from './lumiereSettings';
 
@@ -39,14 +40,19 @@ import { lyricTextSettings, textSettingsToTuning, type LyricTextSettings } from 
 for (const profile of LUMIERE_PROFILES) profile.typography = 'horizontal';
 
 
-/** 播放效果：关闭 / 纯字（folia 绘光的文字特效）/ 房间（薄荷绿纵深 + 长条地毯，逐词飘浮 + 镜头跟随，可细调）/ 唱片（暖褐聆听室 + 33⅓ 转黑胶 + 黄铜唱臂，可细调）。 */
-export type LumiereMode = 'off' | 'text' | 'room' | 'vinyl';
+/** 播放效果：关闭 / 纯字（folia 绘光的文字特效）/ 房间（薄荷绿纵深 + 长条地毯，逐词飘浮 + 镜头跟随，可细调）/ 唱片（暖褐聆听室 + 33⅓ 转黑胶 + 黄铜唱臂，可细调）/ 几何（文字 PV 排版：每句一种构图 + 错版叠印 + 网点颗粒，可细调）。 */
+export type LumiereMode = 'off' | 'text' | 'room' | 'vinyl' | 'geo';
 
 export const LUMIERE_MODES: Array<{ id: LumiereMode; label: string; hint: string }> = [
   { id: 'off', label: '关闭', hint: '歌词页不显示播放效果' },
   { id: 'text', label: '纯字', hint: 'folia 绘光的文字特效：发光大字、关键字染色、逐字点亮，可在「文字设置」里加背景光柱与雾' },
   { id: 'room', label: '房间', hint: '薄荷绿纵深 + 长条地毯：每句歌词拆成词散落在前方空间里，镜头跟着正在唱的那句推进；到「快捷设置 → 房间设置」可细调歌词风格、颜色与离散度' },
   { id: 'vinyl', label: '唱片', hint: '暖褐聆听室 + 33⅓ 转黑胶 + 黄铜唱臂：歌词压在唱片下方逐词点亮，暂停时唱片渐停、唱臂抬起；到「快捷设置 → 唱片设置」可细调盘面、唱臂与歌词样式' },
+  {
+    id: 'geo',
+    label: '几何',
+    hint: '文字 PV 排版：每句换一种构图（横条压字 / 竖排 / 巨字裁切 / 镜像 / 网格 / 跑马灯 / 画框 / 拼章），配青品两路错版、半调网点与裁切标记；到「快捷设置 → 几何设置」可细调配色、字形与肌理',
+  },
 ];
 
 const STORE_KEY = 'zilux2.lumiere';
@@ -58,6 +64,7 @@ export function lumiereMode(): LumiereMode {
     // 「房间」「唱片」是后加的整页场景；「光场」已删除不再复活；「绘光」被「纯字」取代，存档直接落到纯字。
     if (raw === 'room') return 'room';
     if (raw === 'vinyl') return 'vinyl';
+    if (raw === 'geo') return 'geo';
     if (raw === 'off' || raw === 'lightfield') return 'off';
     if (raw) return 'text';
   } catch {
@@ -95,6 +102,23 @@ export interface LumiereSongInput {
     translation: string;
     words: ReadonlyArray<{ text: string; startMs: number; endMs: number; spaceBefore?: boolean }>;
   }>;
+}
+
+/**
+ * 歌词正文摘要：同一首曲目换歌词源/补翻译时 timeMs 往往不变，
+ * 旧签名只含行数与首末时间，会漏掉正文变化（画布停在旧词上）。这里加一层轻量 FNV。
+ */
+function lyricsTextDigest(lines: LumiereSongInput['lines']): string {
+  if (lines.length === 0) return '0';
+  let hash = 0x811c9dc5;
+  for (const line of lines) {
+    const text = `${line.text}\u0000${line.translation}`;
+    for (let index = 0; index < text.length; index += 1) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+  }
+  return `${lines.length}:${hash.toString(16)}`;
 }
 
 const toFoliaLines = (input: LumiereSongInput): Line[] => {
@@ -291,7 +315,23 @@ export function createLumiereStage(options: LumiereStageOptions = {}): LumiereSt
     if (runtime) runtime.setPaused(!state.playing);
   });
 
+  /** 「视觉随音乐」是否开启：关闭时清一次能量值并停止读频谱。 */
+  let audioReactive = true;
+
   const updateAudio = (): void => {
+    if (!getSettings().playback.audioReactive) {
+      if (audioReactive) {
+        audioReactive = false;
+        audioPower.set(0);
+        audioBands.bass.set(0);
+        audioBands.lowMid.set(0);
+        audioBands.mid.set(0);
+        audioBands.vocal.set(0);
+        audioBands.treble.set(0);
+      }
+      return;
+    }
+    audioReactive = true;
     if (!analyser) {
       analyser = playbackAnalyser();
       if (!analyser) return;
@@ -416,7 +456,7 @@ export function createLumiereStage(options: LumiereStageOptions = {}): LumiereSt
   const applySong = (next: LumiereSongInput | null): void => {
     if (!runtime) return;
     const signature = next
-      ? `${next.trackKey}|${next.lines.length}|${next.lines[0]?.timeMs ?? 0}|${next.lines[next.lines.length - 1]?.timeMs ?? 0}|${next.durationMs}|${next.lyricOffsetMs}|${themeSignature()}`
+      ? `${next.trackKey}|${next.lines.length}|${next.lines[0]?.timeMs ?? 0}|${next.lines[next.lines.length - 1]?.timeMs ?? 0}|${next.durationMs}|${next.lyricOffsetMs}|${lyricsTextDigest(next.lines)}|${themeSignature()}`
       : `empty|${themeSignature()}`;
     if (signature === songSignature) return;
     const hasLines = (next?.lines.length ?? 0) > 0;
@@ -447,7 +487,7 @@ export function createLumiereStage(options: LumiereStageOptions = {}): LumiereSt
     const controller = abort;
     const context = buildSongContext(song);
     songSignature = song
-      ? `${song.trackKey}|${song.lines.length}|${song.lines[0]?.timeMs ?? 0}|${song.lines[song.lines.length - 1]?.timeMs ?? 0}|${song.durationMs}|${song.lyricOffsetMs}|${themeSignature()}`
+      ? `${song.trackKey}|${song.lines.length}|${song.lines[0]?.timeMs ?? 0}|${song.lines[song.lines.length - 1]?.timeMs ?? 0}|${song.durationMs}|${song.lyricOffsetMs}|${lyricsTextDigest(song.lines)}|${themeSignature()}`
       : `empty|${themeSignature()}`;
     metadata = {
       title: song?.title ?? '',

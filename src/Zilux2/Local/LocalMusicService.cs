@@ -45,6 +45,14 @@ internal sealed partial class LocalMusicService
     private List<string> _folderLyrics = new();
     private readonly List<LocalTrackDto> _downloadTracks = new();
 
+    /// <summary>当前下载目录 + 历史下载目录（切换目录后旧文件仍可扫描/播放，不迁移、不删除用户文件）。</summary>
+    private readonly List<string> _downloadRoots = new();
+    private bool _downloadRootsLoaded;
+    private bool _downloadTruncated;
+    private string? _libraryNotice;
+
+    private const int MaxDownloadRoots = 4;
+
     /// <summary>
     /// 主文件夹之外追加的曲库根目录。主目录的 Rel 不带前缀；附加目录统一加 `@libN/` 前缀，
     /// 这样播放/封面/歌词/标签/删除都能靠前缀把请求路由回正确的根。
@@ -99,15 +107,17 @@ internal sealed partial class LocalMusicService
 
         try
         {
-            var root = _currentFolder;
-            var localRel = rel;
             if (rel.StartsWith(DownloadRelPrefix, StringComparison.Ordinal))
             {
                 EnsureDownloadFolder();
-                root = _downloadFolder;
-                localRel = rel[DownloadRelPrefix.Length..];
+                return TryResolveDownloadPath(rel[DownloadRelPrefix.Length..], out var downloadPath)
+                    ? LocalCover.Read(downloadPath)?.Bytes
+                    : null;
             }
-            else if (TryMapExtraPath(rel, out var extraRoot, out var extraRelative))
+
+            var root = _currentFolder;
+            var localRel = rel;
+            if (TryMapExtraPath(rel, out var extraRoot, out var extraRelative))
             {
                 root = extraRoot;
                 localRel = extraRelative;
@@ -119,7 +129,7 @@ internal sealed partial class LocalMusicService
             }
 
             var fullPath = Path.GetFullPath(Path.Combine(root, localRel.Replace('/', Path.DirectorySeparatorChar)));
-            if (!fullPath.StartsWith(root, StringComparison.OrdinalIgnoreCase) || !File.Exists(fullPath))
+            if (!IsUnderRoot(root, fullPath) || !File.Exists(fullPath))
             {
                 return null;
             }
@@ -232,7 +242,7 @@ internal sealed partial class LocalMusicService
             return;
         }
 
-        if (!fullPath.StartsWith(folder, StringComparison.OrdinalIgnoreCase) || !File.Exists(fullPath))
+        if (!IsUnderRoot(folder, fullPath) || !File.Exists(fullPath))
         {
             HostLog.Warn($"[local] 404 {uri.AbsolutePath}");
             Respond(e, core, 404, "Not Found", "text/plain", Array.Empty<byte>());
@@ -290,6 +300,7 @@ internal sealed partial class LocalMusicService
         long start = 0;
         long end = total - 1;
         var partial = false;
+        var rangeRejected = false;
         if (!string.IsNullOrWhiteSpace(rangeHeader) && rangeHeader.StartsWith("bytes=", StringComparison.OrdinalIgnoreCase))
         {
             var spec = rangeHeader.Substring(6).Split(',')[0].Trim();
@@ -304,10 +315,18 @@ internal sealed partial class LocalMusicService
                 }
                 else if (long.TryParse(startText, out var parsedStart))
                 {
-                    start = Math.Max(0, Math.Min(parsedStart, total - 1));
-                    if (endText.Length > 0 && long.TryParse(endText, out var parsedEnd))
+                    if (parsedStart >= total)
                     {
-                        end = Math.Max(start, Math.Min(parsedEnd, total - 1));
+                        // D-35：起点越界必须 416，不能夹到最后一个字节伪装成 206。
+                        rangeRejected = true;
+                    }
+                    else
+                    {
+                        start = Math.Max(0, parsedStart);
+                        if (endText.Length > 0 && long.TryParse(endText, out var parsedEnd))
+                        {
+                            end = Math.Max(start, Math.Min(parsedEnd, total - 1));
+                        }
                     }
                 }
 
@@ -315,10 +334,25 @@ internal sealed partial class LocalMusicService
             }
         }
 
-        if (end < start || total <= 0)
+        if (rangeRejected || end < start || total <= 0)
         {
             Respond(e, core, 416, "Range Not Satisfiable", "text/plain", Array.Empty<byte>());
             return;
+        }
+
+        // D-21：WebView2 的响应 API 需要整段 byte[]，这里给单次响应设上限，避免一次请求把几个 GB 读进内存。
+        const long MaxServeBytes = 256L * 1024 * 1024;
+        if (end - start + 1 > MaxServeBytes)
+        {
+            if (!partial)
+            {
+                HostLog.Warn($"[local] file too large for bufferless response: {Path.GetFileName(path)} {total}B");
+                Respond(e, core, 416, "Range Not Satisfiable", "text/plain",
+                    System.Text.Encoding.UTF8.GetBytes("文件过大，请使用 Range 请求分段播放"));
+                return;
+            }
+
+            end = start + MaxServeBytes - 1;
         }
 
         byte[] bytes;
@@ -365,14 +399,22 @@ internal sealed partial class LocalMusicService
     private void ServeCover(CoreWebView2WebResourceRequestedEventArgs e, CoreWebView2 core, Uri uri)
     {
         var rel = QueryValue(uri.Query, "rel");
-        var folder = _currentFolder;
         if (rel is not null && rel.StartsWith(DownloadRelPrefix, StringComparison.Ordinal))
         {
-            // 下载目录里的文件同样支持内嵌封面，路径前缀与曲库 rel 一致。
-            folder = _downloadFolder;
-            rel = rel[DownloadRelPrefix.Length..];
+            // 下载目录（含历史下载根）里的文件同样支持内嵌封面。
+            EnsureDownloadFolder();
+            if (!TryResolveDownloadPath(rel[DownloadRelPrefix.Length..], out var downloadPath))
+            {
+                Respond(e, core, 404, "Not Found", "text/plain", Array.Empty<byte>());
+                return;
+            }
+
+            ServeCoverFile(e, core, downloadPath);
+            return;
         }
-        else if (rel is not null && TryMapExtraPath(rel, out var extraRoot, out var extraRelative))
+
+        var folder = _currentFolder;
+        if (rel is not null && TryMapExtraPath(rel, out var extraRoot, out var extraRelative))
         {
             folder = extraRoot;
             rel = extraRelative;
@@ -395,14 +437,25 @@ internal sealed partial class LocalMusicService
             return;
         }
 
-        if (!fullPath.StartsWith(folder, StringComparison.OrdinalIgnoreCase) || !File.Exists(fullPath))
+        if (!IsUnderRoot(folder, fullPath) || !File.Exists(fullPath))
         {
             Respond(e, core, 404, "Not Found", "text/plain", Array.Empty<byte>());
             return;
         }
 
-        byte[] bytes;
+        ServeCoverFile(e, core, fullPath);
+    }
+
+    /// <summary>读取并缓存一个已校验过的封面文件。</summary>
+    private void ServeCoverFile(CoreWebView2WebResourceRequestedEventArgs e, CoreWebView2 core, string fullPath)
+    {
+        if (!File.Exists(fullPath))
+        {
+            Respond(e, core, 404, "Not Found", "text/plain", Array.Empty<byte>());
+            return;
+        }
         string contentType;
+        byte[] bytes;
         lock (_coverCache)
         {
             if (_coverCache.TryGetValue(fullPath, out var cached))
@@ -659,14 +712,16 @@ internal sealed partial class LocalMusicService
         }
 
         EnsureDownloadFolder();
-        string root;
-        string relative;
         if (rel.StartsWith(DownloadRelPrefix, StringComparison.Ordinal))
         {
-            root = _downloadFolder;
-            relative = rel[DownloadRelPrefix.Length..];
+            return TryResolveDownloadPath(rel[DownloadRelPrefix.Length..], out var downloadPath)
+                ? downloadPath
+                : null;
         }
-        else if (TryMapExtraPath(rel, out var extraRoot, out var extraRelative))
+
+        string root;
+        string relative;
+        if (TryMapExtraPath(rel, out var extraRoot, out var extraRelative))
         {
             root = extraRoot;
             relative = extraRelative;
@@ -1485,20 +1540,202 @@ internal sealed partial class LocalMusicService
 
     private void EnsureDownloadFolder()
     {
+        EnsureDownloadRootsLoaded();
         var next = ResolveDownloadFolder();
         if (string.Equals(next, _downloadFolder, StringComparison.OrdinalIgnoreCase))
         {
             return;
         }
 
+        var previous = _downloadFolder;
+        if (previous.Length > 0 && Directory.Exists(previous))
+        {
+            RememberDownloadRoot(previous);
+        }
+
         _downloadFolder = next;
+        if (next.Length > 0)
+        {
+            RememberDownloadRoot(next);
+        }
+
+        SaveDownloadRoots();
+        if (previous.Length > 0 && next.Length > 0)
+        {
+            _libraryNotice = "下载目录已切换；旧目录中的歌曲仍会显示，文件不会自动迁移。";
+        }
+
         RescanDownloads();
+    }
+
+    private static string DownloadRootsStatePath => Path.Combine(HostFolders.Root, "download-roots.txt");
+
+    private void EnsureDownloadRootsLoaded()
+    {
+        if (_downloadRootsLoaded)
+        {
+            return;
+        }
+
+        _downloadRootsLoaded = true;
+        try
+        {
+            if (!File.Exists(DownloadRootsStatePath))
+            {
+                return;
+            }
+
+            foreach (var line in File.ReadAllLines(DownloadRootsStatePath))
+            {
+                var path = line.Trim();
+                if (path.Length == 0)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var full = Path.GetFullPath(path);
+                    if (!_downloadRoots.Contains(full, StringComparer.OrdinalIgnoreCase))
+                    {
+                        _downloadRoots.Add(full);
+                    }
+                }
+                catch
+                {
+                    // 历史记录里的坏路径直接忽略。
+                }
+
+                if (_downloadRoots.Count >= MaxDownloadRoots)
+                {
+                    break;
+                }
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            HostLog.Warn($"[local] read download roots failed: {exception.Message}");
+        }
+    }
+
+    private void RememberDownloadRoot(string path)
+    {
+        try
+        {
+            path = Path.GetFullPath(path);
+        }
+        catch
+        {
+            return;
+        }
+
+        _downloadRoots.RemoveAll(item => string.Equals(item, path, StringComparison.OrdinalIgnoreCase));
+        _downloadRoots.Insert(0, path);
+        if (_downloadRoots.Count > MaxDownloadRoots)
+        {
+            _downloadRoots.RemoveRange(MaxDownloadRoots, _downloadRoots.Count - MaxDownloadRoots);
+        }
+    }
+
+    private void SaveDownloadRoots()
+    {
+        try
+        {
+            Directory.CreateDirectory(HostFolders.Root);
+            File.WriteAllLines(DownloadRootsStatePath, _downloadRoots);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            HostLog.Warn($"[local] save download roots failed: {exception.Message}");
+        }
+    }
+
+    /// <summary>当前下载根 + 历史根（去重、只保留仍存在的目录；当前根排第一）。</summary>
+    private List<string> BuildDownloadRoots()
+    {
+        EnsureDownloadRootsLoaded();
+        var roots = new List<string>();
+        void Add(string path)
+        {
+            if (path.Length == 0 || !Directory.Exists(path))
+            {
+                return;
+            }
+
+            if (!roots.Contains(path, StringComparer.OrdinalIgnoreCase))
+            {
+                roots.Add(path);
+            }
+        }
+
+        Add(_downloadFolder);
+        foreach (var root in _downloadRoots)
+        {
+            Add(root);
+        }
+
+        return roots;
+    }
+
+    /// <summary>D-30：判断 fullPath 是否位于 root 之下（不允许前缀相同的兄弟目录）。</summary>
+    private static bool IsUnderRoot(string root, string fullPath)
+    {
+        if (string.IsNullOrWhiteSpace(root) || string.IsNullOrWhiteSpace(fullPath))
+        {
+            return false;
+        }
+
+        try
+        {
+            var normalizedRoot = Path.GetFullPath(root)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var normalizedFull = Path.GetFullPath(fullPath);
+            return string.Equals(normalizedFull, normalizedRoot, StringComparison.OrdinalIgnoreCase)
+                || normalizedFull.StartsWith(
+                    normalizedRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>把 @downloads/ 后的相对路径解析到当前或历史下载根。</summary>
+    private bool TryResolveDownloadPath(string relative, out string fullPath)
+    {
+        fullPath = string.Empty;
+        if (string.IsNullOrWhiteSpace(relative))
+        {
+            return false;
+        }
+
+        foreach (var root in BuildDownloadRoots())
+        {
+            try
+            {
+                var candidate = Path.GetFullPath(
+                    Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar)));
+                if (IsUnderRoot(root, candidate) && File.Exists(candidate))
+                {
+                    fullPath = candidate;
+                    return true;
+                }
+            }
+            catch
+            {
+                // 尝试下一个根。
+            }
+        }
+
+        return false;
     }
 
     private void RescanDownloads()
     {
         _downloadTracks.Clear();
-        if (_downloadFolder.Length == 0 || !Directory.Exists(_downloadFolder))
+        _downloadTruncated = false;
+        var roots = BuildDownloadRoots();
+        if (roots.Count == 0)
         {
             return;
         }
@@ -1506,78 +1743,109 @@ internal sealed partial class LocalMusicService
         try
         {
             var count = 0;
-            foreach (var file in Directory.EnumerateFiles(_downloadFolder, "*", SearchOption.AllDirectories))
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var root in roots)
             {
-                if (count++ > 4000 || _downloadTracks.Count >= MaxTracks)
+                try
+                {
+                    foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+                    {
+                        if (count++ > 8000 || _downloadTracks.Count >= MaxTracks)
+                        {
+                            _downloadTruncated = true;
+                            break;
+                        }
+
+                        var extension = Path.GetExtension(file);
+                        if (!AudioExtensions.Contains(extension))
+                        {
+                            continue;
+                        }
+
+                        string relative;
+                        try
+                        {
+                            relative = Path.GetRelativePath(root, file).Replace('\\', '/');
+                        }
+                        catch
+                        {
+                            continue;
+                        }
+
+                        if (!seen.Add(relative))
+                        {
+                            continue;
+                        }
+
+                        long size;
+                        try
+                        {
+                            size = new FileInfo(file).Length;
+                        }
+                        catch
+                        {
+                            continue;
+                        }
+
+                        var stem = Path.GetFileNameWithoutExtension(file);
+                        string? displayTitle = null;
+                        string? displayArtist = null;
+                        var meta = Mvmp3Cache.ReadMetaForFile(file);
+                        if (meta.Title is { Length: > 0 } metaTitle)
+                        {
+                            displayTitle = metaTitle;
+                            displayArtist = meta.Artist is { Length: > 0 } metaArtist ? metaArtist : null;
+                        }
+                        else
+                        {
+                            try
+                            {
+                                var tags = LocalTagReader.TryRead(file);
+                                if (tags is not null)
+                                {
+                                    displayTitle = tags.Title;
+                                    displayArtist = tags.Artist;
+                                }
+                            }
+                            catch
+                            {
+                                // 标签读取失败时退回文件名。
+                            }
+
+                            if (displayArtist is null && TrySplitArtistTitle(stem, out var splitArtist, out var splitTitle))
+                            {
+                                displayArtist = splitArtist;
+                                displayTitle ??= splitTitle;
+                            }
+                        }
+
+                        var name = displayTitle is { Length: > 0 }
+                            ? displayArtist is { Length: > 0 } ? $"{displayArtist} - {displayTitle}" : displayTitle
+                            : stem;
+
+                        _downloadTracks.Add(new LocalTrackDto
+                        {
+                            Rel = DownloadRelPrefix + relative,
+                            Name = name,
+                            Title = displayTitle,
+                            Artist = displayArtist,
+                            HasCover = LocalCover.Has(file),
+                            Size = size,
+                        });
+                    }
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    HostLog.Warn($"[local] scan download root failed root={root}: {exception.Message}");
+                }
+
+                if (_downloadTruncated || _downloadTracks.Count >= MaxTracks)
                 {
                     break;
                 }
-
-                var extension = Path.GetExtension(file);
-                if (!AudioExtensions.Contains(extension))
-                {
-                    continue;
-                }
-
-                long size;
-                try
-                {
-                    size = new FileInfo(file).Length;
-                }
-                catch
-                {
-                    continue;
-                }
-
-                var relative = Path.GetRelativePath(_downloadFolder, file).Replace('\\', '/');
-                var stem = Path.GetFileNameWithoutExtension(file);
-                string? displayTitle = null;
-                string? displayArtist = null;
-                var meta = Mvmp3Cache.ReadMetaForFile(file);
-                if (meta.Title is { Length: > 0 } metaTitle)
-                {
-                    displayTitle = metaTitle;
-                    displayArtist = meta.Artist is { Length: > 0 } metaArtist ? metaArtist : null;
-                }
-                else
-                {
-                    try
-                    {
-                        var tags = LocalTagReader.TryRead(file);
-                        if (tags is not null)
-                        {
-                            displayTitle = tags.Title;
-                            displayArtist = tags.Artist;
-                        }
-                    }
-                    catch
-                    {
-                        // 标签读取失败时退回文件名。
-                    }
-
-                    if (displayArtist is null && TrySplitArtistTitle(stem, out var splitArtist, out var splitTitle))
-                    {
-                        displayArtist = splitArtist;
-                        displayTitle ??= splitTitle;
-                    }
-                }
-
-                var name = displayTitle is { Length: > 0 }
-                    ? displayArtist is { Length: > 0 } ? $"{displayArtist} - {displayTitle}" : displayTitle
-                    : stem;
-
-                _downloadTracks.Add(new LocalTrackDto
-                {
-                    Rel = DownloadRelPrefix + relative,
-                    Name = name,
-                    Title = displayTitle,
-                    Artist = displayArtist,
-                    HasCover = LocalCover.Has(file),
-                    Size = size,
-                });
             }
 
-            HostLog.Info($"[local] download folder {_downloadFolder} ({_downloadTracks.Count} tracks)");
+            HostLog.Info($"[local] download roots={roots.Count} tracks={_downloadTracks.Count} truncated={_downloadTruncated}");
         }
         catch (Exception exception)
         {
@@ -1594,8 +1862,7 @@ internal sealed partial class LocalMusicService
         }
 
         EnsureDownloadFolder();
-        if (_downloadFolder.Length == 0
-            || !path.StartsWith(_downloadFolder, StringComparison.OrdinalIgnoreCase))
+        if (!IsInDownloadRoots(path))
         {
             return;
         }
@@ -1604,6 +1871,19 @@ internal sealed partial class LocalMusicService
         MarkHostWrite(path);
         RescanDownloads();
         PostOnUi(PostMergedTracks);
+    }
+
+    private bool IsInDownloadRoots(string fullPath)
+    {
+        foreach (var root in BuildDownloadRoots())
+        {
+            if (IsUnderRoot(root, fullPath))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -1632,8 +1912,7 @@ internal sealed partial class LocalMusicService
         MarkHostWrite(fullPath);
 
         EnsureDownloadFolder();
-        if (_downloadFolder.Length > 0
-            && fullPath.StartsWith(_downloadFolder + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        if (IsInDownloadRoots(fullPath))
         {
             RescanDownloads();
             PostOnUi(PostMergedTracks);
@@ -1727,29 +2006,12 @@ internal sealed partial class LocalMusicService
         }
     }
 
-    /// <summary>下载目录里的文件也按 /__dl/ 路径给页面播放。</summary>
+    /// <summary>下载目录（含历史下载根）里的文件按 /__dl/ 路径给页面播放。</summary>
     private void ServeDownloadFile(CoreWebView2WebResourceRequestedEventArgs e, CoreWebView2 core, Uri uri)
     {
         EnsureDownloadFolder();
         var relative = Uri.UnescapeDataString(uri.AbsolutePath["/__dl/".Length..]).TrimStart('/');
-        if (relative.Length == 0 || _downloadFolder.Length == 0)
-        {
-            Respond(e, core, 404, "Not Found", "text/plain", Array.Empty<byte>());
-            return;
-        }
-
-        string fullPath;
-        try
-        {
-            fullPath = Path.GetFullPath(Path.Combine(_downloadFolder, relative.Replace('/', Path.DirectorySeparatorChar)));
-        }
-        catch
-        {
-            Respond(e, core, 404, "Not Found", "text/plain", Array.Empty<byte>());
-            return;
-        }
-
-        if (!fullPath.StartsWith(_downloadFolder, StringComparison.OrdinalIgnoreCase) || !File.Exists(fullPath))
+        if (relative.Length == 0 || !TryResolveDownloadPath(relative, out var fullPath))
         {
             HostLog.Warn($"[local] 404 {uri.AbsolutePath}");
             Respond(e, core, 404, "Not Found", "text/plain", Array.Empty<byte>());
@@ -1768,6 +2030,7 @@ internal sealed partial class LocalMusicService
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var track in _downloadTracks)
         {
+            // 去重键用「当前根 + rel」即可：同一 rel 在扫描时已按历史根优先级只保留一条。
             var full = CombinePath(_downloadFolder, track.Rel[DownloadRelPrefix.Length..]);
             if (seen.Add(full)) tracks.Add(track);
         }
@@ -1790,7 +2053,23 @@ internal sealed partial class LocalMusicService
             lyrics.AddRange(root.Lyrics);
         }
 
-        PostTracks(_currentFolder, tracks, lyrics, null);
+        var notices = new List<string>();
+        if (!string.IsNullOrWhiteSpace(_libraryNotice))
+        {
+            notices.Add(_libraryNotice);
+        }
+
+        if (_downloadTruncated)
+        {
+            notices.Add($"下载目录歌曲过多，仅显示前 {MaxTracks} 首。");
+        }
+
+        if (_folderTracks.Count >= MaxTracks)
+        {
+            notices.Add($"曲库歌曲过多，仅显示前 {MaxTracks} 首。");
+        }
+
+        PostTracks(_currentFolder, tracks, lyrics, null, notices.Count > 0 ? string.Join(" ", notices) : null);
     }
 
     private static string CombinePath(string root, string relative)
@@ -1805,7 +2084,7 @@ internal sealed partial class LocalMusicService
         }
     }
 
-    private void PostTracks(string folder, List<LocalTrackDto> tracks, List<string>? lyrics, string? error)
+    private void PostTracks(string folder, List<LocalTrackDto> tracks, List<string>? lyrics, string? error, string? notice = null)
     {
         var name = Path.GetFileName(folder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
         var payload = new LocalLibraryPayload
@@ -1815,6 +2094,7 @@ internal sealed partial class LocalMusicService
             Tracks = tracks,
             Lyrics = lyrics,
             Error = error,
+            Notice = notice,
         };
         var message = new LocalLibraryMessage { Payload = payload };
         _post(JsonSerializer.Serialize(message, LocalLibraryJsonContext.Default.LocalLibraryMessage));
@@ -2416,6 +2696,9 @@ internal sealed class LocalLibraryPayload
     public List<string>? Lyrics { get; set; }
 
     public string? Error { get; set; }
+
+    /// <summary>非错误提示（扫描截断、下载目录切换等），页面可忽略。</summary>
+    public string? Notice { get; set; }
 }
 
 internal sealed class LocalLibraryMessage

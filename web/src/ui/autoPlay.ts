@@ -16,7 +16,7 @@ import { fetchFeed } from '../online/client';
 import { sourceMeta } from '../online/sources';
 import type { OnlineSource, OnlineTrack } from '../online/types';
 import { toast } from './dom';
-import { playQueue } from './player';
+import { playQueue, playerState } from './player';
 
 export type AutoPlaySource = 'daily' | 'liked' | 'playlist';
 
@@ -220,6 +220,9 @@ export async function startAutoPlayOnBoot(): Promise<void> {
       toast(`启动自动播放：${describeSource(cfg)}暂时没有可播放的歌曲`, 'error');
       return;
     }
+    // 解析歌单可能要几秒：期间用户已经手动开播或恢复了上次队列，就不要覆盖当前播放。
+    const now = playerState();
+    if (now.playing || now.track || now.queue.length > 0) return;
     playQueue(tracks, 0, true);
   } catch (err) {
     console.warn('[autoplay] boot failed', err);

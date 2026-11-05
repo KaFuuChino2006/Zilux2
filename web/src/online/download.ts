@@ -64,9 +64,10 @@ export async function resumeDownload(id: string): Promise<void> {
   await api('/api/download/resume', undefined, 8_000, 'POST', { id });
 }
 
-/** 取消任务（进行中或已暂停）：宿主停止下载并从队列移除该记录，不删除已落盘文件。 */
+/** 取消任务（进行中或已暂停）：宿主停止下载、等待清理本次 `.part` 后返回；已落盘成品不受影响。 */
 export async function cancelDownload(id: string): Promise<void> {
-  await api('/api/download/cancel', undefined, 8_000, 'POST', { id });
+  // 宿主最多等待 10s（下载线程退出 + 删除 .part），给 15s 以覆盖清理尾部。
+  await api('/api/download/cancel', undefined, 15_000, 'POST', { id });
 }
 
 /** 清空已完成/失败的任务记录（只清列表，不动磁盘文件）；返回清掉的数量。 */

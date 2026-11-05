@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 namespace Zilux2.Local;
 
@@ -72,68 +73,120 @@ internal static class LocalTagWriter
             return Fail("文件不存在或已被移动");
         }
 
-        IPropertyStore? store = null;
+        // D-11：标签写入串行化，避免两个页面/两个窗口同时改同一批文件时交叉提交。
+        WriteGate.Wait();
+        var backupPath = path + ".tagbak";
+        var backupCreated = false;
         try
         {
-            var iid = IidPropertyStore;
-            var openFlags = GpsReadWrite | GpsNoOplock;
-            var openHr = SHGetPropertyStoreFromParsingName(
-                path, IntPtr.Zero, openFlags, ref iid, out store);
-            if (openHr < 0 || store is null)
-            {
-                HostLog.Warn($"[tag] property store open failed path={path} flags=0x{openFlags:X4} hr=0x{openHr:X8}");
-                return Fail($"该文件格式没有可写的标签处理器（0x{openHr:X8}）");
-            }
-
-            foreach (var definition in FieldDefinitions)
-            {
-                var writeHr = definition.IsNumber
-                    ? WriteNumberField(store, definition, numberFields)
-                    : WriteTextField(store, definition, textFields);
-                if (writeHr < 0)
-                {
-                    return Fail($"写入 {definition.Name} 失败（0x{writeHr:X8}）");
-                }
-            }
-
-            var commitHr = store.Commit();
-            if (commitHr < 0)
-            {
-                return Fail($"提交标签失败（0x{commitHr:X8}）：文件可能只读、正在被占用或格式不支持写入");
-            }
-
-            var fields = ReadBack(store);
             try
             {
-                // 让资源管理器/缩略图缓存看到新标签（失败不影响写入结果）。
-                SHChangeNotify(ShcneUpdateItem, ShcnfPathW, path, IntPtr.Zero);
+                // 写前留一份原文件；成功提交后删除，失败时保留供用户手动恢复。
+                File.Copy(path, backupPath, overwrite: true);
+                backupCreated = true;
             }
-            catch (Exception exception)
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
-                HostLog.Warn($"[tag] change notify failed: {exception.Message}");
+                HostLog.Warn($"[tag] backup failed path={path}: {exception.Message}");
             }
 
-            HostLog.Info($"[tag] wrote {Path.GetFileName(path)}");
-            return new TagWriteResult { Ok = true, Fields = fields };
-        }
-        catch (Exception exception)
-        {
-            HostLog.Warn($"[tag] write failed {Path.GetFileName(path)}: {exception.GetType().Name}: {exception.Message}");
-            return Fail($"写入标签失败：{exception.Message}");
-        }
-        finally
-        {
-            if (store is not null)
+            IPropertyStore? store = null;
+            try
             {
+                var iid = IidPropertyStore;
+                var openFlags = GpsReadWrite | GpsNoOplock;
+                var openHr = SHGetPropertyStoreFromParsingName(
+                    path, IntPtr.Zero, openFlags, ref iid, out store);
+                if (openHr < 0 || store is null)
+                {
+                    HostLog.Warn($"[tag] property store open failed path={path} flags=0x{openFlags:X4} hr=0x{openHr:X8}");
+                    return FailWithBackup($"该文件格式没有可写的标签处理器（0x{openHr:X8}）", backupCreated, backupPath);
+                }
+
+                foreach (var definition in FieldDefinitions)
+                {
+                    var writeHr = definition.IsNumber
+                        ? WriteNumberField(store, definition, numberFields)
+                        : WriteTextField(store, definition, textFields);
+                    if (writeHr < 0)
+                    {
+                        return FailWithBackup(
+                            $"写入 {definition.Name} 失败（0x{writeHr:X8}）", backupCreated, backupPath);
+                    }
+                }
+
+                var commitHr = store.Commit();
+                if (commitHr < 0)
+                {
+                    return FailWithBackup(
+                        $"提交标签失败（0x{commitHr:X8}）：文件可能只读、正在被占用或格式不支持写入",
+                        backupCreated,
+                        backupPath);
+                }
+
+                var fields = ReadBack(store);
                 try
                 {
-                    Marshal.ReleaseComObject(store);
+                    // 让资源管理器/缩略图缓存看到新标签（失败不影响写入结果）。
+                    SHChangeNotify(ShcneUpdateItem, ShcnfPathW, path, IntPtr.Zero);
                 }
                 catch (Exception exception)
                 {
-                    HostLog.Warn($"[tag] release property store failed: {exception.Message}");
+                    HostLog.Warn($"[tag] change notify failed: {exception.Message}");
+                }
+
+                TryDeleteBackup(backupCreated, backupPath);
+                HostLog.Info($"[tag] wrote {Path.GetFileName(path)}");
+                return new TagWriteResult { Ok = true, Fields = fields };
+            }
+            catch (Exception exception)
+            {
+                HostLog.Warn($"[tag] write failed {Path.GetFileName(path)}: {exception.GetType().Name}: {exception.Message}");
+                return FailWithBackup($"写入标签失败：{exception.Message}", backupCreated, backupPath);
+            }
+            finally
+            {
+                if (store is not null)
+                {
+                    try
+                    {
+                        Marshal.ReleaseComObject(store);
+                    }
+                    catch (Exception exception)
+                    {
+                        HostLog.Warn($"[tag] release property store failed: {exception.Message}");
+                    }
                 }
             }
+        }
+        finally
+        {
+            WriteGate.Release();
+        }
+    }
+
+    private static readonly SemaphoreSlim WriteGate = new(1, 1);
+
+    private static TagWriteResult FailWithBackup(string error, bool backupCreated, string backupPath) =>
+        new() { Ok = false, Error = backupCreated ? $"{error}；写前备份：{backupPath}" : error };
+
+    private static void TryDeleteBackup(bool backupCreated, string backupPath)
+    {
+        if (!backupCreated)
+        {
+            return;
+        }
+
+        try
+        {
+            if (File.Exists(backupPath))
+            {
+                File.Delete(backupPath);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            HostLog.Warn($"[tag] delete backup failed path={backupPath}: {exception.Message}");
         }
     }
 

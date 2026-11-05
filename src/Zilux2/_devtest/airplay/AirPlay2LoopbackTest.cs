@@ -221,6 +221,35 @@ internal static class AirPlay2LoopbackTest
                 connection.ResendResponsesSent >= resendSentBefore + 3,
                 $"sent={connection.ResendResponsesSent} before={resendSentBefore}");
 
+            // ---- retransmission past the 1024-packet ring must not alias a newer packet ----
+            // Fill the history so slot 75 holds sequence 1099 while an old 75 is requested.
+            const int extraFrames = 900;
+            for (var i = 0; i < extraFrames; i++)
+            {
+                random.NextBytes(payload);
+                connection.SendAudioFrame(payload);
+            }
+
+            Thread.Sleep(600);
+            Check(
+                "audio history wrapped past 1024 packets",
+                connection.PacketsSent == AudioFrameCount + extraFrames,
+                $"sent={connection.PacketsSent}");
+            var wrapBefore = mock.Stats();
+            var staleRequest = (ushort)75;
+            var aliasSequence = (ushort)(staleRequest + 1024);
+            Check("stale retransmit probe sent", mock.RequestResend(staleRequest, 1), "mock did not accept the probe");
+            Thread.Sleep(400);
+            var wrapAfter = mock.Stats();
+            Check(
+                "stale sequence is treated as missing, not answered with the aliased packet",
+                wrapAfter.ResendResponses == wrapBefore.ResendResponses,
+                $"responses={wrapAfter.ResendResponses} before={wrapBefore.ResendResponses}");
+            Check(
+                "aliased newer packet was not replayed",
+                !wrapAfter.ResentSequences.Contains(aliasSequence),
+                string.Join(',', wrapAfter.ResentSequences));
+
             // ---- /feedback keep-alive ----
             Thread.Sleep(FeedbackWaitMilliseconds);
             var feedbackStats = mock.Stats();

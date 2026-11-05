@@ -579,6 +579,7 @@ internal sealed class NeteaseLibraryProvider
     // 「加入我喜欢」：网易云 playlist/manipulate/tracks(op=add)。先取我喜欢的歌单 id，再写入。
     private HashSet<string>? _likedTrackIds;
     private DateTime _likedTrackIdsAt = DateTime.MinValue;
+    private readonly object _likedGate = new();
 
     internal async Task<bool> CheckLikedAsync(string trackId, CancellationToken cancellationToken)
     {
@@ -621,12 +622,19 @@ internal sealed class NeteaseLibraryProvider
                 }
             }
 
-            _likedTrackIds = ids;
-            _likedTrackIdsAt = DateTime.UtcNow;
+            lock (_likedGate)
+            {
+                _likedTrackIds = ids;
+                _likedTrackIdsAt = DateTime.UtcNow;
+            }
+
             OnlineHttp.Info($"GET netease/library liked-trackids pid={liked.Id} count={ids.Count}");
         }
 
-        return _likedTrackIds.Contains(trackId);
+        lock (_likedGate)
+        {
+            return _likedTrackIds?.Contains(trackId) == true;
+        }
     }
 
     internal async Task AddLikedAsync(string trackId, CancellationToken cancellationToken)
@@ -680,6 +688,15 @@ internal sealed class NeteaseLibraryProvider
         }
 
         OnlineHttp.Info($"POST netease/library like pid={liked.Id} track={trackId} ok");
+        // D-17：刚收藏后同步本地红心缓存，避免 5 分钟内 CheckLiked 仍返回 false。
+        lock (_likedGate)
+        {
+            _likedTrackIds?.Add(trackId);
+            if (_likedTrackIds is not null)
+            {
+                _likedTrackIdsAt = DateTime.UtcNow;
+            }
+        }
     }
 
     // 批量查询收藏状态：CheckLikedAsync 内部会缓存「我喜欢的音乐」trackIds，循环查询只打一次上游。

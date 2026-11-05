@@ -20,7 +20,8 @@ internal sealed class TrayIconService : IDisposable
     private readonly Icon? _ownedIcon;
     private bool _shownHint;
     private bool _disposed;
-    private long _lastLeftClickTicks;
+    private readonly Forms.ToolStripMenuItem _togglePlayItem;
+    private readonly Forms.Timer _clickTimer;
 
     public TrayIconService(MainWindow window)
     {
@@ -37,24 +38,33 @@ internal sealed class TrayIconService : IDisposable
         _menu = new Forms.ContextMenuStrip();
         var showItem = new Forms.ToolStripMenuItem("显示主窗口");
         showItem.Click += (_, _) => _window.ShowFromTray();
-        var togglePlayItem = new Forms.ToolStripMenuItem("播放或暂停");
-        togglePlayItem.Click += (_, _) => _window.SendCommand("togglePlay");
+        _togglePlayItem = new Forms.ToolStripMenuItem("播放或暂停");
+        _togglePlayItem.Click += (_, _) => _window.SendCommand("togglePlay");
         var previousItem = new Forms.ToolStripMenuItem("上一首");
         previousItem.Click += (_, _) => _window.SendCommand("prev");
         var nextItem = new Forms.ToolStripMenuItem("下一首");
         nextItem.Click += (_, _) => _window.SendCommand("next");
+        var unlockLyricsItem = new Forms.ToolStripMenuItem("解锁桌面歌词");
+        unlockLyricsItem.Click += (_, _) => _window.UnlockDesktopLyrics();
+        var settingsItem = new Forms.ToolStripMenuItem("设置…");
+        settingsItem.Click += (_, _) => _window.OpenSettingsFromTray();
         var exitItem = new Forms.ToolStripMenuItem("退出");
         exitItem.Click += (_, _) => _window.CloseForReal();
         _menu.Items.Add(showItem);
         _menu.Items.Add(new Forms.ToolStripSeparator());
-        _menu.Items.Add(togglePlayItem);
+        _menu.Items.Add(_togglePlayItem);
         _menu.Items.Add(previousItem);
         _menu.Items.Add(nextItem);
+        _menu.Items.Add(new Forms.ToolStripSeparator());
+        _menu.Items.Add(unlockLyricsItem);
+        _menu.Items.Add(settingsItem);
         _menu.Items.Add(new Forms.ToolStripSeparator());
         _menu.Items.Add(exitItem);
         _icon.ContextMenuStrip = _menu;
 
         _icon.MouseClick += OnIconMouseClick;
+        _clickTimer = new Forms.Timer { Interval = 250 };
+        _clickTimer.Tick += OnClickTimerTick;
         _window.HiddenToTray += OnHiddenToTray;
 
         try
@@ -102,16 +112,36 @@ internal sealed class TrayIconService : IDisposable
             return;
         }
 
-        // 双击会先发两次 MouseClick；第二次忽略，避免「显示→又隐藏」闪一下。
-        var now = Environment.TickCount64;
-        if (now - _lastLeftClickTicks < 400)
+        // 单击延迟 250ms 执行「显示/隐藏」；期间第二次点击按双击处理，直接显示窗口（B23）。
+        if (_clickTimer.Enabled)
         {
-            _lastLeftClickTicks = now;
+            _clickTimer.Stop();
+            HostLog.Info("tray.click double show");
+            _window.ShowFromTray();
             return;
         }
 
-        _lastLeftClickTicks = now;
-        _window.ToggleFromTray();
+        _clickTimer.Start();
+    }
+
+    private void OnClickTimerTick(object? sender, EventArgs e)
+    {
+        _clickTimer.Stop();
+        if (!_disposed)
+        {
+            _window.ToggleFromTray();
+        }
+    }
+
+    /// <summary>页面播放状态推送：菜单文案与播放态同步（B23）。</summary>
+    internal void UpdatePlaybackState(bool playing)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _togglePlayItem.Text = playing ? "暂停" : "播放";
     }
 
     private void OnHiddenToTray(object? sender, EventArgs e)
@@ -178,6 +208,9 @@ internal sealed class TrayIconService : IDisposable
         _disposed = true;
         try
         {
+            _clickTimer.Stop();
+            _clickTimer.Dispose();
+            _icon.MouseClick -= OnIconMouseClick;
             _window.HiddenToTray -= OnHiddenToTray;
         }
         catch

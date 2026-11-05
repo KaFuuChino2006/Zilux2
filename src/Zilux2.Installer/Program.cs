@@ -25,7 +25,9 @@ internal static class Program
             var launch = args.Contains("--launch", StringComparer.OrdinalIgnoreCase);
             var progress = new Progress<(int Percent, string Message)>(_ => { });
             InstallerCore.KillRunning();
-            InstallerCore.Install(targetDir, progress, createShortcuts: !noShortcuts, register: !noShortcuts);
+            // D-25：--no-shortcuts 只跳过快捷方式；卸载注册表仍须刷新，
+            // 否则自动更新后 DisplayVersion/InstallLocation 会停留在旧版本。
+            InstallerCore.Install(targetDir, progress, createShortcuts: !noShortcuts, register: true);
             if (launch)
             {
                 InstallerCore.Launch(targetDir);

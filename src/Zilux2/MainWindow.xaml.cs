@@ -106,6 +106,7 @@ public partial class MainWindow : Window
     // 全局热键的底层钩子兜底（详见 GlobalHotkeyHookService）：RegisterHotKey 在组合被抢占或
     // 前台是管理员窗口时会失效，钩子仍能看到物理按键。_lastHookFireTicks 用于和 WM_HOTKEY 去重。
     private GlobalHotkeyHookService? _hotkeyHook;
+    private int _hotkeyHookAttempts;
     private readonly Dictionary<string, int> _lastHookFireTicks = new(StringComparer.Ordinal);
 
     internal MainWindow(
@@ -156,21 +157,31 @@ public partial class MainWindow : Window
     /// <summary>钩子线程只用来看按键，触发动作要回到 UI 线程；启动失败不影响 RegisterHotKey。</summary>
     private void StartHotkeyHook()
     {
-        if (_hotkeyHook is not null)
+        if (_hotkeyHook is not null || _hotkeyHookAttempts >= 3)
         {
             return;
         }
 
-        _hotkeyHook = new GlobalHotkeyHookService(action =>
+        _hotkeyHookAttempts++;
+        var hook = new GlobalHotkeyHookService(action =>
             Dispatcher.BeginInvoke(DispatcherPriority.Normal, new Action(() => OnHookHotkey(action))));
-        _hotkeyHook.Start();
+        if (!hook.Start())
+        {
+            // RegisterHotKey 仍是主通路；钩子失败只影响被抢占/管理员前台时的兜底（B21）。
+            HostLog.Warn($"hotkey.hook unavailable attempt={_hotkeyHookAttempts}");
+            hook.Dispose();
+            return;
+        }
+
+        _hotkeyHook = hook;
+        UpdateHotkeyHookBindings();
     }
 
     private void OnHookHotkey(string action)
     {
-        _lastHookFireTicks[action] = Environment.TickCount;
         HostLog.Info($"hotkey.hook.fire action={action}");
-        DispatchHotkeyAction(action);
+        // 统一走 FireHotkey：由它写入去重时间戳（B22）。
+        FireHotkey(action);
     }
 
     private void DispatchHotkeyAction(string action)
@@ -222,6 +233,7 @@ public partial class MainWindow : Window
     private DesktopLyricsWindow? _desktopLyricsWindow;
     private double _desktopLyricsLeft = double.NaN;
     private double _desktopLyricsTop = double.NaN;
+    private bool _desktopLyricsClosingFromSettings;
 
     internal void ApplyDesktopLyricsSettings()
     {
@@ -232,8 +244,27 @@ public partial class MainWindow : Window
             if (_desktopLyricsWindow is not null)
             {
                 var closing = _desktopLyricsWindow;
+                // 从设置里关掉桌面歌词时也记住位置：否则下次开启会回到默认位置（用户右键关闭时
+                // 由 OnDesktopLyricsClosedByUser 保存，两条路径要保持一致）。
+                if (!double.IsNaN(closing.Left) && !double.IsNaN(closing.Top))
+                {
+                    _desktopLyricsLeft = closing.Left;
+                    _desktopLyricsTop = closing.Top;
+                }
+
                 _desktopLyricsWindow = null;
-                closing.Close();
+                PersistDesktopLyricsPosition(_desktopLyricsLeft, _desktopLyricsTop);
+                // 从设置关窗也是程序化关闭：ClosedByUser 不再回写 desktopLyrics=false，
+                // 避免第二次 GeneralChanged 与本轮位置 patch 互相触发。
+                _desktopLyricsClosingFromSettings = true;
+                try
+                {
+                    closing.Close();
+                }
+                finally
+                {
+                    _desktopLyricsClosingFromSettings = false;
+                }
             }
 
             return;
@@ -241,9 +272,15 @@ public partial class MainWindow : Window
 
         if (_desktopLyricsWindow is null)
         {
-            var window = new DesktopLyricsWindow();
+            var window = new DesktopLyricsWindow(_settings);
             window.ClosedByUser += OnDesktopLyricsClosedByUser;
-            if (!double.IsNaN(_desktopLyricsLeft) && !double.IsNaN(_desktopLyricsTop))
+            if (_settings?.DesktopLyricsPosition is { } saved)
+            {
+                // 设置里的坐标优先：拖动后关闭、重启仍回到上次位置（P3-13）。
+                window.Left = saved.Left;
+                window.Top = saved.Top;
+            }
+            else if (!double.IsNaN(_desktopLyricsLeft) && !double.IsNaN(_desktopLyricsTop))
             {
                 window.Left = _desktopLyricsLeft;
                 window.Top = _desktopLyricsTop;
@@ -271,8 +308,46 @@ public partial class MainWindow : Window
         _desktopLyricsWindow?.UpdateLines(now, translation);
     }
 
+    /// <summary>把桌面歌词最后一次位置写回设置（P3-13）；非有限值直接忽略。</summary>
+    private void PersistDesktopLyricsPosition(double left, double top)
+    {
+        if (!double.IsFinite(left) || !double.IsFinite(top))
+        {
+            return;
+        }
+
+        try
+        {
+            var payload = JsonSerializer.Serialize(new
+            {
+                general = new { desktopLyricsLeft = left, desktopLyricsTop = top },
+            });
+            using var document = JsonDocument.Parse(payload);
+            _settings?.Patch(document.RootElement);
+            HostLog.Info($"[lyrics] position saved left={left} top={top}");
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[lyrics] persist position failed: {exception.Message}");
+        }
+    }
+
     private void OnDesktopLyricsClosedByUser()
     {
+        // 退出应用（托盘退出 / 更新重启 / 系统关机）时宿主会统一关闭所有窗口；这不是用户
+        // 想关歌词，不能把 desktopLyrics 回写成 false，否则下次启动歌词窗不再出现。
+        if (_isExiting)
+        {
+            _desktopLyricsWindow = null;
+            return;
+        }
+
+        if (_desktopLyricsClosingFromSettings)
+        {
+            _desktopLyricsWindow = null;
+            return;
+        }
+
         if (_desktopLyricsWindow is not null)
         {
             _desktopLyricsLeft = _desktopLyricsWindow.Left;
@@ -283,7 +358,20 @@ public partial class MainWindow : Window
         HostLog.Info("[lyrics] desktop window hidden by user");
         try
         {
-            using var document = System.Text.Json.JsonDocument.Parse("{\"general\":{\"desktopLyrics\":false}}");
+            // 关闭与位置合并成一次 patch，避免两次 GeneralChanged 重复 Apply（P3-13）。
+            var hasPosition = double.IsFinite(_desktopLyricsLeft) && double.IsFinite(_desktopLyricsTop);
+            var payload = hasPosition
+                ? JsonSerializer.Serialize(new
+                {
+                    general = new
+                    {
+                        desktopLyrics = false,
+                        desktopLyricsLeft = _desktopLyricsLeft,
+                        desktopLyricsTop = _desktopLyricsTop,
+                    },
+                })
+                : "{\"general\":{\"desktopLyrics\":false}}";
+            using var document = JsonDocument.Parse(payload);
             _settings?.Patch(document.RootElement);
         }
         catch (Exception exception)
@@ -295,6 +383,8 @@ public partial class MainWindow : Window
     // 桌面背景歌词：把一个 WebView2 窗口挂到桌面壁纸层（Progman 的图标层下方）当播放器用。
     // 歌词页的视觉效果、背景模式、样式设置都来自同一份站点存储，窗口只负责渲染。
     private DesktopBackgroundWindow? _backgroundLyricsWindow;
+    // 最近一次 online 事件（端口/token）。背景窗还没创建时先缓存，等窗口 Show 后补发（B04）。
+    private string? _lastOnlineJson;
     private uint _taskbarCreatedMessage;
 
     private void OnHostEnvironmentReady()
@@ -326,14 +416,78 @@ public partial class MainWindow : Window
 
         var window = new DesktopBackgroundWindow(environment, _settings, _plan);
         window.Closed += OnBackgroundLyricsClosed;
+        window.InitFailed += OnBackgroundLyricsInitFailed;
         _backgroundLyricsWindow = window;
         window.Show();
+        // 场景页可能在 online 事件之后才打开：把最近一次端点补发过去（B04）。
+        window.PostOnlineInfo(_lastOnlineJson);
         HostLog.Info("[bgLyrics] desktop background window shown");
     }
 
     internal void ForwardToBackgroundLyrics(string json)
     {
         _backgroundLyricsWindow?.PostJson(json);
+    }
+
+    /// <summary>主 WebView 收到 online 端点时同步给背景歌词场景（B04）；窗口未开先缓存。</summary>
+    internal void ForwardOnlineToBackgroundLyrics(string? json)
+    {
+        if (string.IsNullOrEmpty(json))
+        {
+            return;
+        }
+
+        _lastOnlineJson = json;
+        _backgroundLyricsWindow?.PostOnlineInfo(json);
+    }
+
+    /// <summary>页面播放状态变化 → 托盘菜单文案同步（B23）。</summary>
+    internal void NotifyPlaybackState(bool playing) => App.Tray?.UpdatePlaybackState(playing);
+
+    /// <summary>托盘「解锁桌面歌词」：锁定后窗口鼠标穿透，右键菜单点不到，只能从这里解锁（P2-03）。</summary>
+    internal void UnlockDesktopLyrics()
+    {
+        var window = _desktopLyricsWindow;
+        if (window is not null)
+        {
+            window.SetLocked(false);
+            return;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse("{\"general\":{\"desktopLyricsLocked\":false}}");
+            _settings?.Patch(document.RootElement);
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[lyrics] unlock failed: {exception.Message}");
+        }
+    }
+
+    /// <summary>托盘「设置…」：先把主窗口带回前台，再让页面打开设置页（P3-08）。</summary>
+    internal void OpenSettingsFromTray()
+    {
+        ShowFromTray();
+        SendCommand("openSettings");
+    }
+
+    /// <summary>背景窗口 WebView2 初始化失败：回滚开关，避免留下一个空白壁纸窗（B09）。</summary>
+    private void OnBackgroundLyricsInitFailed()
+    {
+        HostLog.Warn("[bgLyrics] init failed, disabling background lyrics");
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            try
+            {
+                using var document = JsonDocument.Parse("{\"general\":{\"backgroundLyrics\":false}}");
+                _settings?.Patch(document.RootElement);
+            }
+            catch (Exception exception)
+            {
+                HostLog.Warn($"[bgLyrics] rollback backgroundLyrics failed: {exception.Message}");
+            }
+        }));
     }
 
     private void OnBackgroundLyricsClosed(object? sender, EventArgs e)
@@ -348,6 +502,12 @@ public partial class MainWindow : Window
     private async void OnShellRestarted()
     {
         HostLog.Info("[bgLyrics] shell restarted (TaskbarCreated)");
+        if (_isExiting)
+        {
+            // 退出流程中不再重建壁纸窗（B20）。
+            return;
+        }
+
         if (_settings?.BackgroundLyricsEnabled != true)
         {
             return;
@@ -407,7 +567,12 @@ public partial class MainWindow : Window
         _host?.PostWindowState(maximized);
 
         // Feature frames are only worth producing while the stage is actually on screen.
-        _audio?.SetPaused(WindowState == WindowState.Minimized);
+        UpdateAudioPauseState();
+        if (WindowState == WindowState.Minimized)
+        {
+            // P1-10：主窗最小化后停止 AirPlay 推流，避免继续占用接收端/网络。
+            StopAirPlayStreaming("minimize");
+        }
 
         if (!maximized)
         {
@@ -423,6 +588,31 @@ public partial class MainWindow : Window
             // The saved normal rect can be off screen (monitor unplugged, resolution change);
             // WPF restores it verbatim, so re-clamp it once the state is settled.
             Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(ClampWindowToWorkArea));
+        }
+    }
+
+    private void UpdateAudioPauseState()
+    {
+        // 隐藏到托盘时窗口仍是 Normal，必须显式算进去（B12）。
+        _audio?.SetPaused(_isHiddenToTray || WindowState == WindowState.Minimized);
+    }
+
+    private void StopAirPlayStreaming(string reason)
+    {
+        var airplay = _airplay;
+        if (airplay is null)
+        {
+            return;
+        }
+
+        try
+        {
+            HostLog.Info($"[airplay] disconnect reason={reason}");
+            airplay.Disconnect();
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[airplay] disconnect failed reason={reason}: {exception.Message}");
         }
     }
 
@@ -872,6 +1062,63 @@ public partial class MainWindow : Window
         _host?.NotifyMiniMode(false);
     }
 
+    /// <summary>
+    /// appearance.miniSize / miniAlwaysOnTop 没有独立事件；页面每次 settings patch 后由宿主调用。
+    /// 当前处于迷你态时原地重排尺寸/置顶，不重走 Enter/Exit（P3-12）。
+    /// </summary>
+    internal void ApplyMiniSettingsIfActive()
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(ApplyMiniSettingsIfActive));
+            return;
+        }
+
+        if (!_miniMode || _miniAnimating || _hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        var topmost = _settings?.MiniAlwaysOnTop ?? true;
+        if (Topmost != topmost)
+        {
+            Topmost = topmost;
+            HostLog.Info($"window.miniMode topmost={topmost}");
+        }
+
+        var (scaleX, scaleY) = CurrentDpiScale();
+        var (widthDip, heightDip) = (_settings?.MiniSize) switch
+        {
+            AppearanceSettings.MiniSizeCompact => (MiniCompactWidthDip, MiniCompactHeightDip),
+            AppearanceSettings.MiniSizeWide => (MiniWideWidthDip, MiniWideHeightDip),
+            _ => (MiniDefaultWidthDip, MiniDefaultHeightDip),
+        };
+        if (!NativeMethods.GetWindowRect(_hwnd, out var current))
+        {
+            return;
+        }
+
+        var width = Math.Max(1, (int)Math.Round(widthDip * scaleX));
+        var height = Math.Max(1, (int)Math.Round(heightDip * scaleY));
+        if (current.Right - current.Left == width && current.Bottom - current.Top == height)
+        {
+            return;
+        }
+
+        var work = WorkAreaOf(current);
+        var marginX = Math.Max(0, (int)Math.Round(MiniScreenMarginDip * scaleX));
+        var marginY = Math.Max(0, (int)Math.Round(MiniScreenMarginDip * scaleY));
+        var left = Math.Max(work.Left + marginX, work.Right - marginX - width);
+        var top = Math.Max(work.Top + marginY, work.Bottom - marginY - height);
+        if (!TrySetWindowRect(left, top, width, height))
+        {
+            ApplyRectInDip(left, top, width, height, scaleX, scaleY);
+        }
+
+        ApplyMiniWindowRegion(true);
+        HostLog.Info($"window.miniMode resized size={width}x{height}");
+    }
+
     private NativeMethods.Rect CurrentWindowRect()
     {
         if (_hwnd != IntPtr.Zero &&
@@ -932,6 +1179,15 @@ public partial class MainWindow : Window
     /// </summary>
     private void OnClosing(object? sender, System.ComponentModel.CancelEventArgs e)
     {
+        // 契约自测脚本用 WM_CLOSE 判定进程退出；测试模式跳过「关闭即隐藏到托盘」（P2-02）。
+        if (Environment.GetEnvironmentVariable("ZILUX2_SELFTEST") == "1")
+        {
+            _isExiting = true;
+            UnregisterHotkeys();
+            Dispatcher.BeginInvoke(new Action(() => System.Windows.Application.Current?.Shutdown()), DispatcherPriority.Normal);
+            return;
+        }
+
         if (_isExiting)
         {
             // 真退出路径：此时 HWND 还没销毁，先注销全局热键。
@@ -978,6 +1234,8 @@ public partial class MainWindow : Window
             return;
         }
 
+        _audio?.SetPaused(true);
+        StopAirPlayStreaming("hide");
         HiddenToTray?.Invoke(this, EventArgs.Empty);
     }
 
@@ -1014,6 +1272,7 @@ public partial class MainWindow : Window
             NativeMethods.ForceForeground(handle);
 
             _isHiddenToTray = false;
+            _audio?.SetPaused(WindowState == WindowState.Minimized);
             HostLog.Info("tray.show");
         }
         catch (Exception exception)
@@ -1079,7 +1338,7 @@ public partial class MainWindow : Window
     internal void SendCommand(string action)
     {
         if (action is not ("togglePlay" or "prev" or "next" or "volumeUp" or "volumeDown" or "mute" or "like"
-            or "mode" or "mini" or "desktopLyrics" or "crossfade"))
+            or "mode" or "mini" or "desktopLyrics" or "crossfade" or "stop" or "openSettings"))
         {
             HostLog.Warn($"tray.command ignored action={action}");
             return;
@@ -1106,6 +1365,7 @@ public partial class MainWindow : Window
 
         _isExiting = true;
         HostLog.Info($"app.exit reason={reason}");
+        StopAirPlayStreaming("exit");
         try
         {
             Close();
@@ -1244,6 +1504,8 @@ public partial class MainWindow : Window
         BuildShortcutStateJson();
         UpdateHotkeyHookBindings();
         PublishShortcutState();
+        // 启动时钩子安装失败则在下一次设置变更/启动重试，最多 3 次（B21）。
+        StartHotkeyHook();
     }
 
     /// <summary>默认值组合保留候选回落链；用户改过的组合只注册配置值。</summary>
@@ -1353,24 +1615,14 @@ public partial class MainWindow : Window
 
     private void OnHotkey(int id)
     {
-        switch (id)
+        var spec = Array.Find(HotkeyCatalog.Actions, item => item.Id == id);
+        if (spec is null)
         {
-            case 1:
-                FireHotkey("togglePlay");
-                break;
-            case 2:
-                FireHotkey("prev");
-                break;
-            case 3:
-                FireHotkey("next");
-                break;
-            case 4:
-                FireHotkey("toggleWindow");
-                break;
-            default:
-                HostLog.Warn($"hotkey.fire unknown id={id}");
-                break;
+            HostLog.Warn($"hotkey.fire unknown id={id}");
+            return;
         }
+
+        FireHotkey(spec.Action);
     }
 
     /// <summary>
@@ -1386,6 +1638,7 @@ public partial class MainWindow : Window
             return;
         }
 
+        _lastHookFireTicks[action] = now;
         HostLog.Info($"hotkey.fire action={action}");
         DispatchHotkeyAction(action);
     }
@@ -1953,9 +2206,9 @@ public partial class MainWindow : Window
         {
             Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(OnShellRestarted));
         }
-        else if (msg == 0x007E)
+        else if (msg == 0x007E || msg == 0x02E0)
         {
-            // WM_DISPLAYCHANGE：分辨率/显示器布局变了，重新铺满新的虚拟桌面。
+            // WM_DISPLAYCHANGE / WM_DPICHANGED：分辨率、布局或缩放变了，重新铺满新的虚拟桌面（B15）。
             Dispatcher.BeginInvoke(
                 DispatcherPriority.Background,
                 new Action(() => _backgroundLyricsWindow?.RepositionToDesktop()));
@@ -1977,6 +2230,7 @@ public partial class MainWindow : Window
         {
             NativeMethods.AppCommandMediaNextTrack => "next",
             NativeMethods.AppCommandMediaPrevTrack => "prev",
+            NativeMethods.AppCommandMediaStop => "stop",
             NativeMethods.AppCommandMediaPlayPause => "togglePlay",
             _ => null,
         };
@@ -1995,7 +2249,8 @@ public partial class MainWindow : Window
         }
 
         HostLog.Info($"[appcommand] fire action={action}");
-        SendCommand(action);
+        // 与钩子/WM_HOTKEY 共用去重：同一次物理按键可能同时走多条通路（B22）。
+        FireHotkey(action);
         return true;
     }
 

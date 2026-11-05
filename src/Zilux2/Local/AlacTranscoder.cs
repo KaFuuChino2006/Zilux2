@@ -14,8 +14,6 @@ namespace Zilux2.Local;
 /// </summary>
 internal static class AlacTranscoder
 {
-    private const string CacheFolderName = "alac-cache";
-
     /// <summary>判断 m4a 是否 ALAC：moov 里出现 alac 解码器且没有 AAC 的 mp4a。</summary>
     public static bool IsAlac(string path)
     {
@@ -65,10 +63,7 @@ internal static class AlacTranscoder
                 return false;
             }
 
-            var cacheDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "Zilux2",
-                CacheFolderName);
+            var cacheDir = TranscodeCache.AlacDirectory;
             Directory.CreateDirectory(cacheDir);
             var stamp = $"{info.FullName}|{info.Length}|{info.LastWriteTimeUtc.Ticks}";
             var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(stamp))).ToLowerInvariant();
@@ -95,6 +90,7 @@ internal static class AlacTranscoder
             }
 
             File.Move(temp, wavPath);
+            TranscodeCache.Prune(cacheDir);
             return true;
         }
         catch (Exception exception)
