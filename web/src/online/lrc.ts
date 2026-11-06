@@ -129,23 +129,82 @@ export function parseLrc(raw: string, baseOffsetMs = 0): LyricLine[] {
   return lines;
 }
 
-/** 把翻译 LRC 合并到主歌词：按开始时间就近匹配（±1s）。 */
+/**
+ * 把两组按时间排好序的行配对：每条主行最多配一条、每条译文最多用一次。
+ * 先收齐所有「时间差 ≤ windowMs」的候选对，再按「时间差 → 主行序 → 译行序」排序后贪心分配；
+ * 精确同时间戳会优先配上。这是 Folia 的做法，比旧的「游标只前进」稳：
+ * 译文整体晚 100ms 时，旧实现从第二行起全部配不上（候选永远落后于游标）。
+ */
+export function pairByTime(mainTimes: number[], otherTimes: number[], windowMs: number): Array<number | null> {
+  const result: Array<number | null> = new Array(mainTimes.length).fill(null);
+  if (!mainTimes.length || !otherTimes.length) return result;
+  interface Pair {
+    main: number;
+    other: number;
+    delta: number;
+  }
+  const pairs: Pair[] = [];
+  let lo = 0;
+  for (let i = 0; i < mainTimes.length; i += 1) {
+    const t = mainTimes[i]!;
+    while (lo < otherTimes.length && (otherTimes[lo] ?? 0) < t - windowMs) lo += 1;
+    for (let j = lo; j < otherTimes.length; j += 1) {
+      const tj = otherTimes[j]!;
+      if (tj > t + windowMs) break;
+      pairs.push({ main: i, other: j, delta: Math.abs(tj - t) });
+    }
+  }
+  pairs.sort((a, b) => a.delta - b.delta || a.main - b.main || a.other - b.other);
+  const mainUsed = new Uint8Array(mainTimes.length);
+  const otherUsed = new Uint8Array(otherTimes.length);
+  for (const pair of pairs) {
+    if (mainUsed[pair.main] || otherUsed[pair.other]) continue;
+    mainUsed[pair.main] = 1;
+    otherUsed[pair.other] = 1;
+    result[pair.main] = pair.other;
+  }
+  return result;
+}
+
+/** 纯符号 / 纯标点的「译文」其实是占位（`//`、`···`、`—` 之类），不要显示。 */
+const TRANSLATION_PLACEHOLDER = /^[\s\-—–·•~～/\\|_=*#.。，,、:：;；!！?？]+$/u;
+
+function translationKey(value: string): string {
+  return value.replace(/[\s\p{P}\p{S}]/gu, '').toLowerCase();
+}
+
+/**
+ * 译文可读性过滤：去掉占位符，以及和原文完全相同的「译文」（很多平台会原样回填）。
+ * 原文可选；两者归一化（去空格/标点/符号、小写）后相同就视为重复。
+ */
+export function isUsefulTranslation(text: string, original?: string): boolean {
+  const value = text.trim();
+  if (!value || TRANSLATION_PLACEHOLDER.test(value)) return false;
+  if (original) {
+    const originalKey = translationKey(original);
+    if (originalKey.length > 0 && translationKey(value) === originalKey) return false;
+  }
+  return true;
+}
+
+/** 把翻译 LRC 合并到主歌词：按开始时间就近匹配（±1s，一对一）。 */
 export function applyTranslation(lines: LyricLine[], translationRaw: string | null): LyricLine[] {
   if (!lines.length || !translationRaw) return lines;
   const trans = parseLrc(translationRaw);
   if (!trans.length) return lines;
 
   const merged = lines.map((line) => ({ ...line }));
-  let cursor = 0;
-  for (const line of merged) {
-    while (cursor + 1 < trans.length && (trans[cursor + 1]?.timeMs ?? Infinity) <= line.timeMs + 60) {
-      cursor += 1;
-    }
-    const candidate = trans[cursor];
-    if (candidate && Math.abs(candidate.timeMs - line.timeMs) <= 1000) {
-      line.translation = candidate.text;
-    }
-  }
+  const match = pairByTime(
+    merged.map((line) => line.timeMs),
+    trans.map((line) => line.timeMs),
+    1000,
+  );
+  match.forEach((index, i) => {
+    if (index === null) return;
+    const text = trans[index]!.text;
+    const line = merged[i]!;
+    if (text && isUsefulTranslation(text, line.text)) line.translation = text;
+  });
   return merged;
 }
 

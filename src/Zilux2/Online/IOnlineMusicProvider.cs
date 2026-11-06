@@ -17,6 +17,12 @@ internal interface IOnlineMusicProvider
     // Resolves a playable upstream URL (or a "needs membership" answer) for one track.
     // quality: "standard" | "high" | "lossless"（平台不支持时自动降级）。
     Task<StreamResolution> ResolveStreamAsync(string id, string? quality, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// 诊断用：强制解析 QMC2 加密档（.mgg/.mflac）。默认无加密档，返回 null 由调用方回退。
+    /// </summary>
+    Task<StreamResolution?> ResolveEncryptedStreamAsync(string id, string? quality, CancellationToken cancellationToken) =>
+        Task.FromResult<StreamResolution?>(null);
 }
 
 internal sealed class LyricData
@@ -30,6 +36,9 @@ internal sealed class LyricData
 
     // QQ QRC 加密十六进制原文（前端用 qrc-decoder 本地解密），仅 QQ 有
     public string? Qrc { get; init; }
+
+    // QRC 已在宿主侧解密后的明文（逐字时间轴），前端优先使用；为旧客户端保留 Qrc 原文
+    public string? QrcText { get; init; }
 }
 
 internal sealed class StreamResolution
@@ -53,12 +62,19 @@ internal sealed class StreamResolution
 
     public string Format { get; private init; } = string.Empty;
 
+    // QMC2 加密档（.mgg/.mflac/.mmp4）：ekey 与解密模式；非空时由宿主边下边解。
+    public string EncryptionKey { get; private init; } = string.Empty;
+
+    public string EncryptionMode { get; private init; } = string.Empty;
+
     public static StreamResolution Playable(
         string url,
         IReadOnlyDictionary<string, string>? headers = null,
         string qualityLabel = "",
         int bitrate = 0,
-        string format = "") =>
+        string format = "",
+        string encryptionKey = "",
+        string encryptionMode = "") =>
         new()
         {
             IsPlayable = true,
@@ -67,6 +83,8 @@ internal sealed class StreamResolution
             QualityLabel = qualityLabel,
             Bitrate = bitrate,
             Format = format,
+            EncryptionKey = encryptionKey,
+            EncryptionMode = encryptionMode,
         };
 
     public static StreamResolution NotPlayable(string message) =>

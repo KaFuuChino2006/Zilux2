@@ -99,6 +99,13 @@ img{display:block}
 .pb-btn.is-main{width:46px;height:46px;color:var(--accent-contrast);background:linear-gradient(135deg,var(--accent-strong),var(--accent))}
 .pb-btn.is-main:hover{filter:brightness(1.06)}
 .pb-btn.is-main svg{width:20px;height:20px}
+/* 人声分离：文字按钮（原声/伴奏/人声），开启时点亮 */
+.pb-btn.pb-stem{width:auto;min-width:46px;padding:0 11px;border-radius:999px;font-size:12px;font-weight:600;letter-spacing:.02em;line-height:1;color:var(--text-soft)}
+.pb-btn.pb-stem .pb-stem-label{white-space:nowrap;font-family:var(--font-ui)}
+.pb-btn.pb-stem:hover{color:var(--text)}
+.pb-btn.pb-stem.is-on{color:var(--accent);background:color-mix(in srgb, var(--accent) 16%, transparent)}
+.pb-btn.pb-stem.is-on:hover{background:color-mix(in srgb, var(--accent) 24%, transparent)}
+.pb-btn.pb-stem[data-mode="vocals"]{color:var(--accent-strong)}
 .pb-progress{flex:1;min-width:90px;display:flex;align-items:center;gap:10px}
 .pb-time{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;flex:none;width:40px;text-align:center}
 .track{position:relative;flex:1;height:20px;display:flex;align-items:center;cursor:pointer}
@@ -274,7 +281,7 @@ to{opacity:1;transform:translateY(0);letter-spacing:.14em}
 .home-host{position:absolute;inset:0}
 .ui-heading{margin:0;color:var(--text);font-size:clamp(30px,3.4vw,46px);font-weight:700;letter-spacing:-.03em;line-height:1.06}
 .ui-sub{margin-top:10px;color:var(--muted);font-size:13.5px;letter-spacing:.01em}
-.ui-btn{display:inline-flex;align-items:center;gap:8px;padding:9px 16px;border-radius:var(--radius-pill);border:1px solid var(--line);background:var(--surface);color:var(--text);font-size:13px;font-family:inherit;cursor:pointer;backdrop-filter:blur(12px);transition:background var(--dur-fast) var(--ease),border-color var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease),box-shadow var(--dur-fast) var(--ease)}
+.ui-btn{display:inline-flex;align-items:center;gap:8px;padding:9px 16px;white-space:nowrap;border-radius:var(--radius-pill);border:1px solid var(--line);background:var(--surface);color:var(--text);font-size:13px;font-family:inherit;cursor:pointer;backdrop-filter:blur(12px);transition:background var(--dur-fast) var(--ease),border-color var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease),box-shadow var(--dur-fast) var(--ease)}
 .ui-btn:hover{background:var(--surface-hover);border-color:var(--line-strong);transform:translateY(-1px)}
 .ui-btn:active{transform:translateY(0)}
 .ui-btn--primary{background:var(--accent);border-color:transparent;color:var(--accent-contrast);font-weight:600}
@@ -427,7 +434,7 @@ to{opacity:1;transform:translateY(0) scale(1)}
 .daily-kicker{display:inline-flex;align-items:center;gap:6px;font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent)}
 .daily-title{margin:0;font-size:clamp(20px,1.6vw,26px);font-weight:650;line-height:1.2;color:var(--text);display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
 .daily-meta{font-size:13px;color:var(--muted)}
-.daily-actions{display:flex;gap:10px;margin-top:12px}
+.daily-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}
 .daily-cover.is-empty{display:grid;place-items:center;color:var(--muted);border:1px dashed var(--line-strong);background:var(--surface)}
 .daily-card.is-empty .daily-deck{width:118px;height:118px}
 /* 首页「今日推荐 + 私人雷达」并排：私人雷达在今日推荐右侧，样式同源 */
@@ -614,7 +621,9 @@ to{opacity:1;transform:none}
 .lyrics-meta .lyrics-artist{margin-top:6px;font-size:13px;color:rgb(var(--overlay-rgb) / .58)}
 .lyrics-right{position:relative;flex:1 1 auto;min-width:0;align-self:stretch;display:flex;align-items:center;overflow:hidden;-webkit-mask-image:linear-gradient(180deg,transparent,#000 14%,#000 86%,transparent);mask-image:linear-gradient(180deg,transparent,#000 14%,#000 86%,transparent)}
 .lyrics-right .lyrics-lines{width:100%;align-items:flex-start;gap:16px}
-.lyrics-right .lyric-line{width:100%;text-align:left;font-size:var(--lyric-line-size-side,clamp(20px,2.05vw,31px));font-weight:600;line-height:1.52;letter-spacing:.01em;color:rgb(var(--overlay-rgb) / .32);transform-origin:0% 50%;transition:color var(--dur-mid) var(--ease),opacity var(--dur-mid) var(--ease)}
+/* 逐字歌词（QQ QRC / 网易云 YRC）常把整句去掉空格，整句就是一个不可断开的「单词」；
+   不给断行机会就会冲出歌词列、被右缘裁掉。允许在任意字间断行，避免文字被切。 */
+.lyrics-right .lyric-line{width:100%;text-align:left;font-size:var(--lyric-line-size-side,clamp(20px,2.05vw,31px));font-weight:600;line-height:1.52;letter-spacing:.01em;color:rgb(var(--overlay-rgb) / .32);transform-origin:0% 50%;padding-right:14px;overflow-wrap:anywhere;word-break:break-word;transition:color var(--dur-mid) var(--ease),opacity var(--dur-mid) var(--ease)}
 .lyrics-right .lyric-line.is-near{color:rgb(var(--overlay-rgb) / .5)}
 .lyrics-right .lyric-line.is-active{color:var(--text)}
 .lyrics-right .lyric-trans{display:block;margin-top:7px;font-size:.56em;font-weight:500;color:rgb(var(--overlay-rgb) / .52)}
@@ -779,6 +788,8 @@ to{opacity:1;transform:none}
 .playerbar .pb-meta{width:168px}
 .playerbar .pb-controls{gap:2px}
 .playerbar .pb-btn{width:30px;height:30px}
+/* 文字按钮不受圆形宽度限制 */
+.playerbar .pb-btn.pb-stem{width:auto;min-width:46px;height:30px;padding:0 11px}
 .playerbar .pb-btn.is-main{width:34px;height:34px}
 .playerbar .pb-btn.is-main svg{width:16px;height:16px}
 .upnext-summary{height:46px;padding:0 16px 0 14px;border-radius:999px}
@@ -840,6 +851,25 @@ to{opacity:1;transform:none}
 .quick-lyric{min-height:56px;padding:10px 12px;border-radius:10px;background:rgb(var(--overlay-rgb) / .05);color:var(--text);font-size:13px;line-height:1.55}
 .quick-cover-foot{display:flex;align-items:center;gap:10px;justify-content:space-between}
 .quick-cover-foot .quick-track{min-width:0}
+/* 快捷设置顶部常驻「正在播放」：封面页是大封面，其余页缩成一行小卡；
+   它永远在设置内容上方，切 tab 只做等比缩放，不会整块消失。 */
+.quick-now{display:flex;flex-direction:column;gap:10px;min-width:0}
+.quick-now .quick-cover{
+  width:100%;aspect-ratio:1 / 1;object-fit:cover;border-radius:12px;background:var(--surface-hover);
+  transition:width .32s cubic-bezier(.22,1.28,.36,1),border-radius .32s var(--ease),transform .4s var(--ease-pop);
+}
+.quick-now .quick-now-meta{display:flex;align-items:center;gap:10px;justify-content:space-between;min-width:0}
+.quick-now .quick-track{min-width:0}
+.quick-now .quick-track-title{transition:font-size .32s var(--ease)}
+.quick-now .quick-track-note{margin-top:3px;font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:opacity .2s var(--ease)}
+/* 非封面页：缩成封面 44px 的「正在播放」小卡 */
+.quick-now:not(.is-big){flex-direction:row;align-items:center;gap:12px}
+.quick-now:not(.is-big) .quick-cover{width:44px;height:44px;flex:0 0 44px;border-radius:10px}
+.quick-now:not(.is-big) .quick-now-meta{flex:1 1 auto}
+.quick-now:not(.is-big) .quick-track-note{display:none}
+.quick-now:not(.is-big) .quick-track-title{font-size:13px}
+.quick-now.is-big .quick-track-title{font-size:17px;line-height:1.3}
+.quick-now.is-big:hover .quick-cover{transform:scale(1.015)}
 .quick-like{flex:none;width:32px;height:32px;display:grid;place-items:center;border-radius:50%;border:1px solid var(--line);background:var(--surface);color:var(--muted);cursor:pointer;transition:color .2s var(--ease),border-color .2s var(--ease),transform .2s var(--ease)}
 .quick-like:hover{color:var(--accent-strong);border-color:color-mix(in srgb,var(--accent) 42%,transparent);transform:scale(1.06)}
 .quick-like:active{transform:scale(.96)}
@@ -1586,10 +1616,7 @@ body,
   opacity: 0.66;
 }
 .lyrics-right .lyric-line.is-active {
-  font-size: clamp(23px, 2.42vw, 35px) !important;
   opacity: 1;
-  transform: translateX(8px) !important;
-  line-height: 1.42 !important;
 }
 
 /* 封面背景不要压暗：去掉白色薄纱，铺满不透明 */
@@ -1619,12 +1646,10 @@ body,
   transition: color 0.3s var(--ease), opacity 0.3s var(--ease),
     font-size 0.36s cubic-bezier(0.22, 1, 0.36, 1) !important;
 }
+/* 上面的「真正用更大字号」实验已废弃：现在所有行同字号，强调行靠 transform 缩放，
+   见文件后面「歌词页 · 当前行放大」一节（先前的字号过渡会让后续行逐帧下移）。 */
 .lyrics-right .lyric-line.is-near {
-  font-size: clamp(20px, 2.05vw, 30px) !important;
-}
-.lyrics-right .lyric-line.is-active {
-  font-size: clamp(23px, 2.42vw, 35px) !important;
-  line-height: 1.4 !important;
+  opacity: 0.66;
 }
 /* 单个词：弹出用 ease-out，缩回拉长到 0.75s 更像「慢慢变小」 */
 .lyrics-view .lyric-line.is-active .lyric-char.is-hot {
@@ -2149,7 +2174,9 @@ body,
   .home .home-collections > .home-liked .daily-deck {
     width: clamp(96px, 7vw, 118px);
     height: clamp(96px, 7vw, 118px);
-    margin-right: clamp(18px, 1.6vw, 26px);
+    /* 封面是叠放旋转的，最外层会向右溢出约 44px（悬停 52px）。
+       这里要给文字列留出这段溢出量，否则标题会压在封面边缘上。 */
+    margin-right: clamp(34px, 2.4vw, 46px);
   }
   .home .home-collections > .home-liked .daily-kicker {
     font-size: clamp(10px, 0.72vw, 11px);
@@ -2193,25 +2220,39 @@ body,
    歌词页 · 当前行放大：起句快速冲到峰值，再平滑回落收住（只回弹一次）
    --grow 由 web/src/ui/lyrics.ts 的 syncProgress() 每帧写入（0→1，按真实时间计时）；
    曲线与档位参数在 lyrics.ts 的 GROW_PROFILES（关闭/柔和/弹跳/强烈，快捷设置里切）。
-   这里把 is-near 字号 → is-active 最大字号之间做连续插值。
+   关键：所有行（含 is-near / is-active）字号与行高完全一致，放大只用 transform 缩放，
+   行盒尺寸不随演唱进度变化，换行与后续行位置在整句过程中保持不动（不再「被顶下去」）。
+   只作用于主歌词页；桌面背景歌词模式有自己的一套字号，不受这里影响。
    ============================================================ */
-.lyrics-right .lyric-line.is-active {
-  /* 当前句的「底」字号就比邻近句大：弹跳只在这个底之上加一点，
-     动画怎么收都会落在 40px，不会显得「只有弹一下才变大」。 */
-  font-size: calc(
-    clamp(23px, 2.3vw, 34px) +
-      (clamp(27px, 2.65vw, 40px) - clamp(23px, 2.3vw, 34px)) * var(--grow, 0)
-  ) !important;
-  /* 行高锁死为最大字号的行高：字号变了也不会把下面的行往下推，整列不漂 */
-  line-height: calc(clamp(27px, 2.65vw, 40px) * 1.4) !important;
-  /* 字号由 JS 每帧驱动，不能再用 transition 追，否则会和逐帧值互相打架 */
-  transition: color 0.3s var(--ease), opacity 0.42s var(--ease),
-    transform 0.5s var(--ease) !important;
+.lyrics-view:not(.is-background-lyrics) .lyrics-right .lyric-line,
+.lyrics-view:not(.is-background-lyrics) .lyrics-right .lyric-line.is-near,
+.lyrics-view:not(.is-background-lyrics) .lyrics-right .lyric-line.is-active {
+  /* 29px 是原来普通行的字号；强调行的 35px 改由下面的 scale 得到。 */
+  font-size: clamp(19px, 1.95vw, 29px) !important;
+  line-height: 1.46;
 }
-/* 离开当前行时把它收回 is-near 尺寸的动作放慢一点，收尾更柔 */
+.lyrics-view:not(.is-background-lyrics) .lyrics-right .lyric-line.is-active {
+  /* 0.207 = 35 / 29 - 1，保持原来的「强调行 ≈ 35px」观感，但不再改字号。
+     --line-emph 由 lyrics.ts 按「行尾到歌词列右缘还剩多少空间」收小（默认 0.207），
+     否则长句放大后最后几个字会被 .lyrics-right 的 overflow 裁掉。 */
+  transform: translate(8px) scale(calc(1 + var(--line-emph, 0.207) * var(--grow, 0))) !important;
+  transform-origin: 0% 50% !important;
+  /* --grow 由 JS 每帧写入，transform 只用短过渡追，避免回弹迟滞 */
+  transition: color 0.3s var(--ease), opacity 0.42s var(--ease),
+    transform 0.12s linear !important;
+}
+/* 文字用 scale 放大；左侧竖条与下划线反向缩放，粗细保持 3px / 2px 不变。 */
+.lyrics-view:not(.is-background-lyrics) .lyrics-right .lyric-line.is-active::before {
+  transform: translateY(-50%) scale(calc(1 / (1 + var(--line-emph, 0.207) * var(--grow, 0))));
+}
+.lyrics-view:not(.is-background-lyrics) .lyrics-right .lyric-line.is-active::after {
+  transform: scaleX(var(--p, 0)) scaleY(calc(1 / (1 + var(--line-emph, 0.207) * var(--grow, 0))));
+}
+/* 行切换时不再过渡 font-size：字号过渡会逐帧触发换行计算，看起来就是「被顶一下」；
+   transform 保留短过渡，离开强调行时缩放平滑收回。 */
 .lyrics-right .lyric-line {
   transition: color 0.3s var(--ease), opacity 0.3s var(--ease),
-    font-size 0.5s cubic-bezier(0.22, 1, 0.36, 1) !important;
+    transform 0.12s linear !important;
 }
 
 /* ============================================================
@@ -3570,6 +3611,17 @@ body,
   opacity: 0.1;
 }
 
+/* 纯字档的舞台本体是透明的，暗场（75% 不透明度）会透出歌词页底色；
+   底色是浅色主题时会发灰。这里给纯字档压一层近黑底，并限制封面底色亮度，
+   避免「灰蒙蒙」。 */
+.lyrics-view.is-lumiere.is-lumiere-pure {
+  background: #07070a;
+}
+.lyrics-view.is-lumiere.is-lumiere-pure .lyrics-bg {
+  opacity: 0.12;
+  filter: blur(110px) saturate(1.05) brightness(0.22);
+}
+
 /* ── 歌词「文字设置」面板 ─────────────────────────────────────────────
    和「匹配歌词」同一套大弹窗：底部居中的面板，左边调参数、右边一整格独立预览画面。 */
 .sheet.text-sheet {
@@ -3861,6 +3913,15 @@ body,
 /* 纯字档「光柱效果」多套样式：一行放不下时折成两行（每行四个） */
 .ts-seg.is-wrap {
   flex-wrap: wrap;
+}
+
+.ts-seg.is-palette {
+  flex-wrap: wrap;
+}
+
+.ts-seg.is-palette .ts-seg-btn {
+  flex: 0 0 calc(25% - 4px);
+  padding: 0 4px;
 }
 
 .ts-seg.is-wrap .ts-seg-btn {
@@ -4181,6 +4242,102 @@ body,
 }
 .lyrics-view.is-geo.is-lumiere-fresh::after {
   content: '几何 · 排版中';
+}
+
+/* ── 播放效果 · PV（文字 PV：五幕换色 / 逐拍硬切 / 图形转场） ──
+   场景本体在 ui/pvScene.ts 里自己画（每一句一整版：底色、色块与纸片、字、页眉页脚），
+   舞台沿用 .lyrics-stage 的绝对定位与淡入规则。
+   PV 的五幕在深底（墨蓝 #141531、朱红 #CC353C）与浅底（白纸、灰绿、黑白收尾）之间切换，
+   场景会把当前幕的深浅写成 .is-pv-deep，控件据此在深墨色 / 浅纸色两套之间换。 */
+.lyrics-stage.is-pv {
+  background: #141531;
+  transition: background 0.24s var(--ease);
+}
+.lyrics-stage.is-pv .pv-scene {
+  position: absolute;
+  inset: 0;
+}
+.lyrics-stage.is-pv canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.lyrics-view.is-pv .lyrics-scrim {
+  background: transparent;
+}
+.lyrics-view.is-pv .lyrics-bg {
+  opacity: 0;
+  visibility: hidden;
+}
+.lyrics-view.is-pv .lyrics-close {
+  color: #18203a;
+  background: rgb(248 245 236 / 0.72);
+  border-color: rgb(24 32 58 / 0.22);
+  box-shadow: 0 10px 30px rgb(24 32 58 / 0.12);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  transition: color 0.24s var(--ease), background 0.24s var(--ease), border-color 0.24s var(--ease);
+}
+.lyrics-view.is-pv .lyrics-close:hover {
+  background: rgb(248 245 236 / 0.92);
+}
+.lyrics-view.is-pv .lyrics-title {
+  color: #18203a;
+}
+.lyrics-view.is-pv .lyrics-artist,
+.lyrics-view.is-pv .lyrics-source,
+.lyrics-view.is-pv .lyrics-progress-time {
+  color: rgb(24 32 58 / 0.62) !important;
+}
+.lyrics-view.is-pv .lyrics-progress-track {
+  background: rgb(24 32 58 / 0.16);
+}
+.lyrics-view.is-pv .lyrics-bg-control {
+  background: rgb(248 245 236 / 0.7);
+  border-color: rgb(24 32 58 / 0.2);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  transition: color 0.24s var(--ease), background 0.24s var(--ease), border-color 0.24s var(--ease);
+}
+.lyrics-view.is-pv .lyrics-bg-btn {
+  color: rgb(24 32 58 / 0.6);
+}
+.lyrics-view.is-pv .lyrics-bg-btn.is-on {
+  color: #0f0f10;
+}
+/* 深幕（墨蓝 / 朱红）：控件反过来排，不然深墨字会消失在深底上。 */
+.lyrics-view.is-pv:has(.lyrics-stage.is-pv-deep) .lyrics-close {
+  color: #f4f2ea;
+  background: rgb(20 21 49 / 0.5);
+  border-color: rgb(244 242 234 / 0.24);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.3);
+}
+.lyrics-view.is-pv:has(.lyrics-stage.is-pv-deep) .lyrics-close:hover {
+  background: rgb(20 21 49 / 0.72);
+}
+.lyrics-view.is-pv:has(.lyrics-stage.is-pv-deep) .lyrics-title {
+  color: #f4f2ea;
+}
+.lyrics-view.is-pv:has(.lyrics-stage.is-pv-deep) .lyrics-artist,
+.lyrics-view.is-pv:has(.lyrics-stage.is-pv-deep) .lyrics-source,
+.lyrics-view.is-pv:has(.lyrics-stage.is-pv-deep) .lyrics-progress-time {
+  color: rgb(244 242 234 / 0.66) !important;
+}
+.lyrics-view.is-pv:has(.lyrics-stage.is-pv-deep) .lyrics-progress-track {
+  background: rgb(244 242 234 / 0.2);
+}
+.lyrics-view.is-pv:has(.lyrics-stage.is-pv-deep) .lyrics-bg-control {
+  background: rgb(20 21 49 / 0.48);
+  border-color: rgb(244 242 234 / 0.22);
+}
+.lyrics-view.is-pv:has(.lyrics-stage.is-pv-deep) .lyrics-bg-btn {
+  color: rgb(244 242 234 / 0.62);
+}
+.lyrics-view.is-pv:has(.lyrics-stage.is-pv-deep) .lyrics-bg-btn.is-on {
+  color: #f4f2ea;
+}
+.lyrics-view.is-pv.is-lumiere-fresh::after {
+  content: 'PV · 排版中';
 }
 
 /* ====================================================================== */
@@ -6184,7 +6341,7 @@ html.is-pb-expanded .playerbar.is-hidden {
 
 /* ---------------- v5：整站控制色 + 自定义背景图片（设置 → 外观） ---------------- */
 .theme-swatches{display:flex;flex-wrap:wrap;gap:9px;align-items:center}
-.theme-swatch{width:28px;height:28px;border-radius:50%;border:1px solid var(--line-strong);padding:0;cursor:pointer;background:#a9803f;transition:transform .16s var(--ease),box-shadow .16s var(--ease)}
+.theme-swatch{position:relative;width:28px;height:28px;border-radius:50%;border:1px solid var(--line-strong);padding:0;cursor:pointer;background:#a9803f;transition:transform .16s var(--ease),box-shadow .16s var(--ease)}
 .theme-swatch[style*="--swatch"] {background:var(--swatch,#a9803f)}
 .theme-swatch:hover{transform:scale(1.08)}
 .theme-swatch.is-on{box-shadow:0 0 0 2px var(--panel-solid),0 0 0 4px var(--accent)}
@@ -6310,6 +6467,12 @@ html.is-pb-expanded .playerbar.is-hidden {
   background:
     radial-gradient(80% 60% at 50% 42%, rgb(var(--ink-rgb) / 0.44), rgb(var(--ink-rgb) / 0.94) 78%),
     linear-gradient(180deg, rgb(var(--ink-rgb) / 0.88), rgb(var(--ink-rgb) / 0.68) 30%, rgb(var(--ink-rgb) / 0.92));
+}
+/* 绘光/纯字的舞台本身是暗场：浅色主题的浅色遮罩会把整屏抬成灰雾。 */
+:root[data-theme='light'] .lyrics-view.is-lumiere .lyrics-scrim {
+  background:
+    linear-gradient(180deg, rgb(2 4 9 / 0.72), rgb(2 4 9 / 0.44) 42%, rgb(2 4 9 / 0.86)),
+    radial-gradient(120% 80% at 50% 45%, transparent, rgb(2 4 9 / 0.5));
 }
 :root[data-theme='light'] .lyrics-view .lyrics-right .lyric-line {
   opacity: 0.8;
@@ -7309,7 +7472,8 @@ html.is-bg-lyrics-scene #app{display:none}
 }
 .lyrics-view.is-background-lyrics:not(.is-lumiere) .lyrics-right .lyric-line.is-active{
   font-size:clamp(46px,5.4vh,104px)!important;
-  transform:none;
+  /* 与主歌词页同一套起句放大：--line-emph 由 applyLineEmphasisCap 按行宽算，--grow 由节奏驱动。 */
+  transform:translate(8px) scale(calc(1 + var(--line-emph, 0.207) * var(--grow, 0)))!important;
 }
 .lyrics-view.is-background-lyrics:not(.is-lumiere) .lyrics-right .lyric-line.is-active:before{display:none}
 
@@ -7468,6 +7632,31 @@ html.is-bg-lyrics-scene #app{display:none}
 .lyrics-view.is-cover-left:not(.is-background-lyrics):not(.is-lumiere) .lyrics-source{
   font-size:clamp(13px,1.2vh,20px);opacity:.72;
 }
+/* 歌曲信息反差色：封面右上区域偏亮时自动换成深字，否则浅底浅字会看不清（lyrics.ts refreshMetaTone）。 */
+.lyrics-view:not(.is-lumiere):not(.is-background-lyrics) .lyrics-meta .lyrics-title,
+.lyrics-view:not(.is-lumiere):not(.is-background-lyrics) .lyrics-meta .lyrics-artist,
+.lyrics-view:not(.is-lumiere):not(.is-background-lyrics) .lyrics-meta .lyrics-source{
+  transition:color .3s var(--ease);
+}
+.lyrics-view.is-meta-dark:not(.is-lumiere):not(.is-background-lyrics) .lyrics-meta .lyrics-title{
+  color:#17181e;text-shadow:0 1px 12px rgb(255 255 255 / .34);
+}
+.lyrics-view.is-meta-dark:not(.is-lumiere):not(.is-background-lyrics) .lyrics-meta .lyrics-artist{
+  color:rgb(23 24 30 / .74);text-shadow:0 1px 10px rgb(255 255 255 / .28);
+}
+.lyrics-view.is-meta-dark:not(.is-lumiere):not(.is-background-lyrics) .lyrics-meta .lyrics-source{
+  color:rgb(23 24 30 / .62);text-shadow:0 1px 10px rgb(255 255 255 / .24);
+}
+/* 暗封面：主题浅字之外再补一层深色描边光，避免压在暗部时发糊。 */
+.lyrics-view.is-meta-light:not(.is-lumiere):not(.is-background-lyrics) .lyrics-meta .lyrics-title{
+  color:#f7f6f3;text-shadow:0 1px 14px rgb(0 0 0 / .5),0 0 2px rgb(0 0 0 / .4);
+}
+.lyrics-view.is-meta-light:not(.is-lumiere):not(.is-background-lyrics) .lyrics-meta .lyrics-artist{
+  color:rgb(255 255 255 / .78);text-shadow:0 1px 12px rgb(0 0 0 / .46);
+}
+.lyrics-view.is-meta-light:not(.is-lumiere):not(.is-background-lyrics) .lyrics-meta .lyrics-source{
+  color:rgb(255 255 255 / .66);text-shadow:0 1px 12px rgb(0 0 0 / .42);
+}
 .lyrics-view.is-cover-left:not(.is-background-lyrics):not(.is-lumiere) .lyrics-right{
   flex:0 0 auto;width:clamp(560px,42vw,1500px);margin-right:6vw;
 }
@@ -7542,3 +7731,207 @@ html.is-bg-lyrics-scene #app{display:none}
 /* 播放效果（纯字/房间/唱片）开启时，「封面在左」相关层一律不参与渲染 */
 .lyrics-view.is-lumiere .bg-cover-left{display:none!important}
 .lyrics-view.is-lumiere .lyrics-cover-blur{display:none!important}
+
+/* 流彩：全幅色场自带背景，控件用深底胶囊保持所有配色下可读。 */
+.lyrics-view.is-flow .lyrics-bg,
+.lyrics-view.is-flow .lyrics-scrim { opacity: 0; }
+.lyrics-view.is-flow .lyrics-progress { background: rgb(24 19 41 / 0.78); border-radius: 18px; padding: 12px 18px; }
+.lyrics-view.is-flow .lyrics-close { background: rgb(24 19 41 / 0.78); color: #fff; }
+
+/* Retired canvases must not crossfade over restored DOM lyrics or the next stage. */
+.lyrics-stage:not(.is-on) { visibility: hidden; opacity: 0; transition: none; }
+.lyrics-view:not(.is-lumiere) .lyrics-stage { display: none; }
+
+/* Keep cover-layout metadata clear of the scrolling lyrics. */
+.lyrics-view.is-cover-left:not(.is-background-lyrics):not(.is-lumiere) .lyrics-right {
+  height: calc(100% - 260px); max-height: calc(100% - 260px);
+  margin-top: 170px; margin-bottom: 90px; align-self: stretch; overflow: hidden;
+}
+/* Stable active-line markers, without pulsing blur or outgoing trails. */
+.lyrics-view:not(.is-lumiere) .lyric-line::before,
+.lyrics-view:not(.is-lumiere) .lyric-line::after {
+  animation: none !important; filter: none !important; box-shadow: none !important;
+}
+.lyrics-view:not(.is-lumiere) .lyric-line:not(.is-active)::before,
+.lyrics-view:not(.is-lumiere) .lyric-line:not(.is-active)::after { content: none !important; }
+
+/* 位置标尺：竖向渐隐（上实下透），和横向下划线用同一套「实→透」语言。
+   颜色只跟主题 --accent 走，不随逐字变色重绘，所以不会闪。 */
+.lyrics-view:not(.is-lumiere) .lyrics-right .lyric-line.is-active::before {
+  background: linear-gradient(
+    180deg,
+    var(--accent) 0%,
+    color-mix(in srgb, var(--accent) 24%, transparent) 100%
+  ) !important;
+  opacity: 1 !important; transition: none !important;
+  width: 3px !important; height: 32px !important;
+}
+
+
+/* ============================================================
+   关闭播放效果时的歌词配色（DOM 歌词）：
+   已唱 / 未唱歌词统一半透明白，正在播放的行纯白 + 白色辉光。
+   只改文字与辉光；左侧标尺、下划线仍走主题 accent。
+   ============================================================ */
+.lyrics-view:not(.is-lumiere):not(.is-background-lyrics) .lyrics-right .lyric-line,
+.lyrics-view:not(.is-lumiere):not(.is-background-lyrics) .lyrics-right .lyric-line.is-near,
+.lyrics-view:not(.is-lumiere):not(.is-background-lyrics) .lyrics-right .lyric-line:not(.is-active) .lyric-char,
+.lyrics-view:not(.is-lumiere):not(.is-background-lyrics) .lyrics-right .lyric-line:not(.is-active) .lyric-trans {
+  color: rgb(255 255 255 / 0.52) !important;
+  text-shadow: none !important;
+}
+.lyrics-view:not(.is-lumiere):not(.is-background-lyrics) .lyrics-right .lyric-line.is-near,
+.lyrics-view:not(.is-lumiere):not(.is-background-lyrics) .lyrics-right .lyric-line.is-near .lyric-char,
+.lyrics-view:not(.is-lumiere):not(.is-background-lyrics) .lyrics-right .lyric-line.is-near .lyric-trans {
+  color: rgb(255 255 255 / 0.6) !important;
+}
+.lyrics-view:not(.is-lumiere):not(.is-background-lyrics) .lyrics-right .lyric-line.is-active,
+.lyrics-view:not(.is-lumiere):not(.is-background-lyrics) .lyrics-right .lyric-line.is-active .lyric-char,
+.lyrics-view:not(.is-lumiere):not(.is-background-lyrics) .lyrics-right .lyric-line.is-active .lyric-char.is-sung,
+.lyrics-view:not(.is-lumiere):not(.is-background-lyrics) .lyrics-right .lyric-line.is-active .lyric-char.is-hot,
+.lyrics-view:not(.is-lumiere):not(.is-background-lyrics) .lyrics-right .lyric-line.is-active .lyric-trans {
+  color: #fff !important;
+}
+/* 正在播放：整行统一白色辉光，逐字的高亮也并入同一层辉光，不再夹带彩色阴影 */
+.lyrics-view:not(.is-lumiere):not(.is-background-lyrics) .lyrics-right .lyric-line.is-active .lyric-char,
+.lyrics-view:not(.is-lumiere):not(.is-background-lyrics) .lyrics-right .lyric-line.is-active .lyric-char.is-sung,
+.lyrics-view:not(.is-lumiere):not(.is-background-lyrics) .lyrics-right .lyric-line.is-active .lyric-char.is-hot {
+  text-shadow:
+    0 0 18px rgb(255 255 255 / 0.55),
+    0 0 42px rgb(255 255 255 / 0.26) !important;
+}
+
+.flow-mg-gallery { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; margin:12px 0; }
+.flow-mg-gallery .ts-seg-btn { min-height:34px; text-align:left; padding:8px; border-radius:8px; }
+.flow-sheet .ts-preview-stage { min-height:240px; }
+.flow-sheet .ts-preview-col > .ts-range { width:100%; margin:12px 0; }
+.flow-sheet input[type=color] { width:52px; height:30px; padding:2px; border:1px solid var(--border, #ffffff20); border-radius:7px; background:transparent; cursor:pointer; }
+
+/* 纯字/绘光舞台是暗场：浅色主题的浅色 lyrics-scrim 会把整屏抬成灰雾，
+   所以这两个档位强制使用暗色遮罩（含背景歌词关闭时的普通歌词页）。 */
+.lyrics-view.is-lumiere-pure:not(.is-background-lyrics) .lyrics-scrim {
+  background:
+    linear-gradient(180deg, rgb(2 4 9 / 0.72), rgb(2 4 9 / 0.44) 42%, rgb(2 4 9 / 0.86)),
+    radial-gradient(120% 80% at 50% 45%, transparent, rgb(2 4 9 / 0.5)) !important;
+}
+
+/* 手动滚动歌词时不压暗：此时 --fade 已归 1，但非当前行仍是 52% 白，
+   滚上去的句子看着像半透明；浏览态统一提到纯白，避免看不清。 */
+.lyrics-right .lyrics-lines.is-browsing .lyric-line,
+.lyrics-right .lyrics-lines.is-browsing .lyric-line .lyric-char,
+.lyrics-right .lyrics-lines.is-browsing .lyric-line .lyric-trans {
+  opacity: 1 !important;
+}
+/* 浏览态的颜色由 lyrics.ts 按当前主题（含同步背景配色）逐行/逐字写入，
+   这里只负责去透明度；写死白色会让用户的歌词颜色设置失效。 */
+.lyrics-right .lyrics-lines.is-browsing .lyric-line .lyric-trans {
+  color: inherit !important;
+}
+
+/* 译文兜底条：某些歌词动效不显示行内译文时，在播放条上方补一条。 */
+.lyrics-transbar {
+  position: absolute;
+  left: 50%;
+  bottom: calc(96px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  max-width: min(78vw, 980px);
+  padding: 6px 16px;
+  border-radius: 999px;
+  background: rgb(0 0 0 / 0.3);
+  backdrop-filter: blur(8px);
+  color: rgb(255 255 255 / 0.92);
+  font-size: clamp(14px, 1.15vw, 18px);
+  line-height: 1.45;
+  text-align: center;
+  text-wrap: balance;
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 0.2s ease;
+  z-index: 6;
+}
+.lyrics-transbar.is-empty {
+  opacity: 0;
+}
+.lyrics-view.is-background-lyrics .lyrics-transbar {
+  bottom: calc(84px + env(safe-area-inset-bottom, 0px));
+}
+
+/* 设置 → 存储：磁盘缓存分类列表（宿主 /api/storage/cache）。 */
+.set-cache-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgb(0 0 0 / 0.06);
+}
+
+.set-cache-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 2px;
+  font-size: 12.5px;
+}
+
+.set-cache-name {
+  flex: 0 0 96px;
+  color: var(--fg);
+}
+
+.set-cache-row .set-value {
+  flex: 1;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.set-cache-row .btn {
+  flex: 0 0 auto;
+  padding: 2px 10px;
+}
+
+.btn-xs {
+  padding: 2px 10px;
+  font-size: 12px;
+}
+
+/* 首页「我喜欢的音乐」两张卡：宽屏下也保持 flex 横排（不用三段网格），
+   否则标题列会被按钮挤到 0 宽、按钮文字换行把按钮撑高。 */
+.home .home-collections > .home-liked .daily-actions{gap:8px;flex-wrap:nowrap}
+.home .home-collections > .home-liked .daily-actions .ui-btn{flex:0 0 auto;padding:9px 14px}
+@media (min-width: 1600px) {
+  .home .home-row .home-collections > .home-liked .daily-card {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+  }
+  .home .home-row .home-collections > .home-liked .daily-card > .daily-body {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .home .home-row .home-collections > .home-liked .daily-card > .daily-deck {
+    grid-column: auto;
+    grid-row: auto;
+    margin-right: 28px;
+  }
+  .home .home-row .home-collections > .home-liked .daily-kicker,
+  .home .home-row .home-collections > .home-liked .daily-title,
+  .home .home-row .home-collections > .home-liked .daily-meta,
+  .home .home-row .home-collections > .home-liked .daily-actions {
+    grid-column: auto;
+    grid-row: auto;
+  }
+  .home .home-row .home-collections > .home-liked .daily-actions { margin-top: 8px; }
+}
+
+/* 已播放歌词与待播放歌词保持同样的可见度，避免“过去的高亮、未来的发灰” */
+.lyrics-view.lyric-style-spin .lyrics-right .lyric-line:not(.is-active) {
+  opacity: 0.2 !important;
+}
+.lyrics-view.lyric-style-spin .lyrics-right .lyrics-lines.is-browsing .lyric-line {
+  opacity: 1 !important;
+}
+

@@ -36,6 +36,7 @@
 import {
   attachDeckToGraph,
   audioTapClock,
+  deckAudioContext,
   audioTapGraphActive,
   detachDeckFromGraph,
   ensureEqualizerGraph,
@@ -49,6 +50,14 @@ import {
   setDeckTrimGain,
   type DeckBandPoint,
 } from '../core/audioTap';
+import {
+  beginStemEntry,
+  hasStemWindow,
+  prefetchStemWindow,
+  primeStemWindow,
+  type StemEntryHandle,
+} from '../core/stemsDeck';
+import { STEM_WINDOW_SEC } from '../core/stemsClient';
 import type { AnalysisResult, BeatAnalysis } from '../online/analysis';
 import type { OnlineTrack } from '../online/types';
 import { compensationDbFor } from './loudness';
@@ -190,14 +199,14 @@ const MAX_FADE_MS = 32_000;
  */
 const HANDOFF_FALLBACK_BAR_MS = 2_000;
 
-/** WSOLA 变速不变调：用原生 preservesPitch 时间拉伸，把 B 的拍间隔拉到与 A 一致（±12% 内才做）。 */
+/** WSOLA 变速不变调：用原生 preservesPitch 时间拉伸，把 A 的拍间隔在过渡里缓慢对齐到 B（±12% 内才做）。 */
 const TEMPO_RATE_MIN = 0.88;
 const TEMPO_RATE_MAX = 1.12;
 /**
- * 变速回正的起点（过渡进度 0–1）：前段保持与 A 对齐，后段在淡化里平滑回到用户倍速，
- * 到过渡结束时正好是正常速度，切歌后不再有「先快/慢一下再回正」的尾巴。
+ * 对速收敛点（过渡进度 0–1）：A 从原速平滑变到 B 的拍间隔，在前 75% 内完成；
+ * 最后一段与 B 同速收尾，切歌瞬间不再有速率台阶（B 全程原速，无回正尾巴）。
  */
-const TEMPO_RESTORE_FROM = 0.55;
+const TEMPO_ALIGN_SPAN = 0.75;
 
 /** B 淡入曲线指数（>1 = 更晚出声）；A 淡出指数（>1 = 人声/尾音多留一会儿）。 */
 const B_ENTRY_WARP = 1.9;
@@ -857,6 +866,8 @@ interface FadeSchedule {
   tailSilenceMs: number;
   /** B 的「开始唱词」位置（曲内毫秒）；0 = 未启用 */
   nextVocalStartMs: number;
+  /** 从 B 起播到 B 首句唱词还要多久（毫秒）：用于把界面切歌推迟到真正开口 */
+  vocalWaitMs: number;
   /** true = B 起播点按唱词反推（前奏够长跳过 / 前奏较短整段过渡） */
   vocalAligned: boolean;
   /** true = 本次走「歌词衔接」：A 末句唱完接 B 首句，人声先出、伴奏渐入 */
@@ -922,6 +933,20 @@ interface ActivePlan {
   fadeStartPosMs: number;
   fadeMs: number;
   bStartFileMs: number;
+  /** B 首句歌词在 B 曲内的时间（毫秒，0 = 未知）；用于推迟界面切歌到「B 真正开口」 */
+  nextVocalStartMs: number;
+  /** 从 B 起播到 B 首句还要多久（毫秒）；displayAtMs 按它算 */
+  vocalWaitMs: number;
+  /** 过渡开始后多久再把界面/歌词切到下一首（毫秒，0 = 立刻） */
+  displayAtMs: number;
+  /** 本次过渡是否已经通知过界面切歌 */
+  displayNotified: boolean;
+  /** 下一首曲目：真分离音轨需要 source/id 去问宿主 */
+  nextTrack?: OnlineTrack;
+  /** 真分离播放句柄（拿到后由 finish/cancel 收尾） */
+  stemHandle?: StemEntryHandle | null;
+  /** A 的曲目（真分离尾小节循环要用 source/id） */
+  currentTrack?: OnlineTrack;
   /** A 的可听结尾（曲内毫秒）；用于 tick 里判断还剩多少可淡化时间 */
   audibleEndPosMs: number;
   /** manual/loop 的触发点（曲内毫秒）：tick 到达后开始过渡；auto 恒为 0 */
@@ -1730,6 +1755,15 @@ function buildStructureCue(args: {
     const vocalGap = Math.round(nextVocalStartMs > 0 ? nextVocalStartMs - nextStartMs : 0);
     const vocalEnd = vocalGap >= MIN_FADE_MS && vocalGap <= availableMs - 300 ? vocalGap : 0;
     fadeMs = manual ? Math.min(manualMs, availableMs) : vocalEnd > 0 ? vocalEnd : availableMs;
+    // 自动档的上限：B 前奏特别长时不再拖出十几二十秒的淡化（听感像「一直在换歌」）。
+    // 不剪 A 的尾奏：把起点后移，让淡化仍在 A 可听结尾收尾，只是窗口变短。
+    if (!manual && fadeMs > 12000) {
+      const shiftedStart = fileAudibleEndMs - 12000;
+      if (shiftedStart > fadeStart) {
+        fadeStart = Math.max(earliestStart, shiftedStart);
+        fadeMs = Math.min(fadeMs, Math.max(MIN_FADE_MS, Math.round(fileAudibleEndMs - fadeStart)));
+      }
+    }
     if (fadeMs > MAX_FADE_MS) fadeMs = MAX_FADE_MS;
     // 快速切入本来就不做长融合，自动模式下也压到 2 小节以内。
     if (cut) fadeMs = Math.min(fadeMs, Math.round(barMs * 2));
@@ -1742,6 +1776,13 @@ function buildStructureCue(args: {
       if (room < MIN_FADE_MS + 400) return null;
       fadeMs = Math.min(fadeMs, Math.round(room - 400));
     }
+  }
+  // 小节量化：自动/结构化的淡化长度收敛到整小节，避免「半小节切换」的拖沓感；
+  // 手动指定时长与快速切入不量化（由用户/风格决定），余量不足时保持原值。
+  if (!manual && !cut && barMs > 0 && fadeMs >= MIN_FADE_MS) {
+    const wholeBars = Math.max(1, Math.floor(fadeMs / barMs));
+    const quantized = Math.round(wholeBars * barMs);
+    if (quantized >= MIN_FADE_MS) fadeMs = quantized;
   }
   if (fadeMs < MIN_FADE_MS) return null;
   return {
@@ -1765,8 +1806,21 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
   const analysis = options.currentAnalysis.analysis;
   // 可听结尾是文件毫秒：CUE 分轨先换算成段内位置再夹进 [0, durationMs]；
   // 缺失（旧宿主 / 旧缓存）或越界时回退曲内时长，行为与 task-19 一致。
+  // 分析用的文件可能和当前播放音质不是同一份（例如 analysis 走 high、播放走 lossless），
+  // 两边的总时长对不上时，audibleEnd 会把淡化起点提前到 A 还在唱的位置——
+  // 这时宁可回退到元素实际时长，也别提前收尾。
+  const analysisDurationMs = Number(options.currentAnalysis.durationMs) || 0;
+  const analysisStale =
+    analysisDurationMs > 0 && Math.abs(analysisDurationMs - durationMs) > 1500;
+  if (analysisStale) {
+    logEvent(
+      'analysis-mismatch',
+      `分析时长 ${Math.round(analysisDurationMs)} ms ≠ 播放时长 ${Math.round(durationMs)} ms，忽略 audibleEnd`,
+    );
+  }
   const rawAudibleEnd = analysis.audibleEndMs;
-  const hasAudibleEnd = typeof rawAudibleEnd === 'number' && Number.isFinite(rawAudibleEnd) && rawAudibleEnd > 0;
+  const hasAudibleEnd =
+    !analysisStale && typeof rawAudibleEnd === 'number' && Number.isFinite(rawAudibleEnd) && rawAudibleEnd > 0;
   const audibleEndPosMs = hasAudibleEnd
     ? Math.min(durationMs, Math.max(0, rawAudibleEnd - currentStartMs))
     : durationMs;
@@ -1789,7 +1843,10 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
     typeof rawVocalStart === 'number' && Number.isFinite(rawVocalStart) && rawVocalStart > 0
       ? Math.round(Math.min(rawVocalStart, nextDurationMs > 0 ? nextDurationMs : rawVocalStart))
       : 0;
-  const vocalFileMs = vocalPosMs > 0 ? nextStartMs + vocalPosMs : 0;
+  const vocalFileMs =
+    vocalPosMs > 0 && (nextDurationMs <= 0 || vocalPosMs < nextDurationMs - 3_000)
+      ? nextStartMs + vocalPosMs
+      : 0;
 
   // 过渡时长（auto 需要 B 的起播点/唱词位置来判断前奏空间，所以放在 B 侧基础信息之后算）。
   const fadePlan = resolveFadePlan(options, {
@@ -1941,13 +1998,14 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
     }
   }
 
-  // ---- WSOLA 节拍对齐：把 B 的播放速率调到与 A 拍间隔一致，再微调 B 起播相位到同拍 ----
+  // ---- 节拍对齐：把「正在播放的 A」在过渡中缓变到 B 的拍间隔，B 按原速入场 ----
   let tempoRate = 1;
   // 局部速度（p0-13 曲线 / 跟拍覆盖）：B 取入场处、A 取淡化起点处；变速歌不再按整曲 BPM 算比率。
   const aBpm = tempoAtMs(options.current.track, analysis, fadeStartFile) || analysis.bpm;
   const bBpm = tempoAtMs(options.next.track, nextAnalysis, bStartFileMs) || nextAnalysis.bpm;
   if (aBpm >= 40 && bBpm >= 40 && settings.tempoRange > 0) {
-    const raw = aBpm / bBpm;
+    // A 要追上 B 的拍：A 的速率比 = bBpm / aBpm（B 更快则 A 提速）。
+    const raw = bBpm / aBpm;
     // 允许范围由设置决定（默认 ±8%）；超出会明显听出快/慢，宁可不变速、按原强拍起播。
     const minRate = 1 - settings.tempoRange;
     const maxRate = 1 + settings.tempoRange;
@@ -1969,13 +2027,19 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
       nextB !== null
         ? nextB - bStartFileMs
         : beatB - mod(bStartFileMs - (nextStartMs + Math.max(0, nextAnalysis.firstBeatMs)), beatB);
-    // B 以 tempoRate 播放：文件偏移 / rate = 真实时间偏移；让两边下一拍落在同一时刻。
-    let shift = toNextB - toNextA * tempoRate;
+    // B 按原速进入：直接让两边的下一拍落在同一时刻，之后再靠 A 的缓变收敛。
+    let shift = toNextB - toNextA;
     while (shift > beatB / 2) shift -= beatB;
     while (shift < -beatB / 2) shift += beatB;
     if (Math.abs(shift) <= 220) bStartFileMs = Math.round(bStartFileMs + shift);
   }
   if (nextLimitMs > 0 && bStartFileMs > nextLimitMs) bStartFileMs = nextLimitMs;
+  // 防御：歌词/BPM 数据异常时 bStartFileMs 可能落到 B 的末尾，起播只剩一两秒就被 ended 打断
+  // （表现为「过渡完成后直接跳到最后一秒并暂停」）。离开曲尾不足一个最小淡化窗口时退回正常起点。
+  if (nextDurationMs > 0) {
+    const latestSafe = nextStartMs + Math.max(0, nextDurationMs - MIN_FADE_MS - 600);
+    if (bStartFileMs > latestSafe) bStartFileMs = baseBStartFileMs;
+  }
 
   // 风格与低频交接：auto 按调性/BPM 距离解析；交接点按结构混音的小节线换算。
   let style = resolveTransitionStyle(settings, analysis, nextAnalysis);
@@ -2019,6 +2083,8 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
     audibleEndPosMs: Math.round(audibleEndPosMs),
     tailSilenceMs: Math.round(tailSilenceMs),
     nextVocalStartMs: vocalPosMs,
+    vocalWaitMs:
+      vocalPosMs > 0 ? Math.max(0, Math.round(vocalPosMs - (bStartFileMs - nextStartMs))) : 0,
     vocalAligned,
     handoff,
     lastVocalEndPosMs,
@@ -2041,6 +2107,10 @@ function applySchedule(plan: ActivePlan, schedule: FadeSchedule): void {
   plan.fadeStartPosMs = schedule.fadeStartPosMs;
   plan.fadeMs = schedule.fadeMs;
   plan.bStartFileMs = schedule.bStartFileMs;
+  plan.nextVocalStartMs = schedule.nextVocalStartMs;
+  plan.vocalWaitMs = schedule.vocalWaitMs;
+  plan.displayAtMs = 0;
+  plan.displayNotified = false;
   plan.tempoRate = schedule.tempoRate;
   plan.handoff = schedule.handoff;
   plan.lastVocalEndPosMs = schedule.lastVocalEndPosMs;
@@ -2089,7 +2159,20 @@ function cancelPendingSeek(element: HTMLAudioElement): void {
 
 /** seek 到指定文件秒数；元数据还没到时挂一次性 loadedmetadata 兜底。 */
 function seekDeck(element: HTMLAudioElement, fileSeconds: number): boolean {
-  const target = Math.max(0, fileSeconds);
+  // 计划里的 nextDuration 可能缺失或与实际文件不一致（旧缓存 / 不同版本音源）：
+  // 真正落点前按元素自身的 duration 再夹一次，避免 B 被 seek 到曲尾后立刻 ended，
+  // 表现为「过渡完成后跳到最后一秒并暂停」。
+  const clampTarget = (target: number): number => {
+    const duration = element.duration;
+    if (!Number.isFinite(duration) || duration <= 0) return target;
+    const minTail = (MIN_FADE_MS + 600) / 1000;
+    if (target > duration - minTail) {
+      logEvent('b-seek-clamped', `目标 ${Math.round(target * 1000)} ms 落在曲尾 ${Math.round(duration * 1000)} ms 内，回退 0`);
+      return 0;
+    }
+    return Math.min(target, Math.max(0, duration - 0.25));
+  };
+  const target = clampTarget(Math.max(0, fileSeconds));
   // 同一个 B 元素可能在上一次取消后还挂着旧监听，先撤掉再排新的。
   cancelPendingSeek(element);
   try {
@@ -2100,7 +2183,7 @@ function seekDeck(element: HTMLAudioElement, fileSeconds: number): boolean {
     const apply = (): void => {
       cancelPendingSeek(element);
       try {
-        element.currentTime = target;
+        element.currentTime = clampTarget(target);
       } catch {
         /* 忽略：已进入播放，位置由 preload 决定 */
       }
@@ -2193,6 +2276,12 @@ export function prepareCrossfade(options: CrossfadePrepareOptions): boolean {
     fadeStartPosMs: 0,
     fadeMs: 0,
     bStartFileMs: 0,
+    nextVocalStartMs: 0,
+    vocalWaitMs: 0,
+    displayAtMs: 0,
+    displayNotified: false,
+    nextTrack: options.next.track,
+    currentTrack: options.current.track,
     audibleEndPosMs: 0,
     triggerPosMs: 0,
     startedAt: 0,
@@ -2217,8 +2306,9 @@ export function prepareCrossfade(options: CrossfadePrepareOptions): boolean {
     debug.gainTrimDb = 0;
   }
   // 预先把 B 的速率与伴奏倾斜设置好：淡化开始时不用临时改，避免首帧爆音。
+  // B 一律按用户倍速原速播放，节拍对齐由 A 在过渡里缓变完成（见 fadeStep）。
   const baseRate = baseDeckRate(options);
-  setDeckPlaybackRate(options.standby, baseRate * plan.tempoRate);
+  setDeckPlaybackRate(options.standby, baseRate);
   setDeckPlaybackRate(options.active, baseRate);
   if (graphMode) {
     setDeckGraphTilt(options.active, 0, 0);
@@ -2227,6 +2317,7 @@ export function prepareCrossfade(options: CrossfadePrepareOptions): boolean {
     setDeckGraphTilt(options.standby, tilt, tilt);
   }
   activePlan = plan;
+  prefetchStemsForPlan(plan);
   debug.phase = 'prepared';
   debug.reason = '';
   debug.currentTitle = options.current.track.title;
@@ -2303,6 +2394,10 @@ function createManualPlan(options: ManualCrossfadeOptions, kind: 'manual' | 'loo
     fadeStartPosMs: Math.max(0, Math.round(options.currentPositionMs || 0)),
     fadeMs,
     bStartFileMs: Math.max(0, Math.round(options.nextStartFileMs || 0)),
+    nextVocalStartMs: 0,
+    vocalWaitMs: 0,
+    displayAtMs: 0,
+    displayNotified: false,
     audibleEndPosMs: 0,
     triggerPosMs: Math.max(0, Math.round(options.triggerPosMs ?? 0)),
     startedAt: 0,
@@ -2537,6 +2632,65 @@ function notifyStart(plan: ActivePlan): void {
   }
 }
 
+/**
+ * 真正的人声分离接管：B 起播后若起始窗口已经算好，就用分离音轨（vocals + instrumental）
+ * 替代 EQ 人声聚焦。任何一步没准备好都不影响原路径（元素照常发声）。
+ */
+function maybeStartStems(plan: ActivePlan): void {
+  const track = plan.nextTrack;
+  if (!track || !plan.graphMode) return;
+  const windowIndex = Math.floor(plan.bStartFileMs / 1000 / STEM_WINDOW_SEC);
+  if (!hasStemWindow(track, windowIndex)) return;
+  const element = plan.options.standby;
+  void beginStemEntry({
+    element,
+    track,
+    positionSec: plan.bStartFileMs / 1000,
+    durationMs: Math.max(1500, plan.fadeMs),
+    instRampMs: plan.fadeMs,
+    // 分层混音：前半段只有 B 的伴奏，人声在约 38% 进度后交叉进来。
+    vocalFrom: 0.38,
+  })
+    .then((handle) => {
+      if (!handle) return;
+      if (activePlan !== plan || plan.phase !== 'fading') {
+        handle.stop(60);
+        return;
+      }
+      plan.stemHandle = handle;
+      logEvent('stems-on', 'B 入场改用真实人声/伴奏分离');
+    })
+    .catch((err: unknown) => {
+      console.warn('[crossfade] stems failed', err);
+    });
+}
+
+/**
+ * 播放中主动预热当前窗口的人声/伴奏分离（供下次过渡直接接管）。
+ * 未建立音频图时静默跳过；失败不影响播放。
+ */
+export function warmStemsAt(element: HTMLAudioElement, track: OnlineTrack, positionSec: number): void {
+  const windowIndex = Math.floor(Math.max(0, positionSec) / STEM_WINDOW_SEC);
+  const ctx = deckAudioContext(element);
+  if (ctx) {
+    void prefetchStemWindow(ctx, track, windowIndex);
+    return;
+  }
+  // 还没建音频图（未开 EQ / 人声保留）时至少让宿主先把这一窗算出来，
+  // 过渡真正要用时命中缓存，不用现场等分离。
+  primeStemWindow(track, windowIndex);
+}
+
+/** 计划准备好时预取 B 起播窗口；算不完就本次继续走 EQ 兜底。 */
+function prefetchStemsForPlan(plan: ActivePlan): void {
+  const track = plan.nextTrack;
+  if (!track || !plan.graphMode) return;
+  const ctx = deckAudioContext(plan.options.active);
+  if (!ctx) return;
+  const windowIndex = Math.floor(plan.bStartFileMs / 1000 / STEM_WINDOW_SEC);
+  void prefetchStemWindow(ctx, track, windowIndex);
+}
+
 function startFade(plan: ActivePlan): void {
   if (plan.phase !== 'prepared') return;
   if (!plan.graphMode && audioTapGraphActive()) {
@@ -2577,9 +2731,15 @@ function startFade(plan: ActivePlan): void {
     setDeckVolume(plan.options.standby, 0);
   }
   // 准备期间 player 可能重设过 deck 属性，起播前再确保一次 WSOLA 速率与用户倍速。
+  // A 从用户倍速起步，fadeStep 里再缓慢对齐到 B 的拍；B 全程保持原速。
   const startBaseRate = baseDeckRate(plan.options);
   setDeckPlaybackRate(plan.options.active, startBaseRate);
-  setDeckPlaybackRate(plan.options.standby, startBaseRate * plan.tempoRate);
+  setDeckPlaybackRate(plan.options.standby, startBaseRate);
+  // 界面/歌词切到下一首的时机：等 B 真正开口，而不是过渡一开始就切。
+  // vocalWaitMs = B 从起播到首句的等待；按用户倍速折算成真实时间，并留 8% 余量给收尾。
+  const rate = startBaseRate > 0 ? startBaseRate : 1;
+  plan.displayAtMs = Math.max(0, Math.min(plan.fadeMs * 0.92, plan.vocalWaitMs / rate));
+  plan.displayNotified = false;
   if (!seekDeck(plan.options.standby, plan.bStartFileMs / 1000)) {
     cancelCrossfade('b-seek-failed');
     return;
@@ -2600,7 +2760,11 @@ function startFade(plan: ActivePlan): void {
           debug.amActive = false;
         }
       }
-      notifyStart(plan);
+      maybeStartStems(plan);
+      if (!plan.displayNotified && plan.displayAtMs <= 0) {
+        plan.displayNotified = true;
+        notifyStart(plan);
+      }
       plan.raf = requestAnimationFrame(fadeStep);
     },
     (err: unknown) => {
@@ -2627,17 +2791,20 @@ function fadeStep(): void {
   const progress = Math.min(1, (performance.now() - plan.startedAt) / Math.max(1, plan.fadeMs));
   plan.progress = progress;
   debug.progress = progress;
-  // 变速回正排在淡化里：前 TEMPO_RESTORE_FROM 段与 A 保持拍点对齐，
-  // 之后平滑拉回用户倍速，过渡完成的瞬间 B 已经是正常播放速度。
+  // 对速：正在播放的 A 从用户倍速缓变到 B 的拍间隔（B 保持原速）。
+  // 收敛放在前 75% 内，最后一段与 B 同速，切歌瞬间没有速率台阶。
   if (Math.abs(plan.tempoRate - 1) > 0.001) {
     const baseRate = baseDeckRate(plan.options);
     const matchedRate = baseRate * plan.tempoRate;
-    const restore = progress <= TEMPO_RESTORE_FROM
-      ? 0
-      : smoothStep((progress - TEMPO_RESTORE_FROM) / (1 - TEMPO_RESTORE_FROM));
-    const liveRate = matchedRate + (baseRate - matchedRate) * restore;
-    setDeckPlaybackRate(plan.options.standby, liveRate);
+    const align = smoothStep(Math.min(1, progress / TEMPO_ALIGN_SPAN));
+    const liveRate = baseRate + (matchedRate - baseRate) * align;
+    setDeckPlaybackRate(plan.options.active, liveRate);
     debug.tempoRateLive = Math.round(liveRate * 1000) / 1000;
+  }
+  // 界面/歌词延迟到 B 开口附近再切，避免「A 还在唱、歌词已经跑到下一首」。
+  if (!plan.displayNotified && progress * plan.fadeMs >= plan.displayAtMs) {
+    plan.displayNotified = true;
+    notifyStart(plan);
   }
   // 交融风格的增益/滤波已经排在 AudioParam 时间线上，这里只推进度，不再逐帧写参数。
   if (!plan.am) applyEqualPowerGains(plan, progress);
@@ -2653,6 +2820,15 @@ function finishFade(plan: ActivePlan): void {
   if (plan.raf) {
     cancelAnimationFrame(plan.raf);
     plan.raf = 0;
+  }
+  if (plan.stemHandle) {
+    plan.stemHandle.stop(220);
+    plan.stemHandle = null;
+  }
+  // 窗口很短 / B 首句很晚时可能还没轮到界面切歌：收尾前补一次，保证歌词跟得上。
+  if (!plan.displayNotified) {
+    plan.displayNotified = true;
+    notifyStart(plan);
   }
   if (plan.graphMode) {
     // 图内收尾：B 满音量、A 静音并从混音入口摘下；主音量仍由本地 gain 保持。
@@ -2685,6 +2861,21 @@ function finishFade(plan: ActivePlan): void {
     plan.kind === 'auto' ? 'fade-done' : plan.kind === 'loop' ? 'loop-fade-done' : 'manual-fade-done',
     'A 已静音、B 已满音量，交由 player 交换 deck',
   );
+  // 最后一道保险：B 若已经播到结尾（ended 或停在最后一帧），交给 player 之前把它拉回开头，
+  // 否则交换后就是「停在最后一秒且暂停」。
+  const standbyDuration = plan.options.standby.duration;
+  if (
+    Number.isFinite(standbyDuration) &&
+    standbyDuration > 0 &&
+    (plan.options.standby.ended || plan.options.standby.currentTime >= standbyDuration - 0.25)
+  ) {
+    try {
+      plan.options.standby.currentTime = 0;
+      void plan.options.standby.play().catch(() => undefined);
+    } catch {
+      /* 忽略：元素已被回收 */
+    }
+  }
   try {
     plan.options.onFinish();
   } catch (err) {
@@ -2739,6 +2930,10 @@ export function cancelCrossfade(reason = 'manual'): void {
   if (!plan) return;
   // 计划作废时 B 的起始 seek 监听也要撤掉，否则下次复用该元素会被旧目标改位置。
   cancelPendingSeek(plan.options.standby);
+  if (plan.stemHandle) {
+    plan.stemHandle.stop(120);
+    plan.stemHandle = null;
+  }
   if (plan.raf) {
     cancelAnimationFrame(plan.raf);
     plan.raf = 0;

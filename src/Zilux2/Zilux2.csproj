@@ -23,6 +23,11 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <!-- WebView2 runtime ships separately; no need to flatten native bits into the output root. -->
     <Platforms>AnyCPU;x64</Platforms>
+    <!--
+      本机构建环境不能访问 api.nuget.org；NuGet 审计每次 restore 都会因下载漏洞库失败而报
+      warning NU1900，和代码无关。发布构建要求 0 警告，这里关闭审计（不改包源、不影响还原）。
+    -->
+    <NuGetAudit>false</NuGetAudit>
   </PropertyGroup>
 
   <!--
@@ -38,6 +43,8 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" />
+    <!-- 离线 2 轨人声分离（docs/zilux2-stems-contract.md）：CPU EP，原生 DLL 走 runtimes/win-x64。 -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.31.1" />
   </ItemGroup>
 
   <ItemGroup>

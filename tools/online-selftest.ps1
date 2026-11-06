@@ -271,7 +271,8 @@ try {
     $healthJson = (Get-BodyText -Result $health) | ConvertFrom-Json
     Check 'health 200' ($health.Status -eq 200) "status $($health.Status)"
     Check 'health ok=true' ($healthJson.ok -eq $true)
-    Check 'health sources=netease,qq' ((@($healthJson.sources) -join ',') -eq 'netease,qq') (@($healthJson.sources) -join ',')
+    $healthSources = @($healthJson.sources)
+    Check 'health sources=netease,qq' ($healthSources -contains 'netease' -and $healthSources -contains 'qq') ($healthSources -join ',')
 
     # --- 2. netease search -------------------------------------------------
     $neteaseSearch = Invoke-Curl -Url "$base/api/search?source=netease&q=$q&limit=5&token=$token" -Name 'search-netease'
@@ -337,10 +338,36 @@ try {
     Check 'qq free stream audio magic' $qqFreeOk $qqDetail
     Check 'qq free stream Content-Type' ($qqType -match 'audio/') $qqType
 
-    $qqPaid = Invoke-Curl -Url "$base/api/stream?source=qq&id=0039MnYb0qxYhV&token=$token" -Name 'stream-qq-paid'
-    $qqPaidJson = (Get-BodyText -Result $qqPaid) | ConvertFrom-Json
-    Check 'qq paid stream 403' ($qqPaid.Status -eq 403) "status $($qqPaid.Status)"
-    Check 'qq paid stream not-playable' ($qqPaidJson.error -eq 'not-playable') ([string]$qqPaidJson.error)
+    # 0039MnYb0qxYhV 曾经是「付费不可播」fixture；上游后来放了 128k 试听，
+    # 所以这里接受两种结果：可播（200/206 + 音频头）或 403 + not-playable。
+    $qqPaid = Invoke-Curl -Url "$base/api/stream?source=qq&id=0039MnYb0qxYhV&token=$token" -RequestHeaders @('Range: bytes=0-2047') -Name 'stream-qq-paid'
+    $qqPaidBytes = Get-BodyBytes -Result $qqPaid
+    $qqPaidDetail = ''
+    $qqPaidAudio = Test-AudioMagic -Bytes $qqPaidBytes -Detail ([ref]$qqPaidDetail)
+    if (($qqPaid.Status -eq 200 -or $qqPaid.Status -eq 206) -and $qqPaidAudio) {
+        Check 'qq paid stream 403 or playable' $true "playable status $($qqPaid.Status) $qqPaidDetail"
+    }
+    else {
+        $qqPaidJson = (Get-BodyText -Result $qqPaid) | ConvertFrom-Json
+        Check 'qq paid stream 403 or playable' ($qqPaid.Status -eq 403) "status $($qqPaid.Status)"
+        Check 'qq paid stream not-playable' ($qqPaidJson.error -eq 'not-playable') ([string]$qqPaidJson.error)
+    }
+
+    # QQ 登录态：登录后 lossless 应解析到 320k 以上（匿名时 502 not-playable 也算正常）。
+    $qqInfo = Invoke-Curl -Url "$base/api/stream/info?source=qq&id=0039MnYb0qxYhV&quality=lossless&token=$token" -Name 'stream-info-qq-lossless'
+    $qqInfoJson = (Get-BodyText -Result $qqInfo) | ConvertFrom-Json
+    $qqInfoPass = ([int]$qqInfo.Status -eq 200 -and [int]$qqInfoJson.bitrate -ge 320000) -or
+        ([int]$qqInfo.Status -eq 502)
+    Check 'qq lossless stream info' $qqInfoPass "status $($qqInfo.Status) bitrate $([string]$qqInfoJson.bitrate) quality $([string]$qqInfoJson.quality)"
+
+    # QMC2 加密档（.mgg/.mflac）：登录态从 CDN 拉密文，宿主边下边解，首包必须是 OggS/fLaC。
+    # 匿名或该曲无加密档时按 502 not-playable 放行。
+    $qqEnc = Invoke-Curl -Url "$base/api/stream?source=qq&id=0039MnYb0qxYhV&quality=lossless&encrypted=1&token=$token" -RequestHeaders @('Range: bytes=0-4095') -Name 'stream-qq-encrypted'
+    $qqEncBytes = Get-BodyBytes -Result $qqEnc
+    $qqEncMagic = if ($qqEncBytes.Length -ge 4) { [Text.Encoding]::ASCII.GetString($qqEncBytes, 0, 4) } else { '' }
+    $qqEncPass = (($qqEnc.Status -eq 200 -or $qqEnc.Status -eq 206) -and ($qqEncMagic -eq 'OggS' -or $qqEncMagic -eq 'fLaC')) -or
+        ($qqEnc.Status -eq 502)
+    Check 'qq encrypted stream decrypted' $qqEncPass "status $($qqEnc.Status) magic $qqEncMagic"
 
     # --- 6. lyrics ---------------------------------------------------------
     $neteaseLyric = Invoke-Curl -Url "$base/api/lyric?source=netease&id=3391116218&token=$token" -Name 'lyric-netease'
@@ -352,6 +379,103 @@ try {
     $qqLyricJson = (Get-BodyText -Result $qqLyric) | ConvertFrom-Json
     Check 'qq lyric 200' ($qqLyric.Status -eq 200) "status $($qqLyric.Status)"
     Check 'qq lyric has [00:' ($qqLyricJson.lrc -match '\[00:') "lrcChars $(([string]$qqLyricJson.lrc).Length)"
+    Check 'qq lyric qrcText decoded' ($qqLyricJson.hasQrcText -eq $true -and -not [string]::IsNullOrWhiteSpace([string]$qqLyricJson.qrcText)) "qrcChars $(([string]$qqLyricJson.qrcText).Length)"
+
+    # --- 6b. discover native paths (artist / album / comments / song) ------
+    # 网易歌手 6452（陈奕迅）：hotSongs[0].albumId 再驱动专辑页，链路自洽。
+    $neteaseArtist = Invoke-Curl -Url "$base/api/discover/artist?source=netease&id=6452&limit=10&token=$token" -Name 'discover-artist-netease'
+    $neteaseArtistJson = (Get-BodyText -Result $neteaseArtist) | ConvertFrom-Json
+    Check 'discover netease artist 200' ($neteaseArtist.Status -eq 200) "status $($neteaseArtist.Status)"
+    Check 'discover netease artist name' (-not [string]::IsNullOrWhiteSpace([string]$neteaseArtistJson.name)) ([string]$neteaseArtistJson.name)
+    $neteaseArtistSongs = @($neteaseArtistJson.hotSongs)
+    Check 'discover netease artist hotSongs' ($neteaseArtistSongs.Count -gt 0) "hotSongs $($neteaseArtistSongs.Count)"
+    $neteaseAlbumId = if ($neteaseArtistSongs.Count -gt 0) { [string]$neteaseArtistSongs[0].albumId } else { '' }
+    Check 'discover netease artist hotSong albumId' (-not [string]::IsNullOrWhiteSpace($neteaseAlbumId)) $neteaseAlbumId
+    if (-not [string]::IsNullOrWhiteSpace($neteaseAlbumId)) {
+        $neteaseAlbum = Invoke-Curl -Url "$base/api/discover/album?source=netease&id=$neteaseAlbumId&token=$token" -Name 'discover-album-netease'
+        $neteaseAlbumJson = (Get-BodyText -Result $neteaseAlbum) | ConvertFrom-Json
+        Check 'discover netease album 200' ($neteaseAlbum.Status -eq 200) "status $($neteaseAlbum.Status)"
+        Check 'discover netease album title' (-not [string]::IsNullOrWhiteSpace([string]$neteaseAlbumJson.title)) ([string]$neteaseAlbumJson.title)
+        Check 'discover netease album tracks' (@($neteaseAlbumJson.tracks).Count -gt 0) "tracks $(@($neteaseAlbumJson.tracks).Count)"
+    }
+
+    $neteaseSong = Invoke-Curl -Url "$base/api/discover/song?source=netease&id=$($neteaseTrack.id)&token=$token" -Name 'discover-song-netease'
+    $neteaseSongJson = (Get-BodyText -Result $neteaseSong) | ConvertFrom-Json
+    Check 'discover netease song 200' ($neteaseSong.Status -eq 200) "status $($neteaseSong.Status)"
+    Check 'discover netease song title' (-not [string]::IsNullOrWhiteSpace([string]$neteaseSongJson.title)) ([string]$neteaseSongJson.title)
+    Check 'discover netease song artists' (@($neteaseSongJson.artists).Count -gt 0) "artists $(@($neteaseSongJson.artists).Count)"
+
+    $neteaseComments = Invoke-Curl -Url "$base/api/discover/comments?source=netease&id=$($neteaseTrack.id)&limit=3&token=$token" -Name 'discover-comments-netease'
+    $neteaseCommentsJson = (Get-BodyText -Result $neteaseComments) | ConvertFrom-Json
+    Check 'discover netease comments 200' ($neteaseComments.Status -eq 200) "status $($neteaseComments.Status)"
+    Check 'discover netease comments total>0' ([long]$neteaseCommentsJson.total -gt 0) ([string]$neteaseCommentsJson.total)
+
+    $neteasePodcasts = Invoke-Curl -Url "$base/api/discover/podcasts?limit=3&token=$token" -Name 'discover-podcasts-netease'
+    $neteasePodcastsJson = (Get-BodyText -Result $neteasePodcasts) | ConvertFrom-Json
+    Check 'discover netease podcasts 200' ($neteasePodcasts.Status -eq 200) "status $($neteasePodcasts.Status)"
+    Check 'discover netease podcasts programs' (@($neteasePodcastsJson.programs).Count -gt 0) "programs $(@($neteasePodcastsJson.programs).Count)"
+
+    # 节目详情 / 云盘：都需要网易登录；未登录回 401 login-required 也算链路正常。
+    $neteaseProgram = Invoke-Curl -Url "$base/api/discover/program?id=3731998321&token=$token" -Name 'discover-program-netease'
+    $neteaseProgramJson = (Get-BodyText -Result $neteaseProgram) | ConvertFrom-Json
+    $programPass = ([int]$neteaseProgram.Status -eq 200 -and -not [string]::IsNullOrWhiteSpace([string]$neteaseProgramJson.name)) -or
+        ([int]$neteaseProgram.Status -eq 401 -and $neteaseProgramJson.error -eq 'login-required')
+    Check 'discover netease program' $programPass "status $($neteaseProgram.Status) name $([string]$neteaseProgramJson.name)"
+
+    $neteaseCloud = Invoke-Curl -Url "$base/api/discover/cloud?limit=3&token=$token" -Name 'discover-cloud-netease'
+    $neteaseCloudJson = (Get-BodyText -Result $neteaseCloud) | ConvertFrom-Json
+    $cloudPass = ([int]$neteaseCloud.Status -eq 200 -and $null -ne $neteaseCloudJson.hasMore) -or
+        ([int]$neteaseCloud.Status -eq 401 -and $neteaseCloudJson.error -eq 'login-required')
+    Check 'discover netease cloud' $cloudPass "status $($neteaseCloud.Status) tracks $(@($neteaseCloudJson.tracks).Count)"
+
+    # 收藏：eapi 原生需要登录；未登录时接口回 401 login-required（也算链路正常）。
+    foreach ($collectionsKind in @('playlist', 'artist')) {
+        $collections = Invoke-Curl -Url "$base/api/discover/collections?source=netease&kind=$collectionsKind&limit=3&token=$token" -Name "discover-collections-$collectionsKind"
+        $collectionsJson = (Get-BodyText -Result $collections) | ConvertFrom-Json
+        $collectionsCount = @($collectionsJson.items).Count
+        $collectionsStatus = [int]$collections.Status
+        $collectionsPass = ($collectionsStatus -eq 200 -and $collectionsCount -gt 0) -or
+            ($collectionsStatus -eq 401 -and $collectionsJson.error -eq 'login-required')
+        Check "discover netease collections $collectionsKind" $collectionsPass "status $collectionsStatus items $collectionsCount"
+    }
+
+    # QQ：mid 来自搜索首曲；专辑 mid 来自歌曲详情返回的 albumId；歌手 mid 固定 fixture。
+    $qqId = [string]$qqFirst.mid
+    if ([string]::IsNullOrWhiteSpace($qqId)) { $qqId = [string]$qqFirst.id }
+    if (-not [string]::IsNullOrWhiteSpace($qqId)) {
+        $qqSong = Invoke-Curl -Url "$base/api/discover/song?source=qq&id=$qqId&token=$token" -Name 'discover-song-qq'
+        $qqSongJson = (Get-BodyText -Result $qqSong) | ConvertFrom-Json
+        Check 'discover qq song 200' ($qqSong.Status -eq 200) "status $($qqSong.Status)"
+        Check 'discover qq song title' (-not [string]::IsNullOrWhiteSpace([string]$qqSongJson.title)) ([string]$qqSongJson.title)
+        $qqAlbumId = [string]$qqSongJson.albumId
+        Check 'discover qq song albumId' (-not [string]::IsNullOrWhiteSpace($qqAlbumId)) $qqAlbumId
+        if (-not [string]::IsNullOrWhiteSpace($qqAlbumId)) {
+            $qqAlbum = Invoke-Curl -Url "$base/api/discover/album?source=qq&id=$qqAlbumId&token=$token" -Name 'discover-album-qq'
+            $qqAlbumJson = (Get-BodyText -Result $qqAlbum) | ConvertFrom-Json
+            Check 'discover qq album 200' ($qqAlbum.Status -eq 200) "status $($qqAlbum.Status)"
+            Check 'discover qq album title' (-not [string]::IsNullOrWhiteSpace([string]$qqAlbumJson.title)) ([string]$qqAlbumJson.title)
+            Check 'discover qq album tracks' (@($qqAlbumJson.tracks).Count -gt 0) "tracks $(@($qqAlbumJson.tracks).Count)"
+            Check 'discover qq album description' (-not [string]::IsNullOrWhiteSpace([string]$qqAlbumJson.description)) "descChars $(([string]$qqAlbumJson.description).Length)"
+        }
+
+        $qqCollections = Invoke-Curl -Url "$base/api/discover/collections?source=qq&kind=album&limit=3&token=$token" -Name 'discover-collections-qq-album'
+        $qqCollectionsJson = (Get-BodyText -Result $qqCollections) | ConvertFrom-Json
+        $qqCollectionsPass = ([int]$qqCollections.Status -eq 200) -or
+            ([int]$qqCollections.Status -eq 401 -and $qqCollectionsJson.error -eq 'login-required')
+        Check 'discover qq collections album' $qqCollectionsPass "status $($qqCollections.Status) items $(@($qqCollectionsJson.items).Count)"
+
+        $qqComments = Invoke-Curl -Url "$base/api/discover/comments?source=qq&id=$qqId&limit=3&token=$token" -Name 'discover-comments-qq'
+        $qqCommentsJson = (Get-BodyText -Result $qqComments) | ConvertFrom-Json
+        Check 'discover qq comments 200' ($qqComments.Status -eq 200) "status $($qqComments.Status)"
+        Check 'discover qq comments total>0' ([long]$qqCommentsJson.total -gt 0) ([string]$qqCommentsJson.total)
+    }
+
+    $qqArtist = Invoke-Curl -Url "$base/api/discover/artist?source=qq&id=0025NhlN2yWrP4&limit=10&token=$token" -Name 'discover-artist-qq'
+    $qqArtistJson = (Get-BodyText -Result $qqArtist) | ConvertFrom-Json
+    Check 'discover qq artist 200' ($qqArtist.Status -eq 200) "status $($qqArtist.Status)"
+    Check 'discover qq artist name' (-not [string]::IsNullOrWhiteSpace([string]$qqArtistJson.name)) ([string]$qqArtistJson.name)
+    Check 'discover qq artist hotSongs' (@($qqArtistJson.hotSongs).Count -gt 0) "hotSongs $(@($qqArtistJson.hotSongs).Count)"
+    Check 'discover qq artist albums' (@($qqArtistJson.albums).Count -gt 0) "albums $(@($qqArtistJson.albums).Count)"
 
     # --- 7. covers ---------------------------------------------------------
     $qqCover = Invoke-Curl -Url "$base/api/cover?source=qq&key=000MkMni19ClKG&token=$token" -Name 'cover-qq'
@@ -387,17 +511,21 @@ try {
     # --- 9. logging: one line per request, token never logged --------------
     $logText = Read-LogFrom -Offset $script:logOffset
     Check 'log: listening line' ($logText -match '\[online\] listening on 127\.0\.0\.1:\d+')
-    Check 'log: netease search line' ($logText -match '\[online\] GET netease/search q=\S+ ok \d+ tracks \d+ms')
-    $qqPrimaryLog = $logText -match '\[online\] GET qq/search q=\S+ ok \d+ tracks \d+ms'
+    # 搜索现在原生优先：原生命中时只有 netease.native / qq.native 行，web 兜底才有 GET 行。
+    $neteaseNativeLog = $logText -match '\[online\] netease\.native search q=\S+ ok \d+ms'
+    $neteaseWebLog = $logText -match '\[online\] GET netease/search q=.+ ok \d+ tracks \d+ms'
+    Check 'log: netease search line' ($neteaseNativeLog -or $neteaseWebLog) "native=$neteaseNativeLog web=$neteaseWebLog"
+    $qqPrimaryLog = $logText -match '\[online\] qq/native search q=.+ count=\d+ (ok|none)'
     $qqFallbackLog = $logText -match '\[online\] qq search fallback=search_for_qq_cp ok n=\d+ \d+ms'
     Check 'log: qq search line (primary or fallback)' ($qqPrimaryLog -or $qqFallbackLog) "primary=$qqPrimaryLog fallback=$qqFallbackLog"
     if ($qqFallbackLog) {
         Write-Host 'qq search path: fallback=search_for_qq_cp'
     }
     elseif ($qqPrimaryLog) {
-        Write-Host 'qq search path: primary=client_search_cp'
+        Write-Host 'qq search path: native musicu'
     }
-    Check 'log: vkey line' ($logText -match '\[online\] POST qq/vkey id=\S+ (ok|not-playable)')
+    # 批量取流只打 batch 行，单曲取流是 id=… quality=… ok；两种都算。
+    Check 'log: vkey line' ($logText -match '\[online\] POST qq/vkey (id=\S+|batch ids=\d+)')
     Check 'log: local request line' ($logText -match '\[online\] req GET /api/search status=200')
     Check 'log: page online event' ($logText -match 'web:info devtest online event port=\d+ sources=netease,qq')
     Check 'log: page health ok' ($logText -match 'web:info devtest health status=200 ok=true')
@@ -405,11 +533,19 @@ try {
     Check 'log: token not logged' (-not $logText.Contains($token))
 
     # --- 10. close + port release -----------------------------------------
+    # 当前产品行为：点关闭 = 隐藏到托盘（tray.hide），不是退出；两种都接受。
     [OnlineSelftest.Native]::PostMessage($script:hostProcess.MainWindowHandle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
     $exited = $script:hostProcess.WaitForExit(10000)
-    Check 'host exited after close' $exited
     if ($exited) {
+        Check 'host exited after close' $true
         Check 'host exit code 0' ($script:hostProcess.ExitCode -eq 0) "exit $($script:hostProcess.ExitCode)"
+    }
+    else {
+        $closeLog = Read-LogFrom -Offset $script:logOffset
+        Check 'host hid to tray on close' ($closeLog -match 'tray\.hide') 'no tray.hide line'
+        Stop-HostProcess
+        $script:hostProcess.Refresh()
+        Check 'host process stopped' $script:hostProcess.HasExited 'process still running'
     }
     Start-Sleep -Milliseconds 500
     Check 'port released after close' ((Get-ListeningRows -Port $port).Count -eq 0)

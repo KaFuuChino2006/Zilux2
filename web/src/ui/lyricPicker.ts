@@ -28,8 +28,6 @@ interface PreviewLine {
   words?: PreviewWord[];
 }
 
-const PREVIEW_LINES = 14;
-
 /** 把平台歌词负载转成预览行（带逐字标记）。 */
 function previewLines(lyric: OnlineLyric): { lines: PreviewLine[]; word: boolean; translation: boolean } {
   const trimmed = (value: string | null | undefined): string => (value ?? '').trim();
@@ -41,7 +39,7 @@ function previewLines(lyric: OnlineLyric): { lines: PreviewLine[]; word: boolean
       const parsed = parseQrcLyric(extractQrcPayload(decryptQrc(lyric.qrc ?? '')));
       if (parsed.length > 0) {
         return {
-          lines: parsed.slice(0, PREVIEW_LINES).map((line) => ({
+          lines: parsed.map((line) => ({
             timeMs: line.timeMs,
             text: line.text ?? line.words.map((word) => word.text).join(''),
             translation: pickTranslation(line.timeMs),
@@ -65,7 +63,7 @@ function previewLines(lyric: OnlineLyric): { lines: PreviewLine[]; word: boolean
     const parsed = parseCharLyric(lyric.yrc);
     if (parsed.length > 0) {
       return {
-        lines: parsed.slice(0, PREVIEW_LINES).map((line) => ({
+        lines: parsed.map((line) => ({
           timeMs: line.timeMs,
           text: line.text ?? line.chars.map((char) => char.text).join(''),
           translation: pickTranslation(line.timeMs),
@@ -84,7 +82,7 @@ function previewLines(lyric: OnlineLyric): { lines: PreviewLine[]; word: boolean
   }
   const base = parseLrc(lyric.lrc ?? '');
   return {
-    lines: base.slice(0, PREVIEW_LINES).map((line) => ({
+    lines: base.map((line) => ({
       timeMs: line.timeMs,
       text: line.text,
       translation: pickTranslation(line.timeMs),

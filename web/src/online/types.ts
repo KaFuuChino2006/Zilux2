@@ -44,6 +44,8 @@ export interface OnlineLyric {
   /** QQ QRC 加密十六进制（需要 qrc-decoder 解密），可空 */
   qrc?: string | null;
   hasQrc?: boolean;
+  /** 宿主原生解密后的 QRC 明文，优先于 qrc 使用 */
+  qrcText?: string | null;
 }
 
 export interface OnlineInfo {

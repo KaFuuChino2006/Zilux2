@@ -92,7 +92,7 @@ const TAB_SUBTITLE: Record<DiscoverTab, string> = {
 };
 
 /** 仅网易云支持的板块（QQ 音乐无对应能力）。 */
-const NET_EASE_ONLY: DiscoverTab[] = ['radio', 'podcasts', 'collections'];
+const NET_EASE_ONLY: DiscoverTab[] = ['radio', 'podcasts'];
 
 const SOURCE_OPTIONS: Array<{ id: SourceFilter; label: string }> = [
   { id: 'all', label: '全部' },
@@ -113,8 +113,8 @@ const COLLECTION_OPTIONS: Array<{ id: CollectionKind; label: string }> = [
 ];
 
 const COLLECTION_EMPTY: Record<CollectionKind, string> = {
-  artist: '在网易云音乐里收藏歌手后会显示在这里',
-  album: '在网易云音乐里收藏专辑后会显示在这里',
+  artist: '在音乐平台收藏歌手后会显示在这里',
+  album: '在音乐平台收藏专辑后会显示在这里',
   mv: '在网易云音乐里收藏 MV 后会显示在这里',
   playlist: '在网易云音乐里创建 / 收藏歌单后会显示在这里',
 };
@@ -570,9 +570,18 @@ export class DiscoverView {
         this.collectionKind = id;
       }),
     );
+    const wantsQq = this.source === 'qq';
+    const collectionSource: DiscoverSource = wantsQq ? 'qq' : 'netease';
+    if (wantsQq && this.collectionKind !== 'album') {
+      wrap.append(
+        h('div', { class: 'disc-note' }, icon('music', 13), h('span', { text: 'QQ 音乐目前只支持查看收藏的专辑' })),
+      );
+      wrap.append(this.emptyBox('暂不支持该收藏类型', COLLECTION_EMPTY[this.collectionKind]));
+      return wrap;
+    }
     let data;
     try {
-      data = await fetchCollections('netease', this.collectionKind);
+      data = await fetchCollections(collectionSource, this.collectionKind);
     } catch (err) {
       wrap.append(this.errorBox(err));
       toast(discoverErrorText(err), 'error');
@@ -930,6 +939,10 @@ export class DiscoverView {
     let offset = 0;
     let loading = false;
     let exhausted = false;
+    const pageSize = 20;
+    const seen = new Set<string>();
+    const keyOf = (comment: DiscoverComment): string =>
+      `${comment.user}\u0001${comment.content}\u0001${comment.time}`;
 
     const load = (): void => {
       if (loading || exhausted) return;
@@ -941,14 +954,19 @@ export class DiscoverView {
       }
       void (async () => {
         try {
-          const data = await fetchComments(source, songId, offset, 20);
-          offset += data.comments.length;
-          exhausted = !data.hasMore || data.comments.length === 0;
+          const data = await fetchComments(source, songId, offset, pageSize);
+          // 按请求页长步进，避免首屏热评去重后返回条数变少导致下一页重复。
+          offset += pageSize;
+          const fresh = data.comments.filter((comment) => !seen.has(keyOf(comment)));
+          exhausted = !data.hasMore || data.comments.length === 0 || fresh.length === 0;
           totalEl.textContent = `共 ${fmtCount(data.total)} 条评论`;
-          if (data.comments.length === 0) {
+          if (fresh.length === 0) {
             if (list.childElementCount === 0) list.append(this.emptyBox('还没有评论'));
           } else {
-            for (const comment of data.comments) list.append(this.commentNode(comment));
+            for (const comment of fresh) {
+              seen.add(keyOf(comment));
+              list.append(this.commentNode(comment));
+            }
           }
           more.textContent = '';
           if (!exhausted) {

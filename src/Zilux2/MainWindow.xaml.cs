@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using Zilux2.AirPlay;
 using Zilux2.Audio;
@@ -15,8 +16,12 @@ namespace Zilux2;
 
 public partial class MainWindow : Window
 {
-    // Mirrors WindowChrome.ResizeBorderThickness (see MainWindow.xaml for the reason).
-    private const double ResizeGrip = 6;
+    // 页面满窗铺满整个客户区：窗口四周不再留 WPF 主题色描边（用户看到的「框」就是那 6px
+    // 主题底色）。边缘/四角的缩放改由注入页面的 5px pointerdown 热区触发 {type:'resize'}
+    // （见 WebViewHost.EdgeResizeScript / MainWindow.BeginResize）；WindowChrome 的 6px
+    // ResizeBorderThickness 只留给 WPF 自己绘制的错误面板。
+    // 无边框窗口的圆角：Win11 交给 DWM（DWMWCP_ROUND），Win10 回退到 SetWindowRgn。
+    private const double WindowCornerRadiusDip = 8;
 
     // How much of the window must stay reachable on the monitor work area while the user drags
     // it around. Without this the page-driven drag can push the title bar off screen and there is
@@ -86,6 +91,13 @@ public partial class MainWindow : Window
     private bool _isHiddenToTray;
     private bool _isExiting;
     private bool _pendingHideToTray;
+
+    // 启动/托盘恢复的「先隐藏、有内容再淡入」：WebView2 初始化 + 首帧大约要 1~3 秒，
+    // 直接 Show 会先露出空白的主题底色窗壳。窗口先以 Opacity=0 显示（WebView2 需要已加载
+    // 才能初始化），首个页面 ready / 导航完成后再淡入；5 秒兜底避免页面异常时窗口一直不出现。
+    private bool _startupRevealed;
+    private DispatcherTimer? _revealTimer;
+    private WindowState _lastWindowState = WindowState.Normal;
     private readonly List<int> _registeredHotkeys = new();
 
     // 全局热键：配置来自 settings.shortcuts（字符串解析见 HotkeyBinding，默认值/候选链见
@@ -139,6 +151,8 @@ public partial class MainWindow : Window
 
     public bool IsMaximized => WindowState == WindowState.Maximized;
 
+    private static bool IsWindows11 => OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000);
+
     // The SMTC session is window scoped, so the host needs the native handle once it is created.
     internal IntPtr Handle => _hwnd;
 
@@ -146,12 +160,176 @@ public partial class MainWindow : Window
     {
         _hwnd = new WindowInteropHelper(this).Handle;
         HwndSource.FromHwnd(_hwnd)?.AddHook(WndProc);
+        ApplyWindowCornerPreference();
+        ApplyWindowCornerRegion();
         // Explorer 重启后 Progman/WorkerW 会重建，桌面背景歌词窗口会被连带销毁；
         // 任务栏重建时会广播 TaskbarCreated，收到后重新挂一层。
         _taskbarCreatedMessage = NativeMethods.RegisterWindowMessage("TaskbarCreated");
         StartHotkeyHook();
         ApplyShortcutSettings("startup");
         InstallMediaKeyHook();
+    }
+
+    /// <summary>
+    /// Win11：让 DWM 画窗口圆角（DWMWCP_ROUND），并用 DWMWA_BORDER_COLOR=COLOR_NONE 去掉
+    /// 系统给无边框窗口补的那条 1px 边框。失败不致命（只是保持直角），Win10 直接跳过。
+    /// </summary>
+    private void ApplyWindowCornerPreference()
+    {
+        if (_hwnd == IntPtr.Zero || !IsWindows11)
+        {
+            return;
+        }
+
+        try
+        {
+            var preference = NativeMethods.DwmWindowCornerRound;
+            var result = NativeMethods.DwmSetWindowAttribute(
+                _hwnd, NativeMethods.DwmWindowCornerPreference, ref preference, sizeof(int));
+            if (result != 0)
+            {
+                HostLog.Warn($"window.corner dwm failed hr=0x{result:X8}");
+            }
+
+            var border = NativeMethods.DwmColorNone;
+            NativeMethods.DwmSetWindowAttribute(
+                _hwnd, NativeMethods.DwmWindowBorderColor, ref border, sizeof(int));
+            HostLog.Info("window.corner dwm round");
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"window.corner dwm unavailable: {exception.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Win10 回退：SetWindowRgn + CreateRoundRectRgn 把窗口裁成圆角矩形。半径按窗口所在
+    /// 显示器的物理 DPI 换算；最大化/最小化/迷你态交给系统或迷你态自己的区域，这里清空。
+    /// Win11 由 DWM 处理，不走这里。
+    /// 注意：SetWindowRgn 是硬裁剪，边缘会有锯齿、也会失去 DWM 给无边框窗口的阴影——这是
+    /// Win10 没有 DWMWCP_ROUND 的固有取舍；半径取 8 DIP 对齐 Win11 DWM 默认，保证两平台观感接近。
+    /// </summary>
+    private void ApplyWindowCornerRegion()
+    {
+        if (_hwnd == IntPtr.Zero || IsWindows11)
+        {
+            return;
+        }
+
+        try
+        {
+            if (WindowState != WindowState.Normal || _miniMode || _miniAnimating)
+            {
+                NativeMethods.SetWindowRgn(_hwnd, IntPtr.Zero, true);
+                return;
+            }
+
+            if (!NativeMethods.GetWindowRect(_hwnd, out var rect))
+            {
+                return;
+            }
+
+            var width = rect.Right - rect.Left;
+            var height = rect.Bottom - rect.Top;
+            if (width <= 0 || height <= 0)
+            {
+                return;
+            }
+
+            var dpi = NativeMethods.GetDpiForWindow(_hwnd);
+            var scale = dpi >= 48 ? dpi / 96.0 : 1.0;
+            var radius = Math.Max(2, (int)Math.Round(WindowCornerRadiusDip * scale));
+            var region = NativeMethods.CreateRoundRectRgn(0, 0, width + 1, height + 1, radius * 2, radius * 2);
+            if (region == IntPtr.Zero)
+            {
+                return;
+            }
+
+            NativeMethods.SetWindowRgn(_hwnd, region, true);
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"window.corner region failed: {exception.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 页面首帧/导航完成前窗口不可见：以 Opacity=0 显示（WebView2 必须已加载才能初始化），
+    /// 内容就绪后淡入。5 秒兜底，避免页面异常时窗口一直不出现（错误面板会自己提前揭示）。
+    /// </summary>
+    private void StartStartupRevealWatchdog()
+    {
+        if (_startupRevealed)
+        {
+            return;
+        }
+
+        if (Opacity >= 1)
+        {
+            _startupRevealed = true;
+            return;
+        }
+
+        _revealTimer = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = TimeSpan.FromSeconds(5),
+        };
+        _revealTimer.Tick += (_, _) =>
+        {
+            HostLog.Warn("window.reveal fallback: content was not ready in time");
+            RevealWindow("startup-fallback");
+        };
+        _revealTimer.Start();
+    }
+
+    private void OnHostFirstContentReady()
+    {
+        // 页面已经渲染出首帧：让 WPF 走完这一轮布局/呈现再淡入，别闪一帧空白。
+        Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() => RevealWindow("first-content")));
+    }
+
+    private void RevealWindow(string reason)
+    {
+        _revealTimer?.Stop();
+        _revealTimer = null;
+        if (_startupRevealed)
+        {
+            return;
+        }
+
+        _startupRevealed = true;
+        FadeWindowIn(reason);
+    }
+
+    /// <summary>窗口从不可见/空白状态恢复时淡入；窗口本身已经可见时不做任何事。</summary>
+    private void FadeWindowIn(string reason)
+    {
+        if (_isHiddenToTray)
+        {
+            return;
+        }
+
+        var from = Opacity;
+        if (from >= 1)
+        {
+            return;
+        }
+
+        // 起新淡入前先停掉可能还在跑的旧动画，并把当前值固化成基准，避免叠加。
+        BeginAnimation(Window.OpacityProperty, null);
+        Opacity = from;
+
+        HostLog.Info($"window.fadeIn reason={reason} from={from:0.00}");
+        var animation = new DoubleAnimation(from, 1, TimeSpan.FromMilliseconds(140))
+        {
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+        };
+        animation.Completed += (_, _) =>
+        {
+            BeginAnimation(Window.OpacityProperty, null);
+            Opacity = 1;
+        };
+        BeginAnimation(Window.OpacityProperty, animation);
     }
 
     /// <summary>钩子线程只用来看按键，触发动作要回到 UI 线程；启动失败不影响 RegisterHotKey。</summary>
@@ -224,7 +402,9 @@ public partial class MainWindow : Window
         Loaded -= OnLoaded;
         _host = new WebViewHost(this, Browser, _plan, _settings, _audio, _media, _airplay);
         _host.SharedEnvironmentReady += OnHostEnvironmentReady;
+        _host.FirstContentReady += OnHostFirstContentReady;
         _ = _host.InitializeAsync();
+        StartStartupRevealWatchdog();
         ApplyDesktopLyricsSettings();
         ApplyBackgroundLyricsSettings();
     }
@@ -562,7 +742,8 @@ public partial class MainWindow : Window
     private void OnStateChanged(object? sender, EventArgs e)
     {
         var maximized = IsMaximized;
-        Browser.Margin = maximized ? new Thickness(0) : new Thickness(ResizeGrip);
+        var wasMinimized = _lastWindowState == WindowState.Minimized;
+        _lastWindowState = WindowState;
         HostLog.Info($"window.state maximized={maximized}");
         _host?.PostWindowState(maximized);
 
@@ -572,6 +753,12 @@ public partial class MainWindow : Window
         {
             // P1-10：主窗最小化后停止 AirPlay 推流，避免继续占用接收端/网络。
             StopAirPlayStreaming("minimize");
+        }
+        else if (wasMinimized)
+        {
+            // 从最小化恢复（任务栏点击/托盘）：WebView2 的子 HWND 偶尔不跟着重画，表现
+            // 为只剩一块窗口底色的空壳。顶一下 WebView2 表面，逼它重新排列并重绘。
+            _host?.RefreshSurface();
         }
 
         if (!maximized)
@@ -589,6 +776,8 @@ public partial class MainWindow : Window
             // WPF restores it verbatim, so re-clamp it once the state is settled.
             Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(ClampWindowToWorkArea));
         }
+
+        Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(ApplyWindowCornerRegion));
     }
 
     private void UpdateAudioPauseState()
@@ -877,9 +1066,6 @@ public partial class MainWindow : Window
         MinWidth = MiniMinWidthDip;
         MinHeight = MiniMinHeightDip;
         Topmost = _settings?.MiniAlwaysOnTop ?? true;
-        // 迷你态窗口会被裁成圆角、页面满窗铺卡片：把 WebView 边距清零，否则窗口四周会露出
-        // 6px 的 WPF 主题底色（用户看到的「正方形框」的来源之一）。
-        Browser.Margin = new Thickness(0);
 
         // 最大化/最小化或尚未拿到 HWND 时退化为即时落位；正常窗口用补间动画收缩，
         // 页面同时切到「悬浮小卡」过渡态（.is-mini-entering），视觉上像窗口被吸到角落。
@@ -922,8 +1108,6 @@ public partial class MainWindow : Window
     private void FinishEnterMiniMode(int left, int top, int pixelWidth, int pixelHeight, int marginX, int marginY)
     {
         _miniMode = true;
-        // 落位时再清一次（最大化进入时会先切 WindowState，OnStateChanged 会把边距改回 6px）。
-        Browser.Margin = new Thickness(0);
         HostLog.Info(
             $"window.miniMode enabled rect={left},{top} size={pixelWidth}x{pixelHeight} margin={marginX},{marginY}");
         ApplyMiniWindowRegion(true);
@@ -1040,8 +1224,6 @@ public partial class MainWindow : Window
         MinWidth = _miniSavedMinWidth;
         MinHeight = _miniSavedMinHeight;
         Topmost = _miniSavedTopmost;
-        // 恢复普通窗口的 WebView 边距（无边框窗口的拖拽/缩放描边区）。
-        Browser.Margin = _miniSavedWindowState == WindowState.Maximized ? new Thickness(0) : new Thickness(ResizeGrip);
 
         if (_miniSavedWindowState == WindowState.Maximized)
         {
@@ -1057,6 +1239,8 @@ public partial class MainWindow : Window
 
         _miniHasRestoreRect = false;
         _miniMode = false;
+        // 退出迷你态后恢复普通窗口的圆角（Win10 的窗口区域在迷你态被裁成 16 DIP，先清掉）。
+        Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(ApplyWindowCornerRegion));
         HostLog.Info(
             $"window.miniMode disabled restored={(hasTarget ? DescribeRect(target) : "none")} state={_miniSavedWindowState}");
         _host?.NotifyMiniMode(false);
@@ -1236,6 +1420,9 @@ public partial class MainWindow : Window
 
         _audio?.SetPaused(true);
         StopAirPlayStreaming("hide");
+        // 隐藏期间把未结束的淡入停掉并复位不透明度，下次显示重新走「先透明、内容就绪再淡入」。
+        BeginAnimation(Window.OpacityProperty, null);
+        Opacity = 1;
         HiddenToTray?.Invoke(this, EventArgs.Empty);
     }
 
@@ -1257,13 +1444,22 @@ public partial class MainWindow : Window
                 WindowState = WindowState.Normal;
             }
 
-            // 开机自启隐藏启动时暂时去掉了任务栏/不透明度，回到前台要把它们恢复。
-            Opacity = 1;
+            // 恢复时先透明显示（WebView2 需要窗口已加载才能继续/重画），把表面顶一下再淡入，
+            // 避免任务栏/托盘回来先看到一块空窗壳。
+            BeginAnimation(Window.OpacityProperty, null);
+            Opacity = 0;
             ShowInTaskbar = true;
             Show();
             // ShowInTaskbar 变化后 WPF 可能重建 HWND，这里重新取一次句柄再激活。
             var handle = new WindowInteropHelper(this).Handle;
-            if (handle != IntPtr.Zero)
+            if (handle != IntPtr.Zero && handle != _hwnd)
+            {
+                _hwnd = handle;
+                // 新 HWND 不继承 DWM 属性：圆角/无边框要重新声明一次。
+                ApplyWindowCornerPreference();
+                ApplyWindowCornerRegion();
+            }
+            else if (handle != IntPtr.Zero)
             {
                 _hwnd = handle;
             }
@@ -1273,10 +1469,16 @@ public partial class MainWindow : Window
 
             _isHiddenToTray = false;
             _audio?.SetPaused(WindowState == WindowState.Minimized);
+            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+            {
+                _host?.RefreshSurface();
+                FadeWindowIn("tray");
+            }));
             HostLog.Info("tray.show");
         }
         catch (Exception exception)
         {
+            Opacity = 1;
             HostLog.Error("tray.show failed", exception);
         }
     }
@@ -2041,8 +2243,9 @@ public partial class MainWindow : Window
 
     public void BeginResize(string edge)
     {
-        if (_hwnd == IntPtr.Zero)
+        if (_hwnd == IntPtr.Zero || _miniMode)
         {
+            // 迷你态保持原来的行为：小窗是满窗卡片，不提供窗口边缘缩放。
             return;
         }
 
@@ -2052,6 +2255,10 @@ public partial class MainWindow : Window
             "right" => NativeMethods.HtRight,
             "top" => NativeMethods.HtTop,
             "bottom" => NativeMethods.HtBottom,
+            "topleft" => NativeMethods.HtTopLeft,
+            "topright" => NativeMethods.HtTopRight,
+            "bottomleft" => NativeMethods.HtBottomLeft,
+            "bottomright" => NativeMethods.HtBottomRight,
             _ => 0,
         };
         if (hitTest == 0)
@@ -2065,7 +2272,10 @@ public partial class MainWindow : Window
             Activate();
         }
 
-        NativeMethods.BeginWindowResize(_hwnd, hitTest);
+        // 落点用物理屏幕坐标一起交给系统缩放循环，避免高 DPI/跨屏时按逻辑像素换算偏移。
+        // 页面没有传坐标，这里取当前光标（消息延迟最多一帧，肉眼不可见）。
+        NativeMethods.GetCursorPos(out var origin);
+        NativeMethods.BeginWindowResize(_hwnd, hitTest, origin.X, origin.Y);
     }
 
     public void BeginDrag()
@@ -2134,12 +2344,53 @@ public partial class MainWindow : Window
                 Activate();
             }
 
-            NativeMethods.BeginWindowDrag(_hwnd);
+            if (IsMaximized)
+            {
+                // 最大化状态下拖窗：先还原成上一次的尺寸，再按指针在窗口里的相对位置摆好，
+                // 然后交给系统 move loop，行为与原生标题栏一致。
+                RestoreForDrag(origin.X, origin.Y);
+            }
+
+            NativeMethods.BeginWindowDrag(_hwnd, origin.X, origin.Y);
         }
         catch (Exception exception)
         {
             _dragPending = false;
             HostLog.Error("window.drag failed", exception);
+        }
+    }
+
+    /// <summary>
+    /// 拖动已最大化窗口时先还原：把窗口按指针在最大化矩形中的相对位置缩放回
+    /// RestoreBounds，这样系统 move loop 的抓取偏移仍落在指针下方，不会从左上角跳一下。
+    /// </summary>
+    private void RestoreForDrag(int screenX, int screenY)
+    {
+        try
+        {
+            var maximized = CurrentWindowRect();
+            // 自定义最大化走的是动画 + WindowState，RestoreBounds 会等于最大化矩形；
+            // 因此优先用 ToggleMaximize 记下的 _restoreRect（最大化前的像素矩形）。
+            var restore = _hasRestoreRect ? _restoreRect : RestoreRectInPixels(maximized);
+            var width = Math.Max(1, maximized.Right - maximized.Left);
+            var height = Math.Max(1, maximized.Bottom - maximized.Top);
+            var ratioX = Math.Clamp((screenX - maximized.Left) / (double)width, 0, 1);
+            var ratioY = Math.Clamp((screenY - maximized.Top) / (double)height, 0, 1);
+            var restoreWidth = Math.Max(1, restore.Right - restore.Left);
+            var restoreHeight = Math.Max(1, restore.Bottom - restore.Top);
+            var left = (int)Math.Round(screenX - restoreWidth * ratioX);
+            var top = (int)Math.Round(screenY - restoreHeight * ratioY);
+
+            // WindowState 必须先回 Normal：最大化窗口的 SetWindowPos 会被系统按最大化处理。
+            WindowState = WindowState.Normal;
+            TrySetWindowRect(left, top, restoreWidth, restoreHeight);
+            HostLog.Info(
+                $"window.drag restore from maximized at {left},{top} {restoreWidth}x{restoreHeight}");
+        }
+        catch (InvalidOperationException)
+        {
+            // RestoreBounds 在窗口尚未显示时不可用，退回普通还原。
+            WindowState = WindowState.Normal;
         }
     }
 
@@ -2168,6 +2419,8 @@ public partial class MainWindow : Window
             ErrorLogHint.Text = $"日志：{HostLog.LogPath}";
             Browser.Visibility = Visibility.Collapsed;
             ErrorPanel.Visibility = Visibility.Visible;
+            // 错误面板本身就是可显示的内容了：不再等页面首帧，立刻揭示窗口。
+            RevealWindow("error");
         }));
     }
 
@@ -2178,20 +2431,19 @@ public partial class MainWindow : Window
             ApplyWindowLimits(hwnd, lParam);
             handled = true;
         }
-        else if (msg == NativeMethods.WmMoving)
+        else if (msg == NativeMethods.WmSize && !IsWindows11)
         {
-            // Live correction while the OS move loop runs: modifying the proposed rect is what
-            // stops the window from being dragged so far that its title bar becomes unreachable.
-            var proposed = Marshal.PtrToStructure<NativeMethods.Rect>(lParam);
-            var clamped = ClampToWorkArea(proposed);
-            if (!SameRect(proposed, clamped))
-            {
-                Marshal.StructureToPtr(clamped, lParam, true);
-            }
+            // Win10 用 SetWindowRgn 做圆角：区域不会跟着窗口尺寸走，实时缩放/最大化切换必须
+            // 按新尺寸重算，否则内容会被裁在旧尺寸里。Win11 交给 DWM，无需处理。
+            ApplyWindowCornerRegion();
         }
         else if (msg == NativeMethods.WmExitSizeMove)
         {
+            // 不能在 WM_MOVING 里改写 proposed rect（旧实现）：拖过不同 DPI 的显示器时 WPF
+            // 的 DpiScale 仍是旧屏幕的值，钳制会把窗口推回原屏幕，表现为「拖不过去/卡住」。
+            // 系统 move loop 自己保证标题栏可见，落点后再统一钳制一次。
             ClampWindowToWorkArea();
+            ApplyWindowCornerRegion();
         }
         else if (msg == NativeMethods.WmHotkey)
         {
@@ -2206,12 +2458,20 @@ public partial class MainWindow : Window
         {
             Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(OnShellRestarted));
         }
-        else if (msg == 0x007E || msg == 0x02E0)
+        else if (msg == NativeMethods.WmDisplayChange || msg == NativeMethods.WmDpiChanged)
         {
-            // WM_DISPLAYCHANGE / WM_DPICHANGED：分辨率、布局或缩放变了，重新铺满新的虚拟桌面（B15）。
-            Dispatcher.BeginInvoke(
-                DispatcherPriority.Background,
-                new Action(() => _backgroundLyricsWindow?.RepositionToDesktop()));
+            // WM_DISPLAYCHANGE / WM_DPICHANGED：分辨率、布局或缩放变了，重新铺满新的虚拟桌面
+            // （B15），并按新 DPI 重算窗口圆角（Win10 的 SetWindowRgn 尺寸是物理像素）。
+            if (msg == NativeMethods.WmDpiChanged)
+            {
+                HostLog.Info($"window.dpiChanged dpi={NativeMethods.GetDpiForWindow(hwnd)}");
+            }
+
+            Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+            {
+                _backgroundLyricsWindow?.RepositionToDesktop();
+                ApplyWindowCornerRegion();
+            }));
         }
 
         return IntPtr.Zero;
@@ -2400,6 +2660,18 @@ public partial class MainWindow : Window
 
     private (double ScaleX, double ScaleY) CurrentDpiScale()
     {
+        // 优先取宿主窗口的物理 DPI：跨屏拖动/DPI 切换的瞬间 WPF 的视觉树 DPI 会滞后一帧，
+        // 用旧值换算窗口最小尺寸、边缘阈值会在新屏幕上产生偏移。GetDpiForWindow 是即时的。
+        if (_hwnd != IntPtr.Zero)
+        {
+            var dpi = NativeMethods.GetDpiForWindow(_hwnd);
+            if (dpi >= 48)
+            {
+                var scale = dpi / 96.0;
+                return (scale, scale);
+            }
+        }
+
         try
         {
             var dpi = VisualTreeHelper.GetDpi(this);

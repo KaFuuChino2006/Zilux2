@@ -1,3 +1,4 @@
+import { openFlowSettingsSheet } from './flowSettingsPanel';
 /// <reference types="vite/client" />
 /**
  * 应用外壳：顶栏 / 左 rail / 墙面 / 播放条 / 弹层（搜索、设置、账号、登录）。
@@ -7,6 +8,9 @@
 import '../styles/shortcut-settings.css';
 import '../styles/local-library.css';
 import '../styles/polish-tools.css';
+import '../styles/settings-layout.css';
+import '../styles/responsive-layout.css';
+import '../styles/dev-tools.css';
 import QRCode from 'qrcode';
 
 /** 迷你播放器状态记忆键：刷新/崩溃恢复后用来向宿主复核窗口态。 */
@@ -98,7 +102,7 @@ import {
   type ShortcutAction,
   type SleepTimerAction,
 } from '../core/settings';
-import { addLikedTrack, checkLikedMany, clearMvmp3Cache, fetchFeed, fetchHotPlaylists, fetchMvmp3Cache, fetchRecentMerged, onlineEndpoint, onlineReady, qualityForSource, removeLikedTrack, searchOnline, setQualityForSource, setStreamQuality } from '../online/client';
+import { addLikedTrack, api, checkLikedMany, clearMvmp3Cache, fetchFeed, fetchHotPlaylists, fetchMvmp3Cache, fetchRecentMerged, onlineEndpoint, onlineReady, qualityForSource, removeLikedTrack, searchOnline, setQualityForSource, setStreamQuality } from '../online/client';
 import type { OnlineSource, OnlineTrack, StreamQuality } from '../online/types';
 import { SOURCE_LABEL } from '../online/types';
 import {
@@ -199,7 +203,16 @@ import { openTagEditor } from './tagEditor';
 import { buildEqPresetManager } from './eqPresets';
 import { buildSearchHistoryPanel, recordSearch, type SearchHistoryPanelHandle } from './searchHistory';
 import { openTrackMenu, type TrackMenuItem } from './trackMenu';
-import { buildSettingsIOActions } from './settingsIO';
+import { buildSettingsIOActions, clearLocalCaches } from './settingsIO';
+import {
+  CACHE_LIMIT_MAX_MB,
+  CACHE_LIMIT_MIN_MB,
+  CACHE_LIMIT_STEP_MB,
+  enforceCacheLimit,
+  measureLocalCache,
+  readCacheLimitMb,
+  writeCacheLimitMb,
+} from './cacheSettings';
 import { buildSleepTimerPanel, completeSleepTimer, getSleepTimerState, subscribeSleepTimer } from './sleepTimer';
 import { bgLyricsCoverStyle, setBgLyricsCoverStyle, type BgLyricsCoverStyle } from './bgLyricsCover';
 import {
@@ -261,13 +274,19 @@ import {
   type PlayerState,
   onTrackEnded,
   setPauseAtTrackEnd,
+  activeAudioElement,
 } from './player';
 import { host, hostAvailable, getSystemFonts, getWindowState, getShortcutsState, onMiniMode, onShortcutsState, onSystemFonts, onWindowState, updateDesktopLyrics, type UpdateSnapshot } from '../core/bridge';
 import { HomeView } from './home';
 import { DiscoverView } from './discover';
 import { fetchRadio, fetchRecommendedPlaylists } from '../online/discover';
+import { clearDiskCache, fetchDiskCache, setDiskCacheLimit } from '../online/storage';
+import type { DiskCacheUsage } from '../online/storage';
+import { heartRadioActive, startHeartRadio, stopHeartRadio } from './heartRadio';
 import { openSongInfo, setSongInfoView, songInfoView } from './songInfo';
 import { createUpNextToast, type UpNextToastHandle } from './upNextToast';
+import { startStemMode, hasStemWindow, type StemModeHandle, type StemPlaybackMode } from '../core/stemsDeck';
+import { estimateStemWaitSeconds, STEM_WINDOW_SEC } from '../core/stemsClient';
 import {
   beginQueueDownload,
   closeDownloadPanel,
@@ -287,7 +306,9 @@ import { openTextSettingsSheet } from './textSettingsPanel';
 import { openRoomSettingsSheet } from './roomSettingsPanel';
 import { openVinylSettingsSheet } from './vinylSettingsPanel';
 import { openGeoSettingsSheet } from './geoSettingsPanel';
+import { openPvSettingsSheet } from './pvSettingsPanel';
 import { readPosterLayout, writePosterLayout, type PosterLayout } from './posterLayout';
+import { buildCommentsPanel } from './comments';
 import { ACCENT_PRESETS, applyAccentColor, readAccentColor, ui, writeAccentColor } from './theme';
 import { APP_BG_BLUR, APP_BG_POSITIONS, applyAppBgStyle, pickBackgroundImageFile, readAppBgBlur, readAppBgImage, readAppBgMode, readAppBgPosition, writeAppBgBlur, writeAppBgImage, writeAppBgMode, writeAppBgPosition, type AppBgMode } from './appBackground';
 import {
@@ -397,6 +418,234 @@ function formatPlays(value: number): string {
 
 const WINDOW_ICON = { minimize: 'minimize', maximize: 'maximize', close: 'close' } as const;
 
+/* ------------------------------------------------------------------ */
+/* 设置页：主选项（左侧）/ 子选项（右上）两级导航                      */
+/* ------------------------------------------------------------------ */
+
+interface SettingsSubGroupSpec {
+  key: string;
+  label: string;
+  /** 按 `.field-label` 文本精确匹配。 */
+  labels?: string[];
+  /** 直接子节点自带这些 class 时归入本组。 */
+  classes?: string[];
+  /** 直接子节点内部出现这些选择器时归入本组（列表 / 曲线 / 操作行等）。 */
+  contains?: string[];
+  /** 这个 section 标题之后的所有子节点都归入本组（实验功能这类动态字段）。 */
+  afterTitle?: string;
+  /** 没有命中任何规则时的兜底组。 */
+  fallback?: boolean;
+}
+
+interface SettingsSubnav {
+  bar: HTMLDivElement;
+  activeKey(): string;
+  activate(key: string, animate?: boolean): void;
+  remeasure(): void;
+  dispose(): void;
+}
+
+/** 每个主分类的子选项分组。字段标签必须与构建代码里的字符串完全一致。 */
+const SETTINGS_SUBNAV: Record<string, SettingsSubGroupSpec[]> = {
+  general: [
+    { key: 'startup', label: '启动', labels: ['启动动画', '启动时最大化', '开机自启', '自启动时不显示窗口'] },
+    {
+      key: 'desktop',
+      label: '桌面歌词',
+      labels: ['桌面歌词', '桌面歌词字号', '桌面歌词粗细', '桌面歌词底色', '桌面歌词锁定', '桌面歌词置顶', '桌面背景歌词'],
+    },
+    { key: 'system', label: '系统', labels: ['监控本地文件夹', '系统媒体控制'] },
+  ],
+  appearance: [
+    {
+      key: 'ui',
+      label: '界面',
+      labels: ['歌曲信息样式', '歌词字号', '窗口动画', '播放条常驻展开', '系统字体', '主题配色'],
+    },
+    { key: 'mini', label: '迷你播放器', labels: ['迷你播放器尺寸', '迷你播放器置顶'] },
+    { key: 'background', label: '页面背景', labels: ['页面背景'] },
+  ],
+  playback: [
+    { key: 'play', label: '播放', labels: ['默认平台', '音量', '播放速度', '在线音质偏好', '搜索结果条数'] },
+    { key: 'autoplay', label: '自动播放', labels: ['打开软件直接播放', '自动播放来源', '自动播放歌单'] },
+    { key: 'sleep', label: '睡眠', labels: ['睡眠定时', '到时渐弱', '到点后'] },
+  ],
+  sound: [
+    {
+      key: 'fade',
+      label: '渐变',
+      labels: ['播放/暂停渐变', '暂停淡出时长', '开始播放淡入时长', '渐变曲线', '人声保留淡出', '人声尾音'],
+    },
+    { key: 'dynamics', label: '响度与动态', labels: ['音频反应', '响度均衡', '夜间模式'] },
+  ],
+  shortcuts: [
+    { key: 'global', label: '全局快捷键', labels: ['启用全局快捷键', '媒体键始终控制 Zilux2'] },
+    { key: 'bindings', label: '组合键', labels: ['恢复默认组合'], contains: ['.shortcut-list', '.shortcut-tip'] },
+  ],
+  eq: [
+    { key: 'basic', label: '基础', labels: ['启用均衡器', '预设', '自定义预设'] },
+    { key: 'curve', label: '频段与曲线', contains: ['.eq-curve-card', '.eq-bands'], fallback: true },
+  ],
+  downloads: [
+    { key: 'target', label: '位置与音质', labels: ['下载目录', '下载音质'] },
+    { key: 'files', label: '文件与并发', labels: ['下载并发', '文件名模板', '下载完成后打开文件夹'], contains: ['.field-hint'] },
+  ],
+  updates: [
+    { key: 'release', label: '版本与更新', labels: ['当前版本', '更新状态', '更新日志', '下载进度'], contains: ['.updates-actions'] },
+    { key: 'auto', label: '自动更新', labels: ['自动检查更新', '更新方式', '更新源', '直连 GitHub'], contains: ['.field-hint'] },
+  ],
+  data: [
+    { key: 'cache', label: '缓存', labels: ['缓存占用', '缓存上限', '缓存位置'] },
+    { key: 'library', label: '数据', labels: ['重新同步收藏与歌单', '本地歌曲文件夹', '设置导入导出'] },
+    { key: 'experimental', label: '实验功能', afterTitle: '实验功能' },
+  ],
+};
+
+/**
+ * 把已构建好的设置分类整理成「子选项组」：直接子节点按标签/class 搬进
+ * `.settings-subpane`，分类标题留在原处（旧 CSS 会隐藏它），子选项条插在标题下面。
+ * 返回 null 表示这个分类不需要子选项（不显示 tab 行）。
+ */
+function decorateSettingsSubnav(
+  root: HTMLElement,
+  specs: SettingsSubGroupSpec[],
+  initialKey: string,
+  onSelect: (key: string) => void,
+): SettingsSubnav | null {
+  if (specs.length < 2) return null;
+
+  const subpanes = new Map<string, HTMLDivElement>();
+  for (const spec of specs) {
+    const pane = h('div', { class: 'settings-subpane', role: 'tabpanel', 'data-subnav': spec.key });
+    pane.hidden = true;
+    subpanes.set(spec.key, pane);
+  }
+
+  let boundary: SettingsSubGroupSpec | null = null;
+  let moved = 0;
+  for (const child of Array.from(root.children) as HTMLElement[]) {
+    if (child.classList.contains('section-title')) {
+      boundary = specs.find((spec) => spec.afterTitle === (child.textContent ?? '').trim()) ?? null;
+      continue;
+    }
+    const label = child.classList.contains('field')
+      ? (child.querySelector('.field-label')?.textContent ?? '').trim()
+      : '';
+    // 先按标签精确归类（字段内部的 .field-hint 等不能把整行抢走），再按内部结构兜底。
+    const spec: SettingsSubGroupSpec | null =
+      boundary ??
+      (label ? specs.find((candidate) => candidate.labels?.includes(label)) : undefined) ??
+      specs.find(
+        (candidate) =>
+          Boolean(candidate.classes?.some((name) => child.classList.contains(name))) ||
+          Boolean(candidate.contains?.some((selector) => child.matches(selector) || Boolean(child.querySelector(selector)))),
+      ) ??
+      specs.find((candidate) => candidate.fallback) ??
+      null;
+    if (!spec) continue;
+    subpanes.get(spec.key)?.append(child);
+    moved += 1;
+  }
+  if (moved === 0) return null;
+
+  const bar = h('div', { class: 'settings-subtabs' });
+  const track = h('div', { class: 'settings-subtabs-track', role: 'tablist', 'aria-label': '设置子选项' });
+  const thumb = h('div', { class: 'settings-subtabs-thumb' });
+  track.append(thumb);
+  bar.append(track);
+
+  const buttons = new Map<string, HTMLButtonElement>();
+  const initial = specs.some((spec) => spec.key === initialKey) ? initialKey : specs[0].key;
+  let current = initial;
+
+  const moveThumb = (button: HTMLButtonElement | undefined, animate: boolean): void => {
+    if (!button || !bar.isConnected) return;
+    bar.dataset.thumb = 'ready';
+    thumb.style.transition = animate ? '' : 'none';
+    thumb.style.width = `${button.offsetWidth}px`;
+    thumb.style.transform = `translateX(${button.offsetLeft}px)`;
+    if (!animate) {
+      window.requestAnimationFrame(() => {
+        thumb.style.transition = '';
+      });
+    }
+  };
+
+  const activate = (key: string, animate = true): void => {
+    const next = buttons.has(key) ? key : initial;
+    current = next;
+    buttons.forEach((button, name) => {
+      const on = name === next;
+      button.classList.toggle('is-on', on);
+      button.setAttribute('aria-selected', on ? 'true' : 'false');
+      button.tabIndex = on ? 0 : -1;
+    });
+    for (const spec of specs) {
+      const pane = subpanes.get(spec.key);
+      if (pane) pane.hidden = spec.key !== next;
+    }
+    moveThumb(buttons.get(next), animate);
+    onSelect(next);
+  };
+
+  specs.forEach((spec) => {
+    const button = h('button', {
+      class: 'settings-subtab',
+      type: 'button',
+      role: 'tab',
+      'aria-selected': 'false',
+      text: spec.label,
+    });
+    button.addEventListener('click', () => activate(spec.key));
+    buttons.set(spec.key, button);
+    track.append(button);
+  });
+
+  track.addEventListener('keydown', (event: KeyboardEvent) => {
+    const order = specs.map((spec) => spec.key);
+    const index = order.indexOf(current);
+    let next: string | null = null;
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') next = order[(index + 1) % order.length];
+    else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') next = order[(index - 1 + order.length) % order.length];
+    else if (event.key === 'Home') next = order[0];
+    else if (event.key === 'End') next = order[order.length - 1];
+    if (!next) return;
+    event.preventDefault();
+    activate(next);
+    buttons.get(next)?.focus();
+  });
+
+  for (const spec of specs) {
+    const pane = subpanes.get(spec.key);
+    if (pane) root.append(pane);
+  }
+  root.insertBefore(bar, root.children[1] ?? null);
+  activate(initial, false);
+
+  const remeasure = (): void => {
+    if (!bar.isConnected) return;
+    // 面板刚切显示时 offsetWidth 还是 0：等一帧再量，隐藏分组也不会量出 0 宽滑块。
+    window.requestAnimationFrame(() => moveThumb(buttons.get(current), false));
+  };
+  const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => remeasure());
+  observer?.observe(track);
+
+  return {
+    bar,
+    activeKey: () => current,
+    activate,
+    remeasure,
+    dispose: () => {
+      observer?.disconnect();
+      bar.remove();
+    },
+  };
+}
+
+/** 开发者选项的本机开关（宿主 settings schema 固定，这类调试偏好只存本地）。 */
+const DEV_FPS_KEY = 'zilux2.dev.fps';
+const DEV_LAYOUT_KEY = 'zilux2.dev.layout';
+
 export class App {
   readonly root: HTMLDivElement;
 
@@ -467,6 +716,19 @@ export class App {
   private sheetScope: Disposers | null = null;
   /** 设置弹窗当前页签；导入设置后按此页签重建面板。 */
   private settingsPaneKey = 'general';
+  /** 每个主分类上次停留的子选项（重开弹窗时恢复）。 */
+  private settingsSubKeys: Record<string, string> = {};
+  /** 开发者选项：FPS 浮层 / 布局描边（本机偏好，存 localStorage）。 */
+  private devFpsOn = false;
+  private devLayoutOn = false;
+  private devHud: HTMLDivElement | null = null;
+  private devHudFps: HTMLSpanElement | null = null;
+  private devHudInfo: HTMLSpanElement | null = null;
+  private devFpsRaf = 0;
+  private devFpsFrames = 0;
+  private devFpsSince = 0;
+  /** 缓存占用相关的刷新器（清理后重算）。 */
+  private cacheMeterRefresh: (() => void) | null = null;
   /** 快捷设置里常驻开关的刷新器：宿主/托盘/导入改了设置后同步回控件。 */
   private quickSwitchRefreshers: Array<() => void> = [];
   /** 设置弹窗里联动控件的刷新器：本地互斥/回读后同步显示。 */
@@ -481,6 +743,12 @@ export class App {
   private playlistsScope: Disposers | null = null;
   private loginOverlay: HTMLDivElement | null = null;
   private playerDispose: (() => void) | null = null;
+  /** 人声分离播放模式：原声 / 纯伴奏 / 纯人声（跨曲目保持，存 localStorage）。 */
+  private stemMode: 'off' | StemPlaybackMode = 'off';
+  private stemHandle: StemModeHandle | null = null;
+  private stemBusy = false;
+  private stemPoll = 0;
+  private pbStemBtn: HTMLButtonElement | null = null;
   private localDispose: (() => void) | null = null;
   private accountDispose: (() => void) | null = null;
   private accountIssueDispose: (() => void) | null = null;
@@ -509,6 +777,7 @@ export class App {
   private pbArtist!: HTMLDivElement;
   private pbPlayBtn!: HTMLButtonElement;
   private pbLikeBtn!: HTMLButtonElement;
+  private pbCommentBtn!: HTMLButtonElement;
   private pbModeBtn!: HTMLButtonElement;
   private smartMixActive = false;
   private smartMixPrevMode: PlayerState['mode'] = 'list';
@@ -562,6 +831,14 @@ export class App {
   private quickBodyInner!: HTMLDivElement;
   private quickRenderKey = '';
   private quickLikeBtn: HTMLButtonElement | null = null;
+  /** 快捷设置顶部常驻的「正在播放」：封面 + 歌名，切 tab 时在大小两档之间等比缩放。 */
+  private quickNow: HTMLDivElement | null = null;
+  private quickNowCover: HTMLImageElement | null = null;
+  private quickNowTitle: HTMLDivElement | null = null;
+  private quickNowArtist: HTMLDivElement | null = null;
+  private quickNowNote: HTMLDivElement | null = null;
+  /** 封面在「大图/小卡」之间切换的补间；切太快时先取消上一段，避免两段动画叠加。 */
+  private quickCoverAnim: Animation | null = null;
   private lastQualityKey = '';
   private downloadQuickView: DownloadQueueView | null = null;
   private hostCommandBound = false;
@@ -627,6 +904,9 @@ export class App {
     this.root.append(this.upNextToast.element);
     // 自定义图片背景不依赖正在播放的歌曲，构造完成即可铺上。
     if (this.appBgMode === 'image') this.paintAppBg(null);
+    // 本机调试开关（FPS / 布局描边）与缓存上限属于前端偏好：启动时按 localStorage 恢复。
+    this.applyDevPrefs();
+    enforceCacheLimit();
   }
 
   /* ------------------------------------------------------------------ */
@@ -638,8 +918,9 @@ export class App {
     // 墙面歌曲行（.track-row）统一走右键菜单：行上带 data-track-key，曲目从当前 wall 里回查。
     this.root.addEventListener('contextmenu', (event) => this.onWallTrackContextMenu(event));
     this.watchSegments();
-    // 调试/自动化用：暴露只读播放状态，便于真机验证。
+    // 调试/自动化用：暴露只读播放状态与当前发声元素，便于真机验证。
     (window as unknown as { __ziluxPlayer?: typeof playerState }).__ziluxPlayer = playerState;
+    (window as unknown as { __ziluxAudio?: typeof activeAudioElement }).__ziluxAudio = activeAudioElement;
     initDownloadQueue();
     this.bindHostCommands();
     // 提前绑定快捷键回执：宿主可能在用户打开设置页之前就推送注册结果。
@@ -655,7 +936,25 @@ export class App {
     window.addEventListener('keydown', onMiniKey);
     this.disposers.add(() => window.removeEventListener('keydown', onMiniKey));
     this.disposers.add(() => this.clearMiniFallback());
-    this.playerDispose = onPlayer((state) => this.syncPlayer(state));
+    this.playerDispose = onPlayer((state) => {
+      this.syncPlayer(state);
+      void this.refreshStemPlayback();
+    });
+    // 人声分离模式：恢复上次选择，并定时复核（过渡开始/暂停/seek 时平滑停用或接续）。
+    try {
+      const stored = localStorage.getItem('zilux2.stemMode');
+      this.stemMode = stored === 'vocals' || stored === 'instrumental' ? stored : 'off';
+    } catch {
+      this.stemMode = 'off';
+    }
+    this.stemPoll = window.setInterval(() => {
+      if (this.stemMode !== 'off') void this.refreshStemPlayback();
+    }, 1200);
+    this.disposers.add(() => {
+      if (this.stemPoll) window.clearInterval(this.stemPoll);
+      this.stemPoll = 0;
+      this.stopStemPlayback(40);
+    });
     // 过渡计划变化（准备完成/取消）不一定伴随播放器状态变化（分析慢、暂停时），
     // 这里主动重绘进度条上的渐变与高潮标记，避免显示上一份计划的旧位置。
     this.disposers.add(
@@ -996,6 +1295,21 @@ export class App {
       host.drag();
     });
 
+    // 顶部空白带双击 = 最大化/还原（拖动逻辑会吞掉 click，所以单独监听 dblclick）。
+    this.root.addEventListener('dblclick', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      if (event.clientY > 84) return;
+      if (
+        target.closest(
+          'button, input, textarea, select, .win-btns, .pill, .rail, .sheet, .lyrics-view, .playerbar, .upnext, .quick, .account-wrap, .search-wrap, .search-dock, .search-pop, .edge-resize',
+        )
+      ) {
+        return;
+      }
+      host.toggleMaximize();
+    });
+
     this.root.append(topbar);
 
     // 无边框窗口的边缘缩放：WebView2 铺满后系统收不到 WM_NCHITTEST，
@@ -1097,6 +1411,7 @@ export class App {
       onLogin: () => this.openLogin(),
       onLiked: (source) => void this.showLiked(source),
       onPlayLiked: (source) => void this.playLikedAll(source),
+      onHeartbeat: (source) => void this.playHeartbeat(source),
       onRecent: () => void this.showRecentWall(),
       onRecommend: () => void this.openRecommendPage(),
       onDaily: () => void this.showDailyWall(),
@@ -1376,6 +1691,62 @@ export class App {
       return;
     }
     playQueue(tracks, 0);
+  }
+
+  /**
+   * 网易云「心动模式」：以「我喜欢的音乐」+ 当前歌曲为种子，请求宿主原生 eapi 的智能续播队列。
+   * 首次回 30 首左右；开启后由 heartRadio 记录歌单/种子，队列快播完时自动再取一批
+   * （不打断播放、按曲目去重、空批次 60 秒冷却）。再次点击即退出心动模式。
+   */
+  private async playHeartbeat(source: OnlineSource = 'netease'): Promise<void> {
+    if (source !== 'netease') {
+      toast('心动模式目前只支持网易云音乐', 'error');
+      return;
+    }
+    if (heartRadioActive()) {
+      stopHeartRadio();
+      toast('心动模式已关闭，当前队列继续播放', 'info');
+      return;
+    }
+    try {
+      const overview = await fetchLibraryOverview();
+      const netease = overview.sources.find((item) => item.source === 'netease');
+      const likedId = netease?.liked?.id ?? '';
+      if (!netease?.loggedIn || likedId.length === 0) {
+        toast('心动模式需要先登录网易云账号并同步收藏', 'error');
+        return;
+      }
+
+      const likes = await this.fetchLikedTracks('netease');
+      const current = playerState().track;
+      const seed = current && current.source === 'netease' && current.id
+        ? current.id
+        : likes?.[0]?.id ?? '';
+      if (!seed) {
+        toast('收藏列表还没有歌曲，心动模式暂时用不了', 'error');
+        return;
+      }
+
+      toast('正在生成心动模式…');
+      const response = await api<{ tracks: OnlineTrack[] }>(
+        '/api/netease/intelligence',
+        { playlist: likedId, songId: seed, count: '30' },
+        20000,
+        'GET',
+      );
+      const tracks = (response.tracks ?? []).filter((track) => track.id.length > 0);
+      if (tracks.length === 0) {
+        toast('心动模式暂时没有返回歌曲，稍后再试', 'error');
+        return;
+      }
+
+      playQueue(tracks, 0);
+      // 必须在 playQueue 之后注册：换队列会先清掉旧的续接器。
+      startHeartRadio(likedId, seed);
+      toast(`心动模式已开始 · ${tracks.length} 首（快播完时自动续排）`, 'info');
+    } catch (error) {
+      toast(`心动模式加载失败：${error instanceof Error ? error.message : '请确认网易云已登录'}`, 'error');
+    }
   }
 
   /** 把多个平台的今日推荐按轮次交错合并（同一平台不会连续刷屏）。 */
@@ -2842,12 +3213,33 @@ export class App {
           void this.applyTrackLiked(track, !liked);
         },
       },
+      ...(!isLocal
+        ? [
+            {
+              label: '查看评论',
+              run: () => this.openTrackComments(track),
+            },
+          ]
+        : []),
       {
         label: '复制歌曲信息',
         run: () => this.copyTrackInfo(track),
       },
     ];
     openTrackMenu({ x, y, items });
+  }
+
+  /** 打开当前曲目 / 指定曲目的评论 Sheet（播放条、右键菜单共用）。 */
+  private openTrackComments(track: OnlineTrack | null | undefined): void {
+    if (!track) {
+      toast('当前没有播放歌曲', 'error');
+      return;
+    }
+    if (track.source === 'local') {
+      toast('本地歌曲没有在线评论', 'error');
+      return;
+    }
+    this.openSheet(`评论 · ${track.title}`, (body) => buildCommentsPanel(body, track.source, track.id));
   }
 
   /** 本地曲目：编辑标签（只把用户填写的字段交给宿主，留空表示不改）。 */
@@ -3883,6 +4275,528 @@ export class App {
     return { root, setValue };
   }
 
+  /* ------------------------------------------------------------------ */
+  /* 开发者选项                                                          */
+  /* ------------------------------------------------------------------ */
+
+  private readDevFlag(key: string): boolean {
+    try {
+      return window.localStorage.getItem(key) === '1';
+    } catch {
+      return false;
+    }
+  }
+
+  private writeDevFlag(key: string, on: boolean): void {
+    try {
+      if (on) window.localStorage.setItem(key, '1');
+      else window.localStorage.removeItem(key);
+    } catch {
+      // 浏览器隐私模式 / 配额异常时静默降级：只在本次会话生效。
+    }
+  }
+
+  /** 读取本机调试开关并同步 HUD / 描边。构造时调用一次，设置页里改开关时立即调用。 */
+  private applyDevPrefs(): void {
+    this.devFpsOn = this.readDevFlag(DEV_FPS_KEY);
+    this.devLayoutOn = this.readDevFlag(DEV_LAYOUT_KEY);
+    this.root.classList.toggle('is-debug-layout', this.devLayoutOn);
+    this.syncDevHud();
+  }
+
+  /** FPS 浮层：rAF 计数，每 500ms 刷新一次；关闭时停止循环并隐藏节点。 */
+  private syncDevHud(): void {
+    if (!this.devFpsOn) {
+      if (this.devFpsRaf) {
+        window.cancelAnimationFrame(this.devFpsRaf);
+        this.devFpsRaf = 0;
+      }
+      if (this.devHud) this.devHud.hidden = true;
+      return;
+    }
+    if (!this.devHud) {
+      this.devHudFps = h('span', { class: 'dev-hud-fps', text: '-- FPS' });
+      this.devHudInfo = h('span', { class: 'dev-hud-item' });
+      this.devHud = h(
+        'div',
+        { class: 'dev-hud', 'aria-hidden': 'true' },
+        this.devHudFps,
+        h('span', { class: 'dev-hud-sep' }),
+        this.devHudInfo,
+      );
+      this.root.append(this.devHud);
+    }
+    this.devHud.hidden = false;
+    if (this.devFpsRaf) return;
+    this.devFpsFrames = 0;
+    this.devFpsSince = performance.now();
+    const tick = (now: number): void => {
+      this.devFpsFrames += 1;
+      const elapsed = now - this.devFpsSince;
+      if (elapsed >= 500) {
+        const fps = Math.round((this.devFpsFrames * 1000) / elapsed);
+        if (this.devHudFps) {
+          this.devHudFps.textContent = `${fps} FPS`;
+          this.devHudFps.classList.toggle('is-low', fps < 45);
+        }
+        if (this.devHudInfo) {
+          this.devHudInfo.textContent = `${window.innerWidth}×${window.innerHeight} · DPR ${window.devicePixelRatio} · 缓存 ${formatBytes(measureLocalCache().bytes)}`;
+        }
+        this.devFpsFrames = 0;
+        this.devFpsSince = now;
+      }
+      this.devFpsRaf = window.requestAnimationFrame(tick);
+    };
+    this.devFpsRaf = window.requestAnimationFrame(tick);
+  }
+
+  /** destroy 时停掉 HUD 循环并移除节点。 */
+  private stopDevHud(): void {
+    if (this.devFpsRaf) {
+      window.cancelAnimationFrame(this.devFpsRaf);
+      this.devFpsRaf = 0;
+    }
+    this.devHud?.remove();
+    this.devHud = null;
+    this.devHudFps = null;
+    this.devHudInfo = null;
+  }
+
+  private writeHostLog(): void {
+    const usage = measureLocalCache();
+    const line = [
+      `[web] 诊断 ${new Date().toISOString()}`,
+      `version=${updateSnapshot().currentVersion || 'unknown'}`,
+      `window=${window.innerWidth}x${window.innerHeight}@${window.devicePixelRatio}`,
+      `host=${hostAvailable() ? 'connected' : 'browser'}`,
+      `mini=${this.miniMode ? 'on' : 'off'}`,
+      `cache=${formatBytes(usage.bytes)}/${readCacheLimitMb()}MB`,
+      `fps=${this.devFpsOn ? 'on' : 'off'} layout=${this.devLayoutOn ? 'on' : 'off'}`,
+      `ua=${navigator.userAgent}`,
+    ].join(' · ');
+    host.log('info', line);
+    toast('已写入宿主日志');
+  }
+
+  /** 宿主目录能力：设置页「存储 → 缓存位置」「开发者选项」共用（/api/host/*）。 */
+  private async openHostFolder(target: 'data' | 'logs' | 'cache'): Promise<void> {
+    try {
+      await api<{ ok: boolean }>('/api/host/reveal', {}, 8000, 'POST', { target });
+    } catch (error) {
+      toast(error instanceof Error ? error.message : '宿主未提供该目录接口');
+    }
+  }
+
+  private async openHostDevTools(): Promise<void> {
+    try {
+      await api<{ ok: boolean }>('/api/host/devtools', {}, 8000, 'POST');
+      toast('已打开 DevTools（关闭窗口后恢复原状）');
+    } catch (error) {
+      toast(error instanceof Error ? error.message : '宿主未提供 DevTools 接口');
+    }
+  }
+
+  private async fillHostPaths(target: HTMLElement): Promise<void> {
+    try {
+      const paths = await api<{ dataDir: string; logsDir: string; cacheDir: string }>('/api/host/paths', {}, 8000);
+      const dir = paths.dataDir || '';
+      target.textContent = dir || '宿主未返回路径';
+      target.dataset.dataDir = dir;
+      target.dataset.logsDir = paths.logsDir || '';
+      target.dataset.cacheDir = paths.cacheDir || '';
+    } catch {
+      target.textContent = '宿主未提供路径接口';
+      delete target.dataset.dataDir;
+    }
+  }
+
+  private exportDiagnostics(): void {
+    const usage = measureLocalCache();
+    const payload = {
+      app: 'Zilux2',
+      kind: 'zilux2-diagnostics',
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      build: { version: updateSnapshot().currentVersion, mode: import.meta.env.MODE },
+      window: {
+        width: window.innerWidth,
+        height: window.innerHeight,
+        dpr: window.devicePixelRatio,
+        screenWidth: window.screen.width,
+        screenHeight: window.screen.height,
+      },
+      navigator: { userAgent: navigator.userAgent, language: navigator.language, platform: navigator.platform },
+      hostAvailable: hostAvailable(),
+      miniMode: this.miniMode,
+      settings: getSettings(),
+      cache: {
+        limitMb: readCacheLimitMb(),
+        bytes: usage.bytes,
+        available: usage.available,
+        entries: usage.entries,
+      },
+      developer: { fps: this.devFpsOn, layoutOutline: this.devLayoutOn },
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const link = h('a', { href: url, download: `zilux2-diagnostics-${stamp}.json` });
+    document.body.append(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    toast('诊断信息已导出');
+  }
+
+  /** 设置页「开发者选项」：只放纯前端已能实现的调试能力；需要宿主接口的在末尾注明。 */
+  private buildDeveloperSection(
+    section: (title: string, ...children: HTMLElement[]) => HTMLElement,
+  ): HTMLElement {
+    const devToggle = (
+      label: string,
+      hint: string,
+      value: boolean,
+      onChange: (next: boolean) => void,
+    ): HTMLDivElement => {
+      const sw = this.pillSwitch(value, onChange);
+      sw.root.classList.add('set-switch');
+      return h(
+        'div',
+        { class: 'field set-row' },
+        h(
+          'div',
+          { class: 'set-row-main' },
+          h('div', { class: 'field-label set-row-label', text: label }),
+          h('div', { class: 'field-hint set-row-hint', text: hint }),
+        ),
+        h('div', { class: 'set-row-control' }, sw.root),
+      );
+    };
+
+    const runtime = h('div', { class: 'set-kv-list' });
+    const paintRuntime = (): void => {
+      runtime.textContent = '';
+      const rows: Array<[string, string]> = [
+        ['版本', updateSnapshot().currentVersion || '未知'],
+        ['窗口', `${window.innerWidth} × ${window.innerHeight} @ ${window.devicePixelRatio}x`],
+        ['宿主', hostAvailable() ? '已连接' : '浏览器预览'],
+        ['缓存', formatBytes(measureLocalCache().bytes)],
+      ];
+      for (const [key, value] of rows) {
+        runtime.append(
+          h(
+            'div',
+            { class: 'set-kv' },
+            h('span', { class: 'set-kv-key', text: key }),
+            h('span', { class: 'set-kv-value', text: value, title: value }),
+          ),
+        );
+      }
+    };
+    paintRuntime();
+    const onResize = (): void => paintRuntime();
+    window.addEventListener('resize', onResize);
+    this.sheetScope?.add(() => window.removeEventListener('resize', onResize));
+
+    const fpsRow = devToggle(
+      '显示 FPS 浮层',
+      '右下角显示实时帧率、窗口尺寸与缓存占用，用于排查动画掉帧。',
+      this.devFpsOn,
+      (next) => {
+        this.devFpsOn = next;
+        this.writeDevFlag(DEV_FPS_KEY, next);
+        this.syncDevHud();
+        toast(next ? '已显示 FPS 浮层' : '已隐藏 FPS 浮层');
+      },
+    );
+    const layoutRow = devToggle(
+      '布局描边',
+      '给顶栏、首页卡片、播放条与设置面板加描边，直观看到网格留白与溢出问题。',
+      this.devLayoutOn,
+      (next) => {
+        this.devLayoutOn = next;
+        this.writeDevFlag(DEV_LAYOUT_KEY, next);
+        this.root.classList.toggle('is-debug-layout', next);
+        toast(next ? '已开启布局描边' : '已关闭布局描边');
+      },
+    );
+
+    const reloadBtn = h('button', { class: 'btn btn-sm', type: 'button', text: '强制重载页面' });
+    reloadBtn.addEventListener('click', () => {
+      void confirmDialog({
+        title: '强制重载页面',
+        message: '重新载入 Web 界面？',
+        detail: '正在播放的歌曲会中断；本地库、设置与下载队列不受影响。',
+        confirmText: '重载',
+        tone: 'default',
+        iconName: 'refresh',
+      }).then((ok) => {
+        if (ok) window.location.reload();
+      });
+    });
+    const exportBtn = h('button', { class: 'btn btn-sm', type: 'button', text: '导出诊断信息' });
+    exportBtn.addEventListener('click', () => this.exportDiagnostics());
+    const logBtn = h('button', { class: 'btn btn-sm', type: 'button', text: '写入宿主日志' });
+    logBtn.addEventListener('click', () => this.writeHostLog());
+
+    const devtoolsBtn = h('button', { class: 'btn btn-sm', type: 'button', text: '打开 DevTools' });
+    devtoolsBtn.addEventListener('click', () => void this.openHostDevTools());
+    const logsBtn = h('button', { class: 'btn btn-sm', type: 'button', text: '打开日志目录' });
+    logsBtn.addEventListener('click', () => void this.openHostFolder('logs'));
+    const cacheDirBtn = h('button', { class: 'btn btn-sm', type: 'button', text: '打开缓存目录' });
+    cacheDirBtn.addEventListener('click', () => void this.openHostFolder('cache'));
+
+    const note = h(
+      'div',
+      { class: 'set-note' },
+      h('div', { text: '以下入口由宿主 C# 侧提供；DevTools 只在点击时临时启用，关闭窗口后恢复。' }),
+      h('div', { class: 'set-actions' }, devtoolsBtn, logsBtn, cacheDirBtn),
+    );
+
+    return section(
+      '开发者选项',
+      h(
+        'div',
+        { class: 'field is-stacked' },
+        h('div', { class: 'field-label set-row-label', text: '运行信息' }),
+        h('div', { class: 'field-hint set-row-hint', text: '当前构建与运行环境，随设置页打开实时读取。' }),
+        runtime,
+      ),
+      fpsRow,
+      layoutRow,
+      h(
+        'div',
+        { class: 'field is-stacked set-row' },
+        h(
+          'div',
+          { class: 'set-row-main' },
+          h('div', { class: 'field-label set-row-label', text: '调试操作' }),
+          h('div', { class: 'field-hint set-row-hint', text: '诊断信息导出为本地 JSON，可随问题反馈一起提供。' }),
+        ),
+        h('div', { class: 'set-row-control set-actions' }, reloadBtn, exportBtn, logBtn),
+      ),
+      note,
+    );
+  }
+
+  /** 设置页「存储」里的缓存三项：占用 / 上限 / 位置（位置只读，目录选择需宿主支持）。 */
+  private buildCacheFields(): HTMLElement[] {
+    const usageValue = h('span', { class: 'set-value' });
+    const usageHint = h('div', { class: 'field-hint set-row-hint' });
+    const meterFill = h('div', { class: 'set-meter-fill' });
+    const meter = h('div', { class: 'set-meter' }, meterFill);
+    const list = h('div', { class: 'set-cache-list' });
+    let host: DiskCacheUsage | null = null;
+    let refreshing = false;
+
+    const limitRange = h('input', {
+      class: 'slider',
+      type: 'range',
+      min: String(CACHE_LIMIT_MIN_MB),
+      max: String(CACHE_LIMIT_MAX_MB),
+      step: String(CACHE_LIMIT_STEP_MB),
+      value: String(readCacheLimitMb()),
+      'aria-label': '缓存上限',
+    });
+    const limitNumber = h('input', {
+      class: 'set-number',
+      type: 'number',
+      min: String(CACHE_LIMIT_MIN_MB),
+      max: String(CACHE_LIMIT_MAX_MB),
+      step: String(CACHE_LIMIT_STEP_MB),
+      value: String(readCacheLimitMb()),
+      'aria-label': '缓存上限（MB）',
+    });
+
+    const syncLimit = (mb: number): void => {
+      writeCacheLimitMb(mb);
+      if (limitRange.value !== String(mb)) limitRange.value = String(mb);
+      if (limitNumber.value !== String(mb)) limitNumber.value = String(mb);
+    };
+
+    const paint = (): void => {
+      const local = measureLocalCache();
+      const total = (host?.totalBytes ?? 0) + (local.available ? local.bytes : 0);
+      const currentLimit = host?.limitMb ?? readCacheLimitMb();
+      usageValue.textContent = host || local.available ? formatBytes(total) : '不可用';
+      usageHint.textContent = host
+        ? `磁盘缓存 ${formatBytes(host.totalBytes)} + 浏览器本地存储 ${formatBytes(local.bytes)} · 上限 ${currentLimit} MB`
+        : local.available
+          ? `浏览器本地存储 ${formatBytes(local.bytes)} · 上限 ${currentLimit} MB`
+          : '缓存统计不可用';
+      const ratio = currentLimit > 0 ? Math.min(1, total / (currentLimit * 1024 * 1024)) : 0;
+      meterFill.style.width = `${Math.round(ratio * 100)}%`;
+      meter.classList.toggle('is-over', total > currentLimit * 1024 * 1024);
+
+      list.textContent = '';
+      for (const item of host?.items ?? []) {
+        const action = item.clearable
+          ? h('button', { class: 'btn btn-xs', type: 'button', text: '清理' })
+          : h('span', { class: 'set-value is-muted', text: item.note ?? '需重启' });
+        if (item.clearable) {
+          action.addEventListener('click', () => {
+            void clearDiskCache(item.id).then((result) => {
+              toast(result.freedBytes > 0 ? `已清理${item.label} ${formatBytes(result.freedBytes)}` : `${item.label}没有可清理的文件`);
+              void refresh();
+            });
+          });
+        }
+        list.append(
+          h(
+            'div',
+            { class: 'set-cache-row' },
+            h('span', { class: 'set-cache-name', text: item.label }),
+            h('span', { class: 'set-value is-muted', text: item.files > 0 ? `${formatBytes(item.bytes)} · ${item.files} 个文件` : '空' }),
+            action,
+          ),
+        );
+      }
+    };
+
+    const refresh = async (): Promise<void> => {
+      if (refreshing) return;
+      refreshing = true;
+      try {
+        host = await fetchDiskCache();
+        limitRange.min = String(host.minMb);
+        limitRange.max = String(host.maxMb);
+        limitNumber.min = String(host.minMb);
+        limitNumber.max = String(host.maxMb);
+        syncLimit(host.limitMb);
+      } catch {
+        host = null;
+      } finally {
+        refreshing = false;
+        paint();
+      }
+    };
+
+    paint();
+    void refresh();
+    const refreshTick = (): void => void refresh();
+    this.cacheMeterRefresh = refreshTick;
+    this.sheetScope?.add(() => {
+      if (this.cacheMeterRefresh === refreshTick) this.cacheMeterRefresh = null;
+    });
+
+    let limitTimer = 0;
+    const applyLimit = (raw: number, commit: boolean): void => {
+      const next = writeCacheLimitMb(raw);
+      if (limitRange.value !== String(next)) limitRange.value = String(next);
+      if (limitNumber.value !== String(next)) limitNumber.value = String(next);
+      window.clearTimeout(limitTimer);
+      limitTimer = window.setTimeout(() => {
+        void setDiskCacheLimit(next)
+          .then((result) => {
+            enforceCacheLimit(next);
+            if (result.removed > 0) toast(`已按上限清理 ${formatBytes(result.freedBytes)} 缓存`);
+            void refresh();
+          })
+          .catch(() => {
+            enforceCacheLimit(next);
+            paint();
+          });
+      }, commit ? 0 : 260);
+    };
+    limitRange.addEventListener('input', () => applyLimit(Number(limitRange.value), false));
+    limitRange.addEventListener('change', () => applyLimit(Number(limitRange.value), true));
+    limitNumber.addEventListener('change', () => applyLimit(Number(limitNumber.value), true));
+
+    const clearBtn = h('button', { class: 'btn btn-sm', type: 'button', text: '清理全部缓存' });
+    clearBtn.addEventListener('click', () => {
+      void confirmDialog({
+        title: '清理全部缓存',
+        message: '清理人声分离、曲目分析、转码临时文件、MV、日志、更新包与浏览器缓存？',
+        detail: '这些都是可重建数据：账号、设置、收藏、歌单、本地曲库索引与自定义背景不会被删除。浏览器缓存会在重启后清空。',
+        confirmText: '全部清理',
+        tone: 'danger',
+        iconName: 'trash',
+      }).then((ok) => {
+        if (!ok) return;
+        void clearDiskCache()
+          .then((result) => {
+            const before = measureLocalCache().bytes;
+            clearLocalCaches();
+            const freedLocal = Math.max(0, before - measureLocalCache().bytes);
+            toast(
+              `已清理 ${formatBytes(result.freedBytes + freedLocal)}${result.needsRestart ? '，浏览器缓存将在重启后清空' : ''}`,
+            );
+            void refresh();
+          })
+          .catch(() => toast('清理失败，请稍后再试'));
+      });
+    });
+
+    const hostPathsValue = h('div', { class: 'set-value is-muted', text: '读取中…' });
+    const openDataBtn = h('button', { class: 'btn btn-sm', type: 'button', text: '打开数据目录' });
+    openDataBtn.addEventListener('click', () => void this.openHostFolder('data'));
+    const openCacheBtn = h('button', { class: 'btn btn-sm', type: 'button', text: '打开缓存目录' });
+    openCacheBtn.addEventListener('click', () => void this.openHostFolder('cache'));
+    const copyPathBtn = h('button', { class: 'btn btn-sm', type: 'button', text: '复制路径' });
+    copyPathBtn.addEventListener('click', () => {
+      const value = hostPathsValue.dataset.dataDir ?? '';
+      if (!value) {
+        toast('宿主还没返回路径');
+        return;
+      }
+      const write = navigator.clipboard?.writeText(value);
+      if (!write) {
+        toast('当前环境不支持复制');
+        return;
+      }
+      void write.then(
+        () => toast('已复制数据目录'),
+        () => toast('复制失败'),
+      );
+    });
+    void this.fillHostPaths(hostPathsValue);
+
+    return [
+      h(
+        'div',
+        { class: 'field is-stacked set-row' },
+        h('div', { class: 'set-row-main' }, h('div', { class: 'field-label set-row-label', text: '缓存占用' }), usageHint),
+        h('div', { class: 'set-row-control' }, meter, usageValue, clearBtn),
+        list,
+      ),
+      h(
+        'div',
+        { class: 'field set-row' },
+        h(
+          'div',
+          { class: 'set-row-main' },
+          h('div', { class: 'field-label set-row-label', text: '缓存上限' }),
+          h('div', {
+            class: 'field-hint set-row-hint',
+            text: '超过上限时自动清理最旧的可重建缓存；自定义背景与本地曲库索引不会被自动删除。',
+          }),
+        ),
+        h('div', { class: 'set-row-control' }, limitRange, limitNumber, h('span', { class: 'set-value is-muted', text: 'MB' })),
+      ),
+      h(
+        'div',
+        { class: 'field is-stacked set-row' },
+        h(
+          'div',
+          { class: 'set-row-main' },
+          h('div', { class: 'field-label set-row-label', text: '缓存位置' }),
+          h('div', {
+            class: 'field-hint set-row-hint',
+            text: '应用数据目录由 Zilux2 宿主管理；Web 端只读，不直接操作磁盘。',
+          }),
+        ),
+        h(
+          'div',
+          { class: 'set-note' },
+          h('div', { text: '应用数据目录（宿主返回）：' }),
+          hostPathsValue,
+          h('div', { class: 'set-actions' }, openDataBtn, openCacheBtn, copyPathBtn),
+          h('div', { text: '目录选择需要宿主提供文件夹选择接口；下载目录可在「下载」页管理。' }),
+        ),
+      ),
+    ];
+  }
+
   private openSettingsSheet(paneKey = 'general'): void {
     this.setRailActive('settings');
     // 设置改用居中大弹窗（和效果设置一致的观感），其他 sheet 仍是右侧滑出。
@@ -3897,10 +4811,21 @@ export class App {
       };
       const toggleField = (label: string, hint: string, value: boolean, onChange: (next: boolean) => void): HTMLDivElement => {
         const sw = this.pillSwitch(value, onChange);
-        return h('div', { class: 'field' }, h('div', {}, h('div', { class: 'field-label', text: label }), h('div', { class: 'field-hint', text: hint })), sw.root);
+        sw.root.classList.add('set-switch');
+        return h(
+          'div',
+          { class: 'field set-row' },
+          h(
+            'div',
+            { class: 'set-row-main' },
+            h('div', { class: 'field-label set-row-label', text: label }),
+            h('div', { class: 'field-hint set-row-hint', text: hint }),
+          ),
+          h('div', { class: 'set-row-control' }, sw.root),
+        );
       };
       const segField = <T extends string>(label: string, options: Array<{ value: T; label: string }>, value: T, onChange: (next: T) => void, hint?: string): HTMLDivElement => {
-        const seg = h('div', { class: 'seg' });
+        const seg = h('div', { class: 'seg set-seg' });
         options.forEach((option) => {
           const btn = h('button', { class: `seg-btn${option.value === value ? ' is-on' : ''}`, text: option.label });
           btn.addEventListener('click', () => {
@@ -3909,8 +4834,13 @@ export class App {
           });
           seg.append(btn);
         });
-        const field = h('div', { class: hint ? 'field is-stacked' : 'field' }, h('div', { class: 'field-label', text: label }), seg);
-        if (hint) field.append(h('div', { class: 'field-hint', text: hint }));
+        const field = h(
+          'div',
+          { class: `field set-row${hint ? ' is-stacked' : ''}` },
+          h('div', { class: 'set-row-main' }, h('div', { class: 'field-label set-row-label', text: label })),
+          h('div', { class: 'set-row-control' }, seg),
+        );
+        if (hint) field.append(h('div', { class: 'field-hint set-row-hint', text: hint }));
         return field;
       };
       const sliderField = (
@@ -3948,9 +4878,9 @@ export class App {
         });
         return h(
           'div',
-          { class: 'field field-slider' },
-          h('div', { class: 'field-label', text: label }),
-          h('div', { class: 'field-slider-control' }, valueLabel, input),
+          { class: 'field field-slider set-row' },
+          h('div', { class: 'set-row-main' }, h('div', { class: 'field-label set-row-label', text: label })),
+          h('div', { class: 'set-row-control field-slider-control' }, valueLabel, input),
         );
       };
       // 条件子项禁用：父开关关闭时整行变灰并真正 disabled，避免「看起来能点、点了不生效」。
@@ -4627,6 +5557,9 @@ export class App {
         })(),
       );
 
+      // 缓存三项（占用 / 上限 / 位置）跟在「数据」字段后面，实验功能再往后。
+      tools.append(...this.buildCacheFields());
+
       // 实验功能：实验来源默认关闭，只有在这里显式开启后，搜索等页面才会出现。
       const experimental = section('实验功能');
       for (const info of Object.values(EXPERIMENTAL_SOURCES)) {
@@ -4931,6 +5864,7 @@ export class App {
       const downloadsSection = this.buildDownloadsSection(section, segField, toggleField);
       const shortcutsSection = this.buildShortcutsSection(section);
       const updatesSection = this.buildUpdatesSection(section, toggleField, segField);
+      const developer = this.buildDeveloperSection(section);
 
       // 父开关 → 子项禁用：通用自启子项、桌面歌词 5 项、渐变 5 项、更新方式。
       const syncConditionalFields = (): void => {
@@ -4954,7 +5888,7 @@ export class App {
       const unsubscribeConditional = onSettingsChange(syncConditionalFields);
       this.sheetScope?.add(unsubscribeConditional);
 
-      // 两栏设置：左侧导航 + 右侧内容（与快捷设置的 tab 选中样式一致）
+      // 两级设置：左侧主选项，右上子选项（分类没有子项时不出子选项条）。
       type SettingsEntry = { key: string; label: string; node: HTMLElement };
       const entries: SettingsEntry[] = [
         { key: 'general', label: '通用', node: general },
@@ -4970,13 +5904,20 @@ export class App {
         { key: 'updates', label: '更新', node: updatesSection },
         { key: 'account', label: '账号', node: accountSection },
         { key: 'data', label: '存储', node: tools },
+        { key: 'developer', label: '开发者', node: developer },
       ];
-      const nav = h('div', { class: 'settings-nav' });
+      const nav = h('div', {
+        class: 'settings-nav',
+        role: 'tablist',
+        'aria-label': '设置分类',
+        'aria-orientation': 'vertical',
+      });
       const navThumb = h('div', { class: 'settings-nav-thumb' });
       nav.append(navThumb);
       const content = h('div', { class: 'settings-content' });
       const panes = new Map<string, HTMLElement>();
       const navBtns = new Map<string, HTMLButtonElement>();
+      const subnavs = new Map<string, SettingsSubnav>();
       const moveNavThumb = (btn: HTMLButtonElement, animate: boolean): void => {
         navThumb.style.transition = animate ? '' : 'none';
         navThumb.style.height = `${btn.offsetHeight}px`;
@@ -4988,24 +5929,64 @@ export class App {
         }
       };
       const activate = (key: string, animate = true): void => {
-        navBtns.forEach((btn, name) => btn.classList.toggle('is-on', name === key));
+        navBtns.forEach((btn, name) => {
+          const on = name === key;
+          btn.classList.toggle('is-on', on);
+          btn.setAttribute('aria-selected', on ? 'true' : 'false');
+          btn.tabIndex = on ? 0 : -1;
+        });
         this.settingsPaneKey = key;
         panes.forEach((pane, name) => {
           pane.hidden = name !== key;
         });
         const target = navBtns.get(key);
         if (target) moveNavThumb(target, animate);
+        subnavs.get(key)?.remeasure();
       };
       const initialKey = entries.some((entry) => entry.key === paneKey) ? paneKey : entries[0]?.key ?? 'general';
       entries.forEach((entry) => {
-        const pane = h('div', { class: 'settings-pane' }, entry.node);
+        const subnav = decorateSettingsSubnav(
+          entry.node,
+          SETTINGS_SUBNAV[entry.key] ?? [],
+          this.settingsSubKeys[entry.key] ?? '',
+          (subKey) => {
+            this.settingsSubKeys[entry.key] = subKey;
+          },
+        );
+        if (subnav) subnavs.set(entry.key, subnav);
+        const pane = h('div', { class: 'settings-pane', role: 'tabpanel' }, entry.node);
         pane.hidden = entry.key !== initialKey;
         panes.set(entry.key, pane);
         content.append(pane);
-        const btn = h('button', { class: `settings-nav-btn${entry.key === initialKey ? ' is-on' : ''}`, type: 'button', text: entry.label });
+        const btn = h('button', {
+          class: `settings-nav-btn${entry.key === initialKey ? ' is-on' : ''}`,
+          type: 'button',
+          role: 'tab',
+          'aria-selected': entry.key === initialKey ? 'true' : 'false',
+          text: entry.label,
+        });
+        btn.tabIndex = entry.key === initialKey ? 0 : -1;
         btn.addEventListener('click', () => activate(entry.key));
         navBtns.set(entry.key, btn);
         nav.append(btn);
+      });
+      // 主选项方向键：与子选项同一套 roving tabindex 语言。
+      nav.addEventListener('keydown', (event: KeyboardEvent) => {
+        const order = entries.map((entry) => entry.key);
+        const index = order.indexOf(this.settingsPaneKey);
+        let next: string | null = null;
+        if (event.key === 'ArrowDown' || event.key === 'ArrowRight') next = order[(index + 1) % order.length];
+        else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') next = order[(index - 1 + order.length) % order.length];
+        else if (event.key === 'Home') next = order[0];
+        else if (event.key === 'End') next = order[order.length - 1];
+        if (!next) return;
+        event.preventDefault();
+        activate(next);
+        navBtns.get(next)?.focus();
+      });
+      this.sheetScope?.add(() => {
+        subnavs.forEach((subnav) => subnav.dispose());
+        subnavs.clear();
       });
       body.append(h('div', { class: 'settings-layout' }, nav, content));
       const resetAll = h('button', { class: 'btn is-danger', type: 'button', text: '恢复全部默认设置' });
@@ -5027,6 +6008,7 @@ export class App {
       window.requestAnimationFrame(() => {
         const first = navBtns.get(initialKey);
         if (first) moveNavThumb(first, false);
+        subnavs.get(initialKey)?.remeasure();
       });
     });
   }
@@ -6082,6 +7064,12 @@ export class App {
     });
 
     this.pbLikeBtn = h('button', { class: 'pb-btn pb-like', title: '收藏' }, icon('heart'));
+    this.pbCommentBtn = h('button', { class: 'pb-btn pb-comment', title: '查看评论' }, icon('comment'));
+    this.pbCommentBtn.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.openTrackComments(playerState().track);
+    });
     this.pbLikeBtn.addEventListener('pointerdown', (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -6128,6 +7116,18 @@ export class App {
     );
 
     const downloadBtn = createDownloadEntryButton((anchor) => this.openPlaybarDownloadMenu(anchor));
+    // 人声分离：原声 → 伴奏 → 人声 循环；状态跨曲目保持。显示文字而不是图标。
+    this.pbStemBtn = h(
+      'button',
+      { class: 'pb-btn pb-stem', title: '人声分离：原声（点击切换）', 'data-qa': 'stem-toggle' },
+      h('span', { class: 'pb-stem-label', text: '原声' }),
+    );
+    this.pbStemBtn.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.cycleStemMode();
+    });
+    this.updateStemButton();
     // 待播队列入口：迷你小窗放不下队列面板，先退出迷你、等窗口长回去再展开。
     this.pbQueueBtn = h(
       'button',
@@ -6156,8 +7156,8 @@ export class App {
       this.pbCoverWrap,
       this.pbMeta,
       h('div', { class: 'pb-controls' }, prevBtn, this.pbPlayBtn, nextBtn),
-      // 播放模式 / 收藏 / 下载 / 待播队列常驻显示，不随播放条收起而隐藏
-      h('div', { class: 'pb-actions' }, this.pbModeBtn, this.pbLikeBtn, downloadBtn, this.pbQueueBtn),
+      // 播放模式 / 收藏 / 评论 / 下载 / 人声分离 / 待播队列常驻显示，不随播放条收起而隐藏
+      h('div', { class: 'pb-actions' }, this.pbModeBtn, this.pbLikeBtn, this.pbCommentBtn, downloadBtn, this.pbStemBtn, this.pbQueueBtn),
       h('div', { class: 'pb-progress' }, this.pbCur, track, this.pbDur),
       h('div', { class: 'pb-extra' }, lyricsBtn, volumeWrap, this.miniBtn),
     );
@@ -6699,10 +7699,14 @@ export class App {
 
     this.quickBodyInner = h('div', { class: 'quick-body-inner' });
     this.quickBody = h('div', { class: 'quick-body' }, this.quickBodyInner);
+    // 顶部常驻「正在播放」：封面页放大成整张封面，其它页缩成一行小卡；
+    // 位置固定在最上方（设置内容之上），切 tab 时只做等比缩放，不再整块消失。
+    this.quickNow = this.buildQuickNow();
     const panel = h(
       'div',
       { class: 'quick-panel' },
       h('div', { class: 'quick-head', text: '快捷设置' }),
+      this.quickNow,
       this.quickBody,
       tabs,
     );
@@ -6830,6 +7834,66 @@ export class App {
     };
   }
 
+  /** 快捷设置顶部常驻的「正在播放」：封面 + 歌名，始终在设置内容上方。 */
+  private buildQuickNow(): HTMLDivElement {
+    const cover = h('img', { class: 'quick-cover', alt: '' }) as HTMLImageElement;
+    const title = h('div', { class: 'quick-track-title', text: '未在播放' }) as HTMLDivElement;
+    const artist = h('div', { class: 'quick-track-artist', text: '' }) as HTMLDivElement;
+    const note = h('div', { class: 'quick-track-note', text: '' }) as HTMLDivElement;
+    const like = h('button', { class: 'quick-like', title: '收藏', 'aria-label': '收藏' }, icon('heart', 16)) as HTMLButtonElement;
+    like.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    like.addEventListener('click', () => {
+      const current = playerState().track;
+      void toggleLiked().then((result) => {
+        if (result === 'error') {
+          toast(current?.source === 'local' ? '本地歌曲不支持收藏' : '收藏失败：请检查登录状态或平台限制', 'error');
+          return;
+        }
+        toast(result === 'liked' ? '已加入「我喜欢的音乐」' : '已取消收藏');
+        this.afterLikedChange(result === 'liked');
+        this.paintQuickLike(result === 'liked');
+      });
+    });
+    this.quickLikeBtn = like;
+    this.quickNowCover = cover;
+    this.quickNowTitle = title;
+    this.quickNowArtist = artist;
+    this.quickNowNote = note;
+    return h(
+      'div',
+      { class: 'quick-now is-big' },
+      cover,
+      h('div', { class: 'quick-now-meta' }, h('div', { class: 'quick-track' }, title, artist, note), like),
+    ) as HTMLDivElement;
+  }
+
+  /** 刷新顶部「正在播放」：封面/歌名/歌手/音质说明/收藏态（切歌、切 tab、打开面板时调用）。 */
+  private paintQuickNow(force = false): void {
+    const track = playerState().track;
+    const key = track ? `${track.source}:${track.id}` : '';
+    if (this.quickNowTitle) this.quickNowTitle.textContent = track?.title ?? '未在播放';
+    if (this.quickNowArtist) this.quickNowArtist.textContent = track?.artist ?? '';
+    if (this.quickNowNote) this.quickNowNote.textContent = this.qualityNoteOf();
+    const cover = this.quickNowCover;
+    if (cover && (force || cover.dataset.trackKey !== key)) {
+      cover.dataset.trackKey = key;
+      cover.src = track ? onlineArtwork(track, 300) : '';
+      if (track && !track.cover) {
+        void lookupCover(track).then((found) => {
+          if (!found) return;
+          track.cover = found;
+          if (this.quickNowCover && playerState().track === track) {
+            this.quickNowCover.src = onlineArtwork(track, 300);
+          }
+        });
+      }
+    }
+    this.paintQuickLike(playerState().liked);
+  }
+
   /** 面板内容按底部选项切换：封面放大预览 / 当前歌词 / 音量与模式 / 投送 / 下载。 */
   private renderQuickBody(): void {
     if (!this.quickBody) return;
@@ -6857,51 +7921,8 @@ export class App {
       return;
     }
     if (this.quickTab === 'cover') {
-      const track = playerState().track;
-      const cover = h('img', { class: 'quick-cover', alt: '' });
-      if (track) cover.src = onlineArtwork(track, 300);
-      if (track && !track.cover) {
-        void lookupCover(track).then((found) => {
-          if (!found) return;
-          track.cover = found;
-          cover.src = onlineArtwork(track, 300);
-        });
-      }
-      const like = h('button', { class: 'quick-like', title: '收藏', 'aria-label': '收藏' }, icon('heart', 16));
-      like.addEventListener('pointerdown', (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        const current = playerState().track;
-        void toggleLiked().then((result) => {
-          if (result === 'error') {
-            toast(current?.source === 'local' ? '本地歌曲不支持收藏' : '收藏失败：请检查登录状态或平台限制', 'error');
-            return;
-          }
-          toast(result === 'liked' ? '已加入「我喜欢的音乐」' : '已取消收藏');
-          this.afterLikedChange(result === 'liked');
-          this.paintQuickLike(result === 'liked');
-        });
-      });
-      this.quickLikeBtn = like;
-      this.paintQuickLike(playerState().liked);
-      body.append(
-        cover,
-        h(
-          'div',
-          { class: 'quick-cover-foot' },
-          h(
-            'div',
-            { class: 'quick-track' },
-            h('div', { class: 'quick-track-title', text: track?.title ?? '未在播放' }),
-            h('div', { class: 'quick-track-artist', text: track?.artist ?? '' }),
-            h('div', {
-              class: 'quick-track-note',
-              text: this.qualityNoteOf(),
-            }),
-          ),
-          like,
-        ),
-      );
+      // 封面与歌名已经常驻在面板顶部（.quick-now），这里只放「页面背景」设置。
+      this.paintQuickNow();
       const bgThumb = h('div', { class: 'quick-seg-thumb' });
       const bgBtns: HTMLButtonElement[] = [];
       const bgHint = h('div', { class: 'quick-cell-hint', text: '' });
@@ -7126,11 +8147,14 @@ export class App {
         title: '点击选择歌词来源',
       });
       sourceValue.dataset.role = 'lyric-source';
+      // 面板里的歌词状态会异步刷新（「读取中…」→ 实际来源），整块 body 可能在这期间重建，
+      // 重建后原来那个按钮在 pointerup 前就被摘掉，click 不会派发，于是第一次点击像没反应。
+      // 和其它播放条按钮一样，用 pointerdown 直接打开。
       sourceValue.addEventListener('pointerdown', (event) => {
         event.preventDefault();
         event.stopPropagation();
+        openLyricPicker(playerState().track);
       });
-      sourceValue.addEventListener('click', () => openLyricPicker(playerState().track));
       const matchValue = h('span', { class: 'quick-value', text: lyricMatchText() });
       matchValue.dataset.role = 'lyric-match';
       const offsetStepper = this.quickStepper({
@@ -7375,7 +8399,12 @@ export class App {
         },
         geo: {
           action: '几何设置…',
-          hint: '几何：配色预设、字形字距、构图模板、逐字点亮、错版与网点颗粒',
+          hint: '几何：凝彩色场与流光、辉光字逐字浮起、取景缓慢轮换、网点与颗粒',
+        },
+        flow: {action:'凝彩设置…',hint:'背景与歌词独立配色、封面取色、段落换色、多角度运镜'},
+        pv: {
+          action: 'PV 设置…',
+          hint: 'PV：文字 PV 定格风、配色与重音、故障强度、纸纹扫描线',
         },
       };
       const effectSettingsBtn = h('button', {
@@ -7392,13 +8421,15 @@ export class App {
         if (mode === 'off') return;
         this.closeQuick();
         const open =
-          mode === 'text'
+          mode === 'flow' ? openFlowSettingsSheet : mode === 'text'
             ? openTextSettingsSheet
             : mode === 'room'
               ? openRoomSettingsSheet
               : mode === 'geo'
                 ? openGeoSettingsSheet
-                : openVinylSettingsSheet;
+                : mode === 'pv'
+                  ? openPvSettingsSheet
+                  : openVinylSettingsSheet;
         window.setTimeout(() => open(), 140);
       });
       const effectSettingsHint = h('span', { class: 'quick-cell-hint', text: '' });
@@ -7932,19 +8963,43 @@ export class App {
     return this.downloadQuickView;
   }
 
+  /**
+   * 量出正文「不受内联高度约束」时的自然高度。
+   * 关键：`.quick-body` 是竖向 flex 且 overflow:hidden，内联 height 会把 `.quick-body-inner`
+   * 按 flex-shrink 压扁，此时读 inner.offsetHeight 得到的是被压扁的高度而不是内容高度。
+   * 切 tab（尤其是封面页 ↔ 其它页）时内联高度还在，直接量就会把目标高度量小一截，
+   * 动画结束清掉内联高度时面板再「弹高」。这里先临时撤掉约束、关掉过渡，量完原样恢复。
+   */
+  private naturalQuickBodyHeight(): number {
+    const body = this.quickBody;
+    const inner = this.quickBodyInner ?? this.quickBody;
+    if (!body || !inner) return 0;
+    const prevHeight = body.style.height;
+    const prevOverflow = body.style.overflow;
+    const prevTransition = body.style.transition;
+    body.style.transition = 'none';
+    body.style.height = 'auto';
+    body.style.overflow = '';
+    void body.offsetHeight;
+    const natural = inner.offsetHeight;
+    body.style.height = prevHeight;
+    body.style.overflow = prevOverflow;
+    void body.offsetHeight;
+    body.style.transition = prevTransition;
+    return natural;
+  }
+
   /** 快捷设置内容区高度变化时做一次平滑过渡（内容显隐/切 tab 都用它，避免面板跳一下）。 */
   private animateQuickBodyHeight(from: number, to: number): void {
     const body = this.quickBody;
     if (!body || from <= 0) return;
     if (this.quickHeightTimer) window.clearTimeout(this.quickHeightTimer);
-    // 先让正文按 flex 自然落位，量出动画结束后的真实高度；否则用估算的上限做终点，
-    // 动画结束清掉内联高度时会再跳 2–3px（看起来像「缩了一点点」）。
+    // 目标高度优先用调用方按「目标宽度」量好的值；没有再退回到自然高度。
+    // 不能读 body.getBoundingClientRect()：height 带 .32s 过渡，读到的是飞行中的中间值。
     const max = this.quickBodyMaxHeight();
     const fromH = Math.min(from, max);
-    body.style.height = '';
-    body.style.overflow = '';
-    const settled = body.getBoundingClientRect().height;
-    const toH = settled > 0 ? settled : Math.min(to, max);
+    const measured = to > 0 ? to : this.naturalQuickBodyHeight();
+    const toH = Math.min(measured > 0 ? measured : fromH, max);
     // 动画期间保持 overflow:auto，让 scrollbar-gutter:stable 一直预留滚动条槽位；
     // 若改成 clip 就不再是滚动容器、槽位不保留，动画结束恢复滚动时整块内容会窄 10px，开关看起来会挪一下。
     body.style.height = `${fromH}px`;
@@ -7953,6 +9008,23 @@ export class App {
     this.quickHeightTimer = window.setTimeout(() => {
       this.quickHeightTimer = 0;
       if (!this.quickBody) return;
+      // 宽度过渡后内容可能又长/缩了一截（下载列表、投送设备这类异步内容，或换行变化）。
+      // 这时直接清掉内联高度会「啪」地跳到自然高度（用户看到的抽搐）；再补一小段动画贴合，
+      // 让第二次变化也是平滑的；差值很小就直接收掉，不留尾巴。
+      const natural = this.naturalQuickBodyHeight();
+      const rendered = this.quickBody.getBoundingClientRect().height;
+      if (natural > 0 && natural <= max && Math.abs(natural - rendered) > 2) {
+        this.quickBody.style.height = `${rendered}px`;
+        void this.quickBody.offsetHeight;
+        this.quickBody.style.height = `${natural}px`;
+        this.quickHeightTimer = window.setTimeout(() => {
+          this.quickHeightTimer = 0;
+          if (!this.quickBody) return;
+          this.quickBody.style.height = '';
+          this.quickBody.style.overflow = '';
+        }, 340);
+        return;
+      }
       this.quickBody.style.height = '';
       this.quickBody.style.overflow = '';
     }, 340);
@@ -7972,7 +9044,7 @@ export class App {
     panel.classList.add('is-resizing');
     panel.style.width = '';
     const width = panel.getBoundingClientRect().width;
-    const height = inner.offsetHeight;
+    const height = this.naturalQuickBodyHeight();
     try {
       panel.style.width = `${fromWidth}px`;
       void panel.offsetWidth;
@@ -8064,7 +9136,34 @@ export class App {
     this.quickTab = key;
     this.quickRoot.classList.toggle('is-airplay', key === 'airplay');
     if (key === 'lyrics') primeLyrics(playerState().track);
+    // 顶部「正在播放」只切大小两档：封面页放大，其余页缩成一行小卡，始终留在设置上方。
+    // 尺寸不能靠 CSS 过渡：从 100%（列布局里是 auto 宽度）切到 44px 时不是可插值长度，
+    // 浏览器会直接跳到终值，看起来就像「啪」地缩没；这里按像素量出前后值再补一段动画。
+    const cover = this.quickNowCover;
+    const coverFrom = cover ? cover.getBoundingClientRect().width : 0;
+    this.quickNow?.classList.toggle('is-big', key === 'cover');
+    if (cover && coverFrom > 0) {
+      const coverTo = cover.getBoundingClientRect().width;
+      if (Math.abs(coverTo - coverFrom) > 1) {
+        this.quickCoverAnim?.cancel();
+        this.quickCoverAnim = null;
+        const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        if (!reduce) {
+          this.quickCoverAnim = cover.animate(
+            [
+              { width: `${coverFrom}px`, height: `${coverFrom}px`, borderRadius: key === 'cover' ? '10px' : '12px' },
+              { width: `${coverTo}px`, height: `${coverTo}px`, borderRadius: key === 'cover' ? '12px' : '10px' },
+            ],
+            { duration: 320, easing: 'cubic-bezier(.22,1,.36,1)' },
+          );
+          this.quickCoverAnim.onfinish = () => {
+            this.quickCoverAnim = null;
+          };
+        }
+      }
+    }
     this.renderQuickBody();
+    this.paintQuickNow();
     if (body) body.scrollTop = 0;
     // 内容高度变化用动画过渡，避免面板一下子跳大/跳小；
     // 目标高度按切完之后的「目标宽度」量，否则宽度过渡结束时内容重排、高度会再跳一下。
@@ -8317,18 +9416,16 @@ export class App {
     const key = `${this.quickTab}:${track ? `${track.source}:${track.id}` : ''}`;
     if (key !== this.quickRenderKey) {
       this.renderQuickBody();
+      this.paintQuickNow();
       return;
     }
+    // 顶部「正在播放」独立于当前 tab，任何页都要跟着收藏态/音质说明刷新。
+    this.paintQuickNow();
     if (this.quickTab === 'lyrics') {
       const source = this.quickBody.querySelector<HTMLElement>('[data-role="lyric-source"]');
       if (source) source.textContent = currentLyricSource() || '读取中…';
       const match = this.quickBody.querySelector<HTMLElement>('[data-role="lyric-match"]');
       if (match) match.textContent = lyricMatchText();
-    }
-    if (this.quickTab === 'cover') {
-      this.paintQuickLike(playerState().liked);
-      const note = this.quickBody.querySelector<HTMLElement>('.quick-track-note');
-      if (note) note.textContent = this.qualityNoteOf();
     }
   }
 
@@ -8656,6 +9753,120 @@ export class App {
     this.pbModeBtn.dataset.mode = mode;
   }
 
+  private cycleStemMode(): void {
+    const order: Array<'off' | 'instrumental' | 'vocals'> = ['off', 'instrumental', 'vocals'];
+    const next = order[(order.indexOf(this.stemMode) + 1) % order.length];
+    this.setStemMode(next, true);
+  }
+
+  private setStemMode(mode: 'off' | 'instrumental' | 'vocals', announce: boolean): void {
+    if (this.stemMode === mode) return;
+    this.stemMode = mode;
+    try {
+      localStorage.setItem('zilux2.stemMode', mode);
+    } catch {
+      /* 忽略 */
+    }
+    this.updateStemButton();
+    if (mode === 'off') {
+      this.stopStemPlayback(160);
+      if (announce) toast('已切回原声');
+      return;
+    }
+    // 只有当前窗口还没分离过才提示等待；已经缓存/分析过的曲目直接静默切换。
+    if (announce) {
+      const state = playerState();
+      const element = activeAudioElement();
+      const track = state.track;
+      const windowIndex = element && track ? Math.floor(element.currentTime / STEM_WINDOW_SEC) : -1;
+      const cached = Boolean(track && windowIndex >= 0 && hasStemWindow(track, windowIndex));
+      if (!cached) {
+        const seconds = estimateStemWaitSeconds();
+        toast(mode === 'vocals' ? `人声：首次分离约需 ${seconds} 秒…` : `伴奏：首次分离约需 ${seconds} 秒…`);
+      }
+    }
+    void this.refreshStemPlayback(true);
+  }
+
+  private updateStemButton(): void {
+    const btn = this.pbStemBtn;
+    if (!btn) return;
+    const active = this.stemMode !== 'off';
+    btn.classList.toggle('is-on', active);
+    btn.dataset.mode = this.stemMode;
+    const label = this.stemMode === 'off' ? '原声' : this.stemMode === 'vocals' ? '人声' : '伴奏';
+    const text = btn.querySelector('.pb-stem-label');
+    if (text) text.textContent = label;
+    btn.title = `人声分离：${label}（点击切换）`;
+  }
+
+  private stopStemPlayback(fadeMs = 160): void {
+    const handle = this.stemHandle;
+    this.stemHandle = null;
+    if (!handle) return;
+    try {
+      handle.stop(fadeMs);
+    } catch {
+      /* 忽略 */
+    }
+  }
+
+  /** 按当前播放状态与 stemMode 维持分离播放：暂停/换曲/seek 后自动接续或停用。 */
+  private async refreshStemPlayback(force = false): Promise<void> {
+    if (this.stemMode === 'off') {
+      this.stopStemPlayback();
+      return;
+    }
+    if (this.stemBusy) return;
+    const state = playerState();
+    const track = state.track;
+    if (!track || !state.playing) {
+      this.stopStemPlayback();
+      return;
+    }
+    if (this.stemHandle?.active) {
+      this.stemHandle.setMode(this.stemMode);
+      return;
+    }
+    this.stopStemPlayback(0);
+    const element = activeAudioElement();
+    if (!element || !Number.isFinite(element.currentTime)) return;
+    this.stemBusy = true;
+    let attached: StemModeHandle | null = null;
+    try {
+      const handle = await startStemMode({
+        element,
+        track,
+        positionSec: element.currentTime,
+        mode: this.stemMode,
+        onDetached: (reason) => {
+          if (attached && this.stemHandle === attached) this.stemHandle = null;
+          if (reason === 'seek' || reason === 'error') {
+            window.setTimeout(() => {
+              void this.refreshStemPlayback();
+            }, reason === 'seek' ? 320 : 1200);
+          }
+        },
+      });
+      if (!handle) {
+        if (force) toast('人声分离暂不可用，已保持原声');
+        return;
+      }
+      attached = handle;
+      const modeNow = this.stemMode as 'off' | StemPlaybackMode;
+      if (modeNow === 'off') {
+        handle.stop(0);
+        return;
+      }
+      this.stemHandle = handle;
+      handle.setMode(modeNow);
+    } catch {
+      if (force) toast('人声分离失败，已保持原声');
+    } finally {
+      this.stemBusy = false;
+    }
+  }
+
   private syncPlayer(state: PlayerState): void {
     const track = state.track;
     if (!track) {
@@ -8715,7 +9926,7 @@ export class App {
             const next = playerState().queue[playerState().index + 1];
             if (next && `${next.source}:${next.id}` === trackKey) this.upnextCover.src = onlineArtwork(next, 120);
           }
-          if (this.quickTab === 'cover') this.renderQuickBody();
+          if (this.quickPanelOpen) this.paintQuickNow();
         });
       }
       // 换歌即预载当前平台歌词，并在后台匹配其它平台的逐字歌词。
@@ -9510,6 +10721,8 @@ export class App {
   }
 
   destroy(): void {
+    this.stopDevHud();
+    this.cacheMeterRefresh = null;
     this.segCleanups.forEach((cleanup) => cleanup());
     this.segCleanups.clear();
     for (const id of this.intervalIds) window.clearInterval(id);

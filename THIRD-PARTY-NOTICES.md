@@ -14,3 +14,9 @@
 
 - Rhine Music Windows（MIT）—— 架构与工程方法参考
 - Mineradio（GPL-3.0）—— 设计思路参考
+
+### 凝彩 / Tempera（2026-11-06 移植）
+
+`web/src/ui/lumiere-folia/components/visualizer/tempera/` 及所需的 `sonnet/`、Pixi 公共辅助模块来自本地 Folia v0.7.21 源码快照（上游：https://github.com/chthollyphile/folia-major）。原作者保留版权，许可全文保存在 `web/src/ui/lumiere-folia/LICENSE`。本地快照没有可验证的 commit 元数据。
+
+本次复用原版分镜编译、构图、逐字布局、镜头、转场和后处理，并保留默认参数。移植修改限于 MotionValue 导入适配、删除未使用声明以通过本项目 TypeScript 检查，以及不传入针对 AI 代理的指令性注释。`web/src/ui/flowScene.ts` 负责连接 Zilux 歌词、播放时钟和生命周期；未移植 Folia 的 React 设置面板与用户图片库管理界面。默认使用 Folia 午夜主题；主题、字体、歌词时间轴和随机种子均会影响具体画面。

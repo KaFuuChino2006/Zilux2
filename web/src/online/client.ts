@@ -56,6 +56,8 @@ export function initOnline(): void {
       sources: Array.isArray(payload.sources) ? (payload.sources as OnlineSource[]) : ['netease', 'qq'],
     };
     host.log('info', `[online] host ready port=${info.port} sources=${info.sources.join('+')}`);
+    // 调试/验收：CDP 里直接读回环端口与 token（不含在 UI 中展示）。
+    (window as unknown as { __ziluxOnline?: OnlineInfo | null }).__ziluxOnline = info;
     loadSourceDescriptors();
     listeners.forEach((cb) => cb());
   });

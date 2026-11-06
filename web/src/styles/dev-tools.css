@@ -1,0 +1,102 @@
+/**
+ * 开发者选项用到的浮层（FPS / 布局描边）。
+ * 只在「设置 → 开发者选项」里由 app.ts 按开关挂到 .app 根节点上，默认不出现。
+ */
+
+/* ---------------- FPS / 运行时 HUD ---------------- */
+
+.dev-hud {
+  position: fixed;
+  right: 16px;
+  bottom: calc(var(--player-h) + 14px);
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(420px, 70vw);
+  padding: 7px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--panel-raised);
+  box-shadow: var(--shadow-1);
+  backdrop-filter: blur(18px);
+  font-family: var(--font-num);
+  font-size: 11px;
+  line-height: 1;
+  color: var(--muted);
+  pointer-events: none;
+  user-select: none;
+}
+
+.dev-hud[hidden] {
+  display: none;
+}
+
+.dev-hud-fps {
+  min-width: 46px;
+  text-align: right;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent-strong, var(--accent));
+  font-variant-numeric: tabular-nums;
+}
+
+/* 掉到 45 以下变红，快速暴露动画/布局抖动 */
+.dev-hud-fps.is-low {
+  color: var(--danger);
+}
+
+.dev-hud-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.dev-hud-item b {
+  font-weight: 600;
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.dev-hud-sep {
+  width: 1px;
+  height: 12px;
+  flex: none;
+  background: var(--line);
+}
+
+/* 迷你播放器里没有空间，也不需要在 420×120 里看 FPS */
+.app.is-mini .dev-hud {
+  display: none;
+}
+
+/* ---------------- 布局描边 ---------------- */
+
+.app.is-debug-layout .topbar,
+.app.is-debug-layout .rail,
+.app.is-debug-layout .stage,
+.app.is-debug-layout .ui-page,
+.app.is-debug-layout .ui-section,
+.app.is-debug-layout .daily-card,
+.app.is-debug-layout .ui-tile,
+.app.is-debug-layout .recent-item,
+.app.is-debug-layout .playerbar,
+.app.is-debug-layout .sheet-panel,
+.app.is-debug-layout .settings-layout,
+.app.is-debug-layout .settings-nav,
+.app.is-debug-layout .settings-content,
+.app.is-debug-layout .settings-subtabs {
+  outline: 1px solid rgb(255 84 120 / 0.45);
+  outline-offset: -1px;
+}
+
+/* 网格容器用虚线，和内容块区分 */
+.app.is-debug-layout .home-daily-row,
+.app.is-debug-layout .home-row,
+.app.is-debug-layout .ui-scroller,
+.app.is-debug-layout .home-collections,
+.app.is-debug-layout .settings-subpane {
+  outline: 1px dashed rgb(84 170 255 / 0.5);
+  outline-offset: -1px;
+}

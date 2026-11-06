@@ -549,7 +549,7 @@ export async function fetchPodcasts(limit = 12): Promise<DiscoverPodcast[]> {
 }
 
 /* ------------------------------------------------------------------ */
-/* 10. 收藏（歌手 / 专辑 / MV；仅网易云）                              */
+/* 10. 收藏（歌手 / 专辑 / MV；网易云全量，QQ 仅专辑）                  */
 /* ------------------------------------------------------------------ */
 
 export async function fetchCollections(

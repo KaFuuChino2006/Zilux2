@@ -21,6 +21,7 @@ import {
   normalizeGeoSettings,
   saveGeoStyleSettings,
   type GeoLayoutId,
+  type GeoAccentWash,
   type GeoStyleSettings,
 } from './geoSettings';
 
@@ -109,7 +110,7 @@ const LAYOUT_RANGES: RangeSpec[] = [
 {
     key: 'revealMs',
     label: '逐字点亮',
-    hint: '一个字从压淡的底稿弹成强调色要多久（毫秒）；0 = 到点直接亮',
+    hint: '一个字从底稿浮起并亮起来要多久（毫秒）；0 = 到点直接亮',
     min: 0,
     max: 600,
     step: 10,
@@ -119,7 +120,27 @@ const LAYOUT_RANGES: RangeSpec[] = [
 {
     key: 'energy',
     label: '随音乐抖',
-    hint: '低频重的时候整版左右抖的程度；0 = 完全静止',
+    hint: '低频重的时候色场亮度与字辉光呼吸的幅度；0 = 完全静止',
+    min: 0,
+    max: 2,
+    step: 0.05,
+    digits: 2,
+    unit: '×',
+  },
+  {
+    key: 'geometry',
+    label: '几何强度',
+    hint: '块面、点阵、圆环与弧线的存在感和运动幅度；调大更像海报、画面更满，0 = 只留文字与色场',
+    min: 0,
+    max: 1.6,
+    step: 0.05,
+    digits: 2,
+    unit: '×',
+  },
+  {
+    key: 'bgMotion',
+    label: '背景运动',
+    hint: '背景相机推拉横移与空气墨团漂移的幅度；调大更像镜头在走动，0 = 背景钉住不动',
     min: 0,
     max: 2,
     step: 0.05,
@@ -132,7 +153,7 @@ const TEXTURE_RANGES: RangeSpec[] = [
   {
     key: 'halftone',
     label: '网点强度',
-    hint: '半调网点铺在背景与巨字后面的浓淡；0 = 没有网点',
+    hint: '半调网点铺在色场上的浓淡；0 = 没有网点',
     min: 0,
     max: 1,
     step: 0.01,
@@ -143,7 +164,7 @@ const TEXTURE_RANGES: RangeSpec[] = [
 {
     key: 'grain',
     label: '颗粒',
-    hint: '纸面/复印颗粒的强度；0 = 干净的数字画面',
+    hint: '胶片颗粒的强度；0 = 干净的数字画面',
     min: 0,
     max: 0.4,
     step: 0.005,
@@ -154,7 +175,7 @@ const TEXTURE_RANGES: RangeSpec[] = [
   {
     key: 'grid',
     label: '网格',
-    hint: '细网格与中央十字线的浓度；0 = 只有底色',
+    hint: '极细网格的浓度；0 = 只有色场',
     min: 0,
     max: 1,
     step: 0.01,
@@ -198,14 +219,20 @@ const TRANSLATION_TOGGLE: ToggleSpec = {
 const MARKS_TOGGLE: ToggleSpec = {
   key: 'marks',
   label: '裁切标记',
-  hint: '四角的「⌐」形裁切标记，印刷/装订的语言',
+  hint: '四角的细裁切标记，给画面一点版式边界',
 };
 
 const META_TOGGLE: ToggleSpec = {
   key: 'meta',
   label: '版面标记',
-  hint: '左上版面编号与曲名、右上时间码与句序、底部进度条',
+  hint: '右下时间码与一条极细的进度线',
 };
+
+const ACCENT_WASH_OPTIONS = [
+  { id: 'off', label: '关' },
+  { id: 'soft', label: '淡' },
+  { id: 'strong', label: '浓' },
+];
 
 /** 预览没有真实曲目时，给一组中英混合的示例句，约 26s 一循环。 */
 function demoPreviewSong(): GeoSong {
@@ -271,7 +298,7 @@ export function openGeoSettingsSheet(): void {
   });
   const previewNote = h('div', {
     class: 'ts-preview-note',
-    text: '构图按「自动轮换」时，每句换一种排版（横条压字 / 竖排 / 巨字裁切 / 镜像 / 网格 / 跑马灯 / 画框 / 拼章）；同一首歌每次进来顺序一致。',
+    text: '「自动轮换」时取景在居中 / 左倾 / 右倾 / 内收之间缓慢变化；换句时旧字向上飘散、新字同时升起，画面不会整块切开。',
   });
   previewStage.append(previewInner);
 
@@ -389,8 +416,8 @@ export function openGeoSettingsSheet(): void {
       'div',
       { class: 'ts-row' },
       h('div', { class: 'ts-row-head' }, h('span', { class: 'ts-label', text: '配色预设' })),
-      h('div', { class: 'ts-seg' }, ...buttons),
-      h('div', { class: 'ts-hint', text: '整组换掉底色、油墨、强调色与两路错版色；字形、构图与肌理保持当前值，仍可继续微调。' }),
+      h('div', { class: 'ts-seg is-palette' }, ...buttons),
+      h('div', { class: 'ts-hint', text: '整组换掉底色、油墨与两路色光；字形、取景与肌理保持当前值，仍可继续微调。' }),
     );
   };
 
@@ -508,11 +535,22 @@ export function openGeoSettingsSheet(): void {
   const layoutRow = (): HTMLElement =>
     segmentedRow(
       '构图',
-      '固定用某一种排版，或自动轮换全部八种；自动轮换时第一句一定是「巨字裁切」开场',
+      '固定一种取景，或随每句在居中 / 左倾 / 右倾 / 内收之间缓慢轮换',
       LAYOUT_OPTIONS,
       draft.layout,
       (id) => {
         draft.layout = (LAYOUT_OPTIONS.some((option) => option.id === id) ? id : 'auto') as GeoLayoutId;
+      },
+    );
+
+  const accentWashRow = (): HTMLElement =>
+    segmentedRow(
+      '副色浓度',
+      '副色作为第二团光在背景里铺开的程度；调大冷端色更抢眼、画面更湿，关掉只剩强调色一路光',
+      ACCENT_WASH_OPTIONS,
+      draft.accentWash,
+      (id) => {
+        draft.accentWash = (ACCENT_WASH_OPTIONS.some((option) => option.id === id) ? id : 'soft') as GeoAccentWash;
       },
     );
 
@@ -521,12 +559,12 @@ export function openGeoSettingsSheet(): void {
 
   const tintNote = h('div', {
     class: 'ts-hint',
-    text: '几何档不按封面给每个字上渐变：它只有一种强调色。勾上「跟随歌词颜色」后，强调色与两路错版色会取「歌词颜色」的封面色板，底色与油墨仍用下面这组印刷配色。',
+    text: '勾上「跟随歌词颜色」后，两团流光与字的渐变会取「歌词颜色」的封面色板；关掉则使用下面的强调色与副色。',
   });
 
   const styleNote = h('div', {
     class: 'ts-hint',
-    text: '逐字点亮用的是歌词自带的逐字时间（没有逐字数据的 LRC 会按整句均分），所以「唱到哪个字亮哪个字」跟演唱走，不是固定延时。',
+    text: '逐字浮起用的仍是歌词自带的逐字时间（没有逐字数据的 LRC 按整句均分）：唱到哪个字，哪个字从底稿亮起来，前后字保持微弱的余像。',
   });
 
   const renderRows = (): void => {
@@ -537,7 +575,7 @@ export function openGeoSettingsSheet(): void {
       group('预设', presetRow()),
       group('字形', tintNote, styleNote, fontRow(), weightRow(), ...TEXT_RANGES.map(rangeRow), toggleRow(TRANSLATION_TOGGLE)),
       group('构图与动效', layoutRow(), ...LAYOUT_RANGES.map(rangeRow)),
-      group('配色', toggleRow(FOLLOW_LYRICS), ...COLOR_ROWS.map(colorRow)),
+      group('配色', toggleRow(FOLLOW_LYRICS), accentWashRow(), ...COLOR_ROWS.map(colorRow)),
       group('肌理与标记', toggleRow(MARKS_TOGGLE), toggleRow(META_TOGGLE), ...TEXTURE_RANGES.map(rangeRow)),
     );
   };

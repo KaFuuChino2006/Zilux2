@@ -86,6 +86,11 @@ internal sealed class LyricResponse
     // QQ QRC 加密十六进制（可选）：前端解密后得到逐字时间轴
     [JsonPropertyName("qrc")] public string? Qrc { get; init; }
 
+    // 宿主已解密的 QRC 明文（逐字时间轴）：前端优先使用，缺省时再退回 qrc 自解密
+    [JsonPropertyName("qrcText")] public string? QrcText { get; init; }
+
+    [JsonPropertyName("hasQrcText")] public bool HasQrcText { get; init; }
+
     [JsonPropertyName("hasQrc")] public bool HasQrc { get; init; }
 }
 

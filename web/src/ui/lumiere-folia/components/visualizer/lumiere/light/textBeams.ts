@@ -412,10 +412,12 @@ const SHELL: LightRig = {
     glare: null,
 };
 
-/** 纯字档固定的大气（雾）光位：不再跟随 folia 镜头切换换参数（那会让雾出现明显的「头尾」突变）。 */
+/** 纯字档固定的大气（雾）光位：不再跟随 folia 镜头切换换参数（那会让雾出现明显的「头尾」突变）。
+ *  纯字档没有背景图像，雾是唯一的「底」，因此密度/环境光要比绘光档低很多，
+ *  否则整屏会发灰、白字也会糊在雾里。 */
 export const TEXT_FOG_RIG: LightRig = {
     beams: [],
-    fog: { density: 0.95, tyndallBase: 0.35, scale: 2.0, driftX: 0, driftY: 0, warp: 0.3, ambient: 0.42 },
+    fog: { density: 0.72, tyndallBase: 0.22, scale: 2.0, driftX: 0, driftY: 0, warp: 0.3, ambient: 0.16 },
     glare: null,
 };
 

@@ -1,0 +1,432 @@
+/**
+ * 设置面板设计语言（两级导航 + 通用设置行 / 开关 / 分段控件）。
+ *
+ * 结构约定的完整版见本文件末尾注释。要点：
+ *   .settings-layout
+ *     └─ .settings-nav（主选项，左侧）          .settings-content
+ *                                                 └─ .settings-pane
+ *                                                      ├─ .settings-subtabs（子选项，仅分类有子项时出现）
+ *                                                      └─ .settings-subpane[hidden]（每个子选项一组）
+ *
+ * 设计语言（与 update-fx.css 里已有的 .pill-switch / .seg / .settings-nav 保持一致）：
+ *   - 轨道：rgb(var(--overlay-rgb)/.06)，圆角 10~12px，内边距 3~4px；
+ *   - 滑块：var(--panel-strong, #fff) 实心 + 0 2px 10px 阴影，圆角 9px；
+ *   - 选中：金色文字（var(--accent-strong, var(--accent))）+ 600 字重，不使用填充色块；
+ *   - 动效：.34s cubic-bezier(.34,1.56,.64,1)（与 .settings-nav-thumb 相同）；
+ *   - 颜色全部走语义令牌，浅色主题（当前默认）与深色主题共用同一套结构。
+ *
+ * 新增设置项请复用：.set-row / .set-row-main / .set-row-label / .set-row-hint /
+ * .set-row-control / .set-switch（挂在 .pill-switch 上）/ .set-seg（挂在 .seg 上）/
+ * .set-actions / .set-value / .set-meter / .set-note。旧 class 名（.field / .seg /
+ * .pill-switch / .settings-nav*）全部保留，避免影响已有逻辑与外部选择器。
+ */
+
+/* ---------------- 子选项 tab 行 ---------------- */
+
+.settings-subtabs {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: -4px 0 0;
+  padding: 4px 0 10px;
+  /* 顶部与面板同色，底部渐隐，滚动时下面的设置项不会从缝隙里透出来 */
+  background: linear-gradient(
+    180deg,
+    var(--panel-solid) 0%,
+    var(--panel-solid) 76%,
+    rgb(var(--ink-rgb) / 0) 100%
+  );
+  animation: settings-subtabs-in 0.24s var(--ease) both;
+}
+
+.settings-subtabs-track {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  padding: 4px;
+  border-radius: 12px;
+  background: rgb(var(--overlay-rgb) / 0.06);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  overscroll-behavior-x: contain;
+}
+
+.settings-subtabs-track::-webkit-scrollbar {
+  display: none;
+}
+
+/* 子选项滑块：与 .settings-nav-thumb 同款白底 + 弹性位移 */
+.settings-subtabs-thumb {
+  position: absolute;
+  top: 4px;
+  left: 0;
+  width: 0;
+  height: 30px;
+  border-radius: 9px;
+  background: var(--panel-strong, #fff);
+  box-shadow: 0 2px 10px rgb(var(--overlay-rgb) / 0.14);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    transform 0.34s cubic-bezier(0.34, 1.56, 0.64, 1),
+    width 0.3s var(--ease),
+    opacity 0.16s var(--ease);
+}
+
+.settings-subtabs[data-thumb='ready'] .settings-subtabs-thumb {
+  opacity: 1;
+}
+
+.settings-subtab {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  height: 30px;
+  padding: 0 14px;
+  border-radius: 9px;
+  display: inline-flex;
+  align-items: center;
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: var(--muted);
+  white-space: nowrap;
+  transition: color 0.18s var(--ease);
+}
+
+.settings-subtab:hover {
+  color: var(--text-soft);
+}
+
+.settings-subtab.is-on {
+  color: var(--accent-strong, var(--accent));
+  font-weight: 600;
+}
+
+.settings-subtab:focus-visible {
+  outline: 2px solid var(--accent-strong, var(--accent));
+  outline-offset: 2px;
+}
+
+.settings-subtabs-meta {
+  margin-left: auto;
+  flex: none;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------- 子选项内容组 ---------------- */
+
+.settings-subpane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.settings-subpane[hidden] {
+  display: none;
+}
+
+/* 同一分类下切换子项时给一点点淡入，方向与 .settings-pane 一致 */
+.settings-subpane:not([hidden]) {
+  animation: settings-subpane-in 0.2s var(--ease) both;
+}
+
+.settings-subpane + .settings-subpane {
+  margin-top: 18px;
+}
+
+/* ---------------- 通用设置行 ---------------- */
+
+.set-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+}
+
+.set-row-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.set-row-label {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text-soft);
+  line-height: 1.35;
+}
+
+.set-row-hint {
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+.set-row-control {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.set-row.is-stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.set-row.is-stacked .set-row-control {
+  width: 100%;
+}
+
+/* .set-row 常与旧的 .field 同时挂载：共用 .field 的分隔线与内边距，这里只补细节 */
+.field.set-row {
+  gap: 16px;
+}
+
+.field.set-row > .set-row-main > .field-label {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text-soft);
+}
+
+/* 开关：沿用 .pill-switch，只保证在行内不被压缩 */
+.set-switch.pill-switch {
+  flex: none;
+}
+
+/* 分段控件：沿用 .seg 的滑块逻辑，stacked 行里铺满 */
+.set-seg.seg {
+  max-width: 100%;
+}
+
+.field.is-stacked .set-seg.seg {
+  width: 100%;
+}
+
+/* 数值 / 状态文字 */
+.set-value {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.set-value.is-muted {
+  font-weight: 500;
+  color: var(--muted);
+}
+
+/* 按钮组 */
+.set-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 进度 / 占用条 */
+.set-meter {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 96px;
+  max-width: 260px;
+  height: 5px;
+  border-radius: var(--radius-pill);
+  background: rgb(var(--overlay-rgb) / 0.1);
+  overflow: hidden;
+}
+
+.set-meter-fill {
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), var(--accent-strong, var(--accent)));
+  transition: width 0.3s var(--ease);
+}
+
+.set-meter.is-over .set-meter-fill {
+  background: var(--danger);
+}
+
+/* 只读说明 / 需要宿主能力的提示 */
+.set-note {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: rgb(var(--overlay-rgb) / 0.03);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.set-note code {
+  font-family: var(--font-num);
+  font-size: 11px;
+  color: var(--text-soft);
+  word-break: break-all;
+}
+
+/* 只读的键值对（缓存位置、版本号、诊断信息） */
+.set-kv {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  font-size: 11.5px;
+}
+
+.set-kv-key {
+  flex: none;
+  color: var(--muted);
+}
+
+.set-kv-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-soft);
+  font-family: var(--font-num);
+}
+
+.set-kv-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  margin-top: 2px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: rgb(var(--overlay-rgb) / 0.03);
+}
+
+/* 数字输入（缓存上限等处）：与滑块、分段控件同一套圆角与描边语言 */
+.set-number {
+  width: 74px;
+  height: 30px;
+  padding: 0 9px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: rgb(var(--overlay-rgb) / 0.05);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  transition: border-color 0.16s var(--ease), background 0.16s var(--ease);
+}
+
+.set-number:hover {
+  border-color: var(--line-strong);
+}
+
+.set-number:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  background: rgb(var(--accent-rgb, 217 192 141) / 0.08);
+}
+
+/* ---------------- 自适应 ---------------- */
+
+/* 宽窗口下把设置面板从 880 放宽一点，两栏 + 子 tab 不会显得局促 */
+@media (min-width: 1800px) {
+  .sheet.is-center .sheet-panel {
+    width: min(1040px, 74vw);
+    height: min(84vh, 980px);
+  }
+}
+
+@media (max-width: 760px) {
+  .settings-layout {
+    gap: 12px;
+  }
+
+  .settings-nav {
+    width: 136px;
+  }
+
+  .settings-nav-btn {
+    padding: 0 10px;
+  }
+
+  .settings-subtab {
+    padding: 0 11px;
+    font-size: 12px;
+  }
+
+  .settings-pane .field {
+    gap: 10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-subtabs,
+  .settings-subpane:not([hidden]) {
+    animation: none;
+  }
+
+  .settings-subtabs-thumb {
+    transition: none;
+  }
+}
+
+@keyframes settings-subtabs-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes settings-subpane-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/**
+ * 结构速查（新增分类 / 设置项时照抄）：
+ *
+ * <div class="settings-subtabs">
+ *   <div class="settings-subtabs-track">
+ *     <div class="settings-subtabs-thumb"></div>
+ *     <button class="settings-subtab is-on">常规</button>
+ *     <button class="settings-subtab">桌面歌词</button>
+ *   </div>
+ * </div>
+ * <div class="settings-subpane">
+ *   <div class="field set-row">
+ *     <div class="set-row-main">
+ *       <div class="field-label set-row-label">开机自启</div>
+ *       <div class="field-hint set-row-hint">随系统登录启动 Zilux2</div>
+ *     </div>
+ *     <div class="set-row-control">
+ *       <div class="pill-switch set-switch">…</div>
+ *     </div>
+ *   </div>
+ * </div>
+ */

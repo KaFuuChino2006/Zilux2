@@ -18,6 +18,8 @@ using Zilux2.Local;
 using Zilux2.Online.Account;
 using Zilux2.Online.Discover;
 using Zilux2.Online.Library;
+using Zilux2.Storage;
+using Zilux2.Stems;
 
 namespace Zilux2.Online;
 
@@ -45,6 +47,7 @@ internal sealed class LocalMusicServer : IDisposable
     private readonly DiscoverService _discover;
     private readonly DownloadService? _download;
     private readonly TrackAnalysisService? _analysis;
+    private readonly StemSeparationService? _stems;
     private readonly byte[] _tokenBytes;
     private readonly string _token;
     private readonly CancellationTokenSource _shutdown = new();
@@ -61,7 +64,8 @@ internal sealed class LocalMusicServer : IDisposable
         AccountService? accounts = null,
         LibraryService? library = null,
         DownloadService? download = null,
-        TrackAnalysisService? analysis = null)
+        TrackAnalysisService? analysis = null,
+        StemSeparationService? stems = null)
     {
         _providers = providers;
         _sources = sources;
@@ -71,6 +75,7 @@ internal sealed class LocalMusicServer : IDisposable
         _library = library;
         _download = download;
         _analysis = analysis;
+        _stems = stems;
         // 发现页服务只读上游；封面回环地址在请求时生成（Start() 之后 Port 才有值）。
         _discover = new DiscoverService(accounts, BuildCoverUrl);
     }
@@ -82,6 +87,12 @@ internal sealed class LocalMusicServer : IDisposable
 
     /// <summary>本地文件被宿主改写后的刷新回调（/api/local/tag 写成功时触发）。</summary>
     internal Action<string>? LocalFileChanged { get; set; }
+
+    /// <summary>
+    /// 打开 WebView2 DevTools（/api/host/devtools）。由 WebViewHost 接到 CoreWebView2.OpenDevToolsWindow；
+    /// 不存在时该接口返回 501，页面据此隐藏/禁用入口。
+    /// </summary>
+    internal Action? OpenDevTools { get; set; }
 
     public int Start()
     {
@@ -235,9 +246,29 @@ internal sealed class LocalMusicServer : IDisposable
                 "/api/cover/colors" => isGet ? await HandleCoverColorsAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/artist/image" => isGet ? await HandleArtistImageAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/playlists/hot" => isGet ? await HandleHotPlaylistsAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
+                // 网易云「心动模式」：我喜欢的音乐 + 当前歌曲 → 智能续播队列（需登录）。
+                "/api/netease/intelligence" => isGet
+                    ? await HandleNeteaseIntelligenceAsync(context).ConfigureAwait(false)
+                    : MethodNotAllowed(context),
                 "/api/stream/info" => isGet ? await HandleStreamInfoAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
+                // 宿主能力（设置页「存储 → 缓存位置」「开发者选项」）：目录路径 / 打开目录 / 打开 DevTools。
+                "/api/host/paths" => isGet ? WriteHostPaths(context) : MethodNotAllowed(context),
+                "/api/storage/cache" => isGet ? WriteCacheUsage(context) : MethodNotAllowed(context),
+                "/api/storage/cache/clear" => isPost
+                    ? await HandleCacheClearAsync(context).ConfigureAwait(false)
+                    : MethodNotAllowed(context),
+                "/api/storage/cache/limit" => isPost
+                    ? await HandleCacheLimitAsync(context).ConfigureAwait(false)
+                    : MethodNotAllowed(context),
+                "/api/host/reveal" => isPost ? await HandleHostRevealAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
+                "/api/host/devtools" => isPost ? HandleHostDevTools(context) : MethodNotAllowed(context),
                 // 离线节拍分析（契约 docs/zilux2-beat-analysis-contract.md；本地 rel / 在线 id 共用）。
                 "/api/analysis" => isGet ? await HandleAnalysisAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
+                // 离线 2 轨人声分离（契约 docs/zilux2-stems-contract.md）：算窗口 / 取窗口 WAV。
+                "/api/stems" => isGet ? await HandleStemsAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
+                "/api/stems/audio" => isGet
+                    ? await HandleStemsAudioAsync(context).ConfigureAwait(false)
+                    : MethodNotAllowed(context),
                 // 在线歌曲下载（网易云 / QQ / 酷狗 / 无名音乐统一走这里）。
                 "/api/downloads" => isGet ? WriteDownloads(context) : MethodNotAllowed(context),
                 "/api/download" => isPost ? await HandleDownloadStartAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
@@ -280,6 +311,8 @@ internal sealed class LocalMusicServer : IDisposable
                 "/api/discover/album" => isGet ? await HandleDiscoverAlbumAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/discover/comments" => isGet ? await HandleDiscoverCommentsAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/discover/podcasts" => isGet ? await HandleDiscoverPodcastsAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
+                "/api/discover/program" => isGet ? await HandleDiscoverProgramAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
+                "/api/discover/cloud" => isGet ? await HandleDiscoverCloudAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/discover/collections" => isGet ? await HandleDiscoverCollectionsAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/discover/song" => isGet ? await HandleDiscoverSongAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 _ => WriteError(context, 404, "not-found", "未知接口"),
@@ -744,6 +777,216 @@ internal sealed class LocalMusicServer : IDisposable
         return status;
     }
 
+    // Contract docs/zilux2-stems-contract.md §3.1：离线 2 轨人声分离。首次请求同步算完
+    //（约 7 s），之后命中磁盘缓存；全局一次只算一个窗口，别的请求回 busy 让页面用 EQ 兜底。
+    private async Task<int> HandleStemsAsync(HttpListenerContext context)
+    {
+        if (!TryReadStemsRequest(context, out var request) || request is null)
+        {
+            return 400;
+        }
+
+        var stems = _stems;
+        if (stems is null)
+        {
+            return WriteStemsError(context, 503, request.Window, "internal-error", "人声分离服务不可用");
+        }
+
+        try
+        {
+            var outcome = await stems.EnsureWindowAsync(request, _shutdown.Token).ConfigureAwait(false);
+            return WriteStemsJson(context, MapStemsStatus(outcome), outcome);
+        }
+        catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
+        {
+            return WriteStemsError(context, 503, request.Window, "internal-error", "宿主正在关闭");
+        }
+        catch (Exception exception)
+        {
+            OnlineHttp.Error("api stems failed", exception);
+            return WriteStemsError(
+                context,
+                500,
+                request.Window,
+                "internal-error",
+                "人声分离失败：" + OnlineHttp.Describe(exception));
+        }
+    }
+
+    // Contract §3.2：只发已经算好并落盘的窗口；未就绪 404、busy 409、模型缺失 501。
+    private async Task<int> HandleStemsAudioAsync(HttpListenerContext context)
+    {
+        if (!TryReadStemsRequest(context, out var request) || request is null)
+        {
+            return 400;
+        }
+
+        var stem = (context.Request.QueryString["stem"] ?? "vocals").Trim().ToLowerInvariant();
+        if (stem is not ("vocals" or "instrumental"))
+        {
+            return WriteStemsError(context, 400, request.Window, "bad-request", "stem 只支持 vocals 或 instrumental");
+        }
+
+        var stems = _stems;
+        if (stems is null)
+        {
+            return WriteStemsError(context, 503, request.Window, "internal-error", "人声分离服务不可用");
+        }
+
+        try
+        {
+            var outcome = stems.ResolveAudio(request, stem);
+            switch (outcome.State)
+            {
+                case StemsState.Ready:
+                    var bytes = await File.ReadAllBytesAsync(outcome.Path, _shutdown.Token).ConfigureAwait(false);
+                    WriteBinary(context, 200, bytes, "audio/wav");
+                    return 200;
+                case StemsState.Busy:
+                    return WriteStemsJson(context, 409, StemsOutcome.Busy(request));
+                case StemsState.ModelMissing:
+                    return WriteStemsJson(context, 501, StemsOutcome.ModelMissing());
+                case StemsState.Error when string.Equals(outcome.Code, "not-found", StringComparison.Ordinal):
+                    WriteJson(context, 404, StemsJson.SerializeNotReady(request.Window, outcome.Message));
+                    return 404;
+                default:
+                    return WriteStemsError(context, 500, request.Window, outcome.Code, outcome.Message);
+            }
+        }
+        catch (FileNotFoundException)
+        {
+            // 缓存刚好被淘汰：当作未就绪，让页面重新走 /api/stems。
+            WriteJson(context, 404, StemsJson.SerializeNotReady(request.Window, "该窗口尚未分离"));
+            return 404;
+        }
+        catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
+        {
+            return WriteStemsError(context, 503, request.Window, "internal-error", "宿主正在关闭");
+        }
+        catch (Exception exception)
+        {
+            OnlineHttp.Error("api stems/audio failed", exception);
+            return WriteStemsError(
+                context,
+                500,
+                request.Window,
+                "internal-error",
+                "读取分离音轨失败：" + OnlineHttp.Describe(exception));
+        }
+    }
+
+    /// <summary>
+    /// /api/stems 与 /api/stems/audio 共用的参数解析；校验失败时已经写回 400 JSON。
+    /// </summary>
+    private bool TryReadStemsRequest(HttpListenerContext context, out StemsRequest? request)
+    {
+        request = null;
+        var query = context.Request.QueryString;
+        var source = (query["source"] ?? string.Empty).Trim().ToLowerInvariant();
+        if (source.Length == 0)
+        {
+            WriteStemsError(context, 400, 0, "bad-request", "缺少 source 参数");
+            return false;
+        }
+
+        string? trackId = null;
+        string? rel = null;
+        if (string.Equals(source, "local", StringComparison.Ordinal))
+        {
+            rel = (query["rel"] ?? string.Empty).Trim();
+            if (rel.Length is 0 or > 1024)
+            {
+                WriteStemsError(context, 400, 0, "bad-request", "rel 参数非法");
+                return false;
+            }
+        }
+        else
+        {
+            trackId = (query["id"] ?? string.Empty).Trim();
+            if (trackId.Length is 0 or > 200)
+            {
+                WriteStemsError(context, 400, 0, "bad-request", "id 参数非法");
+                return false;
+            }
+
+            if (GetProvider(source) is null)
+            {
+                WriteStemsError(context, 404, 0, "not-found", "暂不支持该音乐平台");
+                return false;
+            }
+
+            if (!IsValidTrackId(source, trackId))
+            {
+                WriteStemsError(context, 400, 0, "bad-request", "id 参数非法");
+                return false;
+            }
+        }
+
+        var windowText = query["window"];
+        var window = 0;
+        if (!string.IsNullOrWhiteSpace(windowText) &&
+            (!int.TryParse(windowText, NumberStyles.Integer, CultureInfo.InvariantCulture, out window) ||
+             window is < 0 or > 100_000))
+        {
+            WriteStemsError(context, 400, 0, "bad-request", "window 参数非法");
+            return false;
+        }
+
+        var windowSecText = query["windowSec"];
+        var windowSec = StemsContract.DefaultWindowSec;
+        if (!string.IsNullOrWhiteSpace(windowSecText) &&
+            (!int.TryParse(windowSecText, NumberStyles.Integer, CultureInfo.InvariantCulture, out windowSec) ||
+             windowSec is < StemsContract.MinWindowSec or > StemsContract.MaxWindowSec))
+        {
+            WriteStemsError(context, 400, 0, "bad-request", "windowSec 只允许 10–30");
+            return false;
+        }
+
+        request = new StemsRequest
+        {
+            Source = source,
+            TrackId = trackId,
+            Rel = rel,
+            Window = window,
+            WindowSec = windowSec,
+        };
+        return true;
+    }
+
+    private static int MapStemsStatus(StemsOutcome outcome) => outcome.State switch
+    {
+        StemsState.Ready => 200,
+        // 契约没写 computing 的状态码；同步实现里通常见不到它，按 200 处理最安全。
+        StemsState.Computing => 200,
+        StemsState.ModelMissing => 501,
+        StemsState.Busy => 503,
+        _ => 500,
+    };
+
+    private static int WriteStemsJson(HttpListenerContext context, int status, StemsOutcome outcome)
+    {
+        WriteJson(context, status, StemsJson.Serialize(outcome));
+        return status;
+    }
+
+    private static int WriteStemsError(
+        HttpListenerContext context,
+        int status,
+        int window,
+        string code,
+        string message)
+    {
+        var outcome = new StemsOutcome
+        {
+            State = StemsState.Error,
+            Window = window,
+            Code = code,
+            Message = message,
+        };
+        WriteJson(context, status, StemsJson.Serialize(outcome));
+        return status;
+    }
+
     private async Task<int> HandleHotPlaylistsAsync(HttpListenerContext context)
     {
         var query = context.Request.QueryString;
@@ -792,6 +1035,57 @@ internal sealed class LocalMusicServer : IDisposable
         {
             OnlineHttp.Error("api playlists/hot failed", exception);
             return WriteError(context, 502, "upstream-error", "热门歌单拉取失败：" + OnlineHttp.Describe(exception));
+        }
+    }
+
+    // ── 网易云「心动模式」──────────────────────────────────────────────────────
+    private async Task<int> HandleNeteaseIntelligenceAsync(HttpListenerContext context)
+    {
+        var query = context.Request.QueryString;
+        var playlistId = (query["playlist"] ?? string.Empty).Trim();
+        var songId = (query["songId"] ?? string.Empty).Trim();
+        if (playlistId.Length is 0 or > 20 || songId.Length is 0 or > 20 ||
+            !playlistId.All(char.IsAsciiDigit) || !songId.All(char.IsAsciiDigit))
+        {
+            return WriteError(context, 400, "bad-request", "playlist / songId 必须是数字 id");
+        }
+
+        var count = 30;
+        if (query["count"] is { Length: > 0 } countText &&
+            (!int.TryParse(countText, NumberStyles.Integer, CultureInfo.InvariantCulture, out count) || count is < 1 or > 50))
+        {
+            return WriteError(context, 400, "bad-request", "count 参数必须在 1..50");
+        }
+
+        if (_accounts is null || !_accounts.IsLoggedIn(AccountSources.Netease))
+        {
+            return WriteError(context, 409, "login-required", "心动模式需要先在设置里登录网易云账号");
+        }
+
+        try
+        {
+            var provider = (NeteaseProvider)GetProvider(AccountSources.Netease)!;
+            var tracks = await provider.GetIntelligenceAsync(playlistId, songId, count, _shutdown.Token).ConfigureAwait(false);
+            if (tracks.Count == 0)
+            {
+                return WriteError(context, 502, "empty", "心动模式暂时没有返回歌曲，稍后再试");
+            }
+
+            var response = new SearchResponse
+            {
+                Source = "netease",
+                Query = "intelligence",
+                Tracks = tracks
+                    .Select(track => track with { Cover = BuildCoverUrl(track.Source, track.CoverKey) })
+                    .ToList(),
+            };
+            WriteJson(context, 200, JsonSerializer.Serialize(response, OnlineJsonContext.Default.SearchResponse));
+            return 200;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException || !_shutdown.IsCancellationRequested)
+        {
+            OnlineHttp.Error("api netease/intelligence failed", exception);
+            return WriteError(context, 502, "upstream-error", "心动模式拉取失败：" + OnlineHttp.Describe(exception));
         }
     }
 
@@ -1032,7 +1326,7 @@ internal sealed class LocalMusicServer : IDisposable
             .ConfigureAwait(false);
     }
 
-    private async Task<int> HandleDiscoverCollectionsAsync(HttpListenerContext context)
+    private async Task<int> HandleDiscoverProgramAsync(HttpListenerContext context)
     {
         var loginRequired = RequireNeteaseLogin(context);
         if (loginRequired is not null)
@@ -1040,11 +1334,52 @@ internal sealed class LocalMusicServer : IDisposable
             return loginRequired.Value;
         }
 
+        var id = (context.Request.QueryString["id"] ?? string.Empty).Trim();
+        if (id.Length == 0)
+        {
+            return WriteError(context, 400, "bad-request", "缺少节目 id");
+        }
+
+        return await RunDiscoverAsync(
+                context,
+                () => _discover.GetProgramAsync(id, _shutdown.Token),
+                response => JsonSerializer.Serialize(response, DiscoverJsonContext.Default.DiscoverProgramDetailResponse))
+            .ConfigureAwait(false);
+    }
+
+    private async Task<int> HandleDiscoverCloudAsync(HttpListenerContext context)
+    {
+        var loginRequired = RequireNeteaseLogin(context);
+        if (loginRequired is not null)
+        {
+            return loginRequired.Value;
+        }
+
+        if (!TryReadPage(context, out var offset, out var limit, 50, 200, out var pageError))
+        {
+            return WriteError(context, 400, "bad-request", pageError);
+        }
+
+        return await RunDiscoverAsync(
+                context,
+                () => _discover.GetCloudAsync(offset, limit, _shutdown.Token),
+                response => JsonSerializer.Serialize(response, DiscoverJsonContext.Default.DiscoverCloudResponse))
+            .ConfigureAwait(false);
+    }
+
+    private async Task<int> HandleDiscoverCollectionsAsync(HttpListenerContext context)
+    {
         var query = context.Request.QueryString;
         var source = ReadSource(query["source"]);
         if (source.Length == 0)
         {
             return WriteError(context, 400, "bad-request", "source 只支持 netease / qq");
+        }
+
+        var loginRequired = source == "qq" ? RequireQqLogin(context) : RequireNeteaseLogin(context);
+        if (loginRequired is not null)
+        {
+            return loginRequired.Value;
         }
 
         var kind = (query["kind"] ?? string.Empty).Trim().ToLowerInvariant();
@@ -1132,6 +1467,16 @@ internal sealed class LocalMusicServer : IDisposable
         }
 
         return WriteError(context, 401, "login-required", "需要先登录网易云音乐");
+    }
+
+    private int? RequireQqLogin(HttpListenerContext context)
+    {
+        if (_accounts is not null && _accounts.IsLoggedIn(AccountSources.Qq))
+        {
+            return null;
+        }
+
+        return WriteError(context, 401, "login-required", "需要先登录 QQ 音乐");
     }
 
     private async Task<int> RunDiscoverAsync<T>(
@@ -1242,6 +1587,8 @@ internal sealed class LocalMusicServer : IDisposable
                 HasYrc = !string.IsNullOrWhiteSpace(lyric.Yrc),
                 Qrc = lyric.Qrc,
                 HasQrc = !string.IsNullOrWhiteSpace(lyric.Qrc),
+                QrcText = lyric.QrcText,
+                HasQrcText = !string.IsNullOrWhiteSpace(lyric.QrcText),
             };
             WriteJson(context, 200, JsonSerializer.Serialize(response, OnlineJsonContext.Default.LyricResponse));
             return 200;
@@ -1406,9 +1753,16 @@ internal sealed class LocalMusicServer : IDisposable
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token);
             timeout.CancelAfter(ResolveTimeout);
-            resolution = await provider
-                .ResolveStreamAsync(id, NormalizeQuality(query["quality"]), timeout.Token)
-                .ConfigureAwait(false);
+            resolution = query["encrypted"] == "1"
+                ? await provider
+                    .ResolveEncryptedStreamAsync(id, NormalizeQuality(query["quality"]), timeout.Token)
+                    .ConfigureAwait(false)
+                    ?? await provider
+                        .ResolveStreamAsync(id, NormalizeQuality(query["quality"]), timeout.Token)
+                        .ConfigureAwait(false)
+                : await provider
+                    .ResolveStreamAsync(id, NormalizeQuality(query["quality"]), timeout.Token)
+                    .ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is not OperationCanceledException || !_shutdown.IsCancellationRequested)
         {
@@ -1495,6 +1849,33 @@ internal sealed class LocalMusicServer : IDisposable
 
             response.Headers["Accept-Ranges"] = "bytes";
 
+            // QQ QMC2 加密档（.mgg/.mflac/.mmp4）：上游字节流按 Range 起点偏移边下边解。
+            var decoder = string.IsNullOrWhiteSpace(resolution.EncryptionKey)
+                ? null
+                : Enum.TryParse<Zilux2.Online.Qq.QmcMode>(resolution.EncryptionMode, out var mode)
+                    ? Zilux2.Online.Qq.QmcDecoder.TryCreate(resolution.EncryptionKey, mode)
+                    : null;
+            if (decoder is not null)
+            {
+                var formatType = resolution.Format?.Trim().TrimStart('.').ToLowerInvariant() switch
+                {
+                    "flac" => "audio/flac",
+                    "ogg" => "audio/ogg",
+                    "m4a" or "mp4" => "audio/mp4",
+                    "mp3" => "audio/mpeg",
+                    _ => null,
+                };
+                if (formatType is not null)
+                {
+                    response.ContentType = formatType;
+                }
+
+                OnlineHttp.Info(
+                    $"GET stream decrypt source={source} id={id} mode={decoder.Mode} start={upstream.Content.Headers.ContentRange?.From ?? 0}");
+            }
+
+            var decryptOffset = decoder is null ? 0 : upstream.Content.Headers.ContentRange?.From ?? 0;
+
             var buffer = ArrayPool<byte>.Shared.Rent(StreamBufferSize);
             var bytesCopied = 0L;
             try
@@ -1509,6 +1890,11 @@ internal sealed class LocalMusicServer : IDisposable
                     if (read <= 0)
                     {
                         break;
+                    }
+
+                    if (decoder is not null)
+                    {
+                        decoder.Apply(decryptOffset + bytesCopied, buffer.AsSpan(0, read));
                     }
 
                     await output.WriteAsync(buffer.AsMemory(0, read), _shutdown.Token).ConfigureAwait(false);
@@ -2276,6 +2662,233 @@ internal sealed class LocalMusicServer : IDisposable
                     new DownloadStartResponse { Directory = directory, Job = job },
                     OnlineJsonContext.Default.DownloadStartResponse));
             return 200;
+        }
+    }
+
+    /// <summary>GET /api/host/paths：返回应用数据 / 日志 / 分析缓存目录（均为当前用户可写目录）。</summary>
+    private static int WriteHostPaths(HttpListenerContext context)
+    {
+        var cache = Path.Combine(HostFolders.Root, "analysis");
+        EnsureHostDirectory(HostFolders.Root);
+        EnsureHostDirectory(HostFolders.Logs);
+        EnsureHostDirectory(cache);
+
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("dataDir", HostFolders.Root);
+            writer.WriteString("logsDir", HostFolders.Logs);
+            writer.WriteString("cacheDir", cache);
+            writer.WriteEndObject();
+        }
+
+        WriteJson(context, 200, Encoding.UTF8.GetString(buffer.ToArray()));
+        return 200;
+    }
+
+    /// <summary>GET /api/storage/cache：全部磁盘缓存的分类占用与当前预算。</summary>
+    private static int WriteCacheUsage(HttpListenerContext context)
+    {
+        var entries = CacheService.Measure();
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("root", CacheService.Root);
+            writer.WriteNumber("limitMb", CachePolicy.LimitMb);
+            writer.WriteNumber("minMb", CachePolicy.MinMb);
+            writer.WriteNumber("maxMb", CachePolicy.MaxMb);
+            writer.WriteNumber("defaultMb", CachePolicy.DefaultMb);
+            writer.WriteNumber("totalBytes", entries.Sum(item => item.Bytes));
+            writer.WriteStartArray("items");
+            foreach (var entry in entries)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("id", entry.Id);
+                writer.WriteString("label", entry.Label);
+                writer.WriteNumber("bytes", entry.Bytes);
+                writer.WriteNumber("files", entry.Files);
+                writer.WriteBoolean("clearable", entry.Clearable);
+                if (entry.Note is { Length: > 0 })
+                {
+                    writer.WriteString("note", entry.Note);
+                }
+
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+        }
+
+        WriteJson(context, 200, Encoding.UTF8.GetString(buffer.ToArray()));
+        return 200;
+    }
+
+    /// <summary>POST /api/storage/cache/clear：body {id}（缺省 all）。</summary>
+    private static async Task<int> HandleCacheClearAsync(HttpListenerContext context)
+    {
+        var body = await ReadBodyAsync(context.Request, 4 * 1024).ConfigureAwait(false);
+        string? id = null;
+        if (body is not null)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(body);
+                id = ReadString(document.RootElement, "id");
+            }
+            catch (JsonException)
+            {
+                return WriteError(context, 400, "bad-request", "请求内容不是合法 JSON");
+            }
+        }
+
+        var result = CacheService.Clear(id);
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteStartArray("cleared");
+            foreach (var item in result.Cleared)
+            {
+                writer.WriteStringValue(item);
+            }
+
+            writer.WriteEndArray();
+            writer.WriteNumber("freedBytes", result.FreedBytes);
+            writer.WriteNumber("failed", result.Failed);
+            writer.WriteBoolean("needsRestart", result.NeedsRestart);
+            writer.WriteNumber("totalBytes", CacheService.TotalBytes());
+            writer.WriteEndObject();
+        }
+
+        WriteJson(context, 200, Encoding.UTF8.GetString(buffer.ToArray()));
+        return 200;
+    }
+
+    /// <summary>POST /api/storage/cache/limit：body {limitMb}，保存后立即按预算收缩。</summary>
+    private static async Task<int> HandleCacheLimitAsync(HttpListenerContext context)
+    {
+        var body = await ReadBodyAsync(context.Request, 4 * 1024).ConfigureAwait(false);
+        if (body is null)
+        {
+            return WriteError(context, 400, "bad-request", "缺少请求内容");
+        }
+
+        int requested;
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            requested = document.RootElement.TryGetProperty("limitMb", out var limitElement) &&
+                        limitElement.TryGetInt32(out var parsed)
+                ? parsed
+                : throw new JsonException("limitMb 必须是整数");
+        }
+        catch (JsonException)
+        {
+            return WriteError(context, 400, "bad-request", "请求内容不是合法 JSON");
+        }
+
+        var limit = CachePolicy.SetLimitMb(requested);
+        var pruned = CacheService.PruneToLimit();
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteNumber("limitMb", limit);
+            writer.WriteNumber("removed", pruned.Removed);
+            writer.WriteNumber("freedBytes", pruned.FreedBytes);
+            writer.WriteNumber("totalBytes", pruned.TotalBytes);
+            writer.WriteEndObject();
+        }
+
+        WriteJson(context, 200, Encoding.UTF8.GetString(buffer.ToArray()));
+        return 200;
+    }
+
+    /// <summary>POST /api/host/reveal：body {target: "data"|"logs"|"cache"}，在资源管理器里打开目录。</summary>
+    private async Task<int> HandleHostRevealAsync(HttpListenerContext context)
+    {
+        var body = await ReadBodyAsync(context.Request, 4 * 1024).ConfigureAwait(false);
+        var target = "data";
+        if (body is not null)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(body);
+                target = ReadString(document.RootElement, "target");
+            }
+            catch (JsonException)
+            {
+                return WriteError(context, 400, "bad-request", "请求内容不是合法 JSON");
+            }
+        }
+
+        string? path = target switch
+        {
+            "logs" => HostFolders.Logs,
+            "cache" => Path.Combine(HostFolders.Root, "analysis"),
+            "" or "data" => HostFolders.Root,
+            _ => null,
+        };
+        if (path is null)
+        {
+            return WriteError(context, 400, "bad-request", "未知的目录");
+        }
+
+        try
+        {
+            EnsureHostDirectory(path);
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"\"{path}\"",
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[host] reveal failed target={target}: {exception.Message}");
+            return WriteError(context, 500, "reveal-failed", exception.Message);
+        }
+
+        WriteJson(context, 200, "{\"ok\":true}");
+        return 200;
+    }
+
+    /// <summary>POST /api/host/devtools：打开 WebView2 DevTools；宿主未接线时 501。</summary>
+    private int HandleHostDevTools(HttpListenerContext context)
+    {
+        var open = OpenDevTools;
+        if (open is null)
+        {
+            return WriteError(context, 501, "unsupported", "当前宿主没有提供 DevTools 接口");
+        }
+
+        try
+        {
+            open();
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[host] devtools failed: {exception.Message}");
+            return WriteError(context, 500, "devtools-failed", exception.Message);
+        }
+
+        WriteJson(context, 200, "{\"ok\":true}");
+        return 200;
+    }
+
+    private static void EnsureHostDirectory(string path)
+    {
+        try
+        {
+            Directory.CreateDirectory(path);
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[host] mkdir failed {path}: {exception.Message}");
         }
     }
 

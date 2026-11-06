@@ -206,6 +206,7 @@ internal sealed class WebViewHost : IDisposable
     private const int OnlineRetryLimit = 40;
     private bool _disposed;
     private bool _pageReady;
+    private bool _firstContentReady;
     private bool _recoverAttempted;
     private int _audioPostPending;
     private DispatcherTimer? _onlineRetryTimer;
@@ -219,6 +220,79 @@ internal sealed class WebViewHost : IDisposable
 
     /// <summary>共享环境就绪通知（背景窗口可能比 WebView2 初始化更早被请求）。</summary>
     public event Action? SharedEnvironmentReady;
+
+    /// <summary>页面首帧可用（页面发出 ready 或首次导航成功）：窗口用它从透明淡入。</summary>
+    public event Action? FirstContentReady;
+
+    /// <summary>
+    /// 接管窗口四边/四角 5px 的缩放热区。WebView2 是子 HWND，WPF 的 WindowChrome 命中不到它；
+    /// 旧实现把页面缩进 6px 露出主题色边条来换取可缩放——那条边就是用户看到的「框」。
+    /// 现在页面满窗铺，pointerdown 在最外层捕获阶段换算成边/角后走既有的 resize 消息。
+    /// 页面自己的交互优先：命中按钮/链接/输入框/滚动条时不再抢成窗口缩放。
+    /// </summary>
+    private const string EdgeResizeScript = """
+(() => {
+    if (window.top !== window) return;
+    // 5px 边 / 12px 角是窗口缩放的抓取范围；页面满窗铺，热区只能由页面转发。
+    const EDGE = 5;
+    const CORNER = 12;
+    const INTERACTIVE = 'button, a, input, textarea, select, [contenteditable="true"], [data-no-window-resize]';
+
+    // 指针落在可滚动祖先的滚动条轨道上时不要当窗口缩放：右侧滚动条约 15px，
+    // 会和 5px 的边缘热区重叠，否则拖滚动条会变成拖窗口。overflow:hidden 的裁剪容器
+    // 没有滚动条，不能按 scrollHeight 误判（否则大块边缘热区会失效）。
+    const isOverScrollbar = (event) => {
+        for (let el = event.target instanceof Element ? event.target : null; el; el = el.parentElement) {
+            const style = getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            const canScrollY = style.overflowY === 'auto' || style.overflowY === 'scroll';
+            const canScrollX = style.overflowX === 'auto' || style.overflowX === 'scroll';
+            if (canScrollY && el.scrollHeight > el.clientHeight &&
+                event.clientX > rect.right - (el.offsetWidth - el.clientWidth)) {
+                return true;
+            }
+            if (canScrollX && el.scrollWidth > el.clientWidth &&
+                event.clientY > rect.bottom - (el.offsetHeight - el.clientHeight)) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    window.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0 || event.defaultPrevented) return;
+        const width = window.innerWidth;
+        const height = window.innerHeight;
+        const x = event.clientX;
+        const y = event.clientY;
+        const left = x <= EDGE;
+        const right = x >= width - EDGE;
+        const top = y <= EDGE;
+        const bottom = y >= height - EDGE;
+        if (!(left || right || top || bottom)) return;
+
+        // 页面边缘的交互元素优先：按钮/链接/输入框贴着边时不能被抢成窗口缩放。
+        if (event.target instanceof Element && event.target.closest(INTERACTIVE)) {
+            return;
+        }
+        if (isOverScrollbar(event)) return;
+
+        let edge = '';
+        if (left && y <= CORNER) edge = 'topleft';
+        else if (right && y <= CORNER) edge = 'topright';
+        else if (left && y >= height - CORNER) edge = 'bottomleft';
+        else if (right && y >= height - CORNER) edge = 'bottomright';
+        else if (left) edge = 'left';
+        else if (right) edge = 'right';
+        else if (top) edge = 'top';
+        else if (bottom) edge = 'bottom';
+        if (!edge) return;
+        event.preventDefault();
+        event.stopPropagation();
+        window.chrome.webview.postMessage({ v: 1, type: 'resize', edge });
+    }, true);
+})();
+""";
 
     public WebViewHost(
         MainWindow window,
@@ -277,10 +351,13 @@ internal sealed class WebViewHost : IDisposable
     {
         try
         {
-            // Painting #07080B from the first frame avoids the white flash before the page loads.
-            _webView.DefaultBackgroundColor = System.Drawing.Color.FromArgb(255, 246, 247, 251);
+            // 首帧前 WebView2 自涂的背景：跟窗口主题底色（#F3F1EA）一致，避免启动/恢复时
+            // 闪一块浅灰或纯白。页面 ready 后会按自身主题接管。
+            _webView.DefaultBackgroundColor = System.Drawing.Color.FromArgb(255, 243, 241, 234);
 
             var userDataFolder = Path.Combine(HostFolders.Root, "WebView2");
+            // 设置页「清理浏览器缓存」在运行期只能写标记，这里在环境创建前真正删掉。
+            Zilux2.Storage.CacheService.ClearPendingWebView2();
             Directory.CreateDirectory(userDataFolder);
 
             HostLog.Info($"webview2 environment creating: udf={userDataFolder} dev={_plan.IsDevMode}");
@@ -322,6 +399,24 @@ internal sealed class WebViewHost : IDisposable
             core.NewWindowRequested += OnNewWindowRequested;
             core.PermissionRequested += OnPermissionRequested;
 
+            // 设置页的「打开 DevTools」入口（/api/host/devtools）。发布版平时关闭 DevTools，
+            // 只有用户主动点击时才临时打开；回调线程在 HTTP 侧，宿主实现里切回 UI 线程。
+            if (App.Online is { } onlineService)
+            {
+                onlineService.OpenDevTools = OpenDevToolsWindow;
+            }
+
+            // 注入窗口边缘缩放监听（见 EdgeResizeScript 注释）。失败只损失贴边缩放，不阻断启动。
+            try
+            {
+                var scriptId = await core.AddScriptToExecuteOnDocumentCreatedAsync(EdgeResizeScript);
+                HostLog.Info($"webview2.edgeResize injected id={scriptId}");
+            }
+            catch (Exception exception)
+            {
+                HostLog.Warn($"webview2.edgeResize inject failed: {exception.Message}");
+            }
+
             if (_plan.Kind == WebContentKind.LocalFolder)
             {
                 core.SetVirtualHostNameToFolderMapping(
@@ -343,6 +438,73 @@ internal sealed class WebViewHost : IDisposable
                 $"{exception.GetType().Name}: {exception.Message}\n\n" +
                 "请安装 Microsoft Edge WebView2 Runtime 后重新启动 Zilux2。");
         }
+    }
+
+    private void RaiseFirstContentReady()
+    {
+        if (_firstContentReady)
+        {
+            return;
+        }
+
+        _firstContentReady = true;
+        HostLog.Info("webview2.firstContent");
+        FirstContentReady?.Invoke();
+    }
+
+    /// <summary>
+    /// WebView2 的合成表面在窗口从最小化恢复 / 托盘隐藏后重新显示时，偶尔不会重画（用户看到
+    /// 底框、内容不出来）。把控件尺寸做一次 1px 抖动并重排，强制子 HWND 收到 resize 并重绘；
+    /// 220ms 后再抖一次，覆盖 DWM 还原动画结束的那一帧。
+    /// </summary>
+    public void RefreshSurface()
+    {
+        if (_disposed || _webView.Visibility != Visibility.Visible)
+        {
+            return;
+        }
+
+        NudgeSurface();
+        var timer = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = TimeSpan.FromMilliseconds(220),
+        };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            NudgeSurface();
+        };
+        timer.Start();
+    }
+
+    private void NudgeSurface()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        var width = _webView.ActualWidth;
+        var height = _webView.ActualHeight;
+        if (width <= 1 || height <= 1)
+        {
+            return;
+        }
+
+        _webView.Width = width + 1;
+        _webView.Height = height + 1;
+        _webView.Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _webView.Width = double.NaN;
+            _webView.Height = double.NaN;
+            _webView.InvalidateVisual();
+        }));
+        HostLog.Info($"webview2.surface nudge {width:0.#}x{height:0.#}");
     }
 
     public void PostWindowState(bool maximized)
@@ -503,6 +665,33 @@ internal sealed class WebViewHost : IDisposable
         "{\"v\":1,\"type\":\"host\",\"event\":\"ready\",\"version\":\"" + HostInfo.Version +
         "\",\"maximized\":" + (maximized ? "true" : "false") + "}";
 
+    /// <summary>
+    /// 打开 DevTools（/api/host/devtools 的实现）。发布版平时关着 DevTools，只允许用户在设置里
+    /// 主动点一次开；回调来自 HTTP 线程，这里切回 UI 线程并临时启用。
+    /// </summary>
+    private void OpenDevToolsWindow()
+    {
+        try
+        {
+            _webView.Dispatcher.Invoke(() =>
+            {
+                var core = _webView.CoreWebView2;
+                if (core is null)
+                {
+                    return;
+                }
+
+                core.Settings.AreDevToolsEnabled = true;
+                core.OpenDevToolsWindow();
+                HostLog.Info("webview2.devtools opened");
+            });
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"webview2.devtools open failed: {exception.Message}");
+        }
+    }
+
     private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
         try
@@ -568,6 +757,7 @@ internal sealed class WebViewHost : IDisposable
                         NotifyMiniMode(true);
                     }
 
+                    RaiseFirstContentReady();
                     break;
 
                 case "settings":
@@ -918,7 +1108,11 @@ internal sealed class WebViewHost : IDisposable
         if (!e.IsSuccess)
         {
             HostLog.Error($"navigation failed: {source} status={e.WebErrorStatus}");
+            return;
         }
+
+        // 页面没发 ready（例如前端脚本报错）也不能让窗口永远透明：导航成功本身就是可显示内容。
+        RaiseFirstContentReady();
     }
 
     private void OnProcessFailed(object? sender, CoreWebView2ProcessFailedEventArgs e)

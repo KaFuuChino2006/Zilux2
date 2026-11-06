@@ -19,7 +19,8 @@ namespace Zilux2.Analysis;
 /// </summary>
 internal sealed class TrackAnalysisService : IDisposable
 {
-    private const long CacheLimitBytes = 300L * 1024 * 1024;
+    // 设置页的缓存预算优先；曲目分析自身再封顶 300 MB，避免分析缓存挤掉人声分离窗口。
+    private static long CacheLimitBytes => Math.Min(300L * 1024 * 1024, Zilux2.Storage.CachePolicy.LimitBytes);
     private const long MinAudioBytes = 64L * 1024;
     private static readonly TimeSpan ResolveTimeout = TimeSpan.FromSeconds(8);
     private static readonly TimeSpan DownloadTimeout = TimeSpan.FromSeconds(120);
@@ -490,6 +491,97 @@ internal sealed class TrackAnalysisService : IDisposable
         finally
         {
             TryDelete(temp);
+        }
+    }
+
+    /// <summary>
+    /// 只做「本地解析 / 在线解析 + 下载」，不解码不分析。人声分离需要 44.1 kHz 立体声窗口，
+    /// 和 /api/analysis 的 22.05 kHz 单声道解码管线不同，但曲目解析、质量选择与下载逻辑
+    /// 必须共用这一份；下载的在线音频落在 <paramref name="tempDirectory"/> 里，由调用方负责清理。
+    /// </summary>
+    internal async Task<PreparedAudioOutcome> PrepareAudioAsync(
+        string source,
+        string? trackId,
+        string? rel,
+        string? quality,
+        string tempDirectory,
+        CancellationToken cancellationToken,
+        string purpose = "stems")
+    {
+        var normalizedSource = (source ?? string.Empty).Trim().ToLowerInvariant();
+        try
+        {
+            if (string.Equals(normalizedSource, "local", StringComparison.Ordinal))
+            {
+                var localRel = (rel ?? string.Empty).Trim();
+                var resolved = _localPathResolver?.Invoke(localRel);
+                if (string.IsNullOrWhiteSpace(resolved) || !File.Exists(resolved))
+                {
+                    return PreparedAudioOutcome.Failure("not-found", "找不到本地音频文件");
+                }
+
+                var tags = LocalTagReader.TryRead(resolved);
+                return PreparedAudioOutcome.Success(new PreparedTrackAudio
+                {
+                    AudioPath = resolved,
+                    IsTemporary = false,
+                    Source = normalizedSource,
+                    Title = tags?.Title ?? Path.GetFileNameWithoutExtension(resolved),
+                    Artist = tags?.Artist,
+                });
+            }
+
+            var trackIdText = (trackId ?? string.Empty).Trim();
+            if (!_providers.TryGetValue(normalizedSource, out var provider))
+            {
+                return PreparedAudioOutcome.Failure("not-found", "暂不支持该音乐平台");
+            }
+
+            Directory.CreateDirectory(tempDirectory);
+            var audioPath = Path.Combine(tempDirectory, "source.audio");
+            var existing = new FileInfo(audioPath);
+            if (!existing.Exists || existing.Length < MinAudioBytes)
+            {
+                var resolution = await ResolveStreamAsync(provider, normalizedSource, trackIdText, quality)
+                    .ConfigureAwait(false);
+                if (!resolution.IsPlayable)
+                {
+                    return PreparedAudioOutcome.Failure(
+                        "not-playable",
+                        string.IsNullOrWhiteSpace(resolution.NotPlayableMessage)
+                            ? "该曲目当前不可播放"
+                            : resolution.NotPlayableMessage);
+                }
+
+                await DownloadAudioAsync(
+                        resolution,
+                        audioPath,
+                        string.Create(CultureInfo.InvariantCulture, $"{purpose}:{normalizedSource}:{trackIdText}"))
+                    .ConfigureAwait(false);
+            }
+
+            return PreparedAudioOutcome.Success(new PreparedTrackAudio
+            {
+                AudioPath = audioPath,
+                IsTemporary = true,
+                Source = normalizedSource,
+                Title = trackIdText.Length > 0 ? trackIdText : "在线曲目",
+            });
+        }
+        catch (AnalysisException exception)
+        {
+            HostLog.Warn($"stems.prepare-failed source={normalizedSource} code={exception.Code} message={exception.Message}");
+            return PreparedAudioOutcome.Failure(exception.Code, exception.Message);
+        }
+        catch (OperationCanceledException)
+        {
+            // 宿主关闭 / 调用方取消：交给上层统一映射，不要伪装成普通错误。
+            throw;
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"stems.prepare-error source={normalizedSource}: {exception.Message}");
+            return PreparedAudioOutcome.Failure("internal-error", "准备音频失败：" + exception.Message);
         }
     }
 
