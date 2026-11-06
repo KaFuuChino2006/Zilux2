@@ -26,6 +26,8 @@ internal static class HostLog
     private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
     private static readonly Thread Writer;
     private static volatile bool _shutdown;
+    private static readonly bool SyncMode =
+        Environment.GetEnvironmentVariable("ZILUX2_SYNC_LOG") == "1";
 
     public static string LogPath { get; } = Path.Combine(HostFolders.Logs, "host.log");
 
@@ -75,6 +77,11 @@ internal static class HostLog
     private static void Write(string level, string message)
     {
         var line = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} [{level}] {message}";
+        if (SyncMode)
+        {
+            try { File.AppendAllText(LogPath, line + Environment.NewLine, Utf8NoBom); } catch { }
+            return;
+        }
         if (_shutdown || !Queue.TryAdd(line))
         {
             System.Diagnostics.Debug.WriteLine(line);

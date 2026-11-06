@@ -736,6 +736,11 @@ internal sealed class DownloadService : IDisposable
             }
 
             await using var input = await response.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
+            var decoder = string.IsNullOrWhiteSpace(resolution.EncryptionKey)
+                ? null
+                : Enum.TryParse<Zilux2.Online.Qq.QmcMode>(resolution.EncryptionMode, out var qmcMode)
+                    ? Zilux2.Online.Qq.QmcDecoder.TryCreate(resolution.EncryptionKey, qmcMode)
+                    : null;
             await using var output = new FileStream(
                 partPath,
                 resumed ? FileMode.Append : FileMode.Create,
@@ -774,6 +779,12 @@ internal sealed class DownloadService : IDisposable
                     throw new PauseRequestedException();
                 }
 
+                if (decoder is not null)
+                {
+                    // QMC2：断点续传时 written 就是密文绝对偏移，按块原地解密再落盘。
+                    decoder.Apply(written, buffer.AsSpan(0, read));
+                }
+
                 await output.WriteAsync(buffer.AsMemory(0, read), token).ConfigureAwait(false);
                 written += read;
                 job.Received = written;
@@ -785,6 +796,18 @@ internal sealed class DownloadService : IDisposable
             if (expectedTotal > 0 && written != expectedTotal)
             {
                 throw new InvalidDataException($"下载不完整：收到 {written} / {expectedTotal} 字节");
+            }
+
+            // QMC2 加密档：收满后剥掉 musicex/QTag 尾部元数据（长度校验用的是密文长度）。
+            if (decoder is not null)
+            {
+                var trimmed = Zilux2.Online.Qq.QmcDecoder.TrimTail(output, written);
+                if (trimmed > 0)
+                {
+                    OnlineHttp.Info($"[download] qmc tail trimmed {trimmed}B source={job.Source}:{job.TrackId}");
+                    written -= trimmed;
+                    job.Received = written;
+                }
             }
 
             if (written < MinValidBytes)

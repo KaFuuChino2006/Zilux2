@@ -1,0 +1,229 @@
+/**
+ * 窗口尺寸自适应：首页内容宽度上限 + 居中 + 网格/卡片随窗口宽度变化。
+ *
+ * 背景：窗口可以被拉到 1960×897 / 3218×1303 / 3440×1440，也可以进迷你模式。
+ * 原来 .ui-page 只有固定 padding，首页在超宽窗口里被整幅摊开（卡片内部大面积留白、
+ * 歌单横向滚动只填到屏幕一半）。这里给首页加一个可读宽度上限并居中，所有尺寸都从
+ * clamp()/minmax() 里算，不写死某一档宽度。
+ *
+ * 只覆盖首页与通用页面外壳，不动歌词相关样式（见 lyrics.ts / app.css 的歌词段）。
+ */
+
+:root {
+  /* 首页内容最大宽度：随窗口增长（带鱼屏铺开），但保留一个上限避免卡片被拉成超宽空白。 */
+  --home-max-w: clamp(1640px, 78vw, 2560px);
+  --home-gutter: clamp(10px, 1.8vw, 34px);
+}
+
+/* ---- 首页：内容居中 + 两侧自适应留白 ---- */
+.home-host .ui-page.home {
+  padding-left: max(var(--home-gutter), calc((100% - var(--home-max-w)) / 2));
+  padding-right: max(var(--home-gutter), calc((100% - var(--home-max-w)) / 2));
+}
+
+/* 推荐卡并排时按可用宽度收敛：窄于一屏时自动单列，宽屏时两张等分。 */
+.home .home-daily-row {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 480px), 1fr));
+  gap: clamp(12px, 1.1vw, 18px);
+}
+
+@media (min-width: 1500px) {
+  .home-daily-row .daily-deck {
+    width: 148px;
+    height: 148px;
+  }
+}
+
+/* 歌单横排：卡片宽度跟着窗口走，超宽屏不会「12 张之后一片空白」。 */
+.home .ui-scroller {
+  grid-auto-columns: clamp(132px, 9.2vw, 172px);
+  gap: clamp(12px, 0.9vw, 16px);
+}
+
+/* 收藏卡 + 最近播放：最近播放列宽有上限，收藏卡吃掉剩余空间。 */
+.home .home-row {
+  gap: clamp(14px, 1.2vw, 20px);
+}
+
+.home .home-row > .home-recent {
+  flex: 0 0 clamp(280px, 24vw, 360px);
+}
+
+.home .recent-strip {
+  height: clamp(200px, 17vw, 236px);
+  max-height: clamp(200px, 17vw, 236px);
+}
+
+/* ---- 中窄窗口：内容顶到边距，卡片与标题缩小一档 ---- */
+@media (max-width: 1240px) {
+  .home .home-row {
+    display: block;
+  }
+
+  .home .home-row > .home-recent {
+    width: 100%;
+    margin-top: 18px;
+  }
+
+  .home .recent-strip {
+    max-width: 620px;
+    height: 200px;
+    max-height: 200px;
+  }
+}
+
+@media (max-width: 980px) {
+  :root {
+    --home-gutter: 12px;
+  }
+
+  .home-daily-row .daily-card {
+    gap: 18px;
+    padding: 16px 18px;
+  }
+
+  .home-daily-row .daily-deck {
+    width: 118px;
+    height: 118px;
+    margin-right: 8px;
+  }
+
+  .home .ui-section {
+    margin-top: 26px;
+  }
+}
+
+@media (max-width: 760px) {
+  :root {
+    --home-gutter: 10px;
+  }
+
+  .home .ui-section-title {
+    font-size: 16px;
+  }
+
+  .home-daily-row .daily-card {
+    gap: 14px;
+    padding: 14px;
+  }
+
+  .home-daily-row .daily-deck {
+    width: 96px;
+    height: 96px;
+    margin-right: 6px;
+  }
+
+  .home .home-collections {
+    flex-direction: column;
+  }
+
+  .home .ui-scroller {
+    grid-auto-columns: clamp(120px, 34vw, 150px);
+  }
+}
+
+/* ---- 宽屏卡片：内容横向铺开、操作按钮靠右，避免卡片内部右侧一大块空白 ----
+ * 卡片结构是 .daily-card > .daily-deck + .daily-body(kicker/title/meta/actions)。
+ * 宽屏时把 body 拆成网格列（display:contents），标题区吃中间剩余宽度，
+ * 按钮组贴右边缘，卡片看起来是「封面 | 信息 | 操作」三段，而不是左对齐的一小撮内容。
+ */
+@media (min-width: 1240px) {
+  .home .home-daily-row .daily-card {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-rows: auto auto auto;
+    align-items: center;
+    align-content: center;
+    column-gap: clamp(20px, 2vw, 34px);
+    row-gap: 2px;
+  }
+
+  .home .home-daily-row .daily-card > .daily-deck {
+    grid-column: 1;
+    grid-row: 1 / -1;
+    align-self: center;
+    margin-right: 0;
+  }
+
+  .home .home-daily-row .daily-card > .daily-body {
+    display: contents;
+  }
+
+  .home .home-daily-row .daily-kicker {
+    grid-column: 2 / -1;
+    grid-row: 1;
+  }
+
+  .home .home-daily-row .daily-title {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  /* 元信息在标题与按钮下方通栏一行，避免长文案在窄信息列里折出半个字。 */
+  .home .home-daily-row .daily-meta {
+    grid-column: 2 / -1;
+    grid-row: 3;
+  }
+
+  .home .home-daily-row .daily-actions {
+    grid-column: 3;
+    grid-row: 2;
+    margin-top: 0;
+    align-self: center;
+  }
+}
+
+@media (min-width: 1600px) {
+  .home .home-row .home-collections .daily-card {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-rows: auto auto auto;
+    align-items: center;
+    align-content: center;
+    column-gap: clamp(18px, 1.6vw, 28px);
+    row-gap: 2px;
+  }
+
+  .home .home-row .home-collections .daily-card > .daily-deck {
+    grid-column: 1;
+    grid-row: 1 / -1;
+    align-self: center;
+    /* 叠放封面会向右溢出约 44px（悬停 52px）：margin-right 不能清零，
+       否则文字列只剩 column-gap，宽屏下会被最外层封面压住。 */
+    margin-right: clamp(30px, 2vw, 42px);
+  }
+
+  .home .home-row .home-collections .daily-card > .daily-body {
+    display: contents;
+  }
+
+  .home .home-row .home-collections .daily-kicker {
+    grid-column: 2 / -1;
+    grid-row: 1;
+  }
+
+  .home .home-row .home-collections .daily-title {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  .home .home-row .home-collections .daily-meta {
+    grid-column: 2 / -1;
+    grid-row: 3;
+  }
+
+  .home .home-row .home-collections .daily-actions {
+    grid-column: 3;
+    grid-row: 2;
+    margin-top: 0;
+    align-self: center;
+  }
+}
+
+/* 超宽屏（3440 档）：首页已经居中，只把播放条悬停展开宽度收一点，避免贴满整屏。 */
+@media (min-width: 2400px) {
+  .playerbar:hover,
+  .playerbar:focus-within {
+    width: min(1180px, 62vw);
+  }
+}

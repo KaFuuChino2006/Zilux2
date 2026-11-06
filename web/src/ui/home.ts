@@ -26,6 +26,8 @@ export interface HomeCallbacks {
   onLogin(): void;
   onLiked(source?: OnlineSource): void;
   onPlayLiked(source?: OnlineSource): void;
+  /** 网易云「心动模式」：用我喜欢的音乐 + 当前歌曲取智能续播队列。 */
+  onHeartbeat(source: OnlineSource): void;
   onRecent(): void;
   onRecommend(): void;
   onDaily(): void;
@@ -522,7 +524,19 @@ export class HomeView {
     playAll.addEventListener('click', () => this.callbacks.onPlayLiked(item.source));
     const more = h('button', { class: ui.btn({ variant: 'ghost' }) }, h('span', { text: '查看全部' }));
     more.addEventListener('click', () => this.callbacks.onLiked(item.source));
-    actions.append(playAll, more);
+    actions.append(playAll);
+    if (item.source === 'netease' && item.loggedIn) {
+      // 心动模式是网易云独有的智能续播：以「我喜欢的音乐 + 当前歌曲」为种子。
+      const heartbeat = h(
+        'button',
+        { class: ui.btn({ variant: 'ghost' }), title: '心动模式：按我喜欢的音乐智能续播' },
+        icon('sparkle', 16),
+        h('span', { text: '心动模式' }),
+      );
+      heartbeat.addEventListener('click', () => this.callbacks.onHeartbeat(item.source));
+      actions.append(heartbeat);
+    }
+    actions.append(more);
 
     const card = h(
       'div',

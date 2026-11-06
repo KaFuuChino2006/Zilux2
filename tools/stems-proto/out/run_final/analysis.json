@@ -1,0 +1,37 @@
+{
+  "sample_rate": 44100,
+  "frames": 1323000,
+  "seconds": 30.0,
+  "residual_dbfs": -97.49,
+  "mix": {
+    "name": "mix",
+    "rms_dbfs": -13.98,
+    "peak": 1.0,
+    "crest_db": 13.98
+  },
+  "vocals": {
+    "name": "vocals",
+    "rms_dbfs": -18.2,
+    "peak": 0.6253,
+    "crest_db": 14.12,
+    "centroid_hz": 373.4,
+    "frac_lt250": 0.6732,
+    "frac_250_4k": 0.3212,
+    "frac_gt4k": 0.0055
+  },
+  "instrumental": {
+    "name": "instrumental",
+    "rms_dbfs": -16.51,
+    "peak": 1.0701,
+    "crest_db": 17.1,
+    "centroid_hz": 631.6,
+    "frac_lt250": 0.5269,
+    "frac_250_4k": 0.4498,
+    "frac_gt4k": 0.0233
+  },
+  "band_change_mix_to_instrumental_db": {
+    "200-4000": -3.49,
+    "80-250": -2.49,
+    "4000-16000": -4.4
+  }
+}

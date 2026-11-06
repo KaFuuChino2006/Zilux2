@@ -8,6 +8,8 @@ import { fetchLyric } from '../online/client';
 import {
   applyTranslation,
   extractQrcPayload,
+  isUsefulTranslation,
+  pairByTime,
   parseCharLyric,
   parseLrc,
   parseQrcLyric,
@@ -25,6 +27,8 @@ import { createLumiereStage, lumiereMode, lumiereThemeForCover, setLumiereMode, 
 import { createRoomStage, setRoomLyricTintProvider, type RoomStage } from './room';
 import { createVinylStage, setVinylLyricTintProvider, type VinylStage } from './vinyl';
 import { createGeoStage, setGeoLyricTintProvider, type GeoStage } from './geo';
+import { createPvStage, type PvStage } from './pv';
+import { createFlowStage, type FlowStage } from './flow';
 import type { Theme } from './lumiere-folia/types';
 import type { LyricTextSettings } from './lumiereSettings';
 import { LYRIC_STYLES, lyricStyle, lyricStyleNeedsCharTiming, onLyricStyle, reloadLyricStyle } from './lyricStyle';
@@ -653,6 +657,7 @@ function toDocLines(parsed: SourceLine[]): LyricLine[] {
 
 interface PlatformLyric {
   qrc?: string | null;
+  qrcText?: string | null;
   yrc?: string | null;
   lrc?: string | null;
   translation?: string | null;
@@ -686,6 +691,35 @@ function wordLyricTooShort(
   return wordCoverage < threshold;
 }
 
+/**
+ * 逐字歌词（QRC/YRC）补翻译。
+ *
+ * 平台的逐字轨只带正文，译文在同一个响应里的另一条 `translation` 轨上；
+ * 以前这里直接写死 `translation: ''`，于是「匹配歌词」预览能看到译文、
+ * 真正播放的歌词页却没有（歌词页只能靠跨平台匹配再捞一次）。
+ * 这里和 LRC 路径共用同一套规则：按行时间做 ±1s 的一对一贪心配对，
+ * 并过滤空占位/与原文重复的译文。
+ */
+function attachTranslations(lines: LyricLine[], raw: string | null | undefined): LyricLine[] {
+  if (!raw || lines.length === 0) return lines;
+  const translated = parseLrc(raw)
+    .map((line) => ({ timeMs: line.timeMs, text: line.text.trim() }))
+    .filter((line) => line.text.length > 0);
+  if (translated.length === 0) return lines;
+  const pairs = pairByTime(
+    lines.map((line) => line.timeMs),
+    translated.map((line) => line.timeMs),
+    1000,
+  );
+  lines.forEach((line, index) => {
+    const target = pairs[index];
+    if (target === null || target === undefined) return;
+    const text = translated[target].text;
+    if (isUsefulTranslation(text, line.text)) line.translation = text;
+  });
+  return lines;
+}
+
 /** 平台歌词负载（QRC / YRC / LRC）→ 统一歌词文档 + 来源说明。 */
 function docFromLyric(
   track: OnlineTrack,
@@ -696,24 +730,27 @@ function docFromLyric(
   const platform = SOURCE_LABEL[track.source] ?? track.source;
   // 同一份响应里的 LRC：逐字版只覆盖片段时用它兜底。
   const lrcLines = toDocLines(applyTranslation(parseLrc(lyric.lrc ?? ''), lyric.translation ?? ''));
-  if (lyric.qrc) {
+  if (lyric.qrcText || lyric.qrc) {
     try {
-      const payload = extractQrcPayload(decryptQrc(lyric.qrc));
+      const payload = extractQrcPayload(lyric.qrcText ?? decryptQrc(lyric.qrc ?? ''));
       const qrcLines = parseQrcLyric(payload);
       if (qrcLines.length > 0 && !wordLyricTooShort(qrcLines, track.durationMs, lrcLines)) {
         return {
           doc: {
             kind: 'qrc',
             trackKey: key,
-            lines: qrcLines.map((line) => ({
-              timeMs: line.timeMs,
-              durationMs: line.durationMs,
-              text: line.text ?? joinWords(line.words),
-              translation: '',
-              words: line.words.map((word) => ({ ...word })),
-            })),
+            lines: attachTranslations(
+              qrcLines.map((line) => ({
+                timeMs: line.timeMs,
+                durationMs: line.durationMs,
+                text: line.text ?? joinWords(line.words),
+                translation: '',
+                words: line.words.map((word) => ({ ...word })),
+              })),
+              lyric.translation,
+            ),
           },
-          label: `${prefix}${platform} · 逐字（QRC）`,
+          label: `${prefix}${platform} · 逐字（QRC）${lyric.translation ? ' + 翻译' : ''}`,
         };
       }
     } catch (err) {
@@ -727,20 +764,23 @@ function docFromLyric(
         doc: {
           kind: 'yrc',
           trackKey: key,
-          lines: charLines.map((line) => ({
-            timeMs: line.timeMs,
-            durationMs: line.durationMs,
-            text: line.text ?? line.chars.map((char) => char.text).join(''),
-            translation: '',
-            words: line.chars.map((char) => ({
-              text: char.text,
-              startMs: char.startMs,
-              endMs: char.endMs,
-              spaceBefore: char.spaceBefore,
+          lines: attachTranslations(
+            charLines.map((line) => ({
+              timeMs: line.timeMs,
+              durationMs: line.durationMs,
+              text: line.text ?? line.chars.map((char) => char.text).join(''),
+              translation: '',
+              words: line.chars.map((char) => ({
+                text: char.text,
+                startMs: char.startMs,
+                endMs: char.endMs,
+                spaceBefore: char.spaceBefore,
+              })),
             })),
-          })),
+            lyric.translation,
+          ),
         },
-        label: `${prefix}${platform} · 逐字（YRC）`,
+        label: `${prefix}${platform} · 逐字（YRC）${lyric.translation ? ' + 翻译' : ''}`,
       };
     }
   }
@@ -1053,6 +1093,7 @@ export class LyricsView {
   readonly root: HTMLDivElement;
 
   private linesEl: HTMLDivElement;
+  private transBar: HTMLDivElement;
   private progressFill: HTMLDivElement;
   private progressCur: HTMLSpanElement;
   private progressDur: HTMLSpanElement;
@@ -1061,6 +1102,8 @@ export class LyricsView {
   private bgToken = 0;
   private palette: string[] | null = null;
   private tintedIndex = -1;
+  /** 歌曲信息反差色采样用的封面地址，换封面才重新采样。 */
+  private metaToneKey = '';
   private flowLast = 0;
   private coverWrapEl: HTMLDivElement;
   private metaEl: HTMLDivElement;
@@ -1106,6 +1149,9 @@ export class LyricsView {
   private vinylStage: VinylStage | null = null;
   /** 播放效果（几何）舞台：文字 PV 排版，一句一种构图 + 错版叠印 + 网点颗粒。 */
   private geoStage: GeoStage | null = null;
+  /** 播放效果（PV）舞台：文字 PV 定格风，巨字裁切 + 斜切色带 + 负片 + 错版叠印 + 故障扫描。 */
+  private pvStage: PvStage | null = null;
+  private flowStage: FlowStage | null = null;
   /** 进页时等画布第一次出像的监听（见 watchStagePaint）。 */
   private stageObserver: MutationObserver | null = null;
   /** 默认歌词页的播放样式（见 lyricStyle.ts）：只切 root 上的 lyric-style-<id> class，动画全在 CSS 里。 */
@@ -1132,6 +1178,7 @@ export class LyricsView {
   private lineMetrics: Array<{ top: number; height: number }> = [];
   private resizeTimer = 0;
   private lyricsSizeApplied = '';
+  /** 上一次重算「放大余量」的时间：版面过渡（进歌词页、换封面宽高、切字号）期间也要跟手修正。 */
   /** 逐字状态的上一行与缓存：同一行内只 toggle 发生变化的 span。 */
   private charStateLine = -1;
   private charStateCache: number[] = [];
@@ -1145,6 +1192,7 @@ export class LyricsView {
       this.applyLyricsSizeSetting();
       this.refreshCoverResolution();
       this.measureLines();
+      this.syncProgress(true);
     }, 180);
   };
 
@@ -1155,6 +1203,7 @@ export class LyricsView {
     this.artistEl = h('div', { class: 'lyrics-artist', text: '' });
     this.sourceEl = h('div', { class: 'lyrics-source', text: '' });
     this.linesEl = h('div', { class: 'lyrics-lines' });
+    this.transBar = h('div', { class: 'lyrics-transbar is-empty' });
     this.progressFill = h('div', { class: 'lyrics-progress-fill' });
     this.progressCur = h('span', { class: 'lyrics-progress-cur', text: '00:00' });
     this.progressDur = h('span', { class: 'lyrics-progress-dur', text: '00:00' });
@@ -1173,6 +1222,8 @@ export class LyricsView {
     this.roomStage = createRoomStage();
     this.vinylStage = createVinylStage();
     this.geoStage = createGeoStage();
+    this.pvStage = createPvStage();
+    this.flowStage = createFlowStage();
 
     this.root = h(
       'div',
@@ -1183,6 +1234,8 @@ export class LyricsView {
       this.roomStage.root,
       this.vinylStage.root,
       this.geoStage.root,
+      this.pvStage.root,
+      this.flowStage.root,
       closeBtn,
       h(
         'div',
@@ -1202,6 +1255,7 @@ export class LyricsView {
         ),
         this.rightEl,
       ),
+      this.transBar,
     );
 
     this.applyLumiereMode();
@@ -1214,6 +1268,12 @@ export class LyricsView {
       this.applyLyricStyle();
     });
     window.addEventListener('resize', this.onWindowResize);
+    this.domLayoutObserver = new ResizeObserver(() => {
+      if (this.disposed || this.covered || this.browsing()) return;
+      requestAnimationFrame(() => { if (!this.disposed && !this.covered) { this.measureLines(); this.syncProgress(true); } });
+    });
+    this.domLayoutObserver.observe(this.linesEl);
+    this.domLayoutObserver.observe(this.rightEl);
     this.settingsUnsub = onSettingsChange(() => {
       const before = this.lyricsSizeApplied;
       this.applyLyricsSizeSetting();
@@ -1266,6 +1326,7 @@ export class LyricsView {
     if (coverUrl !== this.bannerUrl) {
       this.bannerUrl = coverUrl;
       this.bgEl.style.backgroundImage = coverUrl ? `url("${coverUrl}")` : 'none';
+      void this.refreshMetaTone(track, coverUrl);
     }
     if (key !== this.tintKey) {
       this.tintKey = key;
@@ -1285,6 +1346,156 @@ export class LyricsView {
     if (changed || key !== this.lastTrackKey) {
       this.lastTrackKey = key;
       void this.reload(track);
+    }
+  }
+
+  /**
+   * 歌曲信息（标题/歌手/来源）压在封面或模糊封面上：按封面整体明暗自动切换反差色。
+   * 优先用宿主取色（/api/cover/colors，跨域安全、与封面主色一致）；拿不到再退回本地像素采样。
+   * 亮底→深字（is-meta-dark），暗底→浅字（is-meta-light），中间调沿用主题色。
+   */
+  private async refreshMetaTone(track: OnlineTrack | null, coverUrl: string): Promise<void> {
+    const toneKey = track ? `${track.source}:${track.id}:${track.cover ?? ''}` : '';
+    if (!toneKey || toneKey === this.metaToneKey) return;
+    this.metaToneKey = toneKey;
+    let luminance: number | null = null;
+    const colors = await coverColorsOf(track);
+    if (this.disposed || toneKey !== this.metaToneKey) return;
+    if (colors) {
+      const swatches = [colors.dominant, ...colors.palette].slice(0, 4);
+      const values = swatches.map(color => this.colorLuminance(color));
+      const average = values.reduce((sum, value) => sum + value, 0) / values.length;
+      // 主色占封面面积最大；模糊背景大致等于整张封面的平均观感，主色权重更高。
+      luminance = this.colorLuminance(colors.dominant) * 0.55 + average * 0.45;
+    } else if (coverUrl) {
+      luminance = await this.sampleMetaLuminance(coverUrl);
+      if (this.disposed || toneKey !== this.metaToneKey) return;
+    }
+    this.root.classList.toggle('is-meta-dark', luminance !== null && luminance >= 0.58);
+    this.root.classList.toggle('is-meta-light', luminance !== null && luminance <= 0.42);
+  }
+
+  /** 把 #rrggbb / rgb() / hsl() 颜色换算成 0~1 的感知亮度。 */
+  private colorLuminance(color: string): number {
+    const text = color.trim();
+    let rgb: [number, number, number] | null = null;
+    if (text.startsWith('#') && text.length >= 7) {
+      rgb = [parseInt(text.slice(1, 3), 16), parseInt(text.slice(3, 5), 16), parseInt(text.slice(5, 7), 16)];
+    } else {
+      const hsl = text.match(/hsl\(\s*([\d.]+)[\s,]+([\d.]+)%[\s,]+([\d.]+)%/i);
+      if (hsl) {
+        const hue = ((Number(hsl[1]) % 360) + 360) % 360 / 360;
+        const sat = Number(hsl[2]) / 100;
+        const light = Number(hsl[3]) / 100;
+        const chroma = (1 - Math.abs(2 * light - 1)) * sat;
+        const x = chroma * (1 - Math.abs(((hue * 6) % 2) - 1));
+        const m = light - chroma / 2;
+        const table: Array<[number, number, number]> = [
+          [chroma, x, 0],
+          [x, chroma, 0],
+          [0, chroma, x],
+          [0, x, chroma],
+          [x, 0, chroma],
+          [chroma, 0, x],
+        ];
+        const pick = table[Math.floor(hue * 6) % 6] ?? [0, 0, 0];
+        rgb = [(pick[0] + m) * 255, (pick[1] + m) * 255, (pick[2] + m) * 255];
+      } else {
+        const match = text.match(/rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/i);
+        if (match) rgb = [Number(match[1]), Number(match[2]), Number(match[3])];
+      }
+    }
+    if (!rgb) return 0.5;
+    return (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255;
+  }
+
+  /** 本地像素兜底：取封面右上区域的平均亮度（封面跨域被污染时返回 null）。 */
+  private async sampleMetaLuminance(url: string): Promise<number | null> {
+    const image = new Image();
+    image.crossOrigin = 'anonymous';
+    image.referrerPolicy = 'no-referrer';
+    image.decoding = 'async';
+    const loaded = await new Promise<boolean>((resolve) => {
+      image.onload = () => resolve(true);
+      image.onerror = () => resolve(false);
+      image.src = url;
+    });
+    if (!loaded || this.disposed) return null;
+    try {
+      const size = 32;
+      const canvas = document.createElement('canvas');
+      canvas.width = size;
+      canvas.height = size;
+      const context = canvas.getContext('2d', { willReadFrequently: true });
+      if (!context) return null;
+      context.drawImage(image, 0, 0, size, size);
+      const data = context.getImageData(0, 0, size, size).data;
+      // 对应屏幕上歌曲信息的位置：封面右半、上三分之一。
+      let sum = 0;
+      let count = 0;
+      for (let y = 0; y < Math.round(size * 0.34); y += 1) {
+        for (let x = Math.round(size * 0.5); x < size; x += 1) {
+          const i = (y * size + x) * 4;
+          sum += (0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2]) / 255;
+          count += 1;
+        }
+      }
+      return count > 0 ? sum / count : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 当前行的放大只向右扩展；长句已经贴到歌词列右缘时，按剩余空间收小放大倍数，
+   * 避免最后几个字被 .lyrics-right 的 overflow 裁掉。
+   * 结果写进 --line-emph（0~0.207），CSS 用 scale(1 + var(--line-emph) * var(--grow))。
+   */
+  private applyLineEmphasisCap(index: number): void {
+    const el = this.lineEls[index];
+    if (!el) return;
+    const chars = this.charEls[index] ?? [];
+    if (chars.length === 0) {
+      el.style.removeProperty('--line-emph');
+      return;
+    }
+    const rightRect = this.rightEl.getBoundingClientRect();
+    const lineRect = el.getBoundingClientRect();
+    const transform = getComputedStyle(el).transform;
+    let scale = 1;
+    if (transform && transform !== 'none') {
+      try {
+        scale = new DOMMatrixReadOnly(transform).a || 1;
+      } catch {
+        scale = 1;
+      }
+    }
+    let textRight = lineRect.left;
+    for (const span of chars) {
+      const rect = span.getBoundingClientRect();
+      if (rect.right > textRight) textRight = rect.right;
+    }
+    // 还原成未放大的版面宽度：transform-origin 在行首，左缘不随缩放移动。
+    const baseWidth = (textRight - lineRect.left) / scale;
+    // 右缘以歌词列的内容盒为准（.lyrics-lines 的 padding-right 不算可用空间），
+    // 再扣掉 active 行固定的 8px 右移与 4px 安全余量；之前直接用列外框，
+    // 长句会多算 16px 余量，放大后最后几个字仍被 overflow 裁掉。
+    const parent = el.parentElement;
+    let contentRight = rightRect.right;
+    if (parent) {
+      const parentRect = parent.getBoundingClientRect();
+      const paddingRight = Number.parseFloat(getComputedStyle(parent).paddingRight) || 0;
+      contentRight = parentRect.right - paddingRight;
+    }
+    const room = contentRight - lineRect.left - 12;
+    // 放大曲线会先冲过 1（wild 档峰值 2.85），按峰值反推每行的最大放大余量，
+    // 否则长句在起句瞬间仍会越过右缘被裁掉。
+    const peakGrow = 1 + (GROW_PROFILES[lyricGrow]?.overshoot ?? 0);
+    const maxScale = baseWidth > 8 ? room / baseWidth : 1.207;
+    const emph = Math.max(0, Math.min(0.207, (maxScale - 1) / Math.max(1, peakGrow)));
+    const next = emph.toFixed(4);
+    if (el.style.getPropertyValue('--line-emph') !== next) {
+      el.style.setProperty('--line-emph', next);
     }
   }
 
@@ -1380,6 +1591,7 @@ export class LyricsView {
 
   /** 取某行的偏移/高度：缓存缺失或高度为 0（行被隐藏）时回落实读，保证不会被顶到错误位置。 */
   private metricOf(index: number, el: HTMLElement | undefined): { top: number; height: number } {
+    if (el) this.lineMetrics[index] = { top: el.offsetTop, height: el.offsetHeight };
     const cached = this.lineMetrics[index];
     if (cached && cached.height > 0) return cached;
     return el ? { top: el.offsetTop, height: el.offsetHeight } : { top: 0, height: 0 };
@@ -1454,12 +1666,16 @@ export class LyricsView {
   /** 应用播放效果（纯字 / 房间）：切换舞台模式、开关渲染循环、同步歌词文档。 */
   applyLumiereMode(): void {
     if (this.disposed) return;
+    this.stageObserver?.disconnect();
+    this.stageObserver = null;
     const mode = lumiereMode();
     const textOn = mode === 'text';
     const roomOn = mode === 'room';
     const vinylOn = mode === 'vinyl';
     const geoOn = mode === 'geo';
-    const anyOn = textOn || roomOn || vinylOn || geoOn;
+    const pvOn = mode === 'pv';
+    const flowOn = mode === 'flow';
+    const anyOn = textOn || roomOn || vinylOn || geoOn || pvOn || flowOn;
     // 纯字 / 房间 / 唱片都由 canvas 画歌词，DOM 歌词与封面栏让位；什么时候藏由 CSS 的 is-painted 门槛决定，
     // 画布还没出像时默认歌词页仍然可见，不会闪灰。
     this.root.classList.toggle('is-lumiere', anyOn);
@@ -1468,6 +1684,8 @@ export class LyricsView {
     this.root.classList.toggle('is-room', roomOn);
     this.root.classList.toggle('is-vinyl', vinylOn);
     this.root.classList.toggle('is-geo', geoOn);
+    this.root.classList.toggle('is-pv', pvOn);
+    this.root.classList.toggle('is-flow', flowOn);
     // 播放效果开启/关闭会改变「封面在左」是否生效，切完模式立即重算一次。
     if (this.coverEl) {
       this.applyCoverStyle();
@@ -1497,8 +1715,20 @@ export class LyricsView {
       if (geoOn) geo.activate();
       else geo.deactivate();
     }
+    const pv = this.pvStage;
+    if (pv) {
+      pv.setMode(pvOn ? 'pv' : 'off');
+      if (pvOn) pv.activate();
+      else pv.deactivate();
+    }
     // 刚进歌词页时先别露默认封面：等画布第一次出像再撤 is-lumiere-fresh（进页那一瞬是暗场 + 加载提示）。
-    const stageRoot = roomOn ? room?.root : vinylOn ? vinyl?.root : geoOn ? geo?.root : stage?.root;
+    const flow = this.flowStage;
+    if (flow) {
+      flow.setMode(flowOn ? 'flow' : 'off');
+      if (flowOn) flow.activate();
+      else flow.deactivate();
+    }
+    const stageRoot = flowOn ? flow?.root : roomOn ? room?.root : vinylOn ? vinyl?.root : geoOn ? geo?.root : pvOn ? pv?.root : stage?.root;
     const painted = stageRoot ? stageRoot.classList.contains('is-painted') : false;
     const failed = stageRoot ? stageRoot.classList.contains('is-failed') : false;
     if (anyOn && stageRoot && !painted && !failed) {
@@ -1508,6 +1738,24 @@ export class LyricsView {
       this.root.classList.remove('is-lumiere-fresh');
     }
     if (anyOn) this.syncLumiereSong();
+    else this.restoreDomLyrics();
+  }
+
+  /** Restore measurable DOM before positioning: content-visibility invalidates cached geometry. */
+  private restoreDomLyrics(): void {
+    this.covered = false;
+    this.coverStart = 0;
+    this.root.classList.remove('is-covered', 'is-lumiere-fresh');
+    window.clearTimeout(this.manualTimer);
+    window.cancelAnimationFrame(this.manualRaf);
+    this.manualRaf = 0;
+    this.manualUntil = this.manualShift = this.manualTarget = 0;
+    this.lineMetrics = [];
+    this.charStateLine = -1;
+    this.charStateCache = [];
+    this.measureLines();
+    this.syncProgress(true);
+    this.applyOffset(false);
   }
 
   /** 应用默认歌词页的播放样式；切换后立即生效、不重载歌词（动画定义全在 app.css 的 lyric-style-* 段）。 */
@@ -1581,6 +1829,7 @@ export class LyricsView {
     lumiereThemeNow = lumiereThemeForCover(this.bgMode, this.palette);
     lumierePaletteNow = this.palette ? [...this.palette] : null;
     this.lumiereText?.setTheme(lumiereThemeNow, lumierePaletteNow);
+
   }
 
   /** 把当前歌词文档交给播放效果舞台（整首歌词）。 */
@@ -1600,12 +1849,18 @@ export class LyricsView {
     this.roomStage?.setSong(input);
     this.vinylStage?.setSong(input);
     this.geoStage?.setSong(input);
+    this.pvStage?.setSong(input);
+    this.flowStage?.setSong(input);
   }
 
 
   /** 按模式给歌词文字上色：纯色=主题色，封面色=封面主色，自动渐变=色板逐字渐变。 */
   private async applyTextTint(): Promise<void> {
     const token = ++this.bgToken;
+    const flowTrack = this.state?.track ?? null;
+    void coverColorsOf(flowTrack).then(colors => {
+      if (!this.disposed && token === this.bgToken) this.flowStage?.setPalette((colors ?? fallbackColors(`${flowTrack?.title ?? ""}|${flowTrack?.artist ?? ""}`)).palette);
+    }).catch(() => {});
     const mode = this.bgMode;
     if (mode === 'solid') {
       const solid = lyricSolidColor();
@@ -1614,6 +1869,8 @@ export class LyricsView {
         : null;
       this.applyLumiereTheme();
       this.paintActiveLineTint();
+      this.colorKey = '';
+      this.paintLyricColors(this.browsing(), Math.max(0, this.activeIndex));
       return;
     }
     const track = this.state?.track ?? null;
@@ -1622,6 +1879,8 @@ export class LyricsView {
     this.palette = colors.palette;
     this.applyLumiereTheme();
     this.paintActiveLineTint();
+    this.colorKey = '';
+    this.paintLyricColors(this.browsing(), Math.max(0, this.activeIndex));
   }
 
   /** 混合两个 #rrggbb 颜色。 */
@@ -1662,6 +1921,43 @@ export class LyricsView {
   }
 
   /** 封面色板取出的颜色多半偏浅，压暗到能在浅色背景上看清：过亮的颜色往墨色里混。 */
+  /** 暗场提亮：保留色相，把过暗的十六进制颜色往白色里混，避免滚动歌词看不见。 */
+  private browseTint(color: string): string {
+    const text = color.trim();
+    if (!text.startsWith('#') || text.length !== 7) return color;
+    const r = parseInt(text.slice(1, 3), 16);
+    const g = parseInt(text.slice(3, 5), 16);
+    const b = parseInt(text.slice(5, 7), 16);
+    const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    if (lum >= 0.62) return color;
+    // 只把过暗的颜色抬到可读亮度（L≈0.62），保留色相与饱和度，不把用户选的颜色洗成白色。
+    const ratio = Math.round(Math.max(6, Math.min(92, ((1 - 0.62) / (1 - lum)) * 100)));
+    return `color-mix(in oklch, ${color} ${ratio}%, white)`;
+  }
+
+  /** 去掉颜色里的 alpha（rgb(r g b / a) / rgba(...) / #rrggbbaa），保留色相。 */
+  private opaqueColor(color: string): string {
+    const text = color.trim();
+    const slash = text.match(/^rgb\(([^)]+)\)$/i);
+    if (slash) {
+      const body = slash[1].split('/')[0].trim();
+      const parts = body.split(/[\s,]+/).filter(Boolean).slice(0, 3);
+      if (parts.length === 3) return `rgb(${parts.join(' ')})`;
+    }
+    const rgba = text.match(/^rgba\(([^)]+)\)$/i);
+    if (rgba) {
+      const parts = rgba[1].split(/[\s,]+/).filter(Boolean).slice(0, 3);
+      if (parts.length === 3) return `rgb(${parts.join(' ')})`;
+    }
+    if (/^#[0-9a-f]{8}$/i.test(text)) return text.slice(0, 7);
+    return text;
+  }
+
+  /** 浏览态把过暗的颜色抬到可读亮度（保留色相）——歌词舞台始终是暗底。 */
+  private ensureReadable(color: string): string {
+    return this.browseTint(color);
+  }
+
   private readableTint(color: string): string {
     const text = color.trim();
     if (!text.startsWith('#') || text.length !== 7) return color;
@@ -1754,22 +2050,22 @@ export class LyricsView {
       }
       return;
     }
-    const gradientMode = this.bgMode === 'gradient';
-    // 左侧竖条跟随歌词颜色：封面色用主色，自动渐变用色板中段
-    const barColor = gradientMode ? this.samplePalette(0.5) : first;
+    // 自动渐变模式：行底色与竖条颜色由 paintGradientFlow 独占写入。
+    // 两个写者交替覆盖同一批变量，会让横线/竖条颜色每隔一帧跳一次（用户看到的闪烁）。
+    if (this.bgMode === 'gradient') return;
+    // 左侧竖条跟随歌词颜色：封面色用主色
     activeEl.style.setProperty('--lyric-bar-a', first);
-    activeEl.style.setProperty('--lyric-bar-b', barColor);
+    activeEl.style.setProperty('--lyric-bar-b', first);
     activeEl.style.setProperty('--lyric-bar-c', first);
-    const hotBase = gradientMode ? this.samplePalette(0.66) : first;
+    const hotBase = first;
     // 文字用色要先压暗，否则浅色封面上「亮色」歌词会糊成灰白
     const hotColor = this.readableTint(this.mixColor(hotBase, '#ffffff', 0.34));
     const spans = this.charEls[this.activeIndex] ?? [];
-    const count = Math.max(1, spans.length - 1);
     const glow = `0 0 18px ${this.mixColor(hotColor, second, 0.45)}, 0 0 10px ${this.mixColor(hotColor, '#1b1b1b', 0.35)}`;
     activeEl.style.setProperty('--lyric-hot', hotColor);
     activeEl.style.setProperty('--lyric-glow', glow);
     activeEl.style.setProperty('--lyric-line', hotColor);
-    spans.forEach((span, index) => {
+    spans.forEach((span) => {
       if (span.classList.contains('is-hot')) {
         span.style.setProperty('--lyric-hot', hotColor);
         span.style.setProperty('--lyric-glow', glow);
@@ -1781,7 +2077,7 @@ export class LyricsView {
       span.style.removeProperty('--lyric-glow');
       if (span.classList.contains('is-sung')) {
         // 自动渐变：沿封面色板多色过渡；封面色：统一用主色
-        span.style.setProperty('--lyric-sung', this.readableTint(gradientMode ? this.samplePalette(index / count) : first));
+        span.style.setProperty('--lyric-sung', this.readableTint(first));
         return;
       }
       span.style.removeProperty('--lyric-sung');
@@ -1882,6 +2178,7 @@ export class LyricsView {
   private render(): void {
     this.linesEl.textContent = '';
     this.lineEls = [];
+    this.colorKey = '';
     this.charEls = [];
     this.lineMetrics = [];
     this.charStateLine = -1;
@@ -1966,7 +2263,7 @@ export class LyricsView {
       this.activeIndex = nextIndex;
       if (changed) this.growStartAt = performance.now();
       if (changed) this.lumiereText?.pulse();
-      if (prev >= 0) {
+      if (changed && prev >= 0) {
         this.lineEls[prev]?.classList.remove('is-active', 'is-near');
         // 上一行唱完后必须清掉逐字状态，否则最后一个字的 is-hot 会一直亮着
         this.charEls[prev]?.forEach((span) => span.classList.remove('is-sung', 'is-hot'));
@@ -1998,6 +2295,7 @@ export class LyricsView {
     }
     const activeLine = this.doc.lines[this.activeIndex];
     currentLyricText = activeLine ? activeLine.text : '';
+    this.updateTranslationBar(activeLine?.translation ?? '');
     // 当前行的演唱进度（0~1），驱动行下方的金色进度线
     const activeEl = this.lineEls[this.activeIndex];
     if (activeEl && activeLine) {
@@ -2044,6 +2342,8 @@ export class LyricsView {
   }
 
   /** 普通 LRC 行的合成逐字状态（charTiming 样式专用）；切到别的样式时把残留状态清掉。 */
+
+  /** 普通 LRC 行的合成逐字状态（charTiming 样式专用）；切到别的样式时把残留状态清掉。 */
   private syncPlainCharStates(line: LyricLine, lyricPos: number): void {
     const spans = this.charEls[this.activeIndex] ?? [];
     if (spans.length === 0) return;
@@ -2064,22 +2364,26 @@ export class LyricsView {
   /** 切换动效档位后，让当前行立刻按新曲线重播一次（快捷设置里能直接看到效果）。 */
   replayGrow(): void {
     if (this.disposed || this.activeIndex < 0) return;
+    // 档位变了峰值也变了，先按新曲线重算放大余量再重播。
+    this.applyLineEmphasisCap(this.activeIndex);
     this.growStartAt = performance.now();
     this.lineEls[this.activeIndex]?.style.setProperty('--grow', '0');
   }
 
   /** 画布接管后是否已经把 DOM 歌词整棵停渲染（延迟到淡出结束，避免切换时闪一下）。 */
   private covered = false;
+  private domLayoutObserver: ResizeObserver | null = null;
   private coverStart = 0;
 
   /** 播放效果画布已经接管画面（出像之后）：DOM 歌词整棵是透明的，没必要再逐帧刷它。 */
   private lumiereCoversLyrics(): boolean {
     const mode = lumiereMode();
     if (mode === 'off') return false;
-    const stage = mode === 'room' ? this.roomStage : mode === 'vinyl' ? this.vinylStage : mode === 'geo' ? this.geoStage : this.lumiereText;
+    const stage = mode === 'flow' ? this.flowStage : mode === 'room' ? this.roomStage : mode === 'vinyl' ? this.vinylStage : mode === 'geo' ? this.geoStage : mode === 'pv' ? this.pvStage : this.lumiereText;
     if (!stage) return false;
     const classes = stage.root.classList;
-    return classes.contains('is-on') && classes.contains('is-painted');
+    return classes.contains('is-on') && classes.contains('is-ready')
+      && classes.contains('is-content') && classes.contains('is-painted') && !classes.contains('is-failed');
   }
 
   /** 画面被接管时只维护全局“当前歌词文本”，让状态栏/系统媒体信息不至于停住。 */
@@ -2108,8 +2412,7 @@ export class LyricsView {
       } else {
         this.coverStart = 0;
         if (this.covered) {
-          this.covered = false;
-          this.root.classList.remove('is-covered');
+          this.restoreDomLyrics();
         }
         this.syncProgress();
       }
@@ -2126,17 +2429,20 @@ export class LyricsView {
    * 每行的可见度：默认按「离当前句几行」渐隐，越远越淡直到消失；
    * 用户手动滚动浏览时全部恢复为可见，否则滚上去的句子全是透明的没法看。
    */
+  private colorKey = '';
+  private gradPhase = 0;
+  private gradTimer: number | null = null;
+
   private applyFade(): void {
     const browsing = this.browsing();
     const base = this.activeIndex >= 0 ? this.activeIndex : 0;
+    this.linesEl.classList.toggle('is-browsing', browsing);
+
+    // 几何与节奏：只写 --fade / --scatter，不碰颜色。
     this.lineEls.forEach((el, index) => {
       const distance = Math.abs(index - base);
       const fade = browsing || distance === 0 ? 1 : Math.max(0, 1 - (distance - 1) * 0.3);
       el.style.setProperty('--fade', fade.toFixed(3));
-      // 旋入样式里整列歌词共用一份「散开系数」--scatter（0 = 完全整齐）：
-      // 当前行 0.6（还没唱的字半散着，唱到再归位）；往后每远一行再散一点，最远 1；
-      // 往前的行已唱完，保持整齐。这样换行时不会「重新组装一次」，而是接着上一行的散开状态继续收拢。
-      // 手动浏览歌词时不打乱（要能看清）。
       const scatter = browsing
         ? 0
         : index === base
@@ -2146,6 +2452,136 @@ export class LyricsView {
             : 0;
       el.style.setProperty('--scatter', scatter.toFixed(3));
     });
+
+    this.paintLyricColors(browsing, base);
+  }
+
+  /**
+   * 歌词文字颜色的唯一写者。
+   *
+   * 语义（与设置面板一致）：
+   *  - 已播放的行：纯色档用「纯色颜色」；封面色/自动渐变档交还给现有色板动画
+   *    （逐字 --lyric-sung 由 paintActiveLineTint / paintGradientFlow 驱动）；
+   *  - 正在播放的行与待播放的行：统一「未播放颜色」。
+   * 透明度只在手动浏览时强制为 1，其余交给样式表。
+   */
+  private paintLyricColors(browsing: boolean, base: number): void {
+    const solid = this.bgMode === 'solid' ? lyricSolidColor() : '';
+    const palette = this.palette;
+    const sungColorFor = (index: number): string => {
+      if (this.bgMode === 'solid') return solid;
+      if (!palette || palette.length === 0) return '';
+      const tone =
+        this.bgMode === 'gradient' ? this.samplePalette((index * 0.21) % 1) : palette[0];
+      return this.opaqueColor(tone);
+    };
+    const unsung = this.ensureReadable(
+      this.opaqueColor(
+        lyricUnsungColor() ||
+          getComputedStyle(this.root).getPropertyValue('--lyric-unsung').trim() ||
+          '#fff',
+      ),
+    );
+    const gradKey = palette && palette.length ? palette.join(',') : '';
+    const key = `${base}|${this.lineEls.length}|${browsing}|${this.bgMode}|${solid}|${unsung}|${gradKey}`;
+    if (key === this.colorKey) return;
+    this.colorKey = key;
+
+    this.lineEls.forEach((el, index) => {
+      const sungLine = index < base;
+      const activeLine = index === base;
+      const sung = sungColorFor(index);
+      const color = sungLine && sung ? this.ensureReadable(sung) : unsung;
+      const gradient = activeLine && this.bgMode !== 'solid' && !!palette && palette.length > 0;
+      el.classList.remove('has-lyric-gradient', 'grad-animated');
+      el.style.removeProperty('--lyric-grad');
+      if (gradient) {
+        el.style.removeProperty('color');
+      } else {
+        if (color) el.style.setProperty('color', color, 'important');
+        else el.style.removeProperty('color');
+      }
+      if (browsing) el.style.setProperty('opacity', '1', 'important');
+      else el.style.removeProperty('opacity');
+
+      for (const ch of Array.from(el.querySelectorAll<HTMLElement>('.lyric-char'))) {
+        if (browsing) ch.style.setProperty('opacity', '1', 'important');
+        else ch.style.removeProperty('opacity');
+        if (gradient) continue;
+        if (color && sungLine) ch.style.setProperty('--lyric-sung', color);
+        else ch.style.removeProperty('--lyric-sung');
+        if (color) ch.style.setProperty('color', color, 'important');
+        else ch.style.removeProperty('color');
+      }
+    });
+
+    if (this.bgMode === 'solid' || !palette || palette.length === 0) this.stopGradientScan();
+    else this.paintActiveGradient(this.bgMode === 'gradient');
+  }
+
+  /** 正在播放行的渐变：逐字按色板取色；自动渐变档再叠加持续移动的相位。 */
+  private paintActiveGradient(animated: boolean): void {
+    const chars = this.charEls[this.activeIndex] ?? [];
+    if (chars.length === 0) return;
+    if (animated) this.startGradientScan();
+    else {
+      this.stopGradientScan();
+      this.gradPhase = 0;
+    }
+    const count = Math.max(1, chars.length - 1);
+    chars.forEach((ch, index) => {
+      const tone = this.samplePalette((index / count + this.gradPhase) % 1);
+      ch.style.setProperty('color', this.ensureReadable(tone), 'important');
+    });
+  }
+
+  private startGradientScan(): void {
+    if (this.gradTimer !== null) return;
+    this.gradTimer = window.setInterval(() => {
+      if (this.disposed || this.bgMode !== 'gradient' || this.activeIndex < 0) {
+        this.stopGradientScan();
+        return;
+      }
+      this.gradPhase = (this.gradPhase + 0.02) % 1;
+      this.paintActiveGradient(true);
+    }, 90);
+  }
+
+  private stopGradientScan(): void {
+    if (this.gradTimer !== null) {
+      window.clearInterval(this.gradTimer);
+      this.gradTimer = null;
+    }
+  }
+
+  /**
+   * 译文兜底条：当前行有译文，但当前歌词样式没把行内译文显示出来时，
+   * 在播放条上方补一条，保证任何动效下都能看到翻译。
+   */
+  private updateTranslationBar(text: string): void {
+    const value = (text ?? '').trim();
+    if (!value) {
+      this.transBar.classList.add('is-empty');
+      if (this.transBar.textContent) this.transBar.textContent = '';
+      return;
+    }
+    const inline = this.lineEls[this.activeIndex]?.querySelector('.lyric-trans') as HTMLElement | null;
+    let inlineVisible = false;
+    if (inline) {
+      const rect = inline.getBoundingClientRect();
+      const visible = typeof inline.checkVisibility === 'function'
+        ? inline.checkVisibility({ opacityProperty: true, visibilityProperty: true, contentVisibilityAuto: true })
+        : getComputedStyle(inline).display !== 'none';
+      // 画布动效会把整棵 DOM 歌词淡出：此时行内译文其实看不见，改由底部条兜底。
+      inlineVisible = visible && rect.height > 2 && rect.width > 2 &&
+        rect.bottom > 0 && rect.top < window.innerHeight;
+    }
+    if (inlineVisible) {
+      this.transBar.classList.add('is-empty');
+      return;
+    }
+    if (this.transBar.textContent !== value) this.transBar.textContent = value;
+    this.transBar.classList.remove('is-empty');
   }
 
   private applyOffset(animate: boolean): void {
@@ -2250,6 +2686,8 @@ export class LyricsView {
     window.clearTimeout(this.coverSwitchTimer);
     window.clearTimeout(this.resizeTimer);
     window.removeEventListener('resize', this.onWindowResize);
+    this.domLayoutObserver?.disconnect();
+    this.domLayoutObserver = null;
     if (this.rafId) window.cancelAnimationFrame(this.rafId);
     window.clearTimeout(this.manualTimer);
     if (this.manualRaf) {
@@ -2264,6 +2702,10 @@ export class LyricsView {
     this.vinylStage = null;
     this.geoStage?.dispose();
     this.geoStage = null;
+    this.pvStage?.dispose();
+    this.pvStage = null;
+    this.flowStage?.dispose();
+    this.flowStage = null;
     this.stageObserver?.disconnect();
     this.stageObserver = null;
     this.styleUnsub?.();

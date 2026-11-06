@@ -210,6 +210,48 @@ internal sealed record DiscoverPodcastsResponse
     [JsonPropertyName("programs")] public List<DiscoverProgram> Programs { get; init; } = [];
 }
 
+// 网易播客节目详情（/api/dj/program/detail）：列表卡片之外补 DJ、电台与互动数据。
+internal sealed record DiscoverProgramDetailResponse
+{
+    [JsonPropertyName("source")] public string Source { get; init; } = "netease";
+
+    [JsonPropertyName("id")] public string Id { get; init; } = string.Empty;
+
+    [JsonPropertyName("name")] public string Name { get; init; } = string.Empty;
+
+    [JsonPropertyName("cover")] public string Cover { get; init; } = string.Empty;
+
+    [JsonPropertyName("description")] public string Description { get; init; } = string.Empty;
+
+    [JsonPropertyName("djName")] public string DjName { get; init; } = string.Empty;
+
+    [JsonPropertyName("djAvatar")] public string DjAvatar { get; init; } = string.Empty;
+
+    [JsonPropertyName("radioName")] public string RadioName { get; init; } = string.Empty;
+
+    [JsonPropertyName("durationMs")] public long DurationMs { get; init; }
+
+    [JsonPropertyName("listenerCount")] public long ListenerCount { get; init; }
+
+    [JsonPropertyName("commentCount")] public long CommentCount { get; init; }
+
+    [JsonPropertyName("mainSongId")] public string MainSongId { get; init; } = string.Empty;
+
+    [JsonPropertyName("createTime")] public long CreateTime { get; init; }
+}
+
+// 网易云盘（/api/v1/cloud/get）：上传曲目按页返回，字段与普通曲目同形。
+internal sealed record DiscoverCloudResponse
+{
+    [JsonPropertyName("source")] public string Source { get; init; } = "netease";
+
+    [JsonPropertyName("hasMore")] public bool HasMore { get; init; }
+
+    [JsonPropertyName("maxSize")] public long MaxSize { get; init; }
+
+    [JsonPropertyName("tracks")] public List<OnlineTrack> Tracks { get; init; } = [];
+}
+
 internal sealed record CollectionItem
 {
     [JsonPropertyName("id")] public string Id { get; init; } = string.Empty;
@@ -312,6 +354,8 @@ internal sealed class DiscoverException : Exception
 [JsonSerializable(typeof(DiscoverAlbumResponse))]
 [JsonSerializable(typeof(DiscoverCommentsResponse))]
 [JsonSerializable(typeof(DiscoverPodcastsResponse))]
+[JsonSerializable(typeof(DiscoverProgramDetailResponse))]
+[JsonSerializable(typeof(DiscoverCloudResponse))]
 [JsonSerializable(typeof(DiscoverCollectionsResponse))]
 [JsonSerializable(typeof(DiscoverSongResponse))]
 internal sealed partial class DiscoverJsonContext : JsonSerializerContext

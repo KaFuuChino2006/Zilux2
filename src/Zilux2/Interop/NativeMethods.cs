@@ -13,7 +13,14 @@ internal static class NativeMethods
     public const int HtLeft = 10;
     public const int HtRight = 11;
     public const int HtTop = 12;
+    public const int HtTopLeft = 13;
+    public const int HtTopRight = 14;
     public const int HtBottom = 15;
+    public const int HtBottomLeft = 16;
+    public const int HtBottomRight = 17;
+    public const int WmSize = 0x0005;
+    public const int WmDisplayChange = 0x007E;
+    public const int WmDpiChanged = 0x02E0;
     public const uint MonitorDefaultToNearest = 2;
     public const uint SwpNoZOrder = 0x0004;
     public const uint SwpNoActivate = 0x0010;
@@ -328,6 +335,22 @@ internal static class NativeMethods
     [DllImport("gdi32.dll")]
     public static extern IntPtr CreateRoundRectRgn(int x1, int y1, int x2, int y2, int w, int h);
 
+    // Win11 圆角 / 边框：DwmSetWindowAttribute。Win10 没有这些属性（返回 E_INVALIDARG），
+    // 由调用方回退到 SetWindowRgn。
+    public const int DwmWindowCornerPreference = 33;
+    public const int DwmWindowCornerDefault = 0;
+    public const int DwmWindowCornerDoNotRound = 1;
+    public const int DwmWindowCornerRound = 2;
+    public const int DwmWindowBorderColor = 34;
+    public const int DwmColorNone = unchecked((int)0xFFFFFFFE);
+
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+
+    /// <summary>窗口所在显示器的物理 DPI（Win10 1607+）。不会像 WPF 的 DpiScale 那样滞后。</summary>
+    [DllImport("user32.dll")]
+    public static extern uint GetDpiForWindow(IntPtr hwnd);
+
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
@@ -467,18 +490,21 @@ internal static class NativeMethods
 
     /// <summary>
     /// Hands the current pointer drag to the OS caption move loop: snapping, shake and
-    /// multi-monitor behaviour then match a normal title bar for free.
+    /// multi-monitor behaviour then match a normal title bar for free. The lParam carries the
+    /// screen point where the pointer went down so the loop keeps the grab offset.
     /// </summary>
-    public static void BeginWindowDrag(IntPtr hwnd)
+    public static void BeginWindowDrag(IntPtr hwnd, int screenX, int screenY)
     {
         ReleaseCapture();
-        SendMessage(hwnd, WmNcLButtonDown, (IntPtr)HtCaption, IntPtr.Zero);
+        SendMessage(hwnd, WmNcLButtonDown, (IntPtr)HtCaption, MakeLParam(screenX, screenY));
     }
 
     /// <summary>Hands a page edge pointerdown to the OS resize loop (borderless window).</summary>
-    public static void BeginWindowResize(IntPtr hwnd, int hitTest)
+    public static void BeginWindowResize(IntPtr hwnd, int hitTest, int screenX, int screenY)
     {
         ReleaseCapture();
-        SendMessage(hwnd, WmNcLButtonDown, (IntPtr)hitTest, IntPtr.Zero);
+        SendMessage(hwnd, WmNcLButtonDown, (IntPtr)hitTest, MakeLParam(screenX, screenY));
     }
+
+    private static IntPtr MakeLParam(int x, int y) => (IntPtr)((y << 16) | (x & 0xFFFF));
 }

@@ -1,9 +1,11 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Zilux2.Online.Account;
+using Zilux2.Online.Qq;
 
 namespace Zilux2.Online;
 
@@ -28,7 +30,17 @@ internal sealed class QqProvider : IOnlineMusicProvider
 
     private readonly AccountService? _accounts;
 
-    public QqProvider(AccountService? accounts = null) => _accounts = accounts;
+    // 匿名 128k 原生客户端（QqNativeClient）：取流与 LRC/翻译。原生优先，失败由 _nativeBreaker
+    // 熔断后直接走 web；web 始终是兜底，不改变其它接口（搜索/歌单/推荐）的既有行为。
+    private readonly QqNativeClient _native;
+
+    private readonly NativeCircuitBreaker _nativeBreaker = new("qq");
+
+    public QqProvider(AccountService? accounts = null)
+    {
+        _accounts = accounts;
+        _native = new QqNativeClient(accounts);
+    }
 
     public string Name => "qq";
 
@@ -40,6 +52,14 @@ internal sealed class QqProvider : IOnlineMusicProvider
 
     public async Task<List<OnlineTrack>> SearchAsync(string query, int limit, CancellationToken cancellationToken)
     {
+        // 原生优先：musicu DoSearchForQQMusicDesktop；失败/熔断/无结果再走原有 web 主备端点。
+        var nativeTracks = await TryNativeSearchAsync(query, limit, cancellationToken).ConfigureAwait(false);
+        if (nativeTracks is { Count: > 0 })
+        {
+            await ApplyEntitlementsAsync(nativeTracks, cancellationToken).ConfigureAwait(false);
+            return nativeTracks;
+        }
+
         var primaryUrl = $"{SearchEndpoint}?p=1&n={limit}&w={Uri.EscapeDataString(query)}&format=json&aggr=1&cr=1&new_json=1";
         var primaryStatus = "unknown";
         string? primaryError = null;
@@ -131,6 +151,21 @@ internal sealed class QqProvider : IOnlineMusicProvider
 
     public async Task<LyricData> GetLyricAsync(string id, CancellationToken cancellationToken)
     {
+        // 原生优先：musicu PlayLyricInfo 直接给 LRC + trans（base64）；拿不到或熔断时走 web。
+        var native = await TryNativeLyricAsync(id, cancellationToken).ConfigureAwait(false);
+        if (native is not null)
+        {
+            var qrc = await TryFetchQrcAsync(id, cancellationToken).ConfigureAwait(false);
+            OnlineHttp.Info($"qq.native lyric result id={id} qrc={(qrc is null ? "none" : "ok")}");
+            return new LyricData
+            {
+                Lrc = native.Lrc,
+                Translation = native.Translation,
+                Qrc = qrc,
+                QrcText = QrcDecoder.TryDecrypt(qrc),
+            };
+        }
+
         var url = $"{LyricEndpoint}?songmid={Uri.EscapeDataString(id)}&format=json&nobase64=1";
         try
         {
@@ -151,6 +186,7 @@ internal sealed class QqProvider : IOnlineMusicProvider
                 Lrc = lrc,
                 Translation = string.IsNullOrWhiteSpace(translation) ? null : translation,
                 Qrc = qrc,
+                QrcText = QrcDecoder.TryDecrypt(qrc),
             };
         }
         catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
@@ -158,6 +194,42 @@ internal sealed class QqProvider : IOnlineMusicProvider
             OnlineHttp.Warn($"GET qq/lyric id={id} failed: {OnlineHttp.Describe(exception)}");
             throw;
         }
+    }
+
+    private async Task<QqNativeLyric?> TryNativeLyricAsync(string id, CancellationToken cancellationToken)
+    {
+        if (!_nativeBreaker.ShouldAttempt(out var remaining))
+        {
+            OnlineHttp.Info(
+                $"qq.native lyric skip id={id} cooldown={NativeFirstPolicy.DescribeCooldown(remaining)}s -> web");
+            return null;
+        }
+
+        var stopwatch = Stopwatch.StartNew();
+        var attempt = await NativeFirstPolicy
+            .RunAsync(token => _native.GetLyricAsync(id, token), cancellationToken)
+            .ConfigureAwait(false);
+        var result = attempt.Value;
+        if (attempt.TimedOut || result is null || result.Outcome == NativeCallOutcome.Failed)
+        {
+            _nativeBreaker.RecordFailure();
+            OnlineHttp.Warn(
+                $"qq.native lyric fail id={id} {(attempt.TimedOut ? "timeout" : "error")} " +
+                $"{stopwatch.ElapsedMilliseconds}ms -> web");
+            return null;
+        }
+
+        if (result.Outcome != NativeCallOutcome.Ok || result.Value is null)
+        {
+            OnlineHttp.Info($"qq.native lyric none id={id} {stopwatch.ElapsedMilliseconds}ms -> web");
+            return null;
+        }
+
+        _nativeBreaker.RecordSuccess();
+        OnlineHttp.Info(
+            $"qq.native lyric ok id={id} lrcChars={result.Value.Lrc.Length} " +
+            $"transChars={result.Value.Translation?.Length ?? 0} {stopwatch.ElapsedMilliseconds}ms");
+        return result.Value;
     }
 
     /// <summary>QQ QRC 逐词歌词（加密十六进制）：失败返回 null，不影响普通 LRC 主流程。</summary>
@@ -207,6 +279,379 @@ internal sealed class QqProvider : IOnlineMusicProvider
     {
         // Logged-in hosts must pass the real uin; anonymous requests keep the old "0" shape.
         var uin = _accounts?.GetUserId(Name) ?? "0";
+        var requestedTier = NativeFirstPolicy.QualityTier(quality);
+
+        // 原生优先：匿名 128k。达到请求档位就直接播放；低于请求档位时先试同档 web，
+        // web 更快/更高才替换，否则保留原生地址，避免为了升档把可播放变成不可播放。
+        var native = await TryNativeStreamAsync(id, quality ?? string.Empty, cancellationToken).ConfigureAwait(false);
+        if (native is not null)
+        {
+            var nativeResolution = StreamResolution.Playable(
+                native.Url,
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["Referer"] = RefererUrl,
+                },
+                native.QualityLabel,
+                native.Bitrate,
+                native.Format);
+            var nativeTier = NativeFirstPolicy.BitrateTier(native.Bitrate);
+            if (nativeTier >= requestedTier)
+            {
+                return nativeResolution;
+            }
+
+            try
+            {
+                var web = await ResolveWebStreamAsync(id, uin, quality, cancellationToken).ConfigureAwait(false);
+                if (web is not null && NativeFirstPolicy.BitrateTier(web.Bitrate) > nativeTier)
+                {
+                    OnlineHttp.Info(
+                        $"qq.native url upgrade id={id} nativeBr={native.Bitrate} webBr={web.Bitrate}");
+                    return web;
+                }
+
+                // 明文档拿不到更高音质时，再试 QMC2 加密档（.mgg/.mflac）。
+                var encrypted = await TryEncryptedStreamAsync(id, quality, cancellationToken).ConfigureAwait(false);
+                if (encrypted is not null && NativeFirstPolicy.BitrateTier(encrypted.Bitrate) > nativeTier)
+                {
+                    OnlineHttp.Info(
+                        $"qq.native url upgrade id={id} nativeBr={native.Bitrate} encryptedBr={encrypted.Bitrate}");
+                    return encrypted;
+                }
+
+                OnlineHttp.Info(
+                    web is null
+                        ? $"qq.native url kept id={id} reason=web-not-playable"
+                        : $"qq.native url kept id={id} nativeBr={native.Bitrate} webBr={web.Bitrate}");
+                return nativeResolution;
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+            {
+                // 原生地址已经可用；web 升档失败不应把可播放变成 502。
+                OnlineHttp.Warn(
+                    $"qq.native url kept id={id} reason=web-failed: {OnlineHttp.Describe(exception)}");
+                return nativeResolution;
+            }
+        }
+
+        var webResolution = await ResolveWebStreamAsync(id, uin, quality, cancellationToken).ConfigureAwait(false);
+        if (webResolution is { IsPlayable: true })
+        {
+            return webResolution;
+        }
+
+        var encryptedFallback = await TryEncryptedStreamAsync(id, quality, cancellationToken).ConfigureAwait(false);
+        return encryptedFallback ?? webResolution ?? StreamResolution.NotPlayable("该歌曲需要 QQ 音乐会员或已下架");
+    }
+
+    /// <summary>
+    /// 诊断入口：跳过普通/Web 档位，直接走 QMC2 加密档，用于验证 ekey 与解密链路。
+    /// </summary>
+    public Task<StreamResolution?> ResolveEncryptedStreamAsync(
+        string id,
+        string? quality,
+        CancellationToken cancellationToken) => TryEncryptedStreamAsync(id, quality, cancellationToken);
+
+    /// <summary>
+    /// QMC2 加密档：登录态请求 .mgg/.mflac → 取 ekey → Range 探测解密模式 → 交给宿主边下边解。
+    /// 任一环节失败返回 null，由调用方继续兜底。
+    /// </summary>
+    private async Task<StreamResolution?> TryEncryptedStreamAsync(
+        string id,
+        string? quality,
+        CancellationToken cancellationToken)
+    {
+        if (_accounts is null || !_accounts.IsLoggedIn(Name))
+        {
+            return null;
+        }
+
+        var mediaMid = await ResolveMediaMidAsync(id, cancellationToken).ConfigureAwait(false);
+        foreach (var candidate in QqEncryptedCandidates(quality))
+        {
+            var vkey = await _native
+                .GetEncryptedVkeyAsync(id, mediaMid, candidate.Prefix, candidate.Extension, cancellationToken)
+                .ConfigureAwait(false);
+            if (vkey.Outcome != NativeCallOutcome.Ok || vkey.Value is null)
+            {
+                continue;
+            }
+
+            var ekey = await _native
+                .GetEkeyAsync(vkey.Value.FileName, id, cancellationToken)
+                .ConfigureAwait(false);
+            if (ekey.Outcome != NativeCallOutcome.Ok ||
+                string.IsNullOrWhiteSpace(ekey.Value))
+            {
+                continue;
+            }
+
+            var probe = await ProbeEncryptedHeaderAsync(vkey.Value.Url, cancellationToken).ConfigureAwait(false);
+            if (probe is null || probe.Length == 0)
+            {
+                continue;
+            }
+
+            var decoder = QmcDecoder.Detect(ekey.Value, probe);
+            if (decoder is null)
+            {
+                OnlineHttp.Warn(
+                    $"qq.encrypted probe mismatch id={id} prefix={candidate.Prefix} bytes={probe.Length}");
+                continue;
+            }
+
+            OnlineHttp.Info(
+                $"qq.encrypted resolved id={id} prefix={candidate.Prefix} mode={decoder.Mode} " +
+                $"br={candidate.Bitrate}");
+            return StreamResolution.Playable(
+                vkey.Value.Url,
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["Referer"] = RefererUrl,
+                },
+                candidate.Label,
+                candidate.Bitrate,
+                candidate.Format,
+                ekey.Value,
+                decoder.Mode.ToString());
+        }
+
+        return null;
+    }
+
+    private async Task<byte[]?> ProbeEncryptedHeaderAsync(string url, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.TryAddWithoutValidation("Referer", RefererUrl);
+            request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, 63);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(StreamTimeout);
+            using var response = await OnlineHttp.Client
+                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token)
+                .ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                OnlineHttp.Warn($"qq.encrypted probe HTTP {(int)response.StatusCode} id=probe");
+                return null;
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
+            var buffer = new byte[64];
+            var total = 0;
+            while (total < buffer.Length)
+            {
+                var read = await stream.ReadAsync(buffer.AsMemory(total), timeout.Token).ConfigureAwait(false);
+                if (read <= 0)
+                {
+                    break;
+                }
+
+                total += read;
+            }
+
+            return buffer[..total];
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            OnlineHttp.Warn($"qq.encrypted probe failed: {OnlineHttp.Describe(exception)}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 加密档文件名用的是媒体 mid（<c>track_info.file.media_mid</c>），与 songmid 不一定相同；
+    /// 拿不到时退回 songmid（多数歌曲两者一致）。
+    /// </summary>
+    private async Task<string> ResolveMediaMidAsync(string id, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var detail = await _native.GetSongDetailJsonAsync(id, cancellationToken).ConfigureAwait(false);
+            if (detail.Outcome == NativeCallOutcome.Ok && detail.Value is { Length: > 0 })
+            {
+                using var document = JsonDocument.Parse(detail.Value);
+                if (document.RootElement.TryGetProperty("req", out var request) &&
+                    request.TryGetProperty("data", out var data) &&
+                    data.TryGetProperty("track_info", out var track) &&
+                    track.TryGetProperty("file", out var file))
+                {
+                    var mediaMid = ReadString(file, "media_mid");
+                    if (!string.IsNullOrWhiteSpace(mediaMid))
+                    {
+                        return mediaMid;
+                    }
+                }
+            }
+        }
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException)
+        {
+            OnlineHttp.Warn($"qq.encrypted media-mid fallback id={id}: {OnlineHttp.Describe(exception)}");
+        }
+
+        return id;
+    }
+
+    private static IReadOnlyList<(string Prefix, string Extension, string Format, int Bitrate, string Label)>
+        QqEncryptedCandidates(string? quality) => (quality ?? string.Empty).Trim().ToLowerInvariant() switch
+    {
+        "lossless" =>
+        [
+            ("F000", "mflac", "flac", 999000, "无损"),
+            ("O8M0", "mgg", "ogg", 320000, "高音质"),
+            ("O6M0", "mgg", "ogg", 192000, "较高音质"),
+            ("O4M0", "mgg", "ogg", 96000, "标准"),
+        ],
+        "standard" => [("O4M0", "mgg", "ogg", 96000, "标准")],
+        _ =>
+        [
+            ("O8M0", "mgg", "ogg", 320000, "高音质"),
+            ("O6M0", "mgg", "ogg", 192000, "较高音质"),
+            ("O4M0", "mgg", "ogg", 96000, "标准"),
+        ],
+    };
+
+    private async Task<QqNativeStream?> TryNativeStreamAsync(string id, string quality, CancellationToken cancellationToken)
+    {
+        if (!_nativeBreaker.ShouldAttempt(out var remaining))
+        {
+            OnlineHttp.Info(
+                $"qq.native url skip id={id} cooldown={NativeFirstPolicy.DescribeCooldown(remaining)}s -> web");
+            return null;
+        }
+
+        var stopwatch = Stopwatch.StartNew();
+        var attempt = await NativeFirstPolicy
+            .RunAsync(token => _native.GetSongUrlAsync(id, quality, token), cancellationToken)
+            .ConfigureAwait(false);
+        var result = attempt.Value;
+        if (attempt.TimedOut || result is null || result.Outcome == NativeCallOutcome.Failed)
+        {
+            _nativeBreaker.RecordFailure();
+            OnlineHttp.Warn(
+                $"qq.native url fail id={id} {(attempt.TimedOut ? "timeout" : "error")} " +
+                $"{stopwatch.ElapsedMilliseconds}ms -> web");
+            return null;
+        }
+
+        if (result.Outcome != NativeCallOutcome.Ok || result.Value is null)
+        {
+            // 匿名无 128k 权益（104003/104009）：上游正常，不算失败、不打开熔断。
+            OnlineHttp.Info($"qq.native url none id={id} {stopwatch.ElapsedMilliseconds}ms -> web");
+            return null;
+        }
+
+        _nativeBreaker.RecordSuccess();
+        OnlineHttp.Info(
+            $"qq.native url ok id={id} br={result.Value.Bitrate} format={result.Value.Format} " +
+            $"{stopwatch.ElapsedMilliseconds}ms");
+        return result.Value;
+    }
+
+    private async Task<List<OnlineTrack>?> TryNativeSearchAsync(
+        string query,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        if (!_nativeBreaker.ShouldAttempt(out var remaining))
+        {
+            OnlineHttp.Info(
+                $"qq.native search skip q={query} cooldown={NativeFirstPolicy.DescribeCooldown(remaining)}s -> web");
+            return null;
+        }
+
+        var stopwatch = Stopwatch.StartNew();
+        var attempt = await NativeFirstPolicy
+            .RunAsync(token => _native.SearchAsync(query, limit, token), cancellationToken)
+            .ConfigureAwait(false);
+        var result = attempt.Value;
+        if (attempt.TimedOut || result is null || result.Outcome == NativeCallOutcome.Failed)
+        {
+            _nativeBreaker.RecordFailure();
+            OnlineHttp.Warn(
+                $"qq.native search fail q={query} {(attempt.TimedOut ? "timeout" : "error")} " +
+                $"{stopwatch.ElapsedMilliseconds}ms -> web");
+            return null;
+        }
+
+        if (result.Outcome != NativeCallOutcome.Ok || result.Value is null || result.Value.Count == 0)
+        {
+            OnlineHttp.Info($"qq.native search none q={query} {stopwatch.ElapsedMilliseconds}ms -> web");
+            return null;
+        }
+
+        _nativeBreaker.RecordSuccess();
+        var tracks = result.Value.Select(song => new OnlineTrack
+        {
+            Source = "qq",
+            Id = song.Mid,
+            Mid = song.Mid,
+            Title = song.Title,
+            Artist = song.Artist,
+            Album = song.Album,
+            DurationMs = song.IntervalSeconds * 1000,
+            Playable = song.PayPlay == 0,
+            Vip = song.PayPlay != 0,
+            CoverKey = song.AlbumMid.Length > 0 ? song.AlbumMid : null,
+        }).ToList();
+        OnlineHttp.Info(
+            $"qq.native search ok q={query} count={tracks.Count} {stopwatch.ElapsedMilliseconds}ms");
+        return tracks;
+    }
+
+    private async Task<List<HotPlaylistItem>?> TryNativeHotPlaylistsAsync(
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        if (!_nativeBreaker.ShouldAttempt(out var remaining))
+        {
+            OnlineHttp.Info(
+                $"qq.native hotlists skip cooldown={NativeFirstPolicy.DescribeCooldown(remaining)}s -> web");
+            return null;
+        }
+
+        var stopwatch = Stopwatch.StartNew();
+        var attempt = await NativeFirstPolicy
+            .RunAsync(token => _native.GetRecommendPlaylistsAsync(0, limit, token), cancellationToken)
+            .ConfigureAwait(false);
+        var result = attempt.Value;
+        if (attempt.TimedOut || result is null || result.Outcome == NativeCallOutcome.Failed)
+        {
+            _nativeBreaker.RecordFailure();
+            OnlineHttp.Warn(
+                $"qq.native hotlists fail {(attempt.TimedOut ? "timeout" : "error")} " +
+                $"{stopwatch.ElapsedMilliseconds}ms -> web");
+            return null;
+        }
+
+        if (result.Outcome != NativeCallOutcome.Ok || result.Value is null || result.Value.Count == 0)
+        {
+            OnlineHttp.Info($"qq.native hotlists none {stopwatch.ElapsedMilliseconds}ms -> web");
+            return null;
+        }
+
+        _nativeBreaker.RecordSuccess();
+        var items = result.Value.Select(playlist => new HotPlaylistItem(
+            playlist.Id,
+            playlist.Title,
+            playlist.Cover.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                ? "https://" + playlist.Cover[7..]
+                : playlist.Cover,
+            playlist.PlayCount,
+            playlist.Creator)).ToList();
+        OnlineHttp.Info(
+            $"qq.native hotlists ok count={items.Count} {stopwatch.ElapsedMilliseconds}ms");
+        return items;
+    }
+
+    private async Task<StreamResolution?> ResolveWebStreamAsync(
+        string id,
+        string uin,
+        string? quality,
+        CancellationToken cancellationToken)
+    {
         foreach (var candidate in QqQualityCandidates(quality))
         {
             var resolution = await ResolveStreamOnceAsync(id, uin, candidate, cancellationToken).ConfigureAwait(false);
@@ -215,7 +660,8 @@ internal sealed class QqProvider : IOnlineMusicProvider
                 return resolution;
             }
         }
-        return StreamResolution.NotPlayable("该歌曲需要 QQ 音乐会员或已下架");
+
+        return null;
     }
 
     private static string[] QqQualityCandidates(string? quality) => (quality ?? string.Empty).Trim().ToLowerInvariant() switch
@@ -462,6 +908,13 @@ internal sealed class QqProvider : IOnlineMusicProvider
     /// <summary>QQ 音乐「音乐馆」热门歌单（匿名可拉，不需要登录）。</summary>
     internal async Task<List<HotPlaylistItem>> GetHotPlaylistsAsync(int limit, CancellationToken cancellationToken)
     {
+        // 原生优先：musicu PlaylistSquare 推荐流；失败/熔断/空列表再走 web 热门歌单。
+        var nativeItems = await TryNativeHotPlaylistsAsync(limit, cancellationToken).ConfigureAwait(false);
+        if (nativeItems is { Count: > 0 })
+        {
+            return nativeItems;
+        }
+
         var url = "https://c.y.qq.com/splcloud/fcgi-bin/fcg_get_diss_by_tag.fcg?picmid=1&rnd=0.2&g_tk=5381" +
                   "&loginUin=0&hostUin=0&format=json&inCharset=utf8&outCharset=utf-8&notice=0" +
                   "&platform=yqq.json&needNewCode=0&categoryId=10000000&sortId=5&sin=0&ein=" +

@@ -22,11 +22,11 @@
     </shell:WindowChrome.WindowChrome>
 
     <Grid x:Name="RootGrid" Background="#F3F1EA">
-        <!-- The inset equals WindowChrome.ResizeBorderThickness. WebView2 is a child HWND:
-             when it reaches the window edge it eats WM_NCHITTEST, and borderless resizing dies.
-             Keeping that thin strip WPF-owned is what makes edge/corner resizing work; it is
-             a little wider than strictly needed because users kept missing the right/bottom
-             edge. It is removed while maximized, where there is nothing to resize anyway. -->
+        <!-- Full-bleed page: WebView2 is a child HWND, so an inset WPF strip would show up as a
+             6px theme-colored frame around the whole window. Edge/corner resizing is instead
+             handled by a host-injected pointerdown listener in the page (5px edges / 12px
+             corners, posting the existing {type:'resize'} message). WindowChrome's 6px border
+             still covers the plain-WPF ErrorPanel shown when WebView2 cannot start. -->
         <wv2:WebView2 x:Name="Browser" Margin="0" />
 
         <!-- Plain WPF fallback (no WebView2 runtime / browser process gone): the user must

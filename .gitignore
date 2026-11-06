@@ -104,3 +104,8 @@ web/arc-proto/
 
 # 例外：档案终端源码要入库（上面的 archive/ 规则原本针对构建产物）
 !web/src/ui/archive/
+
+# stems-proto 构建产物与模型（超 GitHub 100MB 限制）
+tools/stems-proto/bin/
+tools/stems-proto/obj/
+tools/stems-proto/models/

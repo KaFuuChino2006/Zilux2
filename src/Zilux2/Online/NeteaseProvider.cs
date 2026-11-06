@@ -1,6 +1,9 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Zilux2.Online.Account;
+using Zilux2.Online.Netease;
 
 namespace Zilux2.Online;
 
@@ -20,8 +23,16 @@ internal sealed class NeteaseProvider : IOnlineMusicProvider
     private static readonly TimeSpan EnrichmentTimeout = TimeSpan.FromSeconds(3);
 
     private readonly AccountService? _accounts;
+    private readonly NeteaseEapiClient _eapi;
 
-    public NeteaseProvider(AccountService? accounts = null) => _accounts = accounts;
+    // 原生优先（eapi）：取流、LRC+翻译+逐字。失败由 _nativeBreaker 熔断后直接走 web。
+    private readonly NativeCircuitBreaker _nativeBreaker = new("netease");
+
+    public NeteaseProvider(AccountService? accounts = null)
+    {
+        _accounts = accounts;
+        _eapi = new NeteaseEapiClient(accounts);
+    }
 
     public string Name => "netease";
 
@@ -31,57 +42,299 @@ internal sealed class NeteaseProvider : IOnlineMusicProvider
     /// <summary>网易云热门歌单（首页第二块）。</summary>
     public async Task<List<HotPlaylistItem>> GetHotPlaylistsAsync(int limit, CancellationToken cancellationToken)
     {
+        // 原生优先：eapi /api/playlist/list，返回结构与 web 的 playlists[] 一致。
+        var nativeJson = await TryNativeJsonAsync(
+                "/api/playlist/list",
+                new JsonObject
+                {
+                    ["cat"] = "全部",
+                    ["order"] = "hot",
+                    ["offset"] = 0,
+                    ["total"] = true,
+                    ["limit"] = limit,
+                },
+                "netease.native hotlists",
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (nativeJson is not null)
+        {
+            try
+            {
+                using var nativeDocument = JsonDocument.Parse(nativeJson);
+                var nativeItems = ParseHotPlaylists(nativeDocument.RootElement, limit);
+                if (nativeItems.Count > 0)
+                {
+                    return nativeItems;
+                }
+            }
+            catch (JsonException exception)
+            {
+                OnlineHttp.Warn($"netease.native hotlists parse failed: {OnlineHttp.Describe(exception)} -> web");
+            }
+        }
+
         var url = $"{PlaylistHotEndpoint}?cat={Uri.EscapeDataString("全部")}&order=hot&offset=0&total=true&limit={limit}";
         var upstream = await OnlineHttp
             .FetchTextAsync(url, RefererUrl, SearchTimeout, cancellationToken, cookie: AccountCookie)
             .ConfigureAwait(false);
 
+        using var document = JsonDocument.Parse(upstream.Body);
+        var items = ParseHotPlaylists(document.RootElement, limit);
+        OnlineHttp.Info($"GET netease/hotlists count={items.Count} {upstream.TookMs}ms");
+        return items;
+    }
+
+    private static List<HotPlaylistItem> ParseHotPlaylists(JsonElement root, int limit)
+    {
         var items = new List<HotPlaylistItem>();
-        using (var document = JsonDocument.Parse(upstream.Body))
+        var container = root.TryGetProperty("result", out var result) && result.ValueKind == JsonValueKind.Object
+            ? result
+            : root;
+        if (!container.TryGetProperty("playlists", out var list) || list.ValueKind != JsonValueKind.Array)
         {
-            var root = document.RootElement;
-            var container = root.TryGetProperty("result", out var result) && result.ValueKind == JsonValueKind.Object
-                ? result
-                : root;
-            if (container.TryGetProperty("playlists", out var list) && list.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var element in list.EnumerateArray())
-                {
-                    var id = element.TryGetProperty("id", out var idElement) && idElement.ValueKind == JsonValueKind.Number
-                        ? idElement.GetInt64().ToString(CultureInfo.InvariantCulture)
-                        : string.Empty;
-                    var title = ReadString(element, "name");
-                    if (id.Length == 0 || title.Length == 0)
-                    {
-                        continue;
-                    }
-
-                    var cover = ReadString(element, "coverImgUrl");
-                    if (cover.Length == 0)
-                    {
-                        cover = ReadString(element, "picUrl");
-                    }
-
-                    var count = element.TryGetProperty("playCount", out var countElement) && countElement.ValueKind == JsonValueKind.Number
-                        ? countElement.GetInt64()
-                        : 0;
-                    var creator = string.Empty;
-                    if (element.TryGetProperty("creator", out var creatorElement) && creatorElement.ValueKind == JsonValueKind.Object)
-                    {
-                        creator = ReadString(creatorElement, "nickname");
-                    }
-
-                    items.Add(new HotPlaylistItem(id, title, cover, count, creator));
-                }
-            }
+            return items;
         }
 
-        OnlineHttp.Info($"GET netease/hotlists count={items.Count} {upstream.TookMs}ms");
+        foreach (var element in list.EnumerateArray())
+        {
+            var id = element.TryGetProperty("id", out var idElement) && idElement.ValueKind == JsonValueKind.Number
+                ? idElement.GetInt64().ToString(CultureInfo.InvariantCulture)
+                : string.Empty;
+            var title = ReadString(element, "name");
+            if (id.Length == 0 || title.Length == 0)
+            {
+                continue;
+            }
+
+            var cover = ReadString(element, "coverImgUrl");
+            if (cover.Length == 0)
+            {
+                cover = ReadString(element, "picUrl");
+            }
+
+            var count = element.TryGetProperty("playCount", out var countElement) && countElement.ValueKind == JsonValueKind.Number
+                ? countElement.GetInt64()
+                : 0;
+            var creator = string.Empty;
+            if (element.TryGetProperty("creator", out var creatorElement) && creatorElement.ValueKind == JsonValueKind.Object)
+            {
+                creator = ReadString(creatorElement, "nickname");
+            }
+
+            items.Add(new HotPlaylistItem(id, title, cover, count, creator));
+        }
+
         return items.Take(limit).ToList();
+    }
+
+    /// <summary>
+    /// 网易云「心动模式」：用「我喜欢的音乐 + 当前歌曲」作为种子，取智能续播队列
+    /// （eapi /api/playmode/intelligence/list，需登录态；匿名返回 301/空）。
+    /// </summary>
+    public async Task<List<OnlineTrack>> GetIntelligenceAsync(
+        string playlistId,
+        string songId,
+        int count,
+        CancellationToken cancellationToken)
+    {
+        if (!long.TryParse(playlistId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var playlist) ||
+            !long.TryParse(songId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var song))
+        {
+            return [];
+        }
+
+        var json = await TryNativeJsonAsync(
+                "/api/playmode/intelligence/list",
+                new JsonObject
+                {
+                    ["type"] = "fromPlayOne",
+                    ["playlistId"] = playlist,
+                    ["startMusicId"] = song,
+                    ["count"] = Math.Clamp(count, 1, 50),
+                    ["songId"] = song,
+                },
+                $"netease.native intelligence playlist={playlist} song={song}",
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (json is null)
+        {
+            return [];
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return ParseIntelligence(document.RootElement, count);
+        }
+        catch (JsonException exception)
+        {
+            OnlineHttp.Warn($"netease.native intelligence parse failed: {OnlineHttp.Describe(exception)}");
+            return [];
+        }
+    }
+
+    private static List<OnlineTrack> ParseIntelligence(JsonElement root, int count)
+    {
+        var tracks = new List<OnlineTrack>();
+        if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
+        {
+            return tracks;
+        }
+
+        foreach (var item in data.EnumerateArray())
+        {
+            if (tracks.Count >= count)
+            {
+                break;
+            }
+
+            // 每项形如 { id, alg, recommended, songInfo: { name, ar[], al{}, dt, fee } }。
+            if (!item.TryGetProperty("songInfo", out var song) || song.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            var id = song.TryGetProperty("id", out var idElement) ? idElement.ToString() : string.Empty;
+            if (id.Length == 0)
+            {
+                continue;
+            }
+
+            var artists = new List<string>();
+            foreach (var field in new[] { "ar", "artists" })
+            {
+                if (!song.TryGetProperty(field, out var artistArray) || artistArray.ValueKind != JsonValueKind.Array)
+                {
+                    continue;
+                }
+
+                foreach (var artist in artistArray.EnumerateArray())
+                {
+                    var name = ReadString(artist, "name");
+                    if (name.Length > 0)
+                    {
+                        artists.Add(name);
+                    }
+                }
+
+                if (artists.Count > 0)
+                {
+                    break;
+                }
+            }
+
+            var album = string.Empty;
+            var coverKey = string.Empty;
+            foreach (var field in new[] { "al", "album" })
+            {
+                if (!song.TryGetProperty(field, out var albumElement) || albumElement.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                album = ReadString(albumElement, "name");
+                coverKey = ReadString(albumElement, "picUrl");
+                if (album.Length > 0 || coverKey.Length > 0)
+                {
+                    break;
+                }
+            }
+
+            var duration = 0L;
+            if (song.TryGetProperty("dt", out var durationElement) && durationElement.TryGetInt64(out var millis))
+            {
+                duration = millis;
+            }
+            else if (song.TryGetProperty("duration", out var legacyDuration) && legacyDuration.TryGetInt64(out var legacyMillis))
+            {
+                duration = legacyMillis;
+            }
+
+            var fee = song.TryGetProperty("fee", out var feeElement) && feeElement.TryGetInt32(out var feeValue)
+                ? feeValue
+                : 0;
+
+            tracks.Add(new OnlineTrack
+            {
+                Source = "netease",
+                Id = id,
+                Title = ReadString(song, "name"),
+                Artist = string.Join(" / ", artists),
+                Album = album,
+                DurationMs = duration,
+                CoverKey = coverKey,
+                Playable = fee is 0 or 8,
+                Vip = fee is not (0 or 8),
+            });
+        }
+
+        return tracks;
+    }
+
+    private async Task<List<OnlineTrack>?> TryNativeSearchAsync(
+        string query,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        var json = await TryNativeJsonAsync(
+                "/api/search/get",
+                new JsonObject
+                {
+                    ["s"] = query,
+                    ["type"] = 1,
+                    ["limit"] = limit,
+                    ["offset"] = 0,
+                    ["total"] = true,
+                    ["csrf_token"] = string.Empty,
+                },
+                $"netease.native search q={query}",
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (json is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var tracks = ParseSongs(document.RootElement);
+            if (tracks.Count == 0)
+            {
+                // 空结果诊断：只留 code/msg/长度，便于区分「限流」「参数错误」「形状变化」。
+                var code = 0;
+                if (document.RootElement.TryGetProperty("code", out var codeElement) &&
+                    codeElement.TryGetInt32(out var codeValue))
+                {
+                    code = codeValue;
+                }
+
+                var message = ReadString(document.RootElement, "msg");
+                OnlineHttp.Info(
+                    $"netease.native search none q={query} code={code} msg={message} chars={json.Length} -> web");
+                return null;
+            }
+
+            return tracks;
+        }
+        catch (JsonException exception)
+        {
+            OnlineHttp.Warn($"netease.native search parse failed q={query}: {OnlineHttp.Describe(exception)} -> web");
+            return null;
+        }
     }
 
     public async Task<List<OnlineTrack>> SearchAsync(string query, int limit, CancellationToken cancellationToken)
     {
+        // 原生优先：eapi /api/search/get 的 JSON 形状与 web 完全一致，复用 ParseSongs。
+        var nativeTracks = await TryNativeSearchAsync(query, limit, cancellationToken).ConfigureAwait(false);
+        if (nativeTracks is { Count: > 0 })
+        {
+            await FillCoversAsync(nativeTracks, cancellationToken).ConfigureAwait(false);
+            await ApplyEntitlementsAsync(nativeTracks, cancellationToken).ConfigureAwait(false);
+            return nativeTracks;
+        }
+
         var url = $"{SearchEndpoint}?s={Uri.EscapeDataString(query)}&type=1&limit={limit}&offset=0";
 
         // Contract §4.3: upstreams flake; one retry 300ms apart is enough.
@@ -125,6 +378,18 @@ internal sealed class NeteaseProvider : IOnlineMusicProvider
 
     public async Task<LyricData> GetLyricAsync(string id, CancellationToken cancellationToken)
     {
+        // 原生优先：eapi lyric/v1 一次返回 lrc + tlyric + yrc；缺轨/熔断时走 web。
+        var native = await TryNativeLyricAsync(id, cancellationToken).ConfigureAwait(false);
+        if (native is not null)
+        {
+            return new LyricData
+            {
+                Lrc = native.Lrc,
+                Translation = native.Translation,
+                Yrc = native.Yrc,
+            };
+        }
+
         var url = $"{LyricEndpoint}?id={Uri.EscapeDataString(id)}&lv=-1&kv=-1&tv=-1&yv=-1&rv=-1";
         try
         {
@@ -157,7 +422,241 @@ internal sealed class NeteaseProvider : IOnlineMusicProvider
         }
     }
 
+    private async Task<NeteaseEapiLyric?> TryNativeLyricAsync(string id, CancellationToken cancellationToken)
+    {
+        if (!long.TryParse(id, NumberStyles.Integer, CultureInfo.InvariantCulture, out var songId) || songId <= 0)
+        {
+            OnlineHttp.Info($"netease.native lyric skip id={id} reason=non-numeric -> web");
+            return null;
+        }
+
+        if (!_nativeBreaker.ShouldAttempt(out var remaining))
+        {
+            OnlineHttp.Info(
+                $"netease.native lyric skip id={id} cooldown={NativeFirstPolicy.DescribeCooldown(remaining)}s -> web");
+            return null;
+        }
+
+        var stopwatch = Stopwatch.StartNew();
+        var attempt = await NativeFirstPolicy
+            .RunAsync(token => _eapi.GetLyricAsync(songId, token), cancellationToken)
+            .ConfigureAwait(false);
+        var result = attempt.Value;
+        if (attempt.TimedOut || result is null || result.Outcome == NativeCallOutcome.Failed)
+        {
+            _nativeBreaker.RecordFailure();
+            OnlineHttp.Warn(
+                $"netease.native lyric fail id={id} {(attempt.TimedOut ? "timeout" : "error")} " +
+                $"{stopwatch.ElapsedMilliseconds}ms -> web");
+            return null;
+        }
+
+        if (result.Outcome != NativeCallOutcome.Ok || result.Value is null)
+        {
+            OnlineHttp.Info($"netease.native lyric none id={id} {stopwatch.ElapsedMilliseconds}ms -> web");
+            return null;
+        }
+
+        _nativeBreaker.RecordSuccess();
+        OnlineHttp.Info(
+            $"netease.native lyric ok id={id} lrcChars={result.Value.Lrc.Length} " +
+            $"transChars={result.Value.Translation?.Length ?? 0} yrcChars={result.Value.Yrc?.Length ?? 0} " +
+            $"{stopwatch.ElapsedMilliseconds}ms");
+        return result.Value;
+    }
+
     public async Task<StreamResolution> ResolveStreamAsync(string id, string? quality, CancellationToken cancellationToken)
+    {
+        var requestedTier = NativeFirstPolicy.QualityTier(quality);
+        StreamResolution? trial = null;
+
+        // 原生优先：eapi player-url/v1（匿名最高 320k，VIP 曲给 30 秒试听地址）。
+        // 非试听地址达到请求档位就直接用；低于请求档位时先试同档 web，web 更高才替换，否则保留原生。
+        var native = await TryNativeStreamAsync(id, quality, cancellationToken).ConfigureAwait(false);
+        if (native is not null)
+        {
+            var nativeResolution = ToResolution(native);
+            if (native.IsTrial)
+            {
+                trial = nativeResolution;
+                OnlineHttp.Info($"netease.native url trial id={id} -> web");
+            }
+            else
+            {
+                var nativeTier = NativeFirstPolicy.BitrateTier(native.Bitrate);
+                if (nativeTier >= requestedTier)
+                {
+                    return nativeResolution;
+                }
+
+                try
+                {
+                    var web = await ResolveWebStreamAsync(id, quality, cancellationToken).ConfigureAwait(false);
+                    if (web is not null && NativeFirstPolicy.BitrateTier(web.Bitrate) > nativeTier)
+                    {
+                        OnlineHttp.Info(
+                            $"netease.native url upgrade id={id} nativeBr={native.Bitrate} webBr={web.Bitrate}");
+                        return web;
+                    }
+
+                    OnlineHttp.Info(
+                        web is null
+                            ? $"netease.native url kept id={id} reason=web-not-playable"
+                            : $"netease.native url kept id={id} nativeBr={native.Bitrate} webBr={web.Bitrate}");
+                    return nativeResolution;
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+                {
+                    // 原生地址已经可用；web 升档失败不应把可播放变成 502。
+                    OnlineHttp.Warn(
+                        $"netease.native url kept id={id} reason=web-failed: {OnlineHttp.Describe(exception)}");
+                    return nativeResolution;
+                }
+            }
+        }
+
+        try
+        {
+            var webResolution = await ResolveWebStreamAsync(id, quality, cancellationToken).ConfigureAwait(false);
+            if (webResolution is not null)
+            {
+                return webResolution;
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            if (trial is null)
+            {
+                throw;
+            }
+
+            // web 不可用时仍可播 30 秒试听，比直接 502 更接近既有语义。
+            OnlineHttp.Warn(
+                $"netease.web url failed id={id} -> native trial: {OnlineHttp.Describe(exception)}");
+            return trial;
+        }
+
+        return trial ?? StreamResolution.NotPlayable("该歌曲需要网易云会员或已下架");
+    }
+
+    private async Task<NeteaseEapiStream?> TryNativeStreamAsync(
+        string id,
+        string? quality,
+        CancellationToken cancellationToken)
+    {
+        if (!long.TryParse(id, NumberStyles.Integer, CultureInfo.InvariantCulture, out var songId) || songId <= 0)
+        {
+            OnlineHttp.Info($"netease.native url skip id={id} reason=non-numeric -> web");
+            return null;
+        }
+
+        if (!_nativeBreaker.ShouldAttempt(out var remaining))
+        {
+            OnlineHttp.Info(
+                $"netease.native url skip id={id} cooldown={NativeFirstPolicy.DescribeCooldown(remaining)}s -> web");
+            return null;
+        }
+
+        var level = NeteaseEapiLevel(quality);
+        var stopwatch = Stopwatch.StartNew();
+        var attempt = await NativeFirstPolicy
+            .RunAsync(token => _eapi.GetSongUrlAsync(songId, level, token), cancellationToken)
+            .ConfigureAwait(false);
+        var result = attempt.Value;
+        if (attempt.TimedOut || result is null || result.Outcome == NativeCallOutcome.Failed)
+        {
+            _nativeBreaker.RecordFailure();
+            OnlineHttp.Warn(
+                $"netease.native url fail id={id} level={level} {(attempt.TimedOut ? "timeout" : "error")} " +
+                $"{stopwatch.ElapsedMilliseconds}ms -> web");
+            return null;
+        }
+
+        if (result.Outcome != NativeCallOutcome.Ok || result.Value is null)
+        {
+            OnlineHttp.Info(
+                $"netease.native url none id={id} level={level} {stopwatch.ElapsedMilliseconds}ms -> web");
+            return null;
+        }
+
+        _nativeBreaker.RecordSuccess();
+        OnlineHttp.Info(
+            $"netease.native url ok id={id} level={level} br={result.Value.Bitrate} " +
+            $"format={result.Value.Format} trial={result.Value.IsTrial} {stopwatch.ElapsedMilliseconds}ms");
+        return result.Value;
+    }
+
+    private StreamResolution ToResolution(NeteaseEapiStream stream)
+    {
+        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Referer"] = RefererUrl,
+        };
+        return stream.IsTrial
+            ? StreamResolution.Playable(stream.Url, headers, "试听 30 秒", 0, string.Empty)
+            : StreamResolution.Playable(
+                stream.Url,
+                headers,
+                stream.Bitrate >= 900000 ? "无损" : stream.Bitrate >= 300000 ? "高音质" : "标准",
+                stream.Bitrate,
+                stream.Format);
+    }
+
+    private static string NeteaseEapiLevel(string? quality) => (quality ?? string.Empty).Trim().ToLowerInvariant() switch
+    {
+        "lossless" => "lossless",
+        "standard" => "standard",
+        _ => "exhigh",
+    };
+
+    private static int[] NeteaseBitRates(string? quality) => (quality ?? string.Empty).Trim().ToLowerInvariant() switch
+    {
+        "lossless" => [999000, 320000, 128000],
+        "standard" => [128000],
+        _ => [320000, 128000],
+    };
+
+    private async Task<string?> TryNativeJsonAsync(
+        string uri,
+        JsonObject payload,
+        string tag,
+        CancellationToken cancellationToken)
+    {
+        if (!_nativeBreaker.ShouldAttempt(out var remaining))
+        {
+            OnlineHttp.Info($"{tag} skip cooldown={NativeFirstPolicy.DescribeCooldown(remaining)}s -> web");
+            return null;
+        }
+
+        var stopwatch = Stopwatch.StartNew();
+        var attempt = await NativeFirstPolicy
+            .RunAsync(token => _eapi.PostJsonAsync(uri, payload, AccountCookie, tag, token), cancellationToken)
+            .ConfigureAwait(false);
+        var result = attempt.Value;
+        if (attempt.TimedOut || result is null || result.Outcome == NativeCallOutcome.Failed)
+        {
+            _nativeBreaker.RecordFailure();
+            OnlineHttp.Warn(
+                $"{tag} fail {(attempt.TimedOut ? "timeout" : "error")} " +
+                $"{stopwatch.ElapsedMilliseconds}ms -> web");
+            return null;
+        }
+
+        if (result.Outcome != NativeCallOutcome.Ok || string.IsNullOrWhiteSpace(result.Value))
+        {
+            OnlineHttp.Info($"{tag} none {stopwatch.ElapsedMilliseconds}ms -> web");
+            return null;
+        }
+
+        _nativeBreaker.RecordSuccess();
+        OnlineHttp.Info($"{tag} ok {stopwatch.ElapsedMilliseconds}ms");
+        return result.Value;
+    }
+
+    private async Task<StreamResolution?> ResolveWebStreamAsync(
+        string id,
+        string? quality,
+        CancellationToken cancellationToken)
     {
         // 按请求的音质依次尝试，失败自动降级（无损需要会员，多数情况下会退到 320k）。
         foreach (var br in NeteaseBitRates(quality))
@@ -168,15 +667,9 @@ internal sealed class NeteaseProvider : IOnlineMusicProvider
                 return resolution;
             }
         }
-        return StreamResolution.NotPlayable("该歌曲需要网易云会员或已下架");
-    }
 
-    private static int[] NeteaseBitRates(string? quality) => (quality ?? string.Empty).Trim().ToLowerInvariant() switch
-    {
-        "lossless" => [999000, 320000, 128000],
-        "standard" => [128000],
-        _ => [320000, 128000],
-    };
+        return null;
+    }
 
     private async Task<StreamResolution> ResolveStreamOnceAsync(string id, int br, CancellationToken cancellationToken)
     {
@@ -287,6 +780,29 @@ internal sealed class NeteaseProvider : IOnlineMusicProvider
     {
         // The search endpoint does not return album.picUrl, so covers need one batched detail call.
         var ids = string.Join(",", tracks.Select(track => track.Id));
+
+        // 原生优先：eapi /api/song/detail；失败/熔断再走 web。
+        var nativeJson = await TryNativeJsonAsync(
+                "/api/song/detail",
+                new JsonObject { ["ids"] = "[" + ids + "]" },
+                $"netease.native detail ids={tracks.Count}",
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (nativeJson is not null)
+        {
+            try
+            {
+                using var nativeDocument = JsonDocument.Parse(nativeJson);
+                var nativeCovers = ApplyCovers(tracks, nativeDocument.RootElement);
+                OnlineHttp.Info($"netease.native detail ok {nativeCovers} covers");
+                return;
+            }
+            catch (JsonException exception)
+            {
+                OnlineHttp.Warn($"netease.native detail parse failed: {OnlineHttp.Describe(exception)} -> web");
+            }
+        }
+
         var url = $"{DetailEndpoint}?ids={Uri.EscapeDataString("[" + ids + "]")}";
         try
         {
@@ -294,42 +810,48 @@ internal sealed class NeteaseProvider : IOnlineMusicProvider
                 .FetchTextAsync(url, RefererUrl, EnrichmentTimeout, cancellationToken, cookie: AccountCookie)
                 .ConfigureAwait(false);
             using var document = JsonDocument.Parse(upstream.Body);
-            var covers = new Dictionary<string, string>(StringComparer.Ordinal);
-            if (document.RootElement.TryGetProperty("songs", out var songs) && songs.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var song in songs.EnumerateArray())
-                {
-                    var id = song.TryGetProperty("id", out var idElement) ? idElement.ToString() : string.Empty;
-                    if (id.Length == 0)
-                    {
-                        continue;
-                    }
-
-                    if (song.TryGetProperty("album", out var album) &&
-                        album.ValueKind == JsonValueKind.Object &&
-                        album.TryGetProperty("picUrl", out var picUrl) &&
-                        picUrl.ValueKind == JsonValueKind.String)
-                    {
-                        covers[id] = picUrl.GetString() ?? string.Empty;
-                    }
-                }
-            }
-
-            for (var index = 0; index < tracks.Count; index++)
-            {
-                if (covers.TryGetValue(tracks[index].Id, out var coverKey) && coverKey.Length > 0)
-                {
-                    tracks[index] = tracks[index] with { CoverKey = coverKey };
-                }
-            }
-
-            OnlineHttp.Info($"GET netease/detail ids={tracks.Count} ok {covers.Count} covers {upstream.TookMs}ms");
+            var covers = ApplyCovers(tracks, document.RootElement);
+            OnlineHttp.Info($"GET netease/detail ids={tracks.Count} ok {covers} covers {upstream.TookMs}ms");
         }
         catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             // Covers are decorative: a failed detail call must not fail the search.
             OnlineHttp.Warn($"GET netease/detail ids={tracks.Count} failed (covers skipped): {OnlineHttp.Describe(exception)}");
         }
+    }
+
+    private static int ApplyCovers(List<OnlineTrack> tracks, JsonElement root)
+    {
+        var covers = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (root.TryGetProperty("songs", out var songs) && songs.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var song in songs.EnumerateArray())
+            {
+                var id = song.TryGetProperty("id", out var idElement) ? idElement.ToString() : string.Empty;
+                if (id.Length == 0)
+                {
+                    continue;
+                }
+
+                if (song.TryGetProperty("album", out var album) &&
+                    album.ValueKind == JsonValueKind.Object &&
+                    album.TryGetProperty("picUrl", out var picUrl) &&
+                    picUrl.ValueKind == JsonValueKind.String)
+                {
+                    covers[id] = picUrl.GetString() ?? string.Empty;
+                }
+            }
+        }
+
+        for (var index = 0; index < tracks.Count; index++)
+        {
+            if (covers.TryGetValue(tracks[index].Id, out var coverKey) && coverKey.Length > 0)
+            {
+                tracks[index] = tracks[index] with { CoverKey = coverKey };
+            }
+        }
+
+        return covers.Count;
     }
 
     // Contract §4.4: after login, fee=1 tracks may become playable; the only reliable entitlement

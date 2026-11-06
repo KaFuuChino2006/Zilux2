@@ -99,6 +99,10 @@ interface DeckGraphNodes {
   /** 单个 deck 的响度补偿（线性增益）：每首曲子独立对齐 LUFS，随 deck 切换各带各的补偿。 */
   trim: GainNode;
   gain: GainNode;
+  /** 元素取流支路：真实人声分离接管时降到 0，让分离音轨独占输出。 */
+  mixGain: GainNode;
+  /** 分离音轨汇入支路：stemsDeck 把 AudioBufferSourceNode 接到这里，与元素走同一条滤镜链。 */
+  stemGain: GainNode;
 }
 
 /** 滤波器频率下限/上限（Hz）：exponentialRamp 不接受 0，20 Hz 以下对听感也没有意义。 */
@@ -174,6 +178,8 @@ function buildDeckChain(
     presence: BiquadFilterNode;
     trim: GainNode;
     gain: GainNode;
+    mixGain: GainNode;
+    stemGain: GainNode;
   };
 } | null {
   try {
@@ -206,7 +212,15 @@ function buildDeckChain(
     trim.gain.value = 1;
     const gain = ctx.createGain();
     gain.gain.value = 1;
-    source.connect(lowpass);
+    // 元素与分离音轨在滤镜链前汇合：mixGain 静音元素、stemGain 放行分离音轨，
+    // 两条支路共用同一套滤镜/响度补偿，切换时不会绕过 EQ。
+    const mixGain = ctx.createGain();
+    mixGain.gain.value = 1;
+    const stemGain = ctx.createGain();
+    stemGain.gain.value = 1;
+    source.connect(mixGain);
+    mixGain.connect(lowpass);
+    stemGain.connect(lowpass);
     lowpass.connect(highpass);
     highpass.connect(bass);
     bass.connect(low);
@@ -214,7 +228,7 @@ function buildDeckChain(
     high.connect(presence);
     presence.connect(trim);
     trim.connect(gain);
-    return { chain: { lowpass, highpass, bass, low, high, presence, trim, gain } };
+    return { chain: { lowpass, highpass, bass, low, high, presence, trim, gain, mixGain, stemGain } };
   } catch (err) {
     console.warn('[audioTap] buildDeckChain failed', err);
     return null;
@@ -314,12 +328,61 @@ export function setDeckGraphGain(element: HTMLAudioElement, value: number, rampM
   }
 }
 
+/** 分离音轨汇入点：stemsDeck 把 AudioBufferSourceNode 连到这里；图未建立时返回 null。 */
+export function deckStemInput(element: HTMLAudioElement): GainNode | null {
+  return deckNodes.get(element)?.stemGain ?? null;
+}
+
+/** deck 的 AudioContext 时钟（用于把分离音轨排到与元素同一时间轴上）。 */
+export function deckContextTime(element: HTMLAudioElement): number | null {
+  const node = deckNodes.get(element);
+  return node ? node.gain.context.currentTime : null;
+}
+
+/** deck 所在的 AudioContext（分离音轨解码/排程用）；未接入图时返回 null。 */
+export function deckAudioContext(element: HTMLAudioElement): AudioContext | null {
+  const node = deckNodes.get(element);
+  return node ? (node.gain.context as AudioContext) : null;
+}
+
+function rampGain(param: AudioParam, target: number, rampMs: number, now: number): void {
+  try {
+    param.cancelScheduledValues(now);
+    if (rampMs > 0) {
+      param.setValueAtTime(param.value, now);
+      param.linearRampToValueAtTime(target, now + rampMs / 1000);
+    } else {
+      param.value = target;
+    }
+  } catch {
+    /* 忽略 */
+  }
+}
+
+/**
+ * 真实人声分离接管时把元素支路静音（mixGain→0），分离结束后再交还（→1）。
+ * 静音期间元素仍在走播放时间轴，时间不会漂移。
+ */
+export function setDeckMixGain(element: HTMLAudioElement, value: number, rampMs = 0): void {
+  const node = deckNodes.get(element);
+  if (!node) return;
+  const target = Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
+  rampGain(node.mixGain.gain, target, rampMs, node.gain.context.currentTime);
+}
+
+/** 设置分离音轨支路增益（0~1），用于淡入淡出两轨的交接。 */
+export function setDeckStemGain(element: HTMLAudioElement, value: number, rampMs = 0): void {
+  const node = deckNodes.get(element);
+  if (!node) return;
+  const target = Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
+  rampGain(node.stemGain.gain, target, rampMs, node.gain.context.currentTime);
+}
+
 /**
  * 设置单个 deck 的响度补偿（dB，线性折算后写进图里的 trim 节点）。
  * 每首曲子各带各的补偿，过渡期间两个 deck 分别对齐自己的目标响度，切歌时不会因为
  * 「全局增益换值 + 过渡 trim 同时消失」而出现音量台阶。
- */
-export function setDeckTrimGain(element: HTMLAudioElement, db: number): void {
+ */export function setDeckTrimGain(element: HTMLAudioElement, db: number): void {
   const node = deckNodes.get(element);
   if (!node) return;
   const clamped = Number.isFinite(db) ? Math.max(-18, Math.min(12, db)) : 0;

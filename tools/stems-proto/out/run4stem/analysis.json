@@ -1,0 +1,86 @@
+{
+  "sample_rate": 44100,
+  "frames": 1323000,
+  "seconds": 30.0,
+  "residual_dbfs": -74.65,
+  "mix": {
+    "name": "mix",
+    "rms_dbfs": -13.98,
+    "peak": 1.0,
+    "crest_db": 13.98
+  },
+  "vocals": {
+    "name": "vocals",
+    "rms_dbfs": -18.2,
+    "peak": 0.6253,
+    "crest_db": 14.12,
+    "centroid_hz": 373.4,
+    "frac_lt250": 0.6732,
+    "frac_250_4k": 0.3212,
+    "frac_gt4k": 0.0055
+  },
+  "instrumental": {
+    "name": "instrumental",
+    "rms_dbfs": -16.51,
+    "peak": 1.0,
+    "crest_db": 16.51,
+    "centroid_hz": 631.6,
+    "frac_lt250": 0.5269,
+    "frac_250_4k": 0.4498,
+    "frac_gt4k": 0.0233
+  },
+  "band_change_mix_to_instrumental_db": {
+    "200-4000": -3.49,
+    "80-250": -2.49,
+    "4000-16000": -4.4
+  },
+  "stems": [
+    {
+      "name": "drums",
+      "rms_dbfs": -23.14,
+      "peak": 0.931,
+      "crest_db": 22.52,
+      "centroid_hz": 838.4,
+      "frac_lt250": 0.7719,
+      "frac_250_4k": 0.1488,
+      "frac_gt4k": 0.0793
+    },
+    {
+      "name": "bass",
+      "rms_dbfs": -23.09,
+      "peak": 0.2211,
+      "crest_db": 9.98,
+      "centroid_hz": 86.8,
+      "frac_lt250": 0.9996,
+      "frac_250_4k": 0.0004,
+      "frac_gt4k": 0.0
+    },
+    {
+      "name": "other",
+      "rms_dbfs": -20.3,
+      "peak": 0.4841,
+      "crest_db": 14.0,
+      "centroid_hz": 827.3,
+      "frac_lt250": 0.2112,
+      "frac_250_4k": 0.7726,
+      "frac_gt4k": 0.0161
+    },
+    {
+      "name": "vocals4",
+      "rms_dbfs": -18.2,
+      "peak": 0.6148,
+      "crest_db": 13.98,
+      "centroid_hz": 373.4,
+      "frac_lt250": 0.6732,
+      "frac_250_4k": 0.3212,
+      "frac_gt4k": 0.0055
+    }
+  ],
+  "sum4_minus_mix_db": -45.23,
+  "order_expectation": {
+    "bass": "frac_lt250 should dominate (>0.5), centroid < 300 Hz",
+    "drums": "highest crest_db, frac_gt4k well above vocals",
+    "vocals": "centroid ~500-1800 Hz, low crest_db",
+    "other": "brightest, centroid typically highest"
+  }
+}

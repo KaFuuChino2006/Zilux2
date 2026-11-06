@@ -1,7 +1,9 @@
 using System.Globalization;
 using System.Net.Http;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Zilux2.Online.Account;
+using Zilux2.Online.Netease;
 
 namespace Zilux2.Online.Library;
 
@@ -30,12 +32,77 @@ internal sealed class NeteaseLibraryProvider
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10);
 
     private readonly AccountService? _accounts;
+    private readonly NeteaseEapiClient _eapi;
+    private readonly NativeCircuitBreaker _nativeBreaker = new("netease-library");
 
-    public NeteaseLibraryProvider(AccountService? accounts) => _accounts = accounts;
+    public NeteaseLibraryProvider(AccountService? accounts)
+    {
+        _accounts = accounts;
+        _eapi = new NeteaseEapiClient(accounts);
+    }
 
     private string Cookie => _accounts?.CookieHeader(Name, "music.163.com") ?? string.Empty;
 
     private bool IsLoggedIn => _accounts?.IsLoggedIn(Name) == true;
+
+    /// <summary>
+    /// 账号级接口原生优先：eapi 与 web 返回同形 JSON；5s 超时/失败/熔断时回退原 web 端点。
+    /// </summary>
+    private async Task<JsonDocument> FetchJsonAsync(
+        string eapiUri,
+        JsonObject payload,
+        string webUrl,
+        string tag,
+        CancellationToken cancellationToken)
+    {
+        if (!_nativeBreaker.ShouldAttempt(out var remaining))
+        {
+            OnlineHttp.Info($"{tag} skip cooldown={NativeFirstPolicy.DescribeCooldown(remaining)}s -> web");
+            return await FetchWebJsonAsync(webUrl, cancellationToken).ConfigureAwait(false);
+        }
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var attempt = await NativeFirstPolicy
+            .RunAsync(token => _eapi.PostJsonAsync(eapiUri, payload, Cookie, tag, token), cancellationToken)
+            .ConfigureAwait(false);
+        var result = attempt.Value;
+        if (attempt.TimedOut || result is null || result.Outcome == NativeCallOutcome.Failed)
+        {
+            _nativeBreaker.RecordFailure();
+            OnlineHttp.Warn(
+                $"{tag} fail {(attempt.TimedOut ? "timeout" : "error")} " +
+                $"{stopwatch.ElapsedMilliseconds}ms -> web");
+        }
+        else if (result.Outcome != NativeCallOutcome.Ok || string.IsNullOrWhiteSpace(result.Value))
+        {
+            OnlineHttp.Info($"{tag} none {stopwatch.ElapsedMilliseconds}ms -> web");
+        }
+        else
+        {
+            try
+            {
+                var document = JsonDocument.Parse(result.Value);
+                _nativeBreaker.RecordSuccess();
+                OnlineHttp.Info($"{tag} ok {stopwatch.ElapsedMilliseconds}ms");
+                return document;
+            }
+            catch (JsonException exception)
+            {
+                _nativeBreaker.RecordFailure();
+                OnlineHttp.Warn($"{tag} parse failed: {OnlineHttp.Describe(exception)} -> web");
+            }
+        }
+
+        return await FetchWebJsonAsync(webUrl, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<JsonDocument> FetchWebJsonAsync(string webUrl, CancellationToken cancellationToken)
+    {
+        var upstream = await OnlineHttp
+            .FetchTextAsync(webUrl, NeteaseProvider.RefererUrl, Timeout, cancellationToken, cookie: Cookie)
+            .ConfigureAwait(false);
+        return JsonDocument.Parse(upstream.Body);
+    }
 
     internal async Task<LibrarySnapshot> GetSnapshotAsync(CancellationToken cancellationToken)
     {
@@ -46,11 +113,18 @@ internal sealed class NeteaseLibraryProvider
         }
 
         var url = $"{UserPlaylistEndpoint}?uid={Uri.EscapeDataString(userId)}&limit=1000&offset=0";
-        var upstream = await OnlineHttp
-            .FetchTextAsync(url, NeteaseProvider.RefererUrl, Timeout, cancellationToken, cookie: Cookie)
+        using var document = await FetchJsonAsync(
+                "/api/user/playlist",
+                new JsonObject
+                {
+                    ["uid"] = userId,
+                    ["limit"] = 1000,
+                    ["offset"] = 0,
+                },
+                url,
+                "netease.native library playlists",
+                cancellationToken)
             .ConfigureAwait(false);
-
-        using var document = JsonDocument.Parse(upstream.Body);
         var root = document.RootElement;
         if (!root.TryGetProperty("playlist", out var playlists) || playlists.ValueKind != JsonValueKind.Array)
         {
@@ -58,6 +132,7 @@ internal sealed class NeteaseLibraryProvider
         }
 
         LibraryPlaylist? liked = null;
+        var foreignLiked = 0;
         var others = new List<LibraryPlaylist>();
         foreach (var item in playlists.EnumerateArray())
         {
@@ -73,16 +148,27 @@ internal sealed class NeteaseLibraryProvider
             var specialType = ReadInt(item, "specialType");
             if (specialType == 5)
             {
-                liked = new LibraryPlaylist
+                // specialType=5 只是「喜欢歌单」的标记，不一定是自己的：别人添加到本账号
+                // 「我的音乐」里的喜欢歌单同样带 5。必须再核对 creator.userId，否则会把
+                // 别人的喜欢列表当成「我喜欢的音乐」，进而用错 pid 点赞/取消赞。
+                var creatorUserId = ReadNestedId(item, "creator", "userId");
+                if (creatorUserId.Length > 0 && string.Equals(creatorUserId, userId, StringComparison.Ordinal))
                 {
-                    Source = Name,
-                    Id = id,
-                    Title = title.Length == 0 ? "我喜欢的音乐" : title,
-                    Count = count,
-                    Special = "liked",
-                    CoverKey = coverKey,
-                };
-                continue;
+                    // 多处命中时取自己的那个（理论上只有一个，防御异常返回）。
+                    liked ??= new LibraryPlaylist
+                    {
+                        Source = Name,
+                        Id = id,
+                        Title = title.Length == 0 ? "我喜欢的音乐" : title,
+                        Count = count,
+                        Special = "liked",
+                        CoverKey = coverKey,
+                    };
+                    continue;
+                }
+
+                foreignLiked++;
+                // 不 continue：落到下面进入「其他」列表。
             }
 
             if (others.Count >= MaxPlaylists)
@@ -103,7 +189,7 @@ internal sealed class NeteaseLibraryProvider
 
         OnlineHttp.Info(
             $"GET netease/library playlists uid={userId} ok {others.Count} playlists " +
-            $"liked={(liked?.Id ?? "none")} {upstream.TookMs}ms");
+            $"liked={(liked?.Id ?? "none")} foreignLiked={foreignLiked}");
         return new LibrarySnapshot(liked, others);
     }
 
@@ -132,11 +218,13 @@ internal sealed class NeteaseLibraryProvider
         CancellationToken cancellationToken)
     {
         var url = $"{PlaylistDetailEndpoint}?id={Uri.EscapeDataString(id)}";
-        var upstream = await OnlineHttp
-            .FetchTextAsync(url, NeteaseProvider.RefererUrl, Timeout, cancellationToken, cookie: Cookie)
+        using var document = await FetchJsonAsync(
+                "/api/v6/playlist/detail",
+                new JsonObject { ["id"] = id },
+                url,
+                $"netease.native library playlist id={id}",
+                cancellationToken)
             .ConfigureAwait(false);
-
-        using var document = JsonDocument.Parse(upstream.Body);
         var root = document.RootElement;
         if (!root.TryGetProperty("playlist", out var playlist) || playlist.ValueKind != JsonValueKind.Object)
         {
@@ -160,7 +248,7 @@ internal sealed class NeteaseLibraryProvider
         };
 
         OnlineHttp.Info(
-            $"GET netease/library playlist id={id} ok {tracks.Count}/{total} tracks offset={offset} {upstream.TookMs}ms");
+            $"GET netease/library playlist id={id} ok {tracks.Count}/{total} tracks offset={offset}");
         return new LibraryDetail(meta, tracks, offset + tracks.Count < total);
     }
 
@@ -174,11 +262,13 @@ internal sealed class NeteaseLibraryProvider
         CancellationToken cancellationToken)
     {
         var url = $"{LegacyPlaylistDetailEndpoint}?id={Uri.EscapeDataString(id)}";
-        var upstream = await OnlineHttp
-            .FetchTextAsync(url, NeteaseProvider.RefererUrl, Timeout, cancellationToken, cookie: Cookie)
+        using var document = await FetchJsonAsync(
+                "/api/playlist/detail",
+                new JsonObject { ["id"] = id },
+                url,
+                $"netease.native library playlist-legacy id={id}",
+                cancellationToken)
             .ConfigureAwait(false);
-
-        using var document = JsonDocument.Parse(upstream.Body);
         var root = document.RootElement;
         if (!root.TryGetProperty("result", out var result) || result.ValueKind != JsonValueKind.Object)
         {
@@ -212,7 +302,7 @@ internal sealed class NeteaseLibraryProvider
 
         OnlineHttp.Info(
             $"GET netease/library playlist id={id} legacy ok {page.Count}/{allTracks.Count} tracks " +
-            $"offset={offset} {upstream.TookMs}ms");
+            $"offset={offset}");
         return new LibraryDetail(meta, page, offset + page.Count < allTracks.Count);
     }
 
@@ -222,12 +312,15 @@ internal sealed class NeteaseLibraryProvider
         for (var start = 0; start < ids.Count; start += SongDetailBatchSize)
         {
             var chunk = ids.Skip(start).Take(SongDetailBatchSize).ToList();
-            var url = $"{SongDetailEndpoint}?ids={Uri.EscapeDataString("[" + string.Join(",", chunk) + "]")}";
-            var upstream = await OnlineHttp
-                .FetchTextAsync(url, NeteaseProvider.RefererUrl, Timeout, cancellationToken, cookie: Cookie)
+            var idsJson = "[" + string.Join(",", chunk) + "]";
+            var url = $"{SongDetailEndpoint}?ids={Uri.EscapeDataString(idsJson)}";
+            using var document = await FetchJsonAsync(
+                    "/api/song/detail",
+                    new JsonObject { ["ids"] = idsJson },
+                    url,
+                    $"netease.native library songs ids={chunk.Count}",
+                    cancellationToken)
                 .ConfigureAwait(false);
-
-            using var document = JsonDocument.Parse(upstream.Body);
             var byId = new Dictionary<string, OnlineTrack>(StringComparer.Ordinal);
             if (document.RootElement.TryGetProperty("songs", out var songs) && songs.ValueKind == JsonValueKind.Array)
             {
@@ -250,7 +343,7 @@ internal sealed class NeteaseLibraryProvider
                 }
             }
 
-            OnlineHttp.Info($"GET netease/library songs ids={chunk.Count} ok {tracks.Count} total {upstream.TookMs}ms");
+            OnlineHttp.Info($"GET netease/library songs ids={chunk.Count} ok {tracks.Count} total");
         }
 
         return tracks;
@@ -286,9 +379,13 @@ internal sealed class NeteaseLibraryProvider
         }
         var daily = string.Equals(kind, "daily", StringComparison.Ordinal);
         string url;
+        string eapiUri;
+        JsonObject payload;
         if (daily)
         {
             url = "https://music.163.com/api/v3/discovery/recommend/songs";
+            eapiUri = "/api/v3/discovery/recommend/songs";
+            payload = new JsonObject();
         }
         else
         {
@@ -299,13 +396,22 @@ internal sealed class NeteaseLibraryProvider
             }
 
             url = $"https://music.163.com/api/v1/play/record?type=1&uid={Uri.EscapeDataString(userId)}&limit={limit}";
+            eapiUri = "/api/v1/play/record";
+            payload = new JsonObject
+            {
+                ["type"] = 1,
+                ["uid"] = userId,
+                ["limit"] = limit,
+            };
         }
 
-        var upstream = await OnlineHttp
-            .FetchTextAsync(url, NeteaseProvider.RefererUrl, Timeout, cancellationToken, cookie: Cookie)
+        using var document = await FetchJsonAsync(
+                eapiUri,
+                payload,
+                url,
+                $"netease.native library feed kind={(daily ? "daily" : "recent")}",
+                cancellationToken)
             .ConfigureAwait(false);
-
-        using var document = JsonDocument.Parse(upstream.Body);
         var root = document.RootElement;
         if (root.TryGetProperty("code", out var codeElement)
             && codeElement.TryGetInt32(out var code)
@@ -546,6 +652,11 @@ internal sealed class NeteaseLibraryProvider
             ? ReadString(nested, name)
             : string.Empty;
 
+    private static string ReadNestedId(JsonElement element, string objectName, string name) =>
+        element.TryGetProperty(objectName, out var nested) && nested.ValueKind == JsonValueKind.Object
+            ? ReadId(nested, name)
+            : string.Empty;
+
     private static int ReadInt(JsonElement element, string name) =>
         element.TryGetProperty(name, out var value) && value.TryGetInt32(out var number) ? number : 0;
 
@@ -604,10 +715,13 @@ internal sealed class NeteaseLibraryProvider
         {
             var url = "https://music.163.com/api/v6/playlist/detail"
                 + $"?id={Uri.EscapeDataString(liked.Id)}&n=0&s=0";
-            var upstream = await OnlineHttp
-                .FetchTextAsync(url, NeteaseProvider.RefererUrl, Timeout, cancellationToken, HttpMethod.Get, cookie: Cookie)
+            using var document = await FetchJsonAsync(
+                    "/api/v6/playlist/detail",
+                    new JsonObject { ["id"] = liked.Id, ["n"] = 0, ["s"] = 0 },
+                    url,
+                    $"netease.native library liked-trackids pid={liked.Id}",
+                    cancellationToken)
                 .ConfigureAwait(false);
-            using var document = JsonDocument.Parse(upstream.Body);
             var ids = new HashSet<string>(StringComparer.Ordinal);
             if (document.RootElement.TryGetProperty("playlist", out var playlist)
                 && playlist.TryGetProperty("trackIds", out var trackIds)
@@ -637,6 +751,65 @@ internal sealed class NeteaseLibraryProvider
         }
     }
 
+    // 收藏/取消收藏：优先走 eapi 的 playlist/manipulate/tracks（和桌面客户端同一条链路），
+    // eapi 不可用或返回非 200 时回退 web 的同一端点（参数在 query 上，登录态下仍可用）。
+    private async Task<(int Code, string Body)> ManipulateLikedAsync(
+        string op,
+        string playlistId,
+        string trackId,
+        CancellationToken cancellationToken)
+    {
+        var payload = new JsonObject
+        {
+            ["op"] = op,
+            ["trackIds"] = $"[{trackId}]",
+            ["immutable"] = true,
+        };
+        if (long.TryParse(playlistId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var numericPid))
+        {
+            payload["pid"] = numericPid;
+        }
+        else
+        {
+            payload["pid"] = playlistId;
+        }
+
+        var native = await _eapi
+            .PostJsonAsync("/api/playlist/manipulate/tracks", payload, Cookie, $"netease/library {op}", cancellationToken)
+            .ConfigureAwait(false);
+        if (native.Outcome == NativeCallOutcome.Ok && native.Value is { Length: > 0 } nativeBody)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(nativeBody);
+                var nativeCode = ReadCode(document.RootElement);
+                if (nativeCode is 200 or 0)
+                {
+                    OnlineHttp.Info($"POST netease/library {op} native pid={playlistId} track={trackId} ok");
+                    return (nativeCode, nativeBody);
+                }
+
+                OnlineHttp.Warn($"POST netease/library {op} native rejected code={nativeCode} pid={playlistId}");
+            }
+            catch (JsonException)
+            {
+                OnlineHttp.Warn($"POST netease/library {op} native body not json pid={playlistId}");
+            }
+        }
+
+        var url = "https://music.163.com/api/playlist/manipulate/tracks"
+            + $"?op={op}&pid={Uri.EscapeDataString(playlistId)}"
+            + $"&trackIds=%5B{trackId}%5D&immutable=true&csrf_token=";
+        var upstream = await OnlineHttp
+            .FetchTextAsync(url, NeteaseProvider.RefererUrl, Timeout, cancellationToken, HttpMethod.Post, cookie: Cookie)
+            .ConfigureAwait(false);
+        using var webDocument = JsonDocument.Parse(upstream.Body);
+        return (ReadCode(webDocument.RootElement), upstream.Body);
+    }
+
+    private static int ReadCode(JsonElement root)
+        => root.TryGetProperty("code", out var element) && element.TryGetInt32(out var code) ? code : 0;
+
     internal async Task AddLikedAsync(string trackId, CancellationToken cancellationToken)
     {
         if (!IsLoggedIn)
@@ -658,26 +831,18 @@ internal sealed class NeteaseLibraryProvider
 
         // 注意：trackIds 必须是「数字数组」的 JSON 字符串，且 pid 为数字歌单 id；
         // 传字符串数组会被上游以 code=502（请求参数错误）拒绝。
-        var numericTrackId = trackId;
-        var url = "https://music.163.com/api/playlist/manipulate/tracks"
-            + $"?op=add&pid={Uri.EscapeDataString(liked.Id)}"
-            + $"&trackIds=%5B{numericTrackId}%5D&immutable=true&csrf_token=";
-        var upstream = await OnlineHttp
-            .FetchTextAsync(url, NeteaseProvider.RefererUrl, Timeout, cancellationToken, HttpMethod.Post, cookie: Cookie)
+        var (code, body) = await ManipulateLikedAsync("add", liked.Id, trackId, cancellationToken)
             .ConfigureAwait(false);
 
-        using var document = JsonDocument.Parse(upstream.Body);
-        var root = document.RootElement;
-        var code = root.TryGetProperty("code", out var codeElement) && codeElement.TryGetInt32(out var codeValue) ? codeValue : 0;
         if (code != 200 && code != 0)
         {
             // 已经在「我喜欢的音乐」里时上游返回「歌单内歌曲重复」，视为成功（幂等）。
-            if (upstream.Body.Contains("重复", StringComparison.Ordinal))
+            if (body.Contains("重复", StringComparison.Ordinal))
             {
                 OnlineHttp.Info($"POST netease/library like pid={liked.Id} track={trackId} already-liked");
                 return;
             }
-            OnlineHttp.Warn($"POST netease/library like failed code={code} body={upstream.Body}");
+            OnlineHttp.Warn($"POST netease/library like failed code={code} body={body}");
             var message = code switch
             {
                 301 => "网易云歌单权限不足，请重新登录",
@@ -738,19 +903,11 @@ internal sealed class NeteaseLibraryProvider
             throw new OnlineUpstreamException("没有找到我喜欢的音乐", 404);
         }
 
-        var url = "https://music.163.com/api/playlist/manipulate/tracks"
-            + $"?op=del&pid={Uri.EscapeDataString(liked.Id)}"
-            + $"&trackIds=%5B{trackId}%5D&immutable=true&csrf_token=";
-        var upstream = await OnlineHttp
-            .FetchTextAsync(url, NeteaseProvider.RefererUrl, Timeout, cancellationToken, HttpMethod.Post, cookie: Cookie)
+        var (code, body) = await ManipulateLikedAsync("del", liked.Id, trackId, cancellationToken)
             .ConfigureAwait(false);
-
-        using var document = JsonDocument.Parse(upstream.Body);
-        var root = document.RootElement;
-        var code = root.TryGetProperty("code", out var codeElement) && codeElement.TryGetInt32(out var codeValue) ? codeValue : 0;
         if (code != 200 && code != 0)
         {
-            OnlineHttp.Warn($"POST netease/library unlike failed code={code} body={upstream.Body}");
+            OnlineHttp.Warn($"POST netease/library unlike failed code={code} body={body}");
             throw new OnlineUpstreamException($"网易云取消喜欢失败 code={code}", 502);
         }
 

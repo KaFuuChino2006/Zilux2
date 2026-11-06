@@ -6,7 +6,7 @@
 
 import { decryptQrc } from 'qrc-decoder';
 import { fetchLyric, searchOnline } from '../online/client';
-import { applyTranslation, extractQrcPayload, parseCharLyric, parseLrc, parseQrcLyric, type LyricLine as SourceLine } from '../online/lrc';
+import { applyTranslation, extractQrcPayload, isUsefulTranslation, pairByTime, parseCharLyric, parseLrc, parseQrcLyric, type LyricLine as SourceLine } from '../online/lrc';
 import { lyricSourceIds, sourceMeta } from '../online/sources';
 import { SOURCE_LABEL, type OnlineTrack } from '../online/types';
 import type { LyricLine } from './lyrics';
@@ -112,6 +112,25 @@ function metaScore(track: OnlineTrack, candidate: OnlineTrack): number {
   return title * 0.6 + artist * 0.28 + duration * 0.12;
 }
 
+/**
+ * 没有原歌词可对照时（本地曲目 / 平台没有词），元数据是唯一判据。
+ * 这条路必须比“有歌词可比对”的那条更严：差一首歌的代价是整首歌配错词，
+ * 比“取不到词”糟糕得多，所以宁可拒掉也不硬塞。
+ */
+function directAcceptable(track: OnlineTrack, candidate: OnlineTrack): boolean {
+  // 歌名：去掉括号后缀后要几乎一样，避免把《晚安》配给《晚安晚安》这类。
+  if (similarity(bareTitle(track.title), bareTitle(candidate.title)) < 0.8) return false;
+  // 歌手：两边都有值时必须对得上；只有一边缺失才放过（平台元数据缺失很常见）。
+  const a = primaryArtist(track.artist ?? '');
+  const b = primaryArtist(candidate.artist ?? '');
+  if (a && b && similarity(a, b) < 0.55) return false;
+  // 时长是最硬的佐证：两边都有时长却差出十几秒，基本可以断定不是同一首。
+  if (track.durationMs && candidate.durationMs) {
+    if (Math.abs(track.durationMs - candidate.durationMs) > 12000) return false;
+  }
+  return true;
+}
+
 function docText(lines: SourceLine[] | LyricLine[]): string {
   return lines.map((line) => line.text ?? '').join('\n');
 }
@@ -151,28 +170,25 @@ interface WordDoc {
   hasTranslation: boolean;
 }
 
-/** 把平台翻译贴到逐字行上：按时间戳就近匹配（翻译 LRC 与逐字行时间通常一致）。 */
+/** 把平台翻译贴到逐字行上：按时间戳一对一匹配（翻译 LRC 与逐字行时间通常一致）。 */
 function attachTranslation(lines: LyricLine[], translation: string | null | undefined): boolean {
   const text = (translation ?? '').trim();
   if (!text) return false;
   const translated = parseLrc(text).filter((line) => line.text.trim().length > 0);
   if (translated.length === 0) return false;
+  const match = pairByTime(
+    lines.map((line) => line.timeMs),
+    translated.map((line) => line.timeMs),
+    600,
+  );
   let attached = 0;
-  for (const line of lines) {
-    let best: SourceLine | null = null;
-    let bestDelta = Number.MAX_SAFE_INTEGER;
-    for (const item of translated) {
-      const delta = Math.abs(item.timeMs - line.timeMs);
-      if (delta < bestDelta) {
-        bestDelta = delta;
-        best = item;
-      }
-    }
-    if (best && bestDelta <= 600) {
-      line.translation = best.text;
-      attached += 1;
-    }
-  }
+  match.forEach((index, i) => {
+    if (index === null) return;
+    const value = (translated[index]?.text ?? '').trim();
+    if (!isUsefulTranslation(value, lines[i]!.text)) return;
+    lines[i]!.translation = value;
+    attached += 1;
+  });
   return attached > 0;
 }
 
@@ -182,22 +198,19 @@ type TimedLine = { timeMs: number; translation?: string | null };
 function attachTranslationLines(lines: LyricLine[], sourceLines: TimedLine[]): boolean {
   const translated = sourceLines.filter((line) => (line.translation ?? '').trim().length > 0);
   if (translated.length === 0) return false;
+  const match = pairByTime(
+    lines.map((line) => line.timeMs),
+    translated.map((line) => line.timeMs),
+    800,
+  );
   let attached = 0;
-  for (const line of lines) {
-    let nearest: TimedLine | null = null;
-    let bestDelta = Number.MAX_SAFE_INTEGER;
-    for (const item of translated) {
-      const delta = Math.abs(item.timeMs - line.timeMs);
-      if (delta < bestDelta) {
-        bestDelta = delta;
-        nearest = item;
-      }
-    }
-    if (nearest && bestDelta <= 800) {
-      line.translation = (nearest.translation ?? '').trim();
-      attached += 1;
-    }
-  }
+  match.forEach((index, i) => {
+    if (index === null) return;
+    const value = (translated[index]?.translation ?? '').trim();
+    if (!isUsefulTranslation(value, lines[i]!.text)) return;
+    lines[i]!.translation = value;
+    attached += 1;
+  });
   return attached > 0;
 }
 
@@ -361,7 +374,7 @@ async function runDirectMatch(track: OnlineTrack): Promise<LyricMatchResult | nu
     }
     const scored = results
       .map((candidate) => ({ candidate, meta: metaScore(track, candidate) }))
-      .filter((item) => item.meta >= 0.5)
+      .filter((item) => item.meta >= 0.5 && directAcceptable(track, item.candidate))
       .sort((a, b) => b.meta - a.meta)
       .slice(0, 3);
     for (const { candidate, meta } of scored) {
