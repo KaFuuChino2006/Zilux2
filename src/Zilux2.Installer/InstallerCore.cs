@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IO.Compression;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -25,6 +25,22 @@ internal static class InstallerCore
     private static string FailurePath => Path.Combine(StateDir, "installer.failed");
 
     /// <summary>静默安装没有界面，把关键步骤写到 installer.log，失败时再留一个标记文件。</summary>
+    private static void ExtractWithRetry(ZipArchiveEntry entry, string destination)
+    {
+        // 极端情况下旧进程还在释放文件，最多重试 15 秒。
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                entry.ExtractToFile(destination, true);
+                return;
+            }
+            catch (IOException) when (attempt < 60)
+            {
+                System.Threading.Thread.Sleep(250);
+            }
+        }
+    }
     public static void Log(string message)
     {
         try
@@ -54,18 +70,25 @@ internal static class InstallerCore
 
     public static void KillRunning()
     {
-        foreach (var process in Process.GetProcessesByName("Zilux2"))
+        // 进程被 Kill 之后文件锁不会立刻释放，必须等到进程真正退出再解压覆盖。
+        for (var attempt = 0; attempt < 40; attempt++)
         {
-            try
+            var running = Process.GetProcessesByName("Zilux2");
+            if (running.Length == 0) return;
+            foreach (var process in running)
             {
-                if (!process.CloseMainWindow()) process.Kill();
-                process.WaitForExit(2500);
-                if (!process.HasExited) process.Kill();
+                try
+                {
+                    if (!process.CloseMainWindow()) process.Kill();
+                    if (!process.WaitForExit(1000)) process.Kill();
+                    process.WaitForExit(1000);
+                }
+                catch
+                {
+                    // ignore
+                }
             }
-            catch
-            {
-                // ignore
-            }
+            System.Threading.Thread.Sleep(250);
         }
     }
 
@@ -83,7 +106,7 @@ internal static class InstallerCore
             progress.Report((total <= 0 ? 0 : (int)(done * 100 / total), $"正在释放 {entry.FullName}"));
             var destination = Path.Combine(targetDir, entry.FullName.Replace('/', Path.DirectorySeparatorChar));
             Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-            entry.ExtractToFile(destination, true);
+            ExtractWithRetry(entry, destination);
             done += Math.Max(1, entry.Length);
         }
         progress.Report((100, "正在创建快捷方式"));
@@ -224,5 +247,6 @@ internal static class InstallerCore
         }
     }
 }
+
 
 
