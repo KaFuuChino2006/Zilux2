@@ -1,12 +1,12 @@
-using Zilux2.Interop;
+﻿using Zilux2.Interop;
 
 namespace Zilux2.Hotkeys;
 
 /// <summary>
 /// RegisterHotKey 风格的组合键（修饰符 + 虚拟键）。设置里的字符串格式见
 /// docs/zilux2-settings-contract.md §2：修饰键 <c>Ctrl</c>/<c>Alt</c>/<c>Shift</c>/<c>Win</c>
-/// （大小写不限、顺序任意、允许 <c>Control</c>/<c>Meta</c> 别名）+ 一个键名；至少要有 1 个修饰键
-/// 或键名是 F1-F24（例如单独 <c>F5</c> 合法，单独 <c>A</c>/<c>Space</c> 非法）。
+/// （大小写不限、顺序任意、允许 <c>Control</c>/<c>Meta</c> 别名）+ 一个键名。
+/// 支持单个按键（例如 <c>A</c>、<c>Space</c>、<c>F5</c>）或任意组合键。
 /// </summary>
 internal readonly record struct HotkeyBinding(uint Modifiers, uint VirtualKey, string Key)
 {
@@ -49,12 +49,6 @@ internal readonly record struct HotkeyBinding(uint Modifiers, uint VirtualKey, s
         }
 
         if (virtualKey == 0)
-        {
-            return false;
-        }
-
-        // 无修饰键时只接受功能键，否则会抢走打字等正常按键。
-        if (modifiers == 0 && !IsFunctionKey(virtualKey))
         {
             return false;
         }
@@ -240,3 +234,4 @@ internal readonly record struct HotkeyBinding(uint Modifiers, uint VirtualKey, s
         }
     }
 }
+
