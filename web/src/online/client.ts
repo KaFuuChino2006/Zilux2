@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 在线音乐客户端：与宿主回环 HTTP 服务（docs/zilux2-online-music.md §5）通信。
  * 宿主在页面 ready 后推送 {type:'host', event:'online', payload:{port, token, sources}}。
  * 本地预览（无宿主）时可用 ?mock=1 打开内置演示数据，仅用于 UI 验收。
@@ -238,8 +238,8 @@ export async function fetchRecentMerged(limit = 40): Promise<OnlineTrack[]> {
   return Array.isArray(data.tracks) ? data.tracks : [];
 }
 
-export async function fetchLyric(source: OnlineSource, id: string): Promise<OnlineLyric> {
-  return api<OnlineLyric>('/api/lyric', { source, id });
+export async function fetchLyric(source: OnlineSource, id: string, options?: { amll?: boolean }): Promise<OnlineLyric> {
+  return api<OnlineLyric>('/api/lyric', options?.amll ? { source, id, amll: '1' } : { source, id });
 }
 
 /** /api/library/feed 的 kind：最近播放 / 每日推荐 / 私人雷达（网易云）。 */
@@ -581,3 +581,4 @@ export async function recordRecent(track: OnlineTrack): Promise<void> {
     // 记录历史失败不影响播放
   }
 }
+
