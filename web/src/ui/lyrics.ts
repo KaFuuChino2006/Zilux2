@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 沉浸式歌词页：全屏、封面模糊背景、逐行 +（有逐字数据时）逐字高亮。
  * 数据来源：QQ QRC（解密）→ 网易云 yrc → 普通 LRC → 本地同名 .lrc。
  */
@@ -301,6 +301,7 @@ let lyricMatchDone = false;
 /** 'word' = 找逐字替换；'translation' = 已有逐字、只补翻译。 */
 let lyricMatchMode: 'word' | 'translation' | 'direct' = 'word';
 /** 手动选择的歌词来源（非空时不再自动匹配）。 */
+let manualAmll = false;
 let manualLyricLabel = '';
 /** 每首歌记住的手动歌词来源：trackKey -> { source, id, label }。 */
 const MANUAL_KEY = 'zilux2.lyricManual';
@@ -907,6 +908,15 @@ export function manualLyricLabelOf(): string {
 }
 
 /** 手动指定这首歌用哪个平台的哪份歌词（会记住）。 */
+/** 用 AMLL TTML DB 的逐字歌词替换当前曲目（手动选择，优先于自动匹配）。 */
+export async function applyManualAmllLyric(track: OnlineTrack): Promise<boolean> {
+  manualAmll = true;
+  try {
+    return await applyManualLyric(track, track.source, track.id, 'AMLL TTML DB');
+  } finally {
+    manualAmll = false;
+  }
+}
 export async function applyManualLyric(
   track: OnlineTrack,
   source: string,
@@ -914,7 +924,7 @@ export async function applyManualLyric(
   label: string,
 ): Promise<boolean> {
   try {
-    const lyric = await fetchLyric(source, id);
+    const lyric = await fetchLyric(source, id, manualAmll ? { amll: true } : undefined);
     const built = docFromLyric(track, lyric, `${label} · 手动选择 · `);
     if (built.doc.lines.length === 0) return false;
     const key = trackKeyOf(track);
@@ -2768,3 +2778,4 @@ export class LyricsView {
     this.root.remove();
   }
 }
+

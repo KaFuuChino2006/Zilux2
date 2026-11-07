@@ -1,4 +1,4 @@
-import { decryptQrc } from 'qrc-decoder';
+﻿import { decryptQrc } from 'qrc-decoder';
 import { fetchLyric, searchOnline } from '../online/client';
 import { extractQrcPayload, parseCharLyric, parseLrc, parseQrcLyric } from '../online/lrc';
 import { onlineArtwork } from '../online/artwork';
@@ -6,7 +6,7 @@ import { lyricSourceIds, sourceMeta } from '../online/sources';
 import { SOURCE_LABEL, type OnlineLyric, type OnlineTrack } from '../online/types';
 import { fmtTime, h, icon, toast } from './dom';
 import { candidateQueries, metaMatchScore } from './lyricMatch';
-import { applyManualLyric, clearManualLyric, currentLyricSource, manualLyricLabelOf } from './lyrics';
+import { applyManualAmllLyric, applyManualLyric, clearManualLyric, currentLyricSource, manualLyricLabelOf } from './lyrics';
 import { onPlayer, playerState, seek } from './player';
 
 interface Candidate {
@@ -387,11 +387,22 @@ export function openLyricPicker(track: OnlineTrack | null): void {
     ),
     h('div', { class: 'lp-right' }, preview, progressRow),
   );
-  const foot = h(
+  const amllBtn = h('button', { class: 'btn is-quiet', type: 'button', text: 'AMLL 逐字歌词' });
+  amllBtn.addEventListener('click', () => {
+    void (async () => {
+      const ok = await applyManualAmllLyric(track);
+      if (ok) {
+        toast('已切换为 AMLL TTML DB 歌词');
+        close();
+      } else {
+        toast('AMLL TTML DB 里没有这首歌的逐字歌词', 'error');
+      }
+    })();
+  });  const foot = h(
     'div',
     { class: 'lp-foot' },
     h('div', { class: 'lp-current', text: manualLyricLabelOf() ? `当前：手动选择 ${manualLyricLabelOf()}` : `当前：${currentLyricSource() || '自动'}` }),
-    h('div', { class: 'lp-foot-actions' }, autoBtn, cancelBtn, saveBtn),
+    h('div', { class: 'lp-foot-actions' }, amllBtn, autoBtn, cancelBtn, saveBtn),
   );
   panel.append(head, body, foot);
   root.append(panel);
@@ -439,3 +450,4 @@ export function openLyricPicker(track: OnlineTrack | null): void {
   renderTabs();
   void runSearch();
 }
+
