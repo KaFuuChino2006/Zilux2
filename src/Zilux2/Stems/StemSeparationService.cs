@@ -75,13 +75,23 @@ internal sealed class StemSeparationService : IDisposable
 
     internal long CacheLimitBytes => ReadCacheLimitBytes();
 
-    /// <summary>ZILUX2_STEMS_MODEL 优先，否则 %LOCALAPPDATA%\Zilux2\models\htdemucs-…onnx。</summary>
+    /// <summary>
+    /// 优先级：ZILUX2_STEMS_MODEL → 随包 models/htdemucs-…onnx（与 exe 同级）→
+    /// 老版本用户目录 %LOCALAPPDATA%\Zilux2\models\htdemucs-…onnx。
+    /// 发布版把模型一起打进安装包，不再依赖首次下载。
+    /// </summary>
     internal static string ResolveModelPath()
     {
         var overridden = Environment.GetEnvironmentVariable("ZILUX2_STEMS_MODEL");
-        return string.IsNullOrWhiteSpace(overridden)
-            ? Path.Combine(HostFolders.Root, "models", ModelFileName)
-            : overridden.Trim();
+        if (!string.IsNullOrWhiteSpace(overridden))
+        {
+            return overridden.Trim();
+        }
+
+        var bundled = Path.Combine(AppContext.BaseDirectory, "models", ModelFileName);
+        return File.Exists(bundled)
+            ? bundled
+            : Path.Combine(HostFolders.Root, "models", ModelFileName);
     }
 
     internal static bool ModelExists() => File.Exists(ResolveModelPath());
@@ -1081,3 +1091,4 @@ internal sealed class StemSeparationService : IDisposable
         }
     }
 }
+

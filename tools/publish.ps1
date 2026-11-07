@@ -153,11 +153,27 @@ if (-not (Test-Path (Join-Path $OutputDirectory 'web\index.html'))) {
 Get-ChildItem $OutputDirectory -Filter 'Microsoft.Web.WebView2.*.xml' -File |
     Remove-Item -Force -ErrorAction SilentlyContinue
 
+# ---- 3b) 人声分离模型随包发布（约 130 MB）----
+$modelName = 'htdemucs-dft-fp16-transparent.onnx'
+$modelCandidates = @(
+    (Join-Path $repoRoot "models\$modelName"),
+    (Join-Path $env:LOCALAPPDATA "Zilux2\models\$modelName")
+)
+$modelSource = $modelCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $modelSource) {
+    throw "人声分离模型缺失：$modelName。请放到仓库 models\ 或 %LOCALAPPDATA%\Zilux2\models\ 后重新发布（CI 会自动下载）。"
+}
+$modelOut = Join-Path $OutputDirectory 'models'
+New-Item -ItemType Directory -Force -Path $modelOut | Out-Null
+Copy-Item $modelSource (Join-Path $modelOut $modelName) -Force
+Write-Host "model: $modelSource"
 $launcher = Join-Path $OutputDirectory '启动 Zilux2.cmd'
 $launcherBody = "@echo off`r`nstart `"`" `"%~dp0Zilux2.exe`"`r`n"
 [IO.File]::WriteAllText($launcher, $launcherBody, (New-Object Text.UTF8Encoding $false))
 
 $exeSize = (Get-Item $exe).Length
 $webSize = (Get-ChildItem (Join-Path $OutputDirectory 'web') -Recurse -File | Measure-Object Length -Sum).Sum
-Write-Host ("publish ok: {0} ({1:N0} bytes) + web payload {2:N0} bytes" -f $exe, $exeSize, $webSize)
+Write-Host ("publish ok: {0} ({1:N0} bytes) + web payload {2:N0} bytes + model {3:N0} bytes" -f $exe, $exeSize, $webSize, (Get-Item (Join-Path $OutputDirectory "models\$modelName")).Length)
 Write-Host "folder: $OutputDirectory"
+
+
