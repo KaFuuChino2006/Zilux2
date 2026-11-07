@@ -28,7 +28,6 @@ import {
   readCrossfadeSettings,
   setPrefetchDebug,
   startManualCrossfade,
-  warmStemsAt,
 } from './crossfadeDeck';
 import { fetchVocalRange } from './vocalStart';
 
@@ -719,8 +718,6 @@ function onEnded(element: HTMLAudioElement): void {
   }
   // 自然播完：用准备阶段就选好的下一首（shuffle 的随机结果在切换时不再重算）。
   const planned = takePlannedNextIndex();
-  // A 已自然播完：任何残留的过渡预览都不能回退显示到这首已结束的歌上。
-  preview = null;
   cancelSeamless('ended');
   if (state.mode === 'single') {
     seek(0);
@@ -760,6 +757,79 @@ function onError(element: HTMLAudioElement): void {
 }
 
 /** 载入并播放队列中某一首。skipFadeIn=true 时直接全音量起播（用于悬停试听的无缝交接）。 */
+/* ------------------------------------------------------------------ */
+/* 前瞻续接（心动模式等「快播到尾巴」就提前续一批）                     */
+/* ------------------------------------------------------------------ */
+
+export interface LookaheadRefill {
+  remaining: number;
+  load: () => Promise<OnlineTrack[]>;
+  onAppended?: (added: number) => void;
+  onCleared?: () => void;
+}
+
+let lookaheadRefill: LookaheadRefill | null = null;
+let lookaheadInFlight = false;
+
+export function setLookaheadRefill(refill: LookaheadRefill | null): void {
+  const previous = lookaheadRefill;
+  lookaheadRefill = refill;
+  lookaheadInFlight = false;
+  if (previous && previous !== refill) {
+    try {
+      previous.onCleared?.();
+    } catch {
+      /* 持有方清理出错不影响播放 */
+    }
+  }
+  if (!refill) return;
+  maybeLookaheadRefill();
+  prepareSeamlessNext();
+}
+
+function clearLookaheadRefill(): void {
+  if (!lookaheadRefill) return;
+  setLookaheadRefill(null);
+}
+
+function maybeLookaheadRefill(): void {
+  const refill = lookaheadRefill;
+  if (!refill || lookaheadInFlight) return;
+  if (state.index < 0 || !state.track || state.queue.length === 0) return;
+  if (state.queue.length - 1 - state.index > refill.remaining) return;
+  const anchorIndex = state.index;
+  const anchorKey = queueKeyOf(state.track);
+  lookaheadInFlight = true;
+  void (async () => {
+    let batch: OnlineTrack[];
+    try {
+      batch = await refill.load();
+    } catch {
+      lookaheadInFlight = false;
+      return;
+    }
+    lookaheadInFlight = false;
+    if (lookaheadRefill !== refill) return;
+    if (state.index !== anchorIndex) return;
+    if ((state.track ? queueKeyOf(state.track) : '') !== anchorKey) return;
+    const seen = new Set(state.queue.map(queueKeyOf));
+    const extra: OnlineTrack[] = [];
+    for (const track of batch) {
+      if (!track || track.id.length === 0) continue;
+      const key = queueKeyOf(track);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      extra.push(track);
+    }
+    if (extra.length === 0) {
+      refill.onAppended?.(0);
+      return;
+    }
+    state = { ...state, queue: [...state.queue, ...extra] };
+    refill.onAppended?.(extra.length);
+  })();
+}
+
 function load(index: number, autoplay = true, startMs = 0, skipFadeIn = false): void {
   const track = state.queue[index] ?? null;
   if (!track) {
@@ -837,11 +907,10 @@ function load(index: number, autoplay = true, startMs = 0, skipFadeIn = false): 
         setState({ playing: true, loading: false });
         scheduleTick();
         void recordRecent(track);
-        // 没分析过的曲目也在后台预热当前窗口的人声/伴奏，过渡时才有分离音轨可用。
-        warmStemsAt(audio, track, startAt);
         if (fade > 0) void fadeTo(1, fade, token, fx.fadeCurve);
         // 播放已启动：异步预分析 + 预加载下一首，准备鼓点对齐的无缝衔接。
         prepareSeamlessNext();
+        maybeLookaheadRefill();
       })
       .catch((err: unknown) => {
         console.warn('[player] play failed', err);
@@ -856,8 +925,6 @@ function load(index: number, autoplay = true, startMs = 0, skipFadeIn = false): 
   }
   // 这一首是队列末尾时，提前拉下一批续上（私人漫游），避免无缝计划绕回第一首。
   maybeRefillQueue();
-  // 心动模式：剩余曲目 ≤ 阈值就提前预取，不等播到最后一首。
-  maybeLookaheadRefill();
 }
 
 /* ------------------------------------------------------------------ */
@@ -922,102 +989,6 @@ function maybeRefillQueue(): void {
   })();
 }
 
-/* ------------------------------------------------------------------ */
-/* 前瞻续接（心动模式等「快播到尾巴」就提前续一批）                     */
-/* ------------------------------------------------------------------ */
-
-/**
- * 前瞻续接器：队列「剩余」（当前下标之后的曲目数）≤ remaining 时提前拉下一批。
- * 与 queueRefill 的区别：queueRefill 播到最后一首才拉，这里在尾巴之前就开始取，
- * 结果只去重追加、不打断当前播放。任何显式换队列 / 清空队列都会清除它。
- */
-export interface LookaheadRefill {
-  /** 触发阈值：当前下标之后的曲目数 ≤ remaining 时开始预取 */
-  remaining: number;
-  /** 取下一批候选曲目；抛错表示这次没取到（静默，等下一次切歌再试） */
-  load: () => Promise<OnlineTrack[]>;
-  /** 去重追加后的回调：added = 实际入队首数（0 = 空批次或全部重复） */
-  onAppended?: (added: number) => void;
-  /** 续接器被作废时回调（换队列 / 清空队列 / 停止播放），持有方据此取消在途请求 */
-  onCleared?: () => void;
-}
-
-let lookaheadRefill: LookaheadRefill | null = null;
-let lookaheadInFlight = false;
-
-/** 注册前瞻续接器（传 null 清除并通知旧持有方）；注册时若已到阈值会立即预取。 */
-export function setLookaheadRefill(refill: LookaheadRefill | null): void {
-  const previous = lookaheadRefill;
-  lookaheadRefill = refill;
-  lookaheadInFlight = false;
-  if (previous && previous !== refill) {
-    try {
-      previous.onCleared?.();
-    } catch {
-      /* 持有方清理出错不影响播放 */
-    }
-  }
-  if (!refill) return;
-  maybeLookaheadRefill();
-  prepareSeamlessNext();
-}
-
-function clearLookaheadRefill(): void {
-  if (!lookaheadRefill) return;
-  setLookaheadRefill(null);
-}
-
-/**
- * 队列剩余不足时异步预取一批，去重后追加到队尾。
- * 不阻塞播放：结果回来时若已换曲 / 换过队列，这一批整批丢弃。
- */
-function maybeLookaheadRefill(): void {
-  const refill = lookaheadRefill;
-  if (!refill || lookaheadInFlight) return;
-  if (state.index < 0 || !state.track || state.queue.length === 0) return;
-  if (state.queue.length - 1 - state.index > refill.remaining) return;
-  const anchorIndex = state.index;
-  const anchorKey = queueKeyOf(state.track);
-  lookaheadInFlight = true;
-  void (async () => {
-    let batch: OnlineTrack[];
-    try {
-      batch = await refill.load();
-    } catch (err) {
-      lookaheadInFlight = false;
-      // 失败静默：不弹提示、不阻塞播放，下一次切歌（load/commitSeamless）再试。
-      console.debug('[player] lookahead refill failed', err);
-      return;
-    }
-    lookaheadInFlight = false;
-    if (lookaheadRefill !== refill) return;
-    if (state.index !== anchorIndex) return;
-    if ((state.track ? queueKeyOf(state.track) : '') !== anchorKey) return;
-    // 按 source:id 去重（含批次内部重复），避免同一首重复入队。
-    const seen = new Set(state.queue.map(queueKeyOf));
-    const extra: OnlineTrack[] = [];
-    for (const track of batch) {
-      if (!track || track.id.length === 0) continue;
-      const key = queueKeyOf(track);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      extra.push(track);
-    }
-    if (extra.length === 0) {
-      refill.onAppended?.(0);
-      return;
-    }
-    state = { ...state, queue: [...state.queue, ...extra] };
-    setState({ queue: state.queue });
-    console.debug(`[player] lookahead refilled +${extra.length}（共 ${state.queue.length} 首）`);
-    // 追加前排好的「下一首」属于旧队列尾部，作废后按新队列重排。
-    plannedNextIndex = null;
-    plannedFor = '';
-    prepareSeamlessNext();
-    refill.onAppended?.(extra.length);
-  })();
-}
-
 /**
  * 把外部「正在播放」的元素接管为当前 deck（悬停试听点击接续用）：
  * 不重新加载、不 seek、不打断声音——元素继续放，播放器只接管状态与后续链路。
@@ -1030,8 +1001,6 @@ export function adoptPlayingElement(
 ): boolean {
   if (element === audio || element.paused) return false;
   cancelSeamless('adopt');
-  // 接管后是一套全新的队列：原来队列上的前瞻续接作废。
-  clearLookaheadRefill();
   cancelFade();
   const previous = audio;
   // 顺序很重要：先停旧 deck，再恢复主音量，最后接管元素。
@@ -1100,8 +1069,6 @@ export function playQueue(tracks: OnlineTrack[], index = 0, autoplay = true, sta
   skipGuard = 0;
   queueRefill = null;
   refillInFlight = false;
-  // 换了整套队列（切来源 / 重新开播）：前瞻续接器与心动模式等持有方一并作废。
-  clearLookaheadRefill();
   state = { ...state, queue: tracks.slice() };
   load(safeIndex, autoplay, startMs, skipFadeIn);
 }
@@ -1123,8 +1090,6 @@ export function replaceQueue(tracks: OnlineTrack[]): void {
   }
   const index = tracks.findIndex((item) => item.source === track.source && item.id === track.id);
   if (index < 0) return;
-  // 队列内容被整体替换，前瞻续接的锚点已失效，交给持有方重新决定。
-  clearLookaheadRefill();
   // 队列内容变了，下一首也可能变：先放弃旧计划再按新队列重新准备。
   cancelSeamless('queue');
   state = { ...state, queue: tracks.slice(), index };
@@ -1555,8 +1520,6 @@ export function setVolume(value: number): void {
 
 export function stop(): void {
   cancelSeamless('stop');
-  // 停止播放等于清空当前播放上下文：前瞻续接与心动模式等持有方一并退出。
-  clearLookaheadRefill();
   cancelFade();
   vocalHold = 0;
   setVocalFade(0);
@@ -1877,9 +1840,6 @@ function beginSeamlessPreview(
   fromIndex: number,
   nextStartAt: number,
 ): void {
-  // 迟到的预览回调（B 的 play() 在收尾之后才 resolve）：此时 deck 已经交换成活跃 deck，
-  // 再写预览会把界面拉回上一首，直接忽略。
-  if (audio === deck) return;
   const rawDuration = Number.isFinite(deck.duration) && deck.duration > nextStartAt ? deck.duration - nextStartAt : 0;
   preview = {
     deck,
@@ -1906,16 +1866,6 @@ function restorePreview(reason: string): void {
   if (!preview) return;
   const back = preview;
   preview = null;
-  // deck 已交换（过渡收尾或显式切歌之后）：这是过期预览，不能把界面拉回上一首。
-  if (back.deck !== audio) {
-    console.debug(`[player] seamless preview 丢弃（${reason}，deck 已交换）`);
-    return;
-  }
-  // 上一首已经自然播完、暂停在曲尾：恢复它只会停在最后一秒，交给 onEnded 的 advance。
-  if (audio.ended) {
-    console.debug(`[player] seamless preview 丢弃（${reason}，上一首已播完）`);
-    return;
-  }
   setState({
     track: back.fromTrack,
     index: back.fromIndex,
@@ -2004,9 +1954,6 @@ function planSingleLoop(current: OnlineTrack, token: number): void {
  * Web Audio 图已建立时改走图内增益淡化（引擎会把两个 deck 接图）。
  */
 function prepareSeamlessNext(): void {
-  // 淡化进行中不重排：重排会先 restorePreview + cancelCrossfade，把界面退回上一首并打断过渡。
-  // 收尾时 commitSeamless 会再调一次，那会儿 activePlan 已清空。
-  if (crossfadeIsFading()) return;
   seamlessToken += 1;
   const token = seamlessToken;
   // 上一份计划作废（引擎内部会恢复 A 音量、暂停 B）；若界面已在过渡中切到 B，先退回 A。
@@ -2162,6 +2109,7 @@ function commitSeamless(
   plannedNextIndex = null;
   plannedFor = '';
   transitionTarget = null;
+  clearLookaheadRefill();
   // 图内模式时 B 已在 deckMix 里（gain=1），切换后继续走图；只有元素模式的硬切需要标记
   // 「当前 deck 不在图里」以便 applyPlaybackVolume 走元素音量。
   activeDeckOutsideGraph = audioTapGraphActive() && !deckGraphConnected(audio);
@@ -2205,6 +2153,7 @@ function commitSeamless(
   scheduleTick();
   // 无缝过渡也可能落在队列末尾（续接批次里的最后一首）：同样提前续上。
   maybeRefillQueue();
+  maybeLookaheadRefill();
   prepareSeamlessNext();
 }
 
