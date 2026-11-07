@@ -6509,9 +6509,9 @@ export class App {
         refs.row.classList.toggle('is-recording', recording === action);
         refs.row.classList.toggle('is-disabled', !current.shortcuts.enabled);
         refs.record.disabled = !current.shortcuts.enabled;
-        refs.record.textContent = recording === action ? '按下新组合…（Esc 取消）' : '重新录制';
+        refs.record.textContent = recording === action ? '按下按键或组合…（Esc 取消）' : '重新录制';
         if (recording === action) {
-          refs.status.textContent = recordHint || '按下组合；Backspace / Delete 清除，Esc 取消';
+          refs.status.textContent = recordHint || '按下单个按键或组合；Backspace / Delete 清除，Esc 取消';
           refs.status.dataset.kind = 'recording';
           refs.status.title = '';
           continue;
@@ -6542,11 +6542,6 @@ export class App {
         patchShortcut(action, '');
         stopRecording();
         toast(`已清除「${SHORTCUT_LABELS[action].label}」快捷键`);
-        return;
-      }
-      if (noModifier) {
-        recordHint = '请搭配 Ctrl / Alt / Shift / Win 使用';
-        paint();
         return;
       }
       const combo = shortcutBindingFromEvent(event);
@@ -11575,6 +11570,7 @@ export class App {
 }
 
 export type { App as ZiluxApp };
+
 
 
 
