@@ -1,4 +1,4 @@
-﻿using System.Buffers;
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
@@ -1685,6 +1685,24 @@ internal sealed class LocalMusicServer : IDisposable
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token);
             timeout.CancelAfter(LyricTimeout);
             var lyric = await provider.GetLyricAsync(id, timeout.Token).ConfigureAwait(false);
+            // 平台没有逐字轨时，用 AMLL TTML DB 的 .yrc 兜底（同格式，前端可直接解析）。
+            // amll=1 强制只取 AMLL 的逐字轨，供歌词来源切换使用。
+            var forceAmll = string.Equals(context.Request.QueryString["amll"], "1", StringComparison.Ordinal);
+            if (forceAmll ||
+                (string.IsNullOrWhiteSpace(lyric.Yrc) &&
+                 string.IsNullOrWhiteSpace(lyric.QrcText) &&
+                 string.IsNullOrWhiteSpace(lyric.Qrc)))
+            {
+                var amllYrc = await AmllLyrics.FetchYrcAsync(provider.Name, id, timeout.Token).ConfigureAwait(false);
+                if (!string.IsNullOrWhiteSpace(amllYrc))
+                {
+                    lyric = new LyricData { Lrc = lyric.Lrc, Translation = lyric.Translation, Yrc = amllYrc };
+                }
+                else if (forceAmll)
+                {
+                    return WriteError(context, 404, "lyric-missing", "AMLL TTML DB 里没有这首歌的逐字歌词");
+                }
+            }
             var response = new LyricResponse
             {
                 Source = provider.Name,
@@ -3941,6 +3959,7 @@ internal sealed class LocalMusicServer : IDisposable
 
     private sealed record CoverCacheEntry(byte[] Bytes, string ContentType, DateTimeOffset ExpiresAt);
 }
+
 
 
 
