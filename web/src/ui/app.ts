@@ -1,4 +1,4 @@
-import { openFlowSettingsSheet } from './flowSettingsPanel';
+﻿import { openFlowSettingsSheet } from './flowSettingsPanel';
 /// <reference types="vite/client" />
 /**
  * 应用外壳：顶栏 / 左 rail / 墙面 / 播放条 / 弹层（搜索、设置、账号、登录）。
@@ -11575,6 +11575,7 @@ export class App {
 }
 
 export type { App as ZiluxApp };
+
 
 
 
