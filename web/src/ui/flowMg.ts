@@ -1,5 +1,7 @@
 import type { TemperaCompositionContext } from './lumiere-folia/components/visualizer/tempera/temperaCompositionContext';
 import { TEMPERA_SHOT_KINDS } from './lumiere-folia/components/visualizer/tempera/types';
+import { FLOW_CREATIVE_NAMES, FLOW_CREATIVE_START, drawFlowCreative } from './flowMgCreative';
+import { FLOW_GEOMETRY_NAMES, FLOW_GEOMETRY_START, drawFlowGeometry } from './flowMgGeometry';
 export const FLOW_MG_FAMILIES=['orbit','paper','wave','grid','prism','type','signal','organic'] as const;
 export const FLOW_MG_NAMES=[
  '偏心轨道','星环切片','日蚀圆盘','行星刻度','折页海报','撕纸阶梯','悬浮便签','风琴书页','等高波纹','交织丝带','潮汐扇贝','声波峡谷','棋盘透视','窗格拼贴','像素阶梯','点阵星图','棱镜扇面','钻石隧道','折光山脊','万花碎片','字母积木','标点游乐场','书脊排版','巨型括号','雷达扫描','电路节点','条码频谱','瞄准仪表','花瓣旋涡','叶脉剪影','液滴拼贴','珊瑚枝条',
@@ -7,6 +9,8 @@ export const FLOW_MG_NAMES=[
  '纸张隧道','排版风暴','声纹棱镜','时间刻度','霓虹门','分形回廊','数据瀑布','几何潮汐','声音粒子','城市剖面',
  '光盘轨道','玻璃书页','同心阶梯','漂移坐标','光谱折叠','机械花瓣','磁力曲线','像素风暴','窗口漂移','模块星座',
  '字体波纹','弧光列阵','织网脉冲','云层切片','透镜波纹','极光栅栏','印章阵列','黑洞光环','回授波纹','空间折线',
+ ...FLOW_CREATIVE_NAMES,
+ ...FLOW_GEOMETRY_NAMES,
 ];
 export const FLOW_ORIGINAL_NAMES=[
  '双分屏','四分屏','三栏','三段堆叠','棋盘四格','角楔','对角双分','交叉轴','错位双栏','阶梯块面','立柱留隙','角部四格','细条堆叠',
@@ -60,6 +64,8 @@ export const FLOW_COMPOSITION_ORDER=buildRotationOrder();
 export interface FlowMgOptions { variant:number; density:number; scale:number; opacity:number; stagger:number }
 /** Original Zilux compositions: bounded vector nodes, animated by Tempera's absolute-time block driver. */
 export function drawFlowMg(ctx:TemperaCompositionContext, opts:FlowMgOptions) {
+ if(opts.variant>=FLOW_GEOMETRY_START){drawFlowGeometry(ctx,opts);return;}
+ if(opts.variant>=FLOW_CREATIVE_START){drawFlowCreative(ctx,opts);return;}
  const {width:w,height:h,palette:p,pixi}=ctx, u=Math.min(w,h), v=opts.variant;
  const colors=[p.blockA,p.blockB,p.blockC,p.accent], n=Math.max(4,Math.round(10*opts.density));
  const group=ctx.createGroup(0,w/2,h/2);group.scale.set(opts.scale);

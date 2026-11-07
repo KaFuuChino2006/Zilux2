@@ -469,7 +469,11 @@ export class TemperaPixiRuntime {
 
             // Shot boundaries need no scene-level transition any more: the compositions hand
             // off to each other directly, which is what makes a paragraph read as one take.
-            const transitionFrame = paragraphTransitionFrame;
+            const rotationCamera = scene.shots[activeShotIndex]?.shot.cameraMotion === 'rotation';
+            // The shot owns rotation/zoom; a paragraph push or counter-turn must not mask it.
+            const transitionFrame = rotationCamera
+                ? { ...paragraphTransitionFrame, x: 0, y: 0, scale: 1, rotation: 0 }
+                : paragraphTransitionFrame;
             scene.shots.forEach((shot, shotIndex) => {
                 // The outgoing shot stays on screen through its hand-off window, so two
                 // compositions overlap exactly while one is pushing the other out.

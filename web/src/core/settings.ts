@@ -65,6 +65,10 @@ export type FadeCurve = 'smooth' | 'linear' | 'exponential';
 /** 睡眠定时到点前的渐弱时长（秒）可选档位；0 表示不渐弱。 */
 export const SLEEP_FADE_SECONDS_CHOICES: readonly number[] = [0, 5, 10, 15, 30];
 
+/** 本软件音频输出：跟随 Windows 默认设备，或固定到某个播放设备（宿主字段同名）。 */
+export type AppOutputMode = 'system' | 'device';
+export const APP_OUTPUT_MODES: readonly AppOutputMode[] = ['system', 'device'];
+
 /** 睡眠定时到点后的动作。 */
 export type SleepTimerAction = 'pause' | 'minimize' | 'exit';
 export const SLEEP_TIMER_ACTIONS: readonly { value: SleepTimerAction; label: string }[] = [
@@ -96,7 +100,9 @@ export type ShortcutAction =
   | 'mode'
   | 'mini'
   | 'desktopLyrics'
-  | 'crossfade';
+  | 'crossfade'
+  | 'appOutput'
+  | 'systemOutput';
 
 export interface ShortcutsSettings {
   /** 全局开关：关闭后宿主注销全部组合。 */
@@ -116,6 +122,10 @@ export interface ShortcutsSettings {
   mini: string;
   desktopLyrics: string;
   crossfade: string;
+  /** 本软件音频输出：在「跟随系统」与指定设备之间切换。 */
+  appOutput: string;
+  /** Windows 默认播放设备轮换（系统级，不影响本软件通道）。 */
+  systemOutput: string;
 }
 
 /** 四条可配置的全局快捷键（顺序即设置页展示顺序）。 */
@@ -132,6 +142,8 @@ export const SHORTCUT_ACTIONS: readonly ShortcutAction[] = [
   'mini',
   'desktopLyrics',
   'crossfade',
+  'appOutput',
+  'systemOutput',
 ];
 
 /** 设置页展示用的标签与说明。 */
@@ -148,6 +160,8 @@ export const SHORTCUT_LABELS: Record<ShortcutAction, { label: string; hint: stri
   mini: { label: '迷你播放器', hint: '进入 / 退出迷你模式' },
   desktopLyrics: { label: '桌面歌词', hint: '开关独立歌词窗口' },
   crossfade: { label: '无缝衔接', hint: '临时开关自动过渡（与设置里的开关同步）' },
+  appOutput: { label: '本软件输出', hint: '在「跟随系统」和设置里选定的播放设备之间切换' },
+  systemOutput: { label: '系统输出轮换', hint: '切换 Windows 默认播放设备；参与轮换的设备在「系统音频」设置页勾选' },
 };
 
 /** 默认组合（与宿主 Shortcuts v1 schema 的默认值保持一致）。 */
@@ -166,6 +180,8 @@ export const SHORTCUT_DEFAULTS: ShortcutsSettings = {
   mini: '',
   desktopLyrics: '',
   crossfade: '',
+  appOutput: '',
+  systemOutput: '',
 };
 
 const SHORTCUT_MODIFIERS = ['Ctrl', 'Alt', 'Shift', 'Win'] as const;
@@ -324,13 +340,15 @@ export interface Settings {
     desktopLyricsTopmost: boolean;
     /** 桌面背景歌词：把歌词页效果镜像到桌面壁纸层；开启期间软件内歌词页不显示歌词。 */
     backgroundLyrics: boolean;
+    /** 「系统输出轮换」快捷键参与轮换的设备（端点 ID；空数组 = 全部活动设备）。 */
+    systemOutputRotation: string[];
   };
   appearance: {
     theme: Theme;
     reduceMotion: boolean;
     glow: boolean;
     lyricsSize: LyricsSize;
-    /** 窗口过渡：custom=应用内快照动画，native=交给 Windows 原生过渡。 */
+    /** 窗口过渡：常规状态由 Windows 处理；custom 为关闭到托盘补整窗淡出。 */
     windowAnimation: WindowAnimation;
     /** 底部播放条常驻展开：开着时不再依赖鼠标悬停，播放条始终保持展开形态。 */
     playerBarExpanded: boolean;
@@ -371,6 +389,10 @@ export interface Settings {
     sleepFadeSeconds: number;
     /** 睡眠定时到点后的动作：pause 暂停 / minimize 暂停并最小化 / exit 退出应用。 */
     sleepAction: SleepTimerAction;
+    /** 本软件音频输出：system = 跟随 Windows 默认设备；device = 固定到 appOutputDeviceId。 */
+    appOutputMode: AppOutputMode;
+    /** 浏览器 setSinkId 用的设备 deviceId；mode=device 时生效。 */
+    appOutputDeviceId: string;
   };
   shortcuts: ShortcutsSettings;
   downloads: {
@@ -408,7 +430,7 @@ export type SettingsPatch = {
 
 export const DEFAULT_SETTINGS: Settings = {
   version: 1,
-  general: { splash: true, startMaximized: false, autoLaunch: false, autoStartHidden: true, watchLocalFolder: true, mediaSession: true, desktopLyrics: false, desktopLyricsLocked: false, desktopLyricsFontSize: 40, desktopLyricsWeight: 'normal', desktopLyricsBackdropOpacity: 40, desktopLyricsTopmost: true, backgroundLyrics: false },
+  general: { splash: true, startMaximized: false, autoLaunch: false, autoStartHidden: true, watchLocalFolder: true, mediaSession: true, desktopLyrics: false, desktopLyricsLocked: false, desktopLyricsFontSize: 40, desktopLyricsWeight: 'normal', desktopLyricsBackdropOpacity: 40, desktopLyricsTopmost: true, backgroundLyrics: false, systemOutputRotation: [] },
   appearance: {
     theme: 'frost',
     reduceMotion: false,
@@ -437,6 +459,8 @@ export const DEFAULT_SETTINGS: Settings = {
     fadeVocalTailMs: FADE_VOCAL_TAIL_MS.fallback,
     sleepFadeSeconds: 15,
     sleepAction: 'pause',
+    appOutputMode: 'system',
+    appOutputDeviceId: '',
   },
   shortcuts: { ...SHORTCUT_DEFAULTS },
   downloads: { directory: '', quality: 'high', maxConcurrent: 2, fileNameTemplate: '{artist} - {title}', openFolderWhenDone: false },
@@ -524,6 +548,19 @@ function asEqGains(value: unknown): number[] {
   });
 }
 
+/** 设备 ID 数组（最多 32 项、每项 ≤512 字符、去重）；非数组回落空数组。 */
+function asDeviceIdList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const result: string[] = [];
+  for (const item of value) {
+    if (result.length >= 32) break;
+    if (typeof item !== 'string') continue;
+    const text = item.trim();
+    if (text && text.length <= 512 && !result.includes(text)) result.push(text);
+  }
+  return result;
+}
+
 type MsRange = { readonly min: number; readonly max: number; readonly step: number; readonly fallback: number };
 
 function asMs(value: unknown, range: MsRange, fallback = range.fallback): number {
@@ -555,6 +592,8 @@ function asShortcuts(value: Record<string, unknown>): ShortcutsSettings {
     prev: normalizeShortcutBinding(value.prev, SHORTCUT_DEFAULTS.prev),
     next: normalizeShortcutBinding(value.next, SHORTCUT_DEFAULTS.next),
     toggleWindow: normalizeShortcutBinding(value.toggleWindow, SHORTCUT_DEFAULTS.toggleWindow),
+    appOutput: normalizeShortcutBinding(value.appOutput, ''),
+    systemOutput: normalizeShortcutBinding(value.systemOutput, ''),
   };
 }
 
@@ -584,6 +623,7 @@ export function normalizeSettings(raw: unknown): Settings {
       desktopLyricsBackdropOpacity: asBackdropOpacity(general.desktopLyricsBackdropOpacity),
       desktopLyricsTopmost: asBool(general.desktopLyricsTopmost, DEFAULT_SETTINGS.general.desktopLyricsTopmost),
       backgroundLyrics: asBool(general.backgroundLyrics, DEFAULT_SETTINGS.general.backgroundLyrics),
+      systemOutputRotation: asDeviceIdList(general.systemOutputRotation),
     },
     appearance: {
       theme: asEnum(appearance.theme, THEMES, DEFAULT_SETTINGS.appearance.theme),
@@ -619,6 +659,11 @@ export function normalizeSettings(raw: unknown): Settings {
         ? Math.round(Number(playback.sleepFadeSeconds))
         : DEFAULT_SETTINGS.playback.sleepFadeSeconds,
       sleepAction: asEnum(playback.sleepAction, SLEEP_TIMER_ACTION_IDS, DEFAULT_SETTINGS.playback.sleepAction),
+      appOutputMode: asEnum(playback.appOutputMode, APP_OUTPUT_MODES, DEFAULT_SETTINGS.playback.appOutputMode),
+      appOutputDeviceId:
+        typeof playback.appOutputDeviceId === 'string' && playback.appOutputDeviceId.length <= 512
+          ? playback.appOutputDeviceId.trim()
+          : DEFAULT_SETTINGS.playback.appOutputDeviceId,
     },
     shortcuts: asShortcuts(shortcuts),
     downloads: {
@@ -822,3 +867,4 @@ export function resetSettings(): Settings {
   }
   return next;
 }
+

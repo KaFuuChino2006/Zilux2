@@ -9,6 +9,7 @@
  */
 
 import { peekAnalysis } from '../online/analysis';
+import { registerAppAudioElement } from '../core/audioOutput';
 import { streamUrl } from '../online/client';
 import type { OnlineTrack } from '../online/types';
 import { attachDeckToGraph, audioTapGraphActive, setDeckGraphGain } from '../core/audioTap';
@@ -139,6 +140,7 @@ function audio(): HTMLAudioElement {
     // 点击时这个元素会被直接交给播放器接管并接进 Web Audio 图；
     // 图要求跨域媒体带 CORS，宿主/本地服务都允许 zilux2.local，不加会变静音。
     element.crossOrigin = 'anonymous';
+    registerAppAudioElement(element);
   }
   return element;
 }

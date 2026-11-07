@@ -59,7 +59,7 @@ const MIN_INK_CONTRAST = 96;
  * between. When that happens the ink is pushed to the opposite end of the paper and keeps
  * only a whisper of the theme hue.
  */
-const ensureInkContrast = (paper: string, ink: string) => {
+export const ensureInkContrast = (paper: string, ink: string) => {
     if (Math.abs(luminanceOf(ink) - luminanceOf(paper)) >= MIN_INK_CONTRAST) return ink;
     const target = luminanceOf(paper) < 128 ? '#f4f4f2' : '#141414';
     const tinted = mixColors(target, ink, 0.14);
@@ -221,4 +221,35 @@ export const resolveTemperaPalette = (
         gradient: null,
         textGradient: null,
     };
+};
+
+/**
+ * Re-derives the screentone ladder and the hairline colours after the paper or the ink has
+ * been swapped by Zilux's own palette settings.
+ *
+ * Every one of the 121 original Tempera compositions paints its structure out of `tone1`-`tone4`
+ * plus `line`/`shadow`; none of them touch `blockA`-`blockC` or `accent` (those belong to the MG
+ * drawers). A palette override that only rewrites paper/ink therefore leaves the whole artwork
+ * sitting on Folia's fixed grey ladder, and the chosen colour can only seep through as a tint.
+ * Re-running the ladder against the new paper/ink is what actually makes the background colour
+ * land on the original compositions.
+ *
+ * The ladder's dark end uses a contrast-enforced copy of the ink so a pale paper can still carry
+ * tonal structure; `palette.ink` itself is left alone (it colours the type and the inversion
+ * filter, and the caller decides whether it may be adjusted).
+ */
+export const repaintTemperaTones = (
+    palette: TemperaPalette,
+    tintA?: string,
+    tintB?: string,
+): TemperaPalette => {
+    const ladderInk = ensureInkContrast(palette.paper, palette.ink);
+    const ladder = buildToneLadder(palette.paper, ladderInk, tintA, tintB);
+    palette.tone1 = ladder.tone1;
+    palette.tone2 = ladder.tone2;
+    palette.tone3 = ladder.tone3;
+    palette.tone4 = ladder.tone4;
+    palette.line = colorWithAlpha(mixColors(palette.paper, ladderInk, 0.6), 0.5);
+    palette.shadow = colorWithAlpha(mixColors(palette.paper, ladderInk, 0.8), 0.32);
+    return palette;
 };

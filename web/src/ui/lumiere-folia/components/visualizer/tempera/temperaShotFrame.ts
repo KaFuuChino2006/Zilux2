@@ -50,16 +50,19 @@ export const updateTemperaShot = (
     const animationScale = resolveAnimationScale(theme);
     const camera = tuning.cameraIntensity * animationScale;
     const motion = tuning.glyphMotion * animationScale;
+    const rotationOnly = view.shot.cameraMotion === 'rotation';
     const frame = resolveTemperaCameraFrame(view.shot, rawProgress);
 
     const breathWeight = resolveTemperaBreathWeight(time, view.revealDoneTime);
     if (breathWeight > 0) {
         const breathPhase = (hashTemperaSeed(view.shot.id) % 1024) / 1024 * Math.PI * 2;
         const breath = resolveTemperaCameraBreath(time, breathPhase);
-        frame.x += breath.x * breathWeight;
-        frame.y += breath.y * breathWeight;
-        frame.scale += breath.scale * breathWeight;
-        frame.rotation += breath.rotation * breathWeight;
+        if (!rotationOnly) {
+            frame.x += breath.x * breathWeight;
+            frame.y += breath.y * breathWeight;
+            frame.rotation += breath.rotation * breathWeight;
+            frame.scale += breath.scale * breathWeight;
+        }
     }
 
     // Hand-off: the shot arrives from upstream on its own flow vector and, once it is
@@ -72,7 +75,7 @@ export const updateTemperaShot = (
     // own timeline, so a slow entrance would expose type that is still off frame.
     const enter = easeTemperaEnter(clamp01((time - view.shot.startTime) / (handoff * 0.8)));
     const exit = easeTemperaInOut(resolveTemperaShotExit(view, time));
-    const travel = (exit * span * 0.55 - (1 - enter) * span * 0.32) * camera;
+    const travel = rotationOnly ? 0 : (exit * span * 0.55 - (1 - enter) * span * 0.32) * camera;
     view.container.position.set(
         view.baseX + frame.x * width * camera + Math.cos(view.shot.flowAngle) * travel,
         view.baseY + frame.y * height * camera + Math.sin(view.shot.flowAngle) * travel,
@@ -80,7 +83,10 @@ export const updateTemperaShot = (
     // Opaque on the way in: this is a push, not a dissolve. Only the exit fades.
     view.container.alpha = 1 - exit;
     view.container.scale.set((1 + (frame.scale - 1) * camera) * (1 - exit * 0.08));
-    view.container.rotation = frame.rotation * camera;
+    // Rotation is a whole-shot entrance/exit, including short and sparse compositions.
+    // A small full-duration drift alone was barely visible once a late-built shot appeared.
+    const turn = rotationOnly ? (view.shot.rotationSign ?? 1) * (-(1 - enter) * 0.48 + exit * 0.36) : 0;
+    view.container.rotation = (frame.rotation + turn) * camera;
 
     // Two ends on purpose. The graphics' entrance stagger is paced against the lyric this
     // shot carries; the steady flow creep runs for the shot's whole visible life, which is

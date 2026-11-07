@@ -614,7 +614,19 @@ internal sealed class TrackAnalysisService : IDisposable
         try
         {
             return await Task.Run(
-                () => BeatAnalyzer.Analyze(decoded.Samples, decoded.SampleRate),
+                () =>
+                {
+                    var payload = BeatAnalyzer.Analyze(decoded.Samples, decoded.SampleRate);
+                    if (decoded.Loudness is { } loudness)
+                    {
+                        payload.LoudnessLufs = Math.Round(loudness.IntegratedLufs, 2);
+                        payload.PeakDb = Math.Round(loudness.PeakDb, 2);
+                        payload.LoudnessMethod = decoded.Truncated ? "bs1770-truncated" : "bs1770";
+                        payload.LoudnessTimesMs = loudness.TimesMs;
+                        payload.MomentaryLufs = loudness.MomentaryLufs;
+                    }
+                    return payload;
+                },
                 timeout.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)

@@ -8,37 +8,63 @@
         ShowInTaskbar="False"
         ResizeMode="NoResize"
         Topmost="True"
-        Width="980"
-        Height="150"
+        Width="940"
+        Height="256"
         WindowStartupLocation="Manual">
-    <Border x:Name="Shell"
-        Background="#66000000"
-        CornerRadius="999"
-        Padding="30,12"
-        BorderThickness="1"
-        BorderBrush="#26FFFFFF"
-        MouseLeftButtonDown="OnShellMouseDown"
-        MouseRightButtonUp="OnShellRightClick">
-        <Border.Effect>
-            <DropShadowEffect BlurRadius="28" ShadowDepth="0" Opacity="0.35" Color="Black" />
-        </Border.Effect>
-        <StackPanel VerticalAlignment="Center">
-            <TextBlock x:Name="NowText"
-                       Text="桌面歌词"
-                       Foreground="#FFFFFF"
-                       FontWeight="SemiBold"
-                       FontSize="40"
-                       TextAlignment="Center"
-                       TextWrapping="Wrap"
-                       LineHeight="1.25"/>
-            <TextBlock x:Name="TranslationText"
-                       Text=""
-                       Foreground="#CCFFFFFF"
-                       FontSize="18"
-                       TextAlignment="Center"
-                       TextWrapping="Wrap"
-                       Margin="0,6,0,0"
-                       Visibility="Collapsed"/>
-        </StackPanel>
+    <Border x:Name="Shell" Padding="30,16,36,16" CornerRadius="22"
+            MouseLeftButtonDown="OnShellMouseDown"
+            MouseRightButtonUp="OnShellRightClick">
+        <Grid x:Name="LyricStage">
+            <Grid.RowDefinitions>
+                <RowDefinition x:Name="PreviousRow" Height="Auto" MinHeight="38" />
+                <RowDefinition Height="*" />
+                <RowDefinition x:Name="NextRow" Height="Auto" MinHeight="38" />
+            </Grid.RowDefinitions>
+
+            <TextBlock x:Name="PreviousText" Grid.Row="0" Margin="20,0,0,0"
+                       VerticalAlignment="Center" Foreground="#99FFFFFF" FontSize="22"
+                       FontWeight="SemiBold" TextWrapping="Wrap" Opacity="0">
+                <TextBlock.RenderTransform>
+                    <TransformGroup><ScaleTransform x:Name="PreviousScale" /><TranslateTransform x:Name="PreviousShift" /></TransformGroup>
+                </TextBlock.RenderTransform>
+            </TextBlock>
+
+            <Grid Grid.Row="1" VerticalAlignment="Stretch">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="3" />
+                    <ColumnDefinition Width="20" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Border x:Name="ActiveMark" Grid.Column="0" VerticalAlignment="Center"
+                        Height="76" CornerRadius="2" Background="#D8E5FF">
+                    <Border.Effect>
+                        <DropShadowEffect Color="#D8E5FF" BlurRadius="18" ShadowDepth="0" Opacity="0.45" />
+                    </Border.Effect>
+                </Border>
+                <Grid x:Name="LineStage" Grid.Column="2" VerticalAlignment="Center" ClipToBounds="False">
+                    <StackPanel x:Name="CurrentLine" VerticalAlignment="Center" Margin="16,10,48,8">
+                        <StackPanel.RenderTransform>
+                            <TransformGroup><ScaleTransform x:Name="CurrentScale" /><TranslateTransform x:Name="CurrentShift" /></TransformGroup>
+                        </StackPanel.RenderTransform>
+                        <TextBlock x:Name="NowText" Text="桌面歌词" Foreground="White" FontSize="40"
+                                   FontWeight="SemiBold" TextWrapping="Wrap">
+                            <TextBlock.Effect>
+                                <DropShadowEffect Color="White" BlurRadius="12" ShadowDepth="0" Opacity="0.28" />
+                            </TextBlock.Effect>
+                        </TextBlock>
+                        <TextBlock x:Name="TranslationText" Foreground="#D9FFFFFF" FontSize="21" Opacity="0"
+                                   TextWrapping="Wrap" Margin="0,7,0,0">
+                            <TextBlock.RenderTransform><TranslateTransform x:Name="TranslationShift" /></TextBlock.RenderTransform>
+                        </TextBlock>
+                    </StackPanel>
+                </Grid>
+            </Grid>
+
+            <TextBlock x:Name="NextText" Grid.Row="2" Margin="20,0,0,0"
+                       VerticalAlignment="Center" Foreground="#99FFFFFF" FontSize="22"
+                       FontWeight="SemiBold" TextWrapping="Wrap" Opacity="0">
+                <TextBlock.RenderTransform><TranslateTransform x:Name="NextShift" /></TextBlock.RenderTransform>
+            </TextBlock>
+        </Grid>
     </Border>
 </Window>

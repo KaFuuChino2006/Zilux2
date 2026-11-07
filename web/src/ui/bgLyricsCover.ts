@@ -18,16 +18,18 @@ export function bgLyricsCoverStyle(): BgLyricsCoverStyle {
   }
 }
 
-/** 「播放效果」为纯字/房间/唱片时，「封面在左」属于「关闭」档的样式，不应生效。 */
+/** 「播放效果」为纯字/房间/唱片/拼合时，「封面在左」属于「关闭」档的样式，不应生效。 */
 export const LUMIERE_KEY = 'zilux2.lumiere';
 
 export function lumiereEffectOn(): boolean {
   try {
     const raw = window.localStorage.getItem(LUMIERE_KEY);
-    // 与 lumiereMode() 同一套归一化：'off' 与旧版 'lightfield' 都算关闭，
-    // 其它非空值（text/room/vinyl/未来效果）都算开启。两处判定必须一致，
+    // 与 lumiereMode() 同一套归一化：'off'、旧版 'lightfield' 以及已删除的 'geo'/'pv'/'collage'
+    // 都算关闭，其它非空值（text/room/vinyl/flow）都算开启。两处判定必须一致，
     // 否则旧存档升级后会出现「封面在左被禁用、却没有任何播放效果」。
-    return raw !== null && raw !== '' && raw !== 'off' && raw !== 'lightfield';
+    return raw !== null && raw !== ''
+      && raw !== 'off' && raw !== 'lightfield'
+      && raw !== 'geo' && raw !== 'pv' && raw !== 'collage';
   } catch {
     return false;
   }

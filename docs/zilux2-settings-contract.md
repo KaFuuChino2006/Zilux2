@@ -121,6 +121,7 @@
 | `general.backgroundLyrics` | bool | `false` | — | 桌面背景歌词层（第二个 WebView2，挂到桌面 WorkerW）；开启时软件内歌词页不显示歌词；与 `desktopLyrics` 互斥 |
 | `general.desktopLyricsLeft` | number\|null | `null` | `-200000 ~ 200000`，有限数 | 桌面歌词上次关闭位置 X；`null`=未记录。MainWindow 关闭时 patch，启动优先恢复 |
 | `general.desktopLyricsTop` | number\|null | `null` | `-200000 ~ 200000`，有限数 | 同上，Y 坐标 |
+| `general.systemOutputRotation` | string[] | `[]` | ≤32 项、每项 ≤512 字符、去重 | 「系统输出轮换」快捷键参与的设备（WASAPI 端点 ID，按勾选顺序）；空数组 = 全部活动播放设备 |
 
 > 歌词互斥（v1.6）：`patch` 同时把两个歌词开关设为 `true` 时，`backgroundLyrics` 优先，宿主把 `desktopLyrics` 改回 `false` 并在同一次 ACK 中回推；加载时若文件里两者都为 `true`，同样保留 `backgroundLyrics`、关闭 `desktopLyrics`，日志 `[settings] load: desktopLyrics disabled because backgroundLyrics was enabled`。
 
@@ -158,6 +159,8 @@
 | `playback.fadeVocalTailMs` | int | `600` | `0 ~ 3000` 毫秒 | 人声保留尾音 |
 | `playback.sleepFadeSeconds` | int | `15` | `0 ~ 60` 秒；`0`=不渐弱 | 睡眠定时到点前渐弱时长 |
 | `playback.sleepAction` | enum | `"pause"` | `pause` / `minimize` / `exit` | 睡眠定时到点动作 |
+| `playback.appOutputMode` | enum | `"system"` | `system` / `device` | 本软件音频输出：跟随 Windows 默认设备，或固定到 `appOutputDeviceId`（页面用 Web Audio / 媒体元素的 setSinkId 生效，不改系统默认设备） |
+| `playback.appOutputDeviceId` | string | `""` | ≤512 字符 | 本软件输出设备（浏览器 deviceId）；`appOutputMode=device` 时生效；设备断开自动回落系统默认 |
 
 ### 2.4 downloads
 
@@ -196,6 +199,8 @@
 | `shortcuts.mini` | string | `""` | 同上 | 进入/退出迷你播放器 |
 | `shortcuts.desktopLyrics` | string | `""` | 同上 | 开关桌面歌词 |
 | `shortcuts.crossfade` | string | `""` | 同上 | 交叉淡入淡出 |
+| `shortcuts.appOutput` | string | `""` | 同上 | 本软件输出：跟随系统 ↔ 指定设备 |
+| `shortcuts.systemOutput` | string | `""` | 同上 | 轮换 Windows 默认播放设备（系统级，不影响本软件通道） |
 
 > 组合键字符串格式（宿主解析，见 `src/Zilux2/Hotkeys/HotkeyBinding.cs`）：
 > 修饰键 `Ctrl`/`Control`、`Alt`、`Shift`、`Win`/`Meta`（大小写不限、顺序任意）+ 一个键名；

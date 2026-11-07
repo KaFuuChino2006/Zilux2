@@ -1,6 +1,7 @@
 import type { OnlineTrack } from '../online/types';
 import { cachedAnalysis, peekAnalysis } from '../online/analysis';
 import { playerState, reorderUpcoming } from './player';
+import { nearestTempoRatio } from './transitionMath';
 
 function parseCamelot(key?: string): { num: number; letter: string } | null {
   if (!key) return null;
@@ -27,10 +28,8 @@ export function camelotPenalty(a?: string, b?: string): number {
 /** BPM 距离：允许半速/倍速（85 与 170 视为接近），±8% 内按比例加分。 */
 export function bpmPenalty(a?: number, b?: number): number {
   if (!a || !b || !Number.isFinite(a) || !Number.isFinite(b)) return 1.4;
-  let ratio = b / a;
-  while (ratio >= 2) ratio /= 2;
-  while (ratio < 1) ratio *= 2;
-  const diff = Math.abs(ratio - 1);
+  const ratio = nearestTempoRatio(b / a);
+  const diff = Math.max(ratio, 1 / ratio) - 1;
   return diff <= 0.08 ? diff * 5 : 4 + (diff - 0.08) * 30;
 }
 

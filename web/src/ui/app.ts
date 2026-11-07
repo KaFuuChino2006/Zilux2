@@ -58,6 +58,8 @@ import {
   getAccounts,
   importCookie,
   logout,
+  quickAccount,
+  quickWebLogin,
   onAccountChange,
   onAccountIssue,
   pollLogin,
@@ -149,6 +151,8 @@ import {
 } from '../online/experimental';
 import { lookupCover } from '../online/coverLookup';
 import { h, icon, toast, fmtTime, Disposers } from './dom';
+import { createAppOutputControl, createSystemAudioPanel } from './audioOutputControls';
+import { createShortcutRows } from './shortcutRow';
 import { airplay, disposeAirplaySubscription } from '../airplay';
 import { disposeAudioTap, startAudioTap, stopAudioTap } from '../core/audioTap';
 import { disposeMetronome } from '../core/metronome';
@@ -225,6 +229,8 @@ import {
 } from './bgLyricsCover';
 import { currentLyricDisplay, currentLyricSource, lyricGrowMode, lyricMatchMinScore, lyricOffsetOf, LYRIC_UNSUNG_PRESETS, lyricsBackgroundMode, lyricSolidColor, setLyricSolidColor, lyricsLumiereMode, lyricUnsungColor, LyricsView, primeLyrics, setLyricGrowMode, setLyricsBackgroundMode, setLyricsLumiereMode, setLyricMatchMinScore, setLyricOffset, setLyricUnsungColor, updateCurrentLyricLine, lyricMatchText } from './lyrics';
 import { LUMIERE_MODES } from './lumiere';
+import { onLyricMatch } from './lyrics';
+import { onOnlineChange } from '../online/client';
 import {
   CHORUS_PREVIEW_MAX_CHOICES,
   CHORUS_PREVIEW_START_CHOICES,
@@ -305,8 +311,6 @@ import { openLyricPicker } from './lyricPicker';
 import { openTextSettingsSheet } from './textSettingsPanel';
 import { openRoomSettingsSheet } from './roomSettingsPanel';
 import { openVinylSettingsSheet } from './vinylSettingsPanel';
-import { openGeoSettingsSheet } from './geoSettingsPanel';
-import { openPvSettingsSheet } from './pvSettingsPanel';
 import { readPosterLayout, writePosterLayout, type PosterLayout } from './posterLayout';
 import { buildCommentsPanel } from './comments';
 import { ACCENT_PRESETS, applyAccentColor, readAccentColor, ui, writeAccentColor } from './theme';
@@ -323,6 +327,7 @@ import {
   updateProgress,
   updateSnapshot,
 } from './updates';
+import { clearUpdateReminders, updateReminderState } from './updateReminders';
 
 type WallKind = 'liked' | 'local' | 'search' | 'feed' | 'playlist' | 'recent' | 'playlists' | 'recommend' | 'moods' | 'mood' | 'smart' | 'stats';
 
@@ -350,6 +355,18 @@ interface WallPager {
   offset: number;
   pageSize: number;
   hasMore: boolean;
+}
+
+/** 前进/后退用的界面快照：只记足以重建当前页面的状态，不缓存 DOM。 */
+interface NavSnapshot {
+  homeVisible: boolean;
+  wallVisible: boolean;
+  wall: WallData;
+  wallPager: WallPager | null;
+  railActive: string | null;
+  discover: boolean;
+  settingsPane: string | null;
+  lyrics: boolean;
 }
 
 interface SheetHandle {
@@ -711,11 +728,22 @@ export class App {
   /** 当前打开的本地艺术家名；null 表示本地曲库总览。 */
   private localArtistFilter: string | null = null;
   private lyrics: LyricsView | null = null;
+  /** 桌面背景歌词开着时，歌词条第一次点击的时间（连续第二次才切回软件内歌词）。 */
+  private backgroundLyricsClickAt = 0;
   private sheet: SheetHandle | null = null;
   /** 设置弹窗内的订阅集合（换面板 / 关闭弹窗时统一清理）。 */
   private sheetScope: Disposers | null = null;
   /** 设置弹窗当前页签；导入设置后按此页签重建面板。 */
   private settingsPaneKey = 'general';
+  /** 当前设置弹窗的根节点（用来判断「设置页」是否开着）；其它弹窗不算页面。 */
+  private settingsSheetRoot: HTMLElement | null = null;
+  /** 当前 rail 高亮项（恢复历史时直接重绘，不重新推导）。 */
+  private railActiveKey: string | null = null;
+  /** 前进/后退：页面级动作前把当前界面快照压栈。 */
+  private navBackStack: NavSnapshot[] = [];
+  private navForwardStack: NavSnapshot[] = [];
+  private navApplying = false;
+  private navLastSignature = '';
   /** 每个主分类上次停留的子选项（重开弹窗时恢复）。 */
   private settingsSubKeys: Record<string, string> = {};
   /** 开发者选项：FPS 浮层 / 布局描边（本机偏好，存 localStorage）。 */
@@ -742,6 +770,7 @@ export class App {
   /** 「我的歌单」整页里本地歌单的订阅（离开页面时清理）。 */
   private playlistsScope: Disposers | null = null;
   private loginOverlay: HTMLDivElement | null = null;
+  private loginPaneDispose: (() => void) | null = null;
   private playerDispose: (() => void) | null = null;
   /** 人声分离播放模式：原声 / 纯伴奏 / 纯人声（跨曲目保持，存 localStorage）。 */
   private stemMode: 'off' | StemPlaybackMode = 'off';
@@ -938,8 +967,11 @@ export class App {
     this.disposers.add(() => this.clearMiniFallback());
     this.playerDispose = onPlayer((state) => {
       this.syncPlayer(state);
+      this.pushDesktopLyrics();
       void this.refreshStemPlayback();
     });
+    this.disposers.add(onOnlineChange(() => this.pushDesktopLyrics()));
+    this.disposers.add(onLyricMatch(() => this.pushDesktopLyrics()));
     // 人声分离模式：恢复上次选择，并定时复核（过渡开始/暂停/seek 时平滑停用或接续）。
     try {
       const stored = localStorage.getItem('zilux2.stemMode');
@@ -973,6 +1005,7 @@ export class App {
         else this.renderWall();
       }
       this.updateRailBadges();
+      this.pushDesktopLyrics();
     });
     // 本地收藏变化：如果正停在「我喜欢的音乐」墙，就地刷新（融合墙要重新拼本地收藏）。
     this.disposers.add(
@@ -1037,8 +1070,8 @@ export class App {
     setPauseAtTrackEnd(initialSleepTimer.active && initialSleepTimer.mode === 'track-end');
     // 收听统计：按秒采样累计（onPlayer 只在播放状态变化时触发，不能靠它计时）。
     this.intervalIds.push(window.setInterval(() => this.accumulateListening(playerState()), 1000));
-    // 桌面歌词：每秒读一次当前句；只有句/翻译变了才发给宿主，避免桥消息刷屏。
-    this.intervalIds.push(window.setInterval(() => this.pushDesktopLyrics(), 1000));
+    // 播放中的换句跟随 onPlayer 进度；暂停后启用歌词或异步译文到达也及时补齐。
+    this.intervalIds.push(window.setInterval(() => this.pushDesktopLyrics(), 250));
     initLocalLibrary();
     void this.bootData();
   }
@@ -1105,6 +1138,22 @@ export class App {
         const next = !readCrossfadeSettings().enabled;
         writeCrossfadeSettings({ enabled: next });
         toast(next ? '已开启无缝衔接' : '已关闭无缝衔接');
+      } else if (action === 'appOutput') {
+        // 本软件输出：跟随系统 ↔ 设备里记住的那一台。
+        const playback = getSettings().playback;
+        if (playback.appOutputMode === 'device') {
+          patchSettings({ playback: { appOutputMode: 'system' } });
+          toast('Zilux2 输出：跟随系统');
+        } else if (playback.appOutputDeviceId) {
+          patchSettings({ playback: { appOutputMode: 'device' } });
+          toast('Zilux2 输出：已固定到所选设备');
+        } else {
+          toast('还没有选定的播放设备：到设置 → 播放里选一台');
+        }
+      } else if (action === 'navBack') {
+        this.navigateBack();
+      } else if (action === 'navForward') {
+        this.navigateForward();
       } else if (action === 'stop') {
         // 系统媒体「停止」：暂停并回到当前曲开头；不清队列（player.stop 会清空当前曲）。
         if (playerState().playing) toggle();
@@ -1439,9 +1488,108 @@ export class App {
           : kind === 'daily'
             ? null
             : kind;
+    this.railActiveKey = activeKey;
+    this.paintRailActive();
+  }
+
+  private paintRailActive(): void {
     this.railButtons.forEach((btn, key) => {
-      btn.classList.toggle('is-active', key === activeKey);
+      btn.classList.toggle('is-active', key === this.railActiveKey);
     });
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 前进 / 后退（鼠标侧键、navBack / navForward 命令）                   */
+  /* ------------------------------------------------------------------ */
+
+  private captureNavSnapshot(): NavSnapshot {
+    return {
+      homeVisible: !this.homeHost.classList.contains('is-hidden'),
+      wallVisible: !this.wallHost.classList.contains('is-hidden'),
+      wall: this.wall,
+      wallPager: this.wallPager,
+      railActive: this.railActiveKey,
+      discover: this.railActiveKey === 'discover',
+      settingsPane:
+        this.sheet && this.settingsSheetRoot && this.sheet.root === this.settingsSheetRoot
+          ? this.settingsPaneKey
+          : null,
+      lyrics: this.lyrics !== null,
+    };
+  }
+
+  private navSignature(snapshot: NavSnapshot): string {
+    return [
+      snapshot.homeVisible ? 'home' : '',
+      snapshot.wallVisible ? 'wall' : '',
+      snapshot.wall.kind,
+      snapshot.wall.title,
+      snapshot.railActive ?? '',
+      snapshot.discover ? 'discover' : '',
+      snapshot.settingsPane ?? '',
+      snapshot.lyrics ? 'lyrics' : '',
+    ].join('|');
+  }
+
+  /** 页面级导航前调用：把「离开前」的界面压入后退栈，并清空前进栈。 */
+  private navBefore(): void {
+    if (this.navApplying) return;
+    const snapshot = this.captureNavSnapshot();
+    const signature = this.navSignature(snapshot);
+    if (signature === this.navLastSignature) return;
+    this.navLastSignature = signature;
+    this.navBackStack.push(snapshot);
+    if (this.navBackStack.length > 80) this.navBackStack.shift();
+    this.navForwardStack.length = 0;
+  }
+
+  private applyNavSnapshot(target: NavSnapshot): void {
+    this.navApplying = true;
+    try {
+      const settingsOpen = this.sheet !== null
+        && this.settingsSheetRoot !== null
+        && this.sheet.root === this.settingsSheetRoot;
+      if (target.settingsPane) {
+        if (!settingsOpen || this.settingsPaneKey !== target.settingsPane) {
+          this.openSettingsSheet(target.settingsPane);
+        }
+      } else if (settingsOpen) {
+        this.sheet?.close();
+      }
+
+      if (target.lyrics && !this.lyrics) this.openLyrics();
+      else if (!target.lyrics && this.lyrics) this.closeLyrics();
+
+      if (target.discover) {
+        void this.showDiscover();
+      } else {
+        this.homeHost.classList.toggle('is-hidden', !target.homeVisible);
+        this.wallHost.classList.toggle('is-hidden', !target.wallVisible);
+        this.wall = target.wall;
+        this.wallPager = target.wallPager;
+        if (target.wallVisible) this.renderWall();
+        this.railActiveKey = target.railActive;
+        this.paintRailActive();
+      }
+    } finally {
+      this.navApplying = false;
+    }
+  }
+
+  private navigateBack(): void {
+    const target = this.navBackStack.pop();
+    if (!target) return;
+    this.navForwardStack.push(this.captureNavSnapshot());
+    this.applyNavSnapshot(target);
+    this.navLastSignature = this.navSignature(target);
+  }
+
+  private navigateForward(): void {
+    const target = this.navForwardStack.pop();
+    if (!target) return;
+    this.navBackStack.push(this.captureNavSnapshot());
+    this.applyNavSnapshot(target);
+    this.navLastSignature = this.navSignature(target);
   }
 
   private updateRailBadges(): void {
@@ -1462,6 +1610,7 @@ export class App {
   }
 
   private async showHome(): Promise<void> {
+    this.navBefore();
     this.wallPager = null;
     this.closeLyrics();
     this.homeHost.classList.remove('is-hidden');
@@ -1476,6 +1625,7 @@ export class App {
 
   /** rail「发现」：在 wallHost 里渲染发现页（排行榜 / 歌单广场 / 漫游 / 播客 / 收藏）。 */
   private async showDiscover(): Promise<void> {
+    this.navBefore();
     this.wallPager = null;
     this.closeLyrics();
     this.homeHost.classList.add('is-hidden');
@@ -1797,6 +1947,7 @@ export class App {
   }
 
   private async showRecentWall(): Promise<void> {
+    this.navBefore();
     this.wallPager = null;
     this.setRailActive('recent');
     this.wall = { kind: 'recent', title: '最近播放', subtitle: '多平台融合 · 同步中…', tracks: [] };
@@ -1834,6 +1985,7 @@ export class App {
   }
 
   private async showDailyWall(qqDaily = false): Promise<void> {
+    this.navBefore();
     this.wallPager = null;
     const title = qqDaily ? '每日 30 首' : '今日推荐';
     this.feedRailKey = qqDaily ? 'daily30' : '';
@@ -1900,6 +2052,7 @@ export class App {
 
   /** 「推荐」整页：QQ 音乐音乐馆热门歌单，卡片网格，点开进歌单详情。 */
   private async openRecommendPage(): Promise<void> {
+    this.navBefore();
     this.wallPager = null;
     this.setRailActive('recommend');
     this.recommendItems = [];
@@ -2410,6 +2563,7 @@ export class App {
   }
 
   private async showLiked(mode?: 'all' | OnlineSource): Promise<void> {
+    this.navBefore();
     this.wallPager = null;
     if (mode) this.likedMode = mode;
     this.setRailActive('liked');
@@ -2573,6 +2727,7 @@ export class App {
   }
 
   private showLocal(): void {
+    this.navBefore();
     this.wallPager = null;
     this.localArtistFilter = null;
     this.setRailActive('local');
@@ -2760,6 +2915,7 @@ export class App {
 
   /** 「我的歌单」整页：本地歌单（新建 / 重命名 / 删除）+ 各平台在线歌单。 */
   private openPlaylistsPage(): void {
+    this.navBefore();
     this.wallPager = null;
     this.setRailActive('playlists');
     this.wall = {
@@ -3052,6 +3208,7 @@ export class App {
   }
 
   private async showPlaylist(item: LibraryPlaylist): Promise<void> {
+    this.navBefore();
     this.setRailActive('playlist');
     this.wall = {
       kind: 'playlist',
@@ -4798,6 +4955,7 @@ export class App {
   }
 
   private openSettingsSheet(paneKey = 'general'): void {
+    this.navBefore();
     this.setRailActive('settings');
     // 设置改用居中大弹窗（和效果设置一致的观感），其他 sheet 仍是右侧滑出。
     this.centerNextSheet = true;
@@ -5090,7 +5248,7 @@ export class App {
           ],
           settings.appearance.windowAnimation,
           (value) => patchSettings({ appearance: { windowAnimation: value } }),
-          '应用内：最大化/最小化/关闭都用自绘过渡（关闭快照淡出），不依赖系统设置；系统原生：最大化/最小化交给 Windows，关闭没有系统动画会直接消失。',
+          '最大化、还原和最小化统一交给 Windows 平滑处理，避免页面在窗口缩放中反复重排；应用内模式会让关闭到托盘时整窗短暂淡出，系统原生模式则直接隐藏。',
         ),
         toggleField(
           '播放条常驻展开',
@@ -5216,6 +5374,26 @@ export class App {
           setVolume(value / 100);
           patchSettings({ playback: { volume: value / 100 } });
         }, (value) => `${value}%`),
+        (() => {
+          const control = createAppOutputControl();
+          return h(
+            'div',
+            { class: 'field is-stacked' },
+            h('div', { class: 'field-label', text: '扬声器输出' }),
+            control.root,
+          );
+        })(),
+        (() => {
+          const rows = createShortcutRows(['appOutput']);
+          this.sheetScope?.add(() => rows.destroy());
+          return h(
+            'div',
+            { class: 'field is-stacked' },
+            h('div', { class: 'field-label', text: '输出切换快捷键' }),
+            h('div', { class: 'field-hint', text: '在这里直接录制，和「快捷键」页是同一份设置。' }),
+            rows.root,
+          );
+        })(),
         segField(
           '播放速度',
           [
@@ -5280,6 +5458,27 @@ export class App {
             patchSettings({ playback: { sleepAction: value } });
           },
         ),
+      );
+
+      // 系统音频：切换 Windows 默认播放设备（只在设置页出现，快捷设置里没有）。
+      const systemAudio = section(
+        '系统音频',
+        (() => {
+          const panel = createSystemAudioPanel();
+          this.sheetScope?.add(() => panel.dispose());
+          return panel.root;
+        })(),
+        (() => {
+          const rows = createShortcutRows(['appOutput', 'systemOutput']);
+          this.sheetScope?.add(() => rows.destroy());
+          return h(
+            'div',
+            { class: 'field is-stacked' },
+            h('div', { class: 'field-label', text: '切换快捷键' }),
+            h('div', { class: 'field-hint', text: '和「快捷键」页同步：在这里录制后立刻生效，不用来回切页签。' }),
+            rows.root,
+          );
+        })(),
       );
 
       // 音效（渐变 / 响度）
@@ -5430,8 +5629,9 @@ export class App {
         action.addEventListener('click', () => {
           if (info.loggedIn) {
             void logout(source).then(() => {
-              toast('已退出登录');
+              toast(`已退出${SOURCE_LABEL[source]}`);
               this.sheet?.close();
+              this.refreshAccountDependentViews();
             });
             return;
           }
@@ -5894,6 +6094,7 @@ export class App {
         { key: 'general', label: '通用', node: general },
         { key: 'appearance', label: '外观', node: appearance },
         { key: 'playback', label: '播放', node: playback },
+        { key: 'systemAudio', label: '系统音频', node: systemAudio },
         { key: 'sound', label: '音效', node: sound },
         { key: 'preview', label: '试听', node: preview },
         { key: 'transition', label: '过渡', node: transitionPage },
@@ -6011,6 +6212,7 @@ export class App {
         subnavs.get(initialKey)?.remeasure();
       });
     });
+    this.settingsSheetRoot = this.sheet?.root ?? null;
   }
 
   /**
@@ -6663,6 +6865,32 @@ export class App {
           patchSettings({ updates: { directConnection: value } });
         },
       ),
+      (() => {
+        const status = h('div', { class: 'field-hint' });
+        const refreshStatus = (): void => {
+          const state = updateReminderState();
+          const parts: string[] = [];
+          if (state.ignoredVersion) parts.push(`已忽略 v${state.ignoredVersion}`);
+          if (state.snoozeUntil > Date.now()) {
+            const days = Math.ceil((state.snoozeUntil - Date.now()) / 86400000);
+            parts.push(`约 ${days} 天内不再弹更新提示`);
+          }
+          status.textContent = parts.length ? parts.join('；') : '没有「不再提示」的记录，发现新版本会正常弹出更新内容。';
+        };
+        const remindBtn = h('button', { class: 'btn', type: 'button', text: '恢复更新提示' });
+        remindBtn.addEventListener('click', () => {
+          clearUpdateReminders();
+          refreshStatus();
+          toast('已恢复更新提示');
+        });
+        refreshStatus();
+        return h(
+          'div',
+          { class: 'field' },
+          h('div', {}, h('div', { class: 'field-label', text: '更新提示' }), status),
+          remindBtn,
+        );
+      })(),
       browserNote,
     );
 
@@ -6700,6 +6928,32 @@ export class App {
       this.accountBtn.title = accounts.map((item) => `${SOURCE_LABEL[item.source]} · ${item.nickname ?? '已登录'}`).join('\n');
     }
     if (this.accountPanelOpen) this.renderAccountPanel();
+  }
+
+  /**
+   * 登录/退出之后把当前页面依赖账号的数据重新拉一遍：
+   * 「我喜欢的音乐」「最近播放」「我的歌单」都会立刻反映新的登录状态，而不是停在旧数据上。
+   */
+  private refreshAccountDependentViews(): void {
+    this.likedCache.clear();
+    this.syncAccount();
+    if (this.accountPanelOpen) this.renderAccountPanel();
+
+    if (this.wallHost.classList.contains('is-hidden')) {
+      // 首页的推荐/歌单会随账号变化，登录或退出后重新拉一次。
+      if (!this.homeHost.classList.contains('is-hidden')) {
+        void this.showHome();
+      }
+      return;
+    }
+
+    if (this.wall.kind === 'liked') {
+      void this.showLiked();
+    } else if (this.wall.kind === 'recent') {
+      void this.showRecentWall();
+    } else if (this.wall.kind === 'playlists') {
+      this.openPlaylistsPage();
+    }
   }
 
   private openAccountPanel(): void {
@@ -6786,140 +7040,382 @@ export class App {
       toast('这个平台需要导入 Cookie，请在设置 → 账号里操作');
       return;
     }
-    const sources: AccountSource[] = only
-      ? [only]
-      : (accountSourceIds() as AccountSource[]).filter((id) => sourceLoginMode(id) !== 'cookie');
-    const cards = sources.map((source) => this.buildLoginCard(source));
-    const cardWrap = h('div', { class: 'login-grid', style: only ? 'grid-template-columns:1fr;max-width:360px' : '' }, ...cards);
+    const sources = (accountSourceIds() as AccountSource[]).filter((id) => sourceLoginMode(id) !== 'cookie');
+    if (!sources.length) return;
+    // 左竖排选平台，右侧显示该平台的二维码与扫码方式；登录成功后不退出，方便接着登另一个平台。
+    let active: AccountSource = only && sources.includes(only) ? only : sources[0];
+    const nav = h('div', { class: 'login-nav', role: 'tablist', 'aria-label': '登录平台' });
+    const pane = h('div', { class: 'login-pane' });
+    let disposePane: (() => void) | null = null;
+
+    const renderNav = (): void => {
+      nav.textContent = '';
+      for (const source of sources) {
+        const info = accountOf(source);
+        const item = h(
+          'button',
+          {
+            class: `login-nav-item${source === active ? ' is-on' : ''}`,
+            type: 'button',
+            role: 'tab',
+            'aria-selected': source === active ? 'true' : 'false',
+          },
+          h('div', { class: `source-dot ${source}`, text: sourceMeta(source).short }),
+          h(
+            'div',
+            { class: 'login-nav-text' },
+            h('div', { class: 'login-nav-name', text: SOURCE_LABEL[source] }),
+            h('div', {
+              class: `login-nav-status${info.loggedIn ? ' is-on' : ''}`,
+              text: info.loggedIn ? (info.nickname || info.userId || '已登录') : '未登录',
+            }),
+          ),
+        );
+        item.addEventListener('click', () => {
+          if (active === source) return;
+          active = source;
+          renderNav();
+          renderPane();
+        });
+        nav.append(item);
+      }
+    };
+
+    const renderPane = (): void => {
+      disposePane?.();
+      pane.textContent = '';
+      const view = this.buildLoginPanel(active, () => {
+        renderNav();
+        renderPane();
+      });
+      disposePane = view.dispose;
+      this.loginPaneDispose = view.dispose;
+      pane.append(view.root);
+    };
+
     const closeBtn = h('button', { class: 'icon-btn', title: '关闭' }, icon('close', 18));
-    const skipBtn = h('button', { class: 'btn', text: '不登录，直接进入' });
+    const enterBtn = h('button', { class: 'btn is-primary', text: '进入 Zilux2' });
+    const skipBtn = h('button', { class: 'btn', text: '暂不登录' });
     const overlay = h(
       'div',
       { class: 'login' },
       h(
         'div',
-        { class: 'login-card' },
+        { class: 'login-card is-wide' },
         h(
           'div',
           { style: 'display:flex;align-items:flex-start;justify-content:space-between' },
           h(
             'div',
             {},
-            h('h1', { class: 'login-title', text: '先登录，让 Zilux2 认识你' }),
-            h('p', { class: 'login-sub', text: '用手机扫码授权，同步「我喜欢的音乐」与歌单' }),
+            h('h1', { class: 'login-title', text: '登录音乐平台' }),
+            h('p', { class: 'login-sub', text: '选择平台后扫码，或点击本机 QQ 头像直接登录；两个平台可分别登录。' }),
           ),
           closeBtn,
         ),
-        cardWrap,
-        h('div', { class: 'login-actions' }, h('span', { class: 'login-sub', style: 'margin:0', text: '登录信息只保存在本机' }), skipBtn),
+        h('div', { class: 'login-body' }, nav, pane),
+        h(
+          'div',
+          { class: 'login-actions' },
+          h('span', { class: 'login-sub', style: 'margin:0', text: '登录信息只保存在本机' }),
+          skipBtn,
+          enterBtn,
+        ),
       ),
     );
-    const close = (): void => this.closeLogin();
-    closeBtn.addEventListener('click', close);
-    skipBtn.addEventListener('click', close);
+    closeBtn.addEventListener('click', () => this.closeLogin());
+    skipBtn.addEventListener('click', () => this.closeLogin());
+    enterBtn.addEventListener('click', () => this.closeLogin());
     this.loginOverlay = overlay;
     document.body.append(overlay);
+    renderNav();
+    renderPane();
   }
 
-  private buildLoginCard(source: AccountSource): HTMLDivElement {
-    const qrHost = h('div', { class: 'qr-shell' });
-    const note = h('div', { class: 'qr-note', text: '点击下方按钮生成二维码' });
-    const action = h('button', { class: 'btn is-primary', text: '生成二维码' });
+  /** 右侧面板：未登录时自动出二维码；已登录时显示账号状态，仍留在浮层里。 */
+  private buildLoginPanel(
+    source: AccountSource,
+    onAccountChanged: () => void,
+  ): { root: HTMLElement; dispose: () => void } {
+    const info = accountOf(source);
+    const cleanups: Array<() => void> = [];
+    const dispose = (): void => {
+      cleanups.forEach((fn) => fn());
+      cleanups.length = 0;
+    };
+
+    if (info.loggedIn) {
+      const logoutBtn = h('button', { class: 'btn', text: '退出登录' });
+      logoutBtn.addEventListener('click', () => {
+        void logout(source).then(() => {
+          toast(`已退出${SOURCE_LABEL[source]}`);
+          this.refreshAccountDependentViews();
+          onAccountChanged();
+        });
+      });
+      const root = h(
+        'div',
+        { class: 'login-panel login-success' },
+        h('div', { class: 'login-success-mark', text: '✓' }),
+        h('div', { class: 'login-success-title', text: `${SOURCE_LABEL[source]} 已登录` }),
+        h('div', { class: 'login-success-sub', text: info.nickname || info.userId || '登录成功' }),
+        h('div', {
+          class: 'login-success-hint',
+          text: '可以继续登录另一个平台，或点右下角「进入 Zilux2」。',
+        }),
+        logoutBtn,
+      );
+      return { root, dispose };
+    }
+
+    const qrHost = h('div', { class: 'qr-shell is-loading' });
+    const spinner = h('div', { class: 'qr-spinner' });
+    qrHost.append(spinner);
+    const note = h('div', {
+      class: 'qr-note',
+      text: source === 'qq' ? '支持手机 QQ、微信、QQ 音乐 App 扫码登录' : '使用手机 QQ 扫码登录网易云音乐',
+    });
+    const action = h('button', { class: 'btn is-primary', text: '刷新二维码' }) as HTMLButtonElement;
     let session: LoginSession | null = null;
     let timer = 0;
     let cancelled = false;
+    let busy = false;
+    let autoTimer = 0;
+    let quickBusy = false;
+    let neteaseChannel: 'ptlogin' | 'netease' = 'ptlogin';
+    const channelButtons: HTMLButtonElement[] = [];
+    const channels = h('div', { class: 'login-qr-channels', role: 'group', 'aria-label': '扫码方式' });
+    const hints = h('div', { class: 'login-scan-hints' });
+    const syncChannels = (): void => {
+      for (const [index, button] of channelButtons.entries()) {
+        button.disabled = busy || quickBusy;
+        const selected = (index === 0) === (neteaseChannel === 'ptlogin');
+        if (selected) button.classList.add('is-on'); else button.classList.remove('is-on');
+      }
+      hints.textContent = '';
+      const labels = source === 'qq' ? ['手机 QQ 扫码', '微信扫一扫', 'QQ 音乐 App 扫码']
+        : neteaseChannel === 'ptlogin' ? ['手机 QQ 扫一扫', '在手机上确认登录网易云'] : ['网易云音乐 App 扫一扫'];
+      hints.append(...labels.map(text => h('span', { class: 'login-scan-hint', text })));
+    };
+    const pollRequests = new Set<string>();
 
     const stopPoll = (): void => {
       if (timer) window.clearInterval(timer);
       timer = 0;
     };
 
-    const renderQr = (): void => {
+    const showQr = (): void => {
       qrHost.textContent = '';
       if (!session) return;
       if (session.mode === 'image' && session.imageDataUrl) {
         qrHost.append(h('img', { src: session.imageDataUrl, alt: '二维码' }));
-        return;
+      } else {
+        const canvas = h('canvas', {});
+        qrHost.append(canvas);
+        void QRCode.toCanvas(canvas, session.content ?? '', {
+          width: 152,
+          margin: 1,
+          color: { dark: '#101114', light: '#ffffff' },
+        });
       }
-      const canvas = h('canvas', {});
-      qrHost.append(canvas);
-      void QRCode.toCanvas(canvas, session.content ?? '', {
-        width: 152,
-        margin: 1,
-        color: { dark: '#101114', light: '#ffffff' },
-      });
+      qrHost.classList.remove('is-loading', 'is-refreshing');
+      qrHost.classList.add('is-appearing');
+      window.setTimeout(() => qrHost.classList.remove('is-appearing'), 660);
     };
 
     const poll = async (): Promise<void> => {
-      if (!session || cancelled) return;
+      if (!session || cancelled || quickBusy || pollRequests.has(session.key)) return;
+      const pollingSession = session;
+      pollRequests.add(pollingSession.key);
       try {
         const status = await pollLogin(source, session.key);
+        if (cancelled || quickBusy || session !== pollingSession) return;
         if (status.state === 'waiting') {
-          note.textContent = '等待扫码…';
+          note.textContent = status.message || '等待扫码…';
         } else if (status.state === 'scanned') {
-          note.textContent = '已扫码，请在手机上确认';
+          note.textContent = status.message || '已扫码，请在手机上确认';
         } else if (status.state === 'authorized') {
           stopPoll();
           note.textContent = '登录成功';
           toast(`${SOURCE_LABEL[source]} 已登录`);
-          this.closeLogin();
           this.syncAccount();
           this.likedCache.clear();
           void refreshAccounts().then(() => {
-            void this.showLiked(source as OnlineSource);
+            if (cancelled) return;
+            this.refreshAccountDependentViews();
+            onAccountChanged();
           });
         } else if (status.state === 'expired' || status.state === 'refused' || status.state === 'error') {
           stopPoll();
-          note.textContent = status.message ?? (status.state === 'expired' ? '二维码已过期，请重新生成' : '登录失败');
-          action.textContent = '重新生成';
+          note.textContent = status.message ?? (status.state === 'expired' ? '二维码已过期，请点刷新' : '登录失败');
+          action.textContent = '刷新二维码';
         }
       } catch (err) {
         console.warn('[app] poll login failed', err);
+      } finally {
+        pollRequests.delete(pollingSession.key);
       }
     };
 
-    action.addEventListener('click', () => {
-      action.textContent = '生成中…';
+    const start = (force = false): void => {
+      if (busy || cancelled || quickBusy) return;
+      if (session && !force) return;
+      busy = true;
+      stopPoll();
+      session = null;
+      qrHost.classList.remove('is-appearing', 'is-refreshing');
+      qrHost.classList.add('is-loading');
+      qrHost.textContent = '';
+      qrHost.append(spinner);
       note.textContent = '正在获取二维码…';
-      void requestQr(source)
+      action.textContent = '刷新二维码';
+      action.disabled = true;
+      syncChannels();
+
+      const primaryChannel = source === 'qq' ? 'qqmusic' : neteaseChannel === 'ptlogin' ? 'ptlogin' : undefined;
+      void requestQr(source, primaryChannel)
         .then((next) => {
+          if (cancelled) return;
           session = next;
-          renderQr();
-          note.textContent = '等待扫码…';
-          action.textContent = '刷新二维码';
-          stopPoll();
+          showQr();
+          if (!quickBusy) note.textContent = source === 'qq' ? '支持手机 QQ、微信、QQ 音乐 App 扫码登录'
+            : primaryChannel === 'ptlogin' ? '使用手机 QQ 扫码登录网易云音乐' : '使用网易云音乐 App 扫一扫登录';
           timer = window.setInterval(() => void poll(), 2000);
         })
-        .catch((err: unknown) => {
+        .catch(async (err: unknown) => {
+          if (cancelled) return;
+          if (source === 'qq' && primaryChannel === 'qqmusic') {
+            try {
+              const fallback = await requestQr('qq', 'ptlogin');
+              if (cancelled) return;
+              session = fallback;
+              showQr();
+              if (!quickBusy) note.textContent = '已切回手机 QQ 扫码';
+              timer = window.setInterval(() => void poll(), 2000);
+              return;
+            } catch (fallbackError) {
+              console.warn('[app] fallback qr failed', fallbackError);
+            }
+          }
           console.warn('[app] request qr failed', err);
-          note.textContent = '获取二维码失败，请稍后重试';
-          action.textContent = '重试';
+          qrHost.classList.remove('is-loading');
+          if (!quickBusy) note.textContent = '获取二维码失败，点刷新重试';
+          action.textContent = '重新生成';
+        })
+        .finally(() => {
+          busy = false;
+          action.disabled = quickBusy;
+          syncChannels();
         });
+    };
+
+    action.addEventListener('click', () => {
+      qrHost.classList.add('is-refreshing');
+      window.setTimeout(() => start(true), 170);
     });
 
-    const card = h(
+    if (source === 'netease') {
+      for (const [channel, text] of [['ptlogin', 'QQ 扫码'], ['netease', '网易云 App 扫码']] as const) {
+        const button = h('button', { class: 'login-qr-channel', type: 'button', text });
+        button.addEventListener('click', () => {
+          if (busy || quickBusy || cancelled || neteaseChannel === channel) return;
+          neteaseChannel = channel;
+          syncChannels();
+          start(true);
+        });
+        channelButtons.push(button);
+        channels.append(button);
+      }
+    }
+    syncChannels();
+    const quickStatus = h('div', { class: 'login-quick-hint', role: 'status', text: '正在查找本机 QQ…' });
+    const quickAccounts = h('div', { class: 'login-quick-accounts' });
+    const quickRefresh = h('button', { class: 'login-quick-refresh', type: 'button', text: '重新检测' });
+    const quickRow = h('div', { class: 'login-quick' },
+      h('div', { class: 'login-quick-title', text: '本机 QQ 快捷登录' }), quickStatus, quickAccounts, quickRefresh);
+    let detecting = false;
+    const detectQuickAccounts = async (): Promise<void> => {
+      if (cancelled || quickBusy || detecting) return;
+      detecting = true;
+      quickRefresh.disabled = true;
+      quickStatus.textContent = '正在查找本机 QQ…';
+      const info = await quickAccount(source);
+      detecting = false;
+      if (cancelled) return;
+      quickRefresh.disabled = false;
+      quickAccounts.textContent = '';
+      quickStatus.textContent = info.available && info.accounts?.length ? '选择头像直接登录' : '未检测到可用 QQ，请先登录电脑 QQ';
+      for (const account of info.accounts ?? []) {
+        const avatar = h('img', { class: 'login-quick-avatar', src: account.avatarUrl, alt: account.nickname, referrerpolicy: 'no-referrer' });
+        const button = h(
+          'button',
+          { class: 'login-quick-btn', type: 'button', title: '用本机 QQ 直接登录' },
+          avatar,
+          h(
+            'div',
+            { class: 'login-quick-text' },
+            h('div', { class: 'login-quick-name', text: account.nickname || '本机 QQ' }),
+            h('div', { class: 'login-quick-hint', text: '点击直接登录' }),
+          ),
+        );
+        button.addEventListener('click', async () => {
+          if (quickBusy || cancelled) return;
+          quickBusy = true;
+          syncChannels();
+          stopPoll();
+          action.disabled = true;
+          quickRefresh.disabled = true;
+          quickAccounts.querySelectorAll('button').forEach((item) => { item.disabled = true; });
+          button.classList.add('is-loading');
+          note.textContent = '正在用本机 QQ 登录…';
+          try {
+            await quickWebLogin(source, account.id);
+            await refreshAccounts();
+            if (cancelled) return;
+            note.textContent = '登录成功';
+            toast(`${SOURCE_LABEL[source]} 已登录`);
+            this.refreshAccountDependentViews();
+            onAccountChanged();
+          } catch (err: unknown) {
+            if (cancelled) return;
+            note.textContent = err instanceof Error ? err.message : '快捷登录未完成，请重试或扫码登录';
+            if (session && !timer) timer = window.setInterval(() => void poll(), 2000);
+          } finally {
+            quickBusy = false;
+            syncChannels();
+            action.disabled = busy;
+            quickRefresh.disabled = false;
+            button.classList.remove('is-loading');
+            quickAccounts.querySelectorAll('button').forEach((item) => { item.disabled = false; });
+          }
+        });
+        quickAccounts.append(button);
+      }
+    };
+    quickRefresh.addEventListener('click', () => void detectQuickAccounts());
+    void detectQuickAccounts();
+    const root = h(
       'div',
-      { class: 'login-source' },
-      h(
-        'div',
-        { class: 'login-source-head' },
-        h('div', { class: `source-dot ${source}`, text: sourceMeta(source).short }),
-        h('span', { text: SOURCE_LABEL[source] }),
-      ),
-      qrHost,
+      { class: 'login-panel' },
+      ...(source === 'netease' ? [channels] : []),
+      h('div', { class: 'login-qr-row' }, qrHost, quickRow),
       note,
       action,
+      hints,
     );
 
-    // 取消/切走时停轮询
-    this.disposers.add(() => {
+    autoTimer = window.setTimeout(() => start(), 160);
+    cleanups.push(() => {
       cancelled = true;
       stopPoll();
+      window.clearTimeout(autoTimer);
     });
-    return card;
+    return { root, dispose };
   }
 
   private closeLogin(): void {
+    this.loginPaneDispose?.();
+    this.loginPaneDispose = null;
     if (!this.loginOverlay) return;
     this.loginOverlay.remove();
     this.loginOverlay = null;
@@ -6955,8 +7451,7 @@ export class App {
         this.toggleMiniMode();
         return;
       }
-      if (this.lyrics) this.closeLyrics();
-      else this.openLyrics();
+      this.toggleLyricsPage();
     };
     this.pbCoverWrap.addEventListener('click', openLyricsFromCover);
     this.pbCoverWrap.addEventListener('keydown', (event) => {
@@ -6980,8 +7475,7 @@ export class App {
         this.toggleMiniMode();
         return;
       }
-      if (this.lyrics) this.closeLyrics();
-      else this.openLyrics();
+      this.toggleLyricsPage();
     });
     this.pbMeta.addEventListener('keydown', (event) => {
       if (event.key !== 'Enter' && event.key !== ' ') return;
@@ -6990,8 +7484,7 @@ export class App {
         this.toggleMiniMode();
         return;
       }
-      if (this.lyrics) this.closeLyrics();
-      else this.openLyrics();
+      this.toggleLyricsPage();
     });
 
     const prevBtn = h('button', { class: 'pb-btn', title: '上一首' }, icon('prev'));
@@ -7093,8 +7586,7 @@ export class App {
       event.preventDefault();
       event.stopPropagation();
       // 「词」按钮和封面一样：已经打开歌词就退出
-      if (this.lyrics) this.closeLyrics();
-      else this.openLyrics();
+      this.toggleLyricsPage();
     });
 
     this.volumeInput = h('input', { class: 'slider', type: 'range', min: '0', max: '100', step: '1', value: String(Math.round(getSettings().playback.volume * 100)) });
@@ -8108,7 +8600,7 @@ export class App {
         const reason = !lyricsOn
           ? '先开启「桌面背景歌词」'
           : lyricsMode !== 'off'
-            ? '播放效果为「文字/房间/唱片」时，歌词画在效果层，背景歌词样式不生效；切到「关闭」后可用'
+            ? '播放效果为「纯字/房间/唱片/拼合」时，歌词画在效果层，背景歌词样式不生效；切到「关闭」后可用'
             : '';
         for (const node of [bgStyleCell, bgBlurCell, bgFillCell]) {
           const hint = node.querySelector<HTMLElement>('.quick-hint');
@@ -8397,15 +8889,7 @@ export class App {
           action: '唱片设置…',
           hint: '唱片：歌词字体/颜色/排布、盘面配色、转速、唱臂与尘埃',
         },
-        geo: {
-          action: '几何设置…',
-          hint: '几何：凝彩色场与流光、辉光字逐字浮起、取景缓慢轮换、网点与颗粒',
-        },
-        flow: {action:'凝彩设置…',hint:'背景与歌词独立配色、封面取色、段落换色、多角度运镜'},
-        pv: {
-          action: 'PV 设置…',
-          hint: 'PV：文字 PV 定格风、配色与重音、故障强度、纸纹扫描线',
-        },
+        flow: {action:'拼合设置…',hint:'背景与歌词独立配色、封面取色、段落换色、多角度运镜'},
       };
       const effectSettingsBtn = h('button', {
         class: 'quick-value quick-text-settings-btn',
@@ -8425,11 +8909,7 @@ export class App {
             ? openTextSettingsSheet
             : mode === 'room'
               ? openRoomSettingsSheet
-              : mode === 'geo'
-                ? openGeoSettingsSheet
-                : mode === 'pv'
-                  ? openPvSettingsSheet
-                  : openVinylSettingsSheet;
+              : openVinylSettingsSheet;
         window.setTimeout(() => open(), 140);
       });
       const effectSettingsHint = h('span', { class: 'quick-cell-hint', text: '' });
@@ -8874,6 +9354,7 @@ export class App {
         'div',
         { class: 'quick-grid' },
         cell('音量', false, volumeStepper.root),
+        cell('扬声器输出', true, createAppOutputControl().root),
         cell('播放模式', false, this.quickModeBtn),
         cell('音质', true, qualitySeg),
         cell(
@@ -8925,6 +9406,7 @@ export class App {
             : 'play';
     const groupOfTitle = new Map<string, 'play' | 'sound' | 'preview' | 'transition'>([
       ['音量', 'play'],
+      ['扬声器输出', 'play'],
       ['播放模式', 'play'],
       ['播放速度', 'play'],
       ['自动播放', 'play'],
@@ -10087,6 +10569,7 @@ export class App {
    */
   /** 「场景」页：4 张按分析结果分桶的智能歌单。 */
   private openMoodsPage(): void {
+    this.navBefore();
     this.wallPager = null;
     this.setRailActive('moods');
     this.wall = {
@@ -10183,6 +10666,10 @@ export class App {
 
   private desktopLyricNow: string | null = null;
   private desktopLyricTranslation: string | null = null;
+  private desktopLyricPrevious: string | null = null;
+  private desktopLyricNext: string | null = null;
+  private desktopLyricActiveWord = -2;
+  private desktopLyricWordsKey = '';
   private desktopLyricKey = '';
 
   /** 桌面歌词：把当前句推给宿主窗口（换歌或句/翻译变化时才发送）。 */
@@ -10191,6 +10678,10 @@ export class App {
     if (!settings.general.desktopLyrics) {
       this.desktopLyricNow = null;
       this.desktopLyricTranslation = null;
+      this.desktopLyricPrevious = null;
+      this.desktopLyricNext = null;
+      this.desktopLyricActiveWord = -2;
+      this.desktopLyricWordsKey = '';
       this.desktopLyricKey = '';
       return;
     }
@@ -10202,15 +10693,26 @@ export class App {
       this.desktopLyricKey = key;
       this.desktopLyricNow = null;
       this.desktopLyricTranslation = null;
+      this.desktopLyricPrevious = null;
+      this.desktopLyricNext = null;
+      this.desktopLyricActiveWord = -2;
+      this.desktopLyricWordsKey = '';
     }
     // 桌面歌词要在没打开歌词页时也能用：先把歌词拉下来（内部去重）。
     primeLyrics(track);
-    const { now, translation } = currentLyricDisplay();
-    if (now === this.desktopLyricNow && translation === this.desktopLyricTranslation) return;
+    const { previous, now, next, translation, words, activeWord } = currentLyricDisplay();
+    const wordsKey = JSON.stringify(words.map(({ text, spaceBefore, startMs, endMs }) => [text, spaceBefore, startMs, endMs]));
+    if (now === this.desktopLyricNow && translation === this.desktopLyricTranslation &&
+        previous === this.desktopLyricPrevious && next === this.desktopLyricNext &&
+        activeWord === this.desktopLyricActiveWord && wordsKey === this.desktopLyricWordsKey) return;
     this.desktopLyricNow = now;
     this.desktopLyricTranslation = translation;
+    this.desktopLyricPrevious = previous;
+    this.desktopLyricNext = next;
+    this.desktopLyricActiveWord = activeWord;
+    this.desktopLyricWordsKey = wordsKey;
     // 没有歌词的曲目也给一个占位，别让窗口一直停在初始文案。
-    updateDesktopLyrics(now || '♪', translation);
+    updateDesktopLyrics(now || '♪', translation, previous, next, words, activeWord);
   }
 
   /** 收听统计整页：总览卡片、近 14 天时长柱、最爱歌曲与歌手。 */
@@ -10350,6 +10852,7 @@ export class App {
 
   /** 收听统计页（总览 / 最近 14 天 / 最爱歌曲与歌手）。 */
   private openStatsPage(): void {
+    this.navBefore();
     this.wallPager = null;
     this.setRailActive('stats');
     this.wall = { kind: 'stats', title: '收听统计', subtitle: '只统计这台设备上的实际播放时长', tracks: [] };
@@ -10586,10 +11089,37 @@ export class App {
   /* 歌词                                                                */
   /* ------------------------------------------------------------------ */
 
+  /**
+   * 歌词条（封面 / 歌名 / 「词」按钮）的开关逻辑。
+   *
+   * 桌面背景歌词开着时软件内歌词页让位：第一次点击只提示、不打断背景歌词；
+   * 连续再点一次（2.5 秒内）才关闭「桌面背景歌词」并切回软件内歌词页。
+   */
+  private toggleLyricsPage(): void {
+    if (this.lyrics) {
+      this.closeLyrics();
+      return;
+    }
+    if (getSettings().general.backgroundLyrics) {
+      const now = performance.now();
+      if (now - this.backgroundLyricsClickAt <= 2500) {
+        this.backgroundLyricsClickAt = 0;
+        patchSettings({ general: { backgroundLyrics: false } });
+        this.openLyrics();
+        return;
+      }
+      this.backgroundLyricsClickAt = now;
+      toast('歌词正在桌面背景显示：再点一次切回软件内歌词');
+      return;
+    }
+    this.openLyrics();
+  }
+
   private openLyrics(): void {
+    this.navBefore();
     if (this.lyrics) return;
     if (getSettings().general.backgroundLyrics) {
-      toast('歌词正在桌面背景显示，关闭「桌面背景歌词」后恢复软件内歌词');
+      toast('歌词正在桌面背景显示：再点一次切回软件内歌词');
       return;
     }
     // 歌词页是整窗覆盖层：先收起搜索，避免搜索层与歌词页互相抢层级
@@ -10605,6 +11135,8 @@ export class App {
   private closeLyrics(): void {
     const view = this.lyrics;
     if (!view) return;
+    // 关歌词页也是一次页面级导航：后退能把它重新打开。
+    this.navBefore();
     this.lyrics = null;
     this.root.classList.remove('is-lyrics-open');
     // 先播退场动画，再真正卸载
@@ -11043,3 +11575,15 @@ export class App {
 }
 
 export type { App as ZiluxApp };
+
+
+
+
+
+
+
+
+
+
+
+

@@ -11,6 +11,7 @@
  */
 
 import { cachedAnalysis } from '../online/analysis';
+import { registerAppAudioContext } from './audioOutput';
 import { onPlayer, playerState, type PlayerState } from '../ui/player';
 
 export interface MetronomeSettings {
@@ -157,6 +158,7 @@ async function ensureContext(): Promise<void> {
     }
     try {
       ctx = new Ctor();
+      registerAppAudioContext(ctx);
       master = ctx.createGain();
       master.gain.value = settings.volume;
       master.connect(ctx.destination);

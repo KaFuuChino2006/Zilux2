@@ -40,41 +40,30 @@ import { lyricTextSettings, textSettingsToTuning, type LyricTextSettings } from 
 for (const profile of LUMIERE_PROFILES) profile.typography = 'horizontal';
 
 
-/** 播放效果：关闭 / 纯字（folia 绘光的文字特效）/ 房间（薄荷绿纵深 + 长条地毯，逐词飘浮 + 镜头跟随，可细调）/ 唱片（暖褐聆听室 + 33⅓ 转黑胶 + 黄铜唱臂，可细调）/ 几何（纸面排版：连续流动的换页与逐字显影）/ PV（文字 PV 定格风：五幕底色轮换、明朝巨字裁切、斜切色带、纸片卡片、报刊竖栏，换句整页推走或擦除）。 */
-export type LumiereMode = 'off' | 'text' | 'room' | 'vinyl' | 'geo' | 'pv' | 'flow';
+/** 播放效果：关闭 / 纯字（folia 绘光的文字特效）/ 房间（薄荷绿纵深 + 长条地毯，逐词飘浮 + 镜头跟随，可细调）/ 唱片（暖褐聆听室 + 33⅓ 转黑胶 + 黄铜唱臂，可细调）/ 拼合（Folia Tempera 渲染）。 */
+export type LumiereMode = 'off' | 'text' | 'room' | 'vinyl' | 'flow';
 
 export const LUMIERE_MODES: Array<{ id: LumiereMode; label: string; hint: string }> = [
-  { id: 'flow', label: '凝彩', hint: 'Folia 凝彩原版渲染：分镜排版、连续运镜、逐字入场、网点几何与反色文字' },
+  { id: 'flow', label: '拼合', hint: 'Folia 渲染：分镜排版、连续运镜、逐字入场、网点几何与反色文字' },
   { id: 'off', label: '关闭', hint: '歌词页不显示播放效果' },
   { id: 'text', label: '纯字', hint: 'folia 绘光的文字特效：发光大字、关键字染色、逐字点亮，可在「文字设置」里加背景光柱与雾' },
   { id: 'room', label: '房间', hint: '薄荷绿纵深 + 长条地毯：每句歌词拆成词散落在前方空间里，镜头跟着正在唱的那句推进；到「快捷设置 → 房间设置」可细调歌词风格、颜色与离散度' },
   { id: 'vinyl', label: '唱片', hint: '暖褐聆听室 + 33⅓ 转黑胶 + 黄铜唱臂：歌词压在唱片下方逐词点亮，暂停时唱片渐停、唱臂抬起；到「快捷设置 → 唱片设置」可细调盘面、唱臂与歌词样式' },
-  {
-    id: 'geo',
-    label: '几何',
-    hint: '凝彩色场与流动光带，辉光歌词逐字浮起、换句时旧字向上飘散；取景在居中/左倾/右倾/内收之间缓慢轮换，到「快捷设置 → 几何设置」可细调配色、字形与肌理',
-  },
-  {
-    id: 'pv',
-    label: 'PV',
-    hint: '文字 PV 的定格风：五幕底色轮换（墨蓝 / 纸白 / 朱红 / 灰绿 / 黑白收尾），明朝巨字、斜切色带、纸片卡片、报刊竖栏与对撞叠印；换句整页推走或擦除，到「快捷设置 → PV 设置」可细调配色、字号、手抖、故障与纸纹',
-  },
 ];
 
 const STORE_KEY = 'zilux2.lumiere';
 
-/** 当前播放效果（只在歌词页生效）。已删掉的「绘光 / 光场」存档统一归到「纯字」。 */
+/** 当前播放效果（只在歌词页生效）。已删掉的「几何 / PV / 绘光 / 光场」存档统一回落到「关闭」。 */
 export function lumiereMode(): LumiereMode {
   try {
     const raw = localStorage.getItem(STORE_KEY);
-    // 「房间」「唱片」是后加的整页场景；「光场」已删除不再复活；「绘光」被「纯字」取代，存档直接落到纯字。
+    // 「房间」「唱片」是后加的整页场景；「几何」「PV」已删除；「光场」已删除不再复活；
+    // 「绘光」被「纯字」取代，存档直接落到纯字。
     if (raw === 'room') return 'room';
     if (raw === 'vinyl') return 'vinyl';
-    if (raw === 'geo') return 'geo';
-    if (raw === 'pv') return 'pv';
     if (raw === 'flow') return 'flow';
-    if (raw === 'collage') return 'pv';
     if (raw === 'off' || raw === 'lightfield') return 'off';
+    if (raw === 'geo' || raw === 'pv' || raw === 'collage') return 'off';
     if (raw) return 'text';
   } catch {
     // localStorage 不可用时按默认处理

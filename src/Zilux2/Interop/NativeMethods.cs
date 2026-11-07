@@ -31,6 +31,9 @@ internal static class NativeMethods
     public const uint ModControl = 0x0002;
     public const uint ModShift = 0x0004;
     public const uint ModWin = 0x0008;
+    // MOD_NOREPEAT：按住不放时系统不再连续投递 WM_HOTKEY。自动重复由底层钩子负责吞掉，
+    // 这里关掉系统重复，快速连按才不会被误当成重复而丢掉。
+    public const uint ModNoRepeat = 0x4000;
     public const uint VkSpace = 0x20;
     public const uint VkLeft = 0x25;
     public const uint VkRight = 0x27;
@@ -50,6 +53,28 @@ internal static class NativeMethods
     public const uint VkMediaPrevTrack = 0xB1;
     public const uint VkMediaStop = 0xB2;
     public const uint VkMediaPlayPause = 0xB3;
+
+    // 鼠标侧键导航（WH_MOUSE_LL）：XBUTTON1=后退、XBUTTON2=前进。Chromium 自己会把侧键
+    // 当成浏览器历史，这里在钩子里先吞掉，改成给页面发 navBack / navForward。
+    public const int WhMouseLl = 14;
+    public const int WmXButtonDown = 0x020B;
+    public const int WmXButtonUp = 0x020C;
+    public const uint XButton1 = 0x0001;
+    public const uint XButton2 = 0x0002;
+    public const uint GaRoot = 2;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MsllHookStruct
+    {
+        public int PointX;
+        public int PointY;
+        public uint MouseData;
+        public uint Flags;
+        public uint Time;
+        public IntPtr ExtraInfo;
+    }
+
+    public delegate IntPtr LowLevelMouseProc(int nCode, IntPtr wParam, IntPtr lParam);
 
     // 热键钩子线程：独立消息循环 + 结束信号
     public const int WmQuit = 0x0012;
@@ -234,6 +259,9 @@ internal static class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool GetCursorPos(out Point point);
 
+    [DllImport("user32.dll")]
+    public static extern IntPtr WindowFromPoint(Point point);
+
     // 桌面背景歌词：把第二个 WebView2 窗口挂到桌面壁纸层（WorkerW）下面。
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern IntPtr FindWindow(string? className, string? windowName);
@@ -320,6 +348,13 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool ShowWindow(IntPtr hWnd, int command);
+
+    public const int AwHide = 0x00010000;
+    public const int AwBlend = 0x00080000;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool AnimateWindow(IntPtr hWnd, int durationMs, int flags);
 
     [DllImport("gdi32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -431,6 +466,13 @@ internal static class NativeMethods
     public static extern IntPtr SetWindowsHookEx(
         int idHook,
         LowLevelKeyboardProc callback,
+        IntPtr module,
+        uint threadId);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr SetWindowsHookEx(
+        int idHook,
+        LowLevelMouseProc callback,
         IntPtr module,
         uint threadId);
 

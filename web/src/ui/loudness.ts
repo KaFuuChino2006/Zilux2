@@ -23,11 +23,14 @@ export function setNightModeEnabled(value: boolean): void {
  * 关掉响度均衡 / 没分析结果时返回 null，调用方据此不处理。
  * 夜间模式目标更低（-17 LUFS）并再压 2 dB。
  */
-export function compensationDbFor(lufs: number | null | undefined): number | null {
+export function compensationDbFor(lufs: number | null | undefined, peakDb?: number): number | null {
   if (!loudnessEnabled()) return null;
   if (typeof lufs !== 'number' || !Number.isFinite(lufs)) return null;
+  if (lufs <= -60) return 0; // Never amplify silence/no valid gated blocks.
   const night = nightModeEnabled();
   const target = night ? -17 : -14;
-  const db = Math.max(-9, Math.min(6, target - lufs)) + (night ? -2 : 0);
+  let db = Math.max(-9, Math.min(6, target - lufs)) + (night ? -2 : 0);
+  // Sample peak is not true peak: retain 3dB headroom when boosting.
+  if (typeof peakDb === 'number' && Number.isFinite(peakDb)) db = Math.min(db, -3 - peakDb);
   return Math.round(db * 10) / 10;
 }

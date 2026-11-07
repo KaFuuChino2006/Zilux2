@@ -4,7 +4,7 @@
  */
 
 import { decryptQrc } from 'qrc-decoder';
-import { fetchLyric } from '../online/client';
+import { fetchLyric, onlineReady } from '../online/client';
 import {
   applyTranslation,
   extractQrcPayload,
@@ -17,7 +17,7 @@ import {
 } from '../online/lrc';
 import { SOURCE_LABEL, type OnlineTrack } from '../online/types';
 import { onlineArtwork } from '../online/artwork';
-import { fetchLocalLrc, lrcOf } from './local';
+import { fetchLocalLrc, localLibrary, lrcOf } from './local';
 import { fmtTime, h, icon } from './dom';
 import { onPlayer, playerState, seek, type PlayerState } from './player';
 import { getSettings, onSettingsChange } from '../core/settings';
@@ -26,8 +26,6 @@ import { coverColorsOf, fallbackColors } from './coverColors';
 import { createLumiereStage, lumiereMode, lumiereThemeForCover, setLumiereMode, type LumiereMode, type LumiereSongInput, type LumiereStage } from './lumiere';
 import { createRoomStage, setRoomLyricTintProvider, type RoomStage } from './room';
 import { createVinylStage, setVinylLyricTintProvider, type VinylStage } from './vinyl';
-import { createGeoStage, setGeoLyricTintProvider, type GeoStage } from './geo';
-import { createPvStage, type PvStage } from './pv';
 import { createFlowStage, type FlowStage } from './flow';
 import type { Theme } from './lumiere-folia/types';
 import type { LyricTextSettings } from './lumiereSettings';
@@ -113,12 +111,6 @@ setVinylLyricTintProvider(() => {
   return { mode: lyricsBgMode, palette: lumierePaletteNow ? [...lumierePaletteNow] : [] };
 });
 
-// 几何档：强调色与两路错版色也跟着「歌词颜色」走（纯色档不回落到固定色，
-// 交给几何自己的配色预设——那几组印刷配色比单色更适合这套版式）。
-setGeoLyricTintProvider(() => {
-  if (lyricsBgMode === 'solid') return null;
-  return { mode: lyricsBgMode, palette: lumierePaletteNow ? [...lumierePaletteNow] : [] };
-});
 let activeLyricsView: LyricsView | null = null;
 
 /** 当前歌词页背景模式（快捷设置里展示用）。 */
@@ -301,6 +293,8 @@ function readOffsets(): Record<string, number> {
 const lyricOffsets: Record<string, number> = readOffsets();
 let lyricSource = '';
 let primeKey = '';
+let primeRetryKey = '';
+let primeRetryAt = 0;
 let lyricMatchInfo: LyricMatchResult | null = null;
 let lyricMatchSkipped = false;
 let lyricMatchDone = false;
@@ -585,17 +579,26 @@ export function reloadSharedLyricSettings(): void {
 export function primeLyrics(track: OnlineTrack | null): void {
   const key = trackKeyOf(track);
   if (!key || primeKey === key) return;
+  // 恢复播放先于宿主 ready 回执，不能把接口未就绪当作「这首没有歌词」。
+  if (track?.source === 'local' ? !localLibrary() : !onlineReady()) return;
+  if (primeRetryKey === key && performance.now() < primeRetryAt) return;
   if (lastDoc && lastDoc.trackKey === key) return;
   primeKey = key;
-  void loadLyricDoc(track)
+  void loadLyricDoc(track, true)
     .then((doc) => {
-      if (doc.trackKey === key) {
+      if (doc.trackKey === key && trackKeyOf(playerState().track) === key) {
+        primeRetryKey = '';
         lastDoc = doc;
         updateCurrentLyricLine();
+        notifyMatch();
         if (track) startLyricMatch(track, doc);
       }
     })
-    .catch(() => undefined)
+    .catch(() => {
+      // 网络暂时失败不缓存空文档；播放状态/兜底轮询会在退避后重试。
+      primeRetryKey = key;
+      primeRetryAt = performance.now() + 3000;
+    })
     .finally(() => {
       if (primeKey === key) primeKey = '';
     });
@@ -794,8 +797,37 @@ function docFromLyric(
   };
 }
 
+const upcomingLyrics=new Map<string,{doc:LyricDoc;label:string;manualLabel:string;choice:string}>();
+const upcomingLoads=new Map<string,Promise<LumiereSongInput>>();
+
+/** Prepare only the queued song; never overwrite the current lyric document or source label. */
+export function preloadLyricSong(track:OnlineTrack):Promise<LumiereSongInput>{
+ const key=trackKeyOf(track),manual=readManual()[key],choice=manual?`${manual.source}:${manual.id}`:'';
+ const requestKey=`${key}|${choice}`;
+ const pending=upcomingLoads.get(requestKey);if(pending)return pending;
+ const request=(async()=>{
+  let cached=upcomingLyrics.get(key);
+  if(!cached||cached.choice!==choice){
+   let built:{doc:LyricDoc;label:string}|null=null;
+   if(track.source==='local'){
+    if(!localLibrary())throw new Error('Local lyric library is not ready');
+    const rel=lrcOf(track);
+    built={doc:{...EMPTY,trackKey:key,lines:rel?toDocLines(parseLrc(await fetchLocalLrc(rel))):[]},label:'本地 LRC 文件'};
+   }else{
+    if(manual){try{const candidate=docFromLyric(track,await fetchLyric(manual.source,manual.id),`${manual.label} · 手动选择 · `);if(candidate.doc.lines.length)built=candidate;}catch{/* Fall back to the track's own source. */}}
+    if(!built)built=docFromLyric(track,await fetchLyric(track.source,track.id));
+   }
+   cached={...built,manualLabel:manual&&built.label.includes('手动选择')?manual.label:'',choice};
+   upcomingLyrics.set(key,cached);
+   while(upcomingLyrics.size>4)upcomingLyrics.delete(upcomingLyrics.keys().next().value!);
+  }
+  return {trackKey:key,title:track.title,artist:track.artist,album:track.album??'',coverUrl:onlineArtwork(track,300),durationMs:track.durationMs??0,lyricOffsetMs:lyricOffsetOf(key),lines:cached.doc.lines};
+ })().finally(()=>upcomingLoads.delete(requestKey));
+ upcomingLoads.set(requestKey,request);return request;
+}
+
 /** 拉取并解析当前曲目歌词。 */
-export async function loadLyricDoc(track: OnlineTrack | null): Promise<LyricDoc> {
+export async function loadLyricDoc(track: OnlineTrack | null, throwOnFetchError = false): Promise<LyricDoc> {
   if (!track) return EMPTY;
   const key = trackKeyOf(track);
   lyricSource = '';
@@ -803,6 +835,11 @@ export async function loadLyricDoc(track: OnlineTrack | null): Promise<LyricDoc>
   lyricMatchSkipped = false;
   lyricMatchDone = false;
   manualLyricLabel = '';
+  const warmed=upcomingLyrics.get(key);
+  const selected=readManual()[key];
+  if(warmed&&warmed.choice===(selected?`${selected.source}:${selected.id}`:'')){
+    lyricSource=warmed.label;manualLyricLabel=warmed.manualLabel;return warmed.doc;
+  }
 
   // 本地曲目：同名 .lrc
   if (track.source === 'local') {
@@ -818,6 +855,7 @@ export async function loadLyricDoc(track: OnlineTrack | null): Promise<LyricDoc>
       };
     } catch (err) {
       console.warn('[lyrics] local lrc failed', err);
+      if (throwOnFetchError) throw err;
       return { ...EMPTY, trackKey: key };
     }
   }
@@ -843,6 +881,7 @@ export async function loadLyricDoc(track: OnlineTrack | null): Promise<LyricDoc>
     lyric = await fetchLyric(track.source, track.id);
   } catch (err) {
     console.warn('[lyrics] fetch failed', err);
+    if (throwOnFetchError) throw err;
     return { ...EMPTY, trackKey: key };
   }
   const built = docFromLyric(track, lyric);
@@ -1045,18 +1084,35 @@ export function currentLyricLine(): string {
   return doc.lines[index]?.text ?? '';
 }
 
-/** 桌面歌词窗口用：当前正在唱的一句 + 翻译（无歌词时都是空串）。 */
-export function currentLyricDisplay(): { now: string; translation: string } {
+/** 桌面歌词窗口用：与关闭效果时的歌词栏相同，提供上下文和当前句译文。 */
+export function currentLyricDisplay(): { previous: string; now: string; next: string; translation: string; words: LyricWord[]; activeWord: number } {
   const doc = lastDoc;
   const state = playerState();
   const track = state.track;
-  if (!doc || doc.lines.length === 0 || !track) return { now: '', translation: '' };
+  const empty = { previous: '', now: '', next: '', translation: '', words: [] as LyricWord[], activeWord: -1 };
+  if (!doc || doc.lines.length === 0 || !track) return empty;
   // 换歌后新歌词还没拉回来时，lastDoc 仍是上一首的——不能把上一首的句子推给桌面歌词。
-  if (doc.trackKey !== `${track.source}:${track.id}`) return { now: '', translation: '' };
+  if (doc.trackKey !== `${track.source}:${track.id}`) return empty;
   const position = state.positionMs + lyricOffsetOf(doc.trackKey);
   const index = activeIndexOf(doc.lines, position);
   const line = doc.lines[index];
-  return { now: line?.text ?? '', translation: line?.translation ?? '' };
+  const words = line?.words ?? [];
+  let activeWord = -1;
+  for (let i = 0; i < words.length; i += 1) {
+    const word = words[i]!;
+    if (position >= word.startMs && position < word.endMs) {
+      activeWord = i;
+      break;
+    }
+  }
+  return {
+    previous: doc.lines[index - 1]?.text ?? '',
+    now: line?.text ?? '',
+    next: doc.lines[index + 1]?.text ?? '',
+    translation: line?.translation ?? '',
+    words,
+    activeWord,
+  };
 }
 
 /**
@@ -1094,6 +1150,9 @@ export class LyricsView {
 
   private linesEl: HTMLDivElement;
   private transBar: HTMLDivElement;
+  private transBarTarget = '';
+  private transBarVisible = false;
+  private transBarTimer: number | null = null;
   private progressFill: HTMLDivElement;
   private progressCur: HTMLSpanElement;
   private progressDur: HTMLSpanElement;
@@ -1147,10 +1206,6 @@ export class LyricsView {
   private roomStage: RoomStage | null = null;
   /** 播放效果（唱片）舞台：暖褐聆听室 + 33⅓ 转黑胶 + 黄铜唱臂，歌词压在唱片下方。 */
   private vinylStage: VinylStage | null = null;
-  /** 播放效果（几何）舞台：文字 PV 排版，一句一种构图 + 错版叠印 + 网点颗粒。 */
-  private geoStage: GeoStage | null = null;
-  /** 播放效果（PV）舞台：文字 PV 定格风，巨字裁切 + 斜切色带 + 负片 + 错版叠印 + 故障扫描。 */
-  private pvStage: PvStage | null = null;
   private flowStage: FlowStage | null = null;
   /** 进页时等画布第一次出像的监听（见 watchStagePaint）。 */
   private stageObserver: MutationObserver | null = null;
@@ -1221,8 +1276,6 @@ export class LyricsView {
     this.lumiereText = createLumiereStage({ textOnly: true });
     this.roomStage = createRoomStage();
     this.vinylStage = createVinylStage();
-    this.geoStage = createGeoStage();
-    this.pvStage = createPvStage();
     this.flowStage = createFlowStage();
 
     this.root = h(
@@ -1233,8 +1286,6 @@ export class LyricsView {
       this.lumiereText.root,
       this.roomStage.root,
       this.vinylStage.root,
-      this.geoStage.root,
-      this.pvStage.root,
       this.flowStage.root,
       closeBtn,
       h(
@@ -1672,10 +1723,8 @@ export class LyricsView {
     const textOn = mode === 'text';
     const roomOn = mode === 'room';
     const vinylOn = mode === 'vinyl';
-    const geoOn = mode === 'geo';
-    const pvOn = mode === 'pv';
     const flowOn = mode === 'flow';
-    const anyOn = textOn || roomOn || vinylOn || geoOn || pvOn || flowOn;
+    const anyOn = textOn || roomOn || vinylOn || flowOn;
     // 纯字 / 房间 / 唱片都由 canvas 画歌词，DOM 歌词与封面栏让位；什么时候藏由 CSS 的 is-painted 门槛决定，
     // 画布还没出像时默认歌词页仍然可见，不会闪灰。
     this.root.classList.toggle('is-lumiere', anyOn);
@@ -1683,8 +1732,6 @@ export class LyricsView {
     this.root.classList.toggle('is-lumiere-pure', textOn);
     this.root.classList.toggle('is-room', roomOn);
     this.root.classList.toggle('is-vinyl', vinylOn);
-    this.root.classList.toggle('is-geo', geoOn);
-    this.root.classList.toggle('is-pv', pvOn);
     this.root.classList.toggle('is-flow', flowOn);
     // 播放效果开启/关闭会改变「封面在左」是否生效，切完模式立即重算一次。
     if (this.coverEl) {
@@ -1709,18 +1756,6 @@ export class LyricsView {
       if (vinylOn) vinyl.activate();
       else vinyl.deactivate();
     }
-    const geo = this.geoStage;
-    if (geo) {
-      geo.setMode(geoOn ? 'geo' : 'off');
-      if (geoOn) geo.activate();
-      else geo.deactivate();
-    }
-    const pv = this.pvStage;
-    if (pv) {
-      pv.setMode(pvOn ? 'pv' : 'off');
-      if (pvOn) pv.activate();
-      else pv.deactivate();
-    }
     // 刚进歌词页时先别露默认封面：等画布第一次出像再撤 is-lumiere-fresh（进页那一瞬是暗场 + 加载提示）。
     const flow = this.flowStage;
     if (flow) {
@@ -1728,7 +1763,7 @@ export class LyricsView {
       if (flowOn) flow.activate();
       else flow.deactivate();
     }
-    const stageRoot = flowOn ? flow?.root : roomOn ? room?.root : vinylOn ? vinyl?.root : geoOn ? geo?.root : pvOn ? pv?.root : stage?.root;
+    const stageRoot = flowOn ? flow?.root : roomOn ? room?.root : vinylOn ? vinyl?.root : stage?.root;
     const painted = stageRoot ? stageRoot.classList.contains('is-painted') : false;
     const failed = stageRoot ? stageRoot.classList.contains('is-failed') : false;
     if (anyOn && stageRoot && !painted && !failed) {
@@ -1848,8 +1883,6 @@ export class LyricsView {
     this.lumiereText?.setSong(input);
     this.roomStage?.setSong(input);
     this.vinylStage?.setSong(input);
-    this.geoStage?.setSong(input);
-    this.pvStage?.setSong(input);
     this.flowStage?.setSong(input);
   }
 
@@ -2199,7 +2232,10 @@ export class LyricsView {
     this.syncLumiereSong();
     this.emptyEl.style.display = this.doc.lines.length === 0 ? '' : 'none';
     this.progressFill.style.width = '0%';
-    if (this.doc.lines.length === 0) return;
+    if (this.doc.lines.length === 0) {
+      this.updateTranslationBar('');
+      return;
+    }
 
     for (const line of this.doc.lines) {
       const lineEl = h('div', { class: 'lyric-line' });
@@ -2379,7 +2415,7 @@ export class LyricsView {
   private lumiereCoversLyrics(): boolean {
     const mode = lumiereMode();
     if (mode === 'off') return false;
-    const stage = mode === 'flow' ? this.flowStage : mode === 'room' ? this.roomStage : mode === 'vinyl' ? this.vinylStage : mode === 'geo' ? this.geoStage : mode === 'pv' ? this.pvStage : this.lumiereText;
+    const stage = mode === 'flow' ? this.flowStage : mode === 'room' ? this.roomStage : mode === 'vinyl' ? this.vinylStage : this.lumiereText;
     if (!stage) return false;
     const classes = stage.root.classList;
     return classes.contains('is-on') && classes.contains('is-ready')
@@ -2560,12 +2596,9 @@ export class LyricsView {
    */
   private updateTranslationBar(text: string): void {
     const value = (text ?? '').trim();
-    if (!value) {
-      this.transBar.classList.add('is-empty');
-      if (this.transBar.textContent) this.transBar.textContent = '';
-      return;
-    }
-    const inline = this.lineEls[this.activeIndex]?.querySelector('.lyric-trans') as HTMLElement | null;
+    const inline = value
+      ? this.lineEls[this.activeIndex]?.querySelector('.lyric-trans') as HTMLElement | null
+      : null;
     let inlineVisible = false;
     if (inline) {
       const rect = inline.getBoundingClientRect();
@@ -2576,12 +2609,37 @@ export class LyricsView {
       inlineVisible = visible && rect.height > 2 && rect.width > 2 &&
         rect.bottom > 0 && rect.top < window.innerHeight;
     }
-    if (inlineVisible) {
+    const show = Boolean(value && !inlineVisible);
+    const target = show ? value : '';
+    if (target === this.transBarTarget && show === this.transBarVisible) return;
+    this.transBarTarget = target;
+    if (this.transBarTimer !== null) {
+      window.clearTimeout(this.transBarTimer);
+      this.transBarTimer = null;
+    }
+    if (!show) {
+      this.transBarVisible = false;
+      this.transBar.classList.remove('is-changing');
       this.transBar.classList.add('is-empty');
       return;
     }
-    if (this.transBar.textContent !== value) this.transBar.textContent = value;
+    if (!this.transBarVisible || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      this.transBar.textContent = value;
+      this.transBar.classList.remove('is-changing');
+      this.transBar.classList.remove('is-empty');
+      this.transBarVisible = true;
+      return;
+    }
+    // 旧句先退场，待胶囊透明后替换文字，新句再进入；避免换句时文字和宽度硬跳。
+    this.transBar.classList.add('is-changing');
+    this.transBarTimer = window.setTimeout(() => {
+      this.transBarTimer = null;
+      if (this.disposed) return;
+      this.transBar.textContent = this.transBarTarget;
+      this.transBar.classList.remove('is-changing');
+    }, 140);
     this.transBar.classList.remove('is-empty');
+    this.transBarVisible = true;
   }
 
   private applyOffset(animate: boolean): void {
@@ -2673,6 +2731,7 @@ export class LyricsView {
     }
     currentLyricText = '';
     this.disposed = true;
+    if (this.transBarTimer !== null) window.clearTimeout(this.transBarTimer);
     // 作废还在途中的封面预载回调。
     this.coverSwapToken += 1;
     this.unsubscribe?.();
@@ -2700,10 +2759,6 @@ export class LyricsView {
     this.roomStage = null;
     this.vinylStage?.dispose();
     this.vinylStage = null;
-    this.geoStage?.dispose();
-    this.geoStage = null;
-    this.pvStage?.dispose();
-    this.pvStage = null;
     this.flowStage?.dispose();
     this.flowStage = null;
     this.stageObserver?.disconnect();

@@ -14,7 +14,7 @@ declarations rejected by this project's compiler, and omission of AI-directed co
 `web/src/ui/flowScene.ts` adapts milliseconds to seconds, maps lyrics and word timing,
 applies Zilux's positive lyric-clock offset, and drives the original `renderOnce`.
 Folia's default Midnight theme and `DEFAULT_TEMPERA_TUNING` are used unchanged.
-The persisted effect id remains `flow`; its displayed name is now 凝彩.
+The persisted effect id remains `flow`; its displayed name is now 拼合.
 The React settings panel, image-library UI and subtitle-overlay UI are not ported.
 
 Validation on 2026-11-06:

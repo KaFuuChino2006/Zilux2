@@ -67,6 +67,10 @@ export interface BeatAnalysis {
   energy?: number;
   /** 整曲响度近似值（LUFS 口径，p0-9 起），用于响度均衡。 */
   loudnessLufs?: number;
+  loudnessMethod?: string;
+  /** 400ms K-weighted windows, 100ms hop; file-relative window centers. */
+  loudnessTimesMs?: number[];
+  momentaryLufs?: number[];
   /** 峰值电平（dBFS，p0-9 起）。 */
   peakDb?: number;
   /**
@@ -298,6 +302,21 @@ function normalizeResult(raw: AnalysisResponse, track: OnlineTrack): AnalysisRes
     analysis.loudnessLufs = source.loudnessLufs;
   }
   if (typeof source.peakDb === 'number' && Number.isFinite(source.peakDb)) analysis.peakDb = source.peakDb;
+  if (typeof source.loudnessMethod === 'string') analysis.loudnessMethod = source.loudnessMethod;
+  if (Array.isArray(source.loudnessTimesMs) && Array.isArray(source.momentaryLufs)
+    && source.loudnessTimesMs.length === source.momentaryLufs.length) {
+    const times: number[] = [], levels: number[] = [];
+    for (let i = 0; i < source.loudnessTimesMs.length; i++) {
+      const time = source.loudnessTimesMs[i], level = source.momentaryLufs[i];
+      if (typeof time === 'number' && Number.isFinite(time) && time >= 0
+        && (times.length === 0 || time > times[times.length - 1])
+        && typeof level === 'number' && Number.isFinite(level)) {
+        times.push(time); levels.push(level);
+      }
+    }
+    analysis.loudnessTimesMs = times;
+    analysis.momentaryLufs = levels;
+  }
   // p0-11：结构 cue（混音入点/出点）。缺失时保持 undefined，过渡计划回退旧逻辑。
   if (typeof source.cueInMs === 'number' && Number.isFinite(source.cueInMs) && source.cueInMs > 0) {
     analysis.cueInMs = source.cueInMs;

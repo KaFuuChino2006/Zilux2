@@ -1,8 +1,9 @@
-/** 新前端入口：启动序列 + 全局快捷键 + 宿主就绪握手。 */
+﻿/** 新前端入口：启动序列 + 全局快捷键 + 宿主就绪握手。 */
 
 import { host, hostAvailable, type UpdateSnapshot } from './core/bridge';
 import { initAccount } from './core/account';
 import { loadSettings } from './core/settings';
+import { initAppAudioOutput, initSystemAudioOutput } from './core/audioOutput';
 import { initOnline, onlineReady, setStreamQuality } from './online/client';
 import { App } from './ui/app';
 import { restoreLastPlayback, setVolume } from './ui/player';
@@ -13,39 +14,105 @@ import { installCoverFallback } from './ui/coverFallback';
 import { installAppTooltips } from './ui/tooltip';
 import { installChorusPreview } from './ui/chorusPreview';
 import { refreshArtworkCovers } from './online/artwork';
-import { confirmDialog } from './ui/confirmDialog';
-import { initUpdates, installUpdate, onUpdateChange, updateSnapshot } from './ui/updates';
+import { initUpdates, downloadUpdate, installUpdate, openReleasePage, onUpdateChange, updateSnapshot } from './ui/updates';
+import { showUpdateNotes } from './ui/updateNotes';
+import { ignoreUpdateVersion, shouldPromptUpdate, snoozeUpdateReminder } from './ui/updateReminders';
 import { bootBackgroundLyricsScene, installBackgroundLyricsPublisher, isBackgroundLyricsScene } from './ui/backgroundLyrics';
 
 // 更新提示去重：同一个版本只提示一次，宿主重复推送也不会反复弹窗。
-let promptedVersion: string | null = null;
-let notifiedVersion: string | null = null;
+let availablePromptedVersion: string | null = null;
+let readyPromptedVersion: string | null = null;
+let installedPromptedVersion: string | null = null;
 
-/** 处理更新推送提示：auto 模式下载完成时问一次是否安装；notify 模式发现新版时轻提示一次。 */
+/** 记录「上一次已经看过的版本」，用来判断刚更新完该不该弹当前版本的更新内容。 */
+const WHATS_NEW_SEEN_KEY = 'zilux2.whatsNewSeen';
+
+const normalizeVersion = (value: string): string => value.trim().replace(/^v/i, '');
+
+function readSeenVersion(): string {
+  try {
+    return localStorage.getItem(WHATS_NEW_SEEN_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function markSeenVersion(version: string): void {
+  try {
+    localStorage.setItem(WHATS_NEW_SEEN_KEY, version);
+  } catch {
+    // 存不了就只在本次会话里去重，不影响主流程。
+  }
+}
+
+/**
+ * 更新提示：三个时机都复用同一块「版本 + 更新内容」面板。
+ *  1) 发现新版本：显示下一个版本的更新内容（点空白 / Esc / × 关闭即稍后）；
+ *  2) 新版本已下载：提示是否立即安装（点空白 = 稍后）；
+ *  3) 更新完成后的第一次启动：显示当前版本的更新内容，并记住已看过。
+ */
 function handleUpdatePrompt(update: UpdateSnapshot): void {
-  if (update.state === 'downloaded' && update.mode === 'auto') {
-    const version = update.latestVersion || update.currentVersion;
-    if (promptedVersion === version) return;
-    promptedVersion = version;
-    const label = version ? `v${version}` : '新版本';
-    void confirmDialog({
-      title: '安装更新',
-      message: `${label} 已下载完成，立即安装并重启？`,
-      detail: '安装期间播放会中断，已打开的窗口会被关闭。',
-      confirmText: '立即安装并重启',
-      cancelText: '稍后',
-      iconName: 'download',
-    }).then((ok) => {
-      if (ok) installUpdate();
+  if (update.state === 'available' && update.latestVersion) {
+    const version = normalizeVersion(update.latestVersion);
+    if (!version || availablePromptedVersion === version) return;
+    // 用户选过「不再提示这个版本 / N 天内不再提示」就不再打扰（新版本仍会提示）。
+    if (!shouldPromptUpdate(version)) return;
+    availablePromptedVersion = version;
+    const auto = update.mode === 'auto';
+    showUpdateNotes({
+      kind: 'available',
+      version,
+      releaseName: update.releaseName,
+      notes: update.notes ?? '',
+      downloading: auto,
+      allowSnooze: true,
+      onDismiss: (choice) => {
+        if (choice.ignore) ignoreUpdateVersion(version);
+        else snoozeUpdateReminder(choice.days);
+      },
+      onDownload: auto ? undefined : downloadUpdate,
+      onOpenRelease: openReleasePage,
     });
     return;
   }
-  if (update.state === 'available' && update.mode === 'notify') {
-    const version = update.latestVersion;
-    if (!version || notifiedVersion === version) return;
-    notifiedVersion = version;
-    toast(`发现新版本 v${version}，可在「设置 → 更新」中下载`);
+
+  if (update.state === 'downloaded' && update.latestVersion) {
+    const version = normalizeVersion(update.latestVersion);
+    if (!version || readyPromptedVersion === version) return;
+    if (!shouldPromptUpdate(version)) return;
+    readyPromptedVersion = version;
+    showUpdateNotes({
+      kind: 'downloaded',
+      version,
+      releaseName: update.releaseName,
+      notes: update.notes ?? '',
+      allowSnooze: true,
+      onDismiss: (choice) => {
+        if (choice.ignore) ignoreUpdateVersion(version);
+        else snoozeUpdateReminder(choice.days);
+      },
+      onInstall: installUpdate,
+      onOpenRelease: openReleasePage,
+    });
+    return;
   }
+
+  if (update.state !== 'up-to-date' || !update.currentVersion) return;
+  const version = normalizeVersion(update.currentVersion);
+  if (!version) return;
+  const seen = readSeenVersion();
+  if (seen === version || installedPromptedVersion === version) return;
+  installedPromptedVersion = version;
+  markSeenVersion(version);
+  const notes = (update.notes ?? '').trim();
+  if (!notes) return;
+  showUpdateNotes({
+    kind: 'installed',
+    version,
+    releaseName: update.releaseName,
+    notes,
+    onOpenRelease: openReleasePage,
+  });
 }
 
 
@@ -57,7 +124,7 @@ function createSplash(): HTMLDivElement {
       'div',
       { style: 'display:flex;flex-direction:column;align-items:center;gap:4px' },
       h('div', { class: 'splash-mark', text: 'ZILUX2' }),
-      h('div', { class: 'splash-sub', text: 'IMMERSIVE MUSIC SPACE' }),
+      h('div', { class: 'splash-sub', text: '新一代创意播放器' }),
     ),
   );
   return el;
@@ -105,6 +172,9 @@ async function main(): Promise<void> {
   initUpdates();
   const settings = await loadSettings();
   initTheme();
+  // 音频输出：本软件通道（setSinkId）与系统默认设备（宿主 WASAPI）各一条，互不影响。
+  initAppAudioOutput();
+  initSystemAudioOutput();
   setVolume(settings.playback.volume);
   setStreamQuality(settings.playback.quality);
 
@@ -270,3 +340,4 @@ main().catch((err: unknown) => {
     );
   }
 });
+

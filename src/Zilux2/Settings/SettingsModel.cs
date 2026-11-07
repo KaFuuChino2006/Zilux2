@@ -79,6 +79,10 @@ internal sealed class GeneralSettings
     public double? DesktopLyricsLeft { get; set; }
 
     public double? DesktopLyricsTop { get; set; }
+
+    // 「切换系统输出」快捷键参与轮换的设备（MMDevice 端点 ID，按用户勾选顺序；空数组 = 全部
+    // 活动播放设备）。只影响系统默认输出，不影响软件自己的音频通道。追加在最后，旧文件顺序不变。
+    public string[] SystemOutputRotation { get; set; } = Array.Empty<string>();
 }
 
 internal sealed class AppearanceSettings
@@ -106,7 +110,7 @@ internal sealed class AppearanceSettings
 
     public string LyricsSize { get; set; } = LyricsSizeMedium;
 
-    // 窗口过渡方式：custom=应用内自绘（快照缩放/淡出），native=交给 Windows 原生过渡。
+    // 常规状态变化交给 Windows；custom 为关闭到托盘补整窗淡出，native 直接隐藏。
     // 追加在最后，保证旧 settings.json 的字段顺序不变。
     public string WindowAnimation { get; set; } = WindowAnimationCustom;
 
@@ -220,6 +224,18 @@ internal sealed class PlaybackSettings
 
     /// <summary>睡眠定时到点后的动作：pause 暂停 / minimize 暂停并最小化 / exit 退出应用。</summary>
     public string SleepAction { get; set; } = SleepActionPause;
+
+    // 本软件音频输出：system = 跟随 Windows 默认设备；device = 固定到 AppOutputDeviceId。
+    // 设备 ID 是浏览器侧 enumerateDevices 的 deviceId，只有页面能用它做 setSinkId，宿主只负责
+    // 持久化与回传。追加在最后，保证旧 settings.json 字段顺序不变。
+    public const string AppOutputSystem = "system";
+    public const string AppOutputDevice = "device";
+
+    internal static readonly string[] AppOutputModes = { AppOutputSystem, AppOutputDevice };
+
+    public string AppOutputMode { get; set; } = AppOutputSystem;
+
+    public string AppOutputDeviceId { get; set; } = string.Empty;
 }
 
 internal sealed class DownloadSettings
@@ -334,6 +350,12 @@ internal sealed class ShortcutSettings
     /// <summary>开关无缝衔接。</summary>
     public string Crossfade { get; set; } = string.Empty;
 
+    /// <summary>在本软件「跟随系统 / 指定的播放设备」之间切换音频输出。</summary>
+    public string AppOutput { get; set; } = string.Empty;
+
+    /// <summary>切换 Windows 默认播放设备（系统级输出，不影响软件自己的通道）。</summary>
+    public string SystemOutput { get; set; } = string.Empty;
+
     /// <summary>复制一份，避免调用方在锁外直接读写正在被序列化的实例。</summary>
     public ShortcutSettings Clone() => new()
     {
@@ -351,6 +373,8 @@ internal sealed class ShortcutSettings
         Mini = Mini,
         DesktopLyrics = DesktopLyrics,
         Crossfade = Crossfade,
+        AppOutput = AppOutput,
+        SystemOutput = SystemOutput,
     };
 }
 

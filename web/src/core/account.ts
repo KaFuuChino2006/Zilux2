@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 账号登录客户端（Account v1，docs/zilux2-account-login.md）。
  *
  * 宿主在回环 HTTP 服务上提供 /api/account、/api/account/login/qr、/api/account/login/status、
@@ -54,6 +54,8 @@ export type LoginState = 'waiting' | 'scanned' | 'authorized' | 'expired' | 'ref
 
 export interface LoginSession {
   source: AccountSource;
+  /** ptlogin = 手机 QQ 扫（网易云也支持）；qqmusic / wechat 用于 QQ 音乐。 */
+  channel?: 'ptlogin' | 'qqmusic' | 'wechat';
   mode: 'code' | 'image';
   key: string;
   /** mode === 'code'：二维码内容（网易云由前端用 qrcode 渲染） */
@@ -300,12 +302,41 @@ function applyPush(payload: unknown): void {
 /* 扫码登录 API                                                        */
 /* ------------------------------------------------------------------ */
 
-export async function requestQr(source: AccountSource): Promise<LoginSession> {
+export interface QuickAccount {
+  id: string;
+  nickname: string;
+  avatarUrl: string;
+}
+export interface QuickAccountInfo {
+  available: boolean;
+  accounts: QuickAccount[];
+}
+
+/** 宿主用隐藏 WebView2 探测出的本机 QQ 账号（登录面板里显示头像用）。 */
+export async function quickAccount(source: AccountSource): Promise<QuickAccountInfo> {
+  if (isMockOnline()) return { available: false, accounts: [] };
+  try {
+    return await request<QuickAccountInfo>('/api/account/quick-account', { source }, 'GET', 20_000);
+  } catch {
+    return { available: false, accounts: [] };
+  }
+}
+export async function quickWebLogin(source: AccountSource, accountId: string): Promise<void> {
+  if (isMockOnline()) return;
+  await request<{ sources?: AccountInfo[] }>('/api/account/login/quick', { source, accountId }, 'POST', 2 * 60_000);
+}
+
+export async function webLogin(source: AccountSource): Promise<void> {
+  if (isMockOnline()) return;
+  await request<{ sources?: AccountInfo[] }>('/api/account/login/web', { source }, 'POST', 10 * 60_000);
+}
+export async function requestQr(source: AccountSource, channel?: 'ptlogin' | 'qqmusic' | 'wechat'): Promise<LoginSession> {
   if (isMockOnline()) return mockRequestQr(source);
   const resp = await request<Partial<LoginSession>>(
     '/api/account/login/qr',
-    { source },
+    channel ? { source, channel } : { source },
     'POST',
+    source === 'netease' && channel === 'ptlogin' ? 35_000 : 25_000,
   );
   const mode = resp.mode === 'image' ? 'image' : 'code';
   const expiresIn =
@@ -322,6 +353,7 @@ export async function requestQr(source: AccountSource): Promise<LoginSession> {
   };
   if (typeof resp.content === 'string') session.content = resp.content;
   if (typeof resp.imageDataUrl === 'string') session.imageDataUrl = resp.imageDataUrl;
+  if (resp.channel === 'ptlogin' || resp.channel === 'qqmusic' || resp.channel === 'wechat') session.channel = resp.channel;
   if (!session.key) throw new OnlineError('bad-response', '登录会话创建失败（缺少 key）');
   if (mode === 'code' && !session.content) {
     throw new OnlineError('bad-response', '登录会话创建失败（缺少二维码内容）');
@@ -645,3 +677,9 @@ function mockAvatar(source: AccountSource): string {
   ctx.fillText(source === 'netease' ? '云' : 'Q', size / 2, size / 2 + 2);
   return canvas.toDataURL('image/png');
 }
+
+
+
+
+
+

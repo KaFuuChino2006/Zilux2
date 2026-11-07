@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
 
@@ -187,6 +187,71 @@ internal sealed class NeteaseLoginProvider : IDisposable
         RemoveSession(key);
         OnlineHttp.Info("[account] login source=netease ok");
         return new LoginStatusResponse { State = "authorized", Message = "登录成功", Account = account };
+    }
+
+    /// <summary>
+    /// WebView2 快捷登录回来的一组 cookie（MUSIC_U 等）：直接拉资料并落库。
+    /// 与扫码登录共用同一个 ProfileEndpoint 与 AccountStore。
+    /// </summary>
+    internal async Task<AccountInfo> SaveCookiesAsync(
+        IReadOnlyList<StoredCookie> cookies,
+        CancellationToken cancellationToken)
+    {
+        using var session = new LoginHttpSession(DesktopUserAgent);
+        foreach (var cookie in cookies)
+        {
+            if (cookie.Value.Length > 0)
+            {
+                session.SetCookie(cookie.Domain, cookie.Name, cookie.Value);
+            }
+        }
+
+        var response = await session.GetAsync(ProfileEndpoint, RefererUrl, cancellationToken).ConfigureAwait(false);
+        if (response.Status != 200)
+        {
+            throw new AccountException("invalid-cookie", "网易云登录校验失败，请重试");
+        }
+
+        string nickname = string.Empty;
+        string userId = string.Empty;
+        bool? vip = null;
+        try
+        {
+            using var document = JsonDocument.Parse(response.Body);
+            var root = document.RootElement;
+            if (root.TryGetProperty("profile", out var profile) && profile.ValueKind == JsonValueKind.Object)
+            {
+                if (profile.TryGetProperty("nickname", out var nick)) nickname = nick.GetString() ?? string.Empty;
+                if (profile.TryGetProperty("userId", out var uid)) userId = uid.ToString();
+                if (profile.TryGetProperty("vipType", out var vipType) && vipType.TryGetInt32(out var type)) vip = type > 0;
+            }
+
+            if (userId.Length == 0 && root.TryGetProperty("account", out var accountElement) && accountElement.ValueKind == JsonValueKind.Object)
+            {
+                if (accountElement.TryGetProperty("id", out var id)) userId = id.ToString();
+            }
+        }
+        catch (JsonException)
+        {
+            throw new AccountException("invalid-cookie", "网易云返回了无法解析的账号信息");
+        }
+
+        if (userId.Length == 0)
+        {
+            throw new AccountException("invalid-cookie", "网易云登录没有返回账号信息");
+        }
+
+        var account = new AccountInfo
+        {
+            Source = AccountSources.Netease,
+            LoggedIn = true,
+            Nickname = string.IsNullOrWhiteSpace(nickname) ? null : nickname,
+            UserId = userId,
+            Vip = vip,
+        };
+        _store.SaveLogin(AccountSources.Netease, account, cookies);
+        OnlineHttp.Info($"[account] login source=netease channel=qq-web userId={userId} vip={vip?.ToString() ?? "unknown"}");
+        return account;
     }
 
     private async Task<AccountInfo> FetchAccountAsync(Session session, CancellationToken cancellationToken)
@@ -729,3 +794,4 @@ internal sealed class NeteaseLoginProvider : IDisposable
 
     private sealed record Session(string Key, DateTimeOffset CreatedAt, LoginHttpSession Http);
 }
+

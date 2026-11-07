@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -293,6 +293,52 @@ internal sealed class QqLoginProvider : IDisposable
         }
     }
 
+    // QQ 音乐 App 扫码通道复用：拿到 musickey 后拉资料、落库，和手机 QQ 扫码的后半段保持一致。
+    internal async Task<AccountInfo> SaveCredentialAsync(string musicId, string musicKey, CancellationToken cancellationToken)
+    {
+        var credentialCookies = BuildCredentialCookies(musicId, musicKey);
+        using var session = new LoginHttpSession();
+        foreach (var cookie in credentialCookies)
+        {
+            session.SetCookie(cookie.Domain, cookie.Name, cookie.Value);
+        }
+
+        var account = await FetchAccountAsync(session, musicId, cancellationToken).ConfigureAwait(false);
+        _store.SaveLogin(AccountSources.Qq, account, credentialCookies);
+        return account;
+    }
+
+    // WebView2 快捷登录：窗口走完 OAuth 拿到 code 后，用它换 musickey 并落库，逻辑与扫码一致。
+    internal async Task<AccountInfo> SaveOAuthCodeAsync(string oauthCode, CancellationToken cancellationToken)
+    {
+        using var session = new LoginHttpSession();
+        var musicu = await session
+            .PostJsonAsync(MusicuEndpoint, BuildMusicuLoginBody(oauthCode), MusicuReferer, cancellationToken)
+            .ConfigureAwait(false);
+        string musicId = string.Empty;
+        string musicKey = string.Empty;
+        var credentialOk = false;
+        var credentialError = $"HTTP {musicu.Status}";
+        if (musicu.Status == 200)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(musicu.Body);
+                credentialOk = TryReadCredential(document.RootElement, out musicId, out musicKey, out credentialError);
+            }
+            catch (JsonException)
+            {
+                credentialError = "响应不是 JSON";
+            }
+        }
+
+        if (!credentialOk)
+        {
+            throw new AccountException("upstream-failed", $"QQ 音乐登录失败（{credentialError}），请重试");
+        }
+
+        return await SaveCredentialAsync(musicId, musicKey, cancellationToken).ConfigureAwait(false);
+    }
     private async Task<AccountInfo> FetchAccountAsync(
         LoginHttpSession session,
         string musicId,
@@ -1199,3 +1245,5 @@ internal sealed class QqLoginProvider : IDisposable
 
     private sealed record Session(string Key, DateTimeOffset CreatedAt, LoginHttpSession Http, string QrSig);
 }
+
+
