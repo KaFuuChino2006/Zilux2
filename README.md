@@ -1,7 +1,6 @@
-# Zilux2
+﻿# Zilux2
 
 <p>
-  <img alt="version" src="https://img.shields.io/badge/version-1.1.93-2f6f4f?style=flat-square">
   <img alt="platform" src="https://img.shields.io/badge/platform-Windows%2010%20%2F%2011%20x64-0067c0?style=flat-square">
   <img alt=".NET" src="https://img.shields.io/badge/.NET-10-512bd4?style=flat-square">
   <img alt="Vite" src="https://img.shields.io/badge/Vite-7-646cff?style=flat-square">
@@ -15,8 +14,6 @@
 Zilux2 使用 **.NET 10 / WPF** 承载 **WebView2**，界面、动画与音频处理由 **TypeScript + Vite** 前端实现；在保留桌面应用系统集成能力的同时，获得现代 Web 的渲染表现与迭代效率。
 
 - 下载与更新日志：[Releases](https://github.com/KaFuuChino2006/Zilux2/releases)
-- 当前版本：**1.1.93**
-- 问题反馈：[Issues](https://github.com/KaFuuChino2006/Zilux2/issues)
 
 ---
 
@@ -27,7 +24,7 @@ Zilux2 使用 **.NET 10 / WPF** 承载 **WebView2**，界面、动画与音频�
 
 这意味着：
 
-- 项目迭代速度快，但**难免存在动效异常、偶发 bug 或细节不完善之处，敬请谅解**；欢迎通过 [Issues](https://github.com/KaFuuChino2006/Zilux2/issues) 反馈，我们会持续修复。
+- 项目迭代速度快，但**难免存在动效异常、偶发 bug 或细节不完善之处，敬请谅解**。
 - 请勿将其视为商业级软件；在重要场景使用前请自行做好数据与系统备份。
 
 ## 功能特性
@@ -166,8 +163,8 @@ Start-Process "$env:LOCALAPPDATA\Programs\Zilux2\Zilux2.exe"
 ```powershell
 # 1) 修改 Directory.Build.props 中的 <Version>
 # 2) 提交后执行发版脚本（本地构建 + 可选打 tag + 推送）
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\release.ps1 -Version 1.1.93 -Tag -Push
-# 或手动：git tag v1.1.93 && git push origin v1.1.93
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\release.ps1 -Version <version> -Tag -Push
+# 或手动：git tag v<version> && git push origin v<version>
 ```
 
 推送 `v*` tag 后，`.github/workflows/release.yml` 会在 `windows-latest` 上构建并发布 Release，产物包括：
@@ -209,7 +206,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\release.ps1 -Version 1
 
 - 仅支持 Windows x64，依赖 WebView2 Runtime；暂无移动端与跨平台计划。
 - 安装包未做代码签名，首次运行可能出现 SmartScreen 提示。
-- **项目由 AI 全程开发，难免存在动效异常或偶发 bug，敬请谅解；问题欢迎提交 Issues。**
+- **项目由 AI 全程开发，难免存在动效异常或偶发 bug，敬请谅解。**
 - 在线曲目受平台版权与账号权益限制，无权限时返回 403 并在界面明确提示；QQ 音乐搜索主接口偶发 500，会自动回退备用接口。
 - 无缝衔接为 B 版 Phase 1：仅在「列表循环」模式生效；WSOLA 变速范围 ±12%，超出范围不做变速对齐；开启均衡器 / 人声保留淡出 / 歌词页频谱等 Web Audio 音效时使用图内混音路径，否则回退元素音量；自动过渡依赖宿主节拍分析，首次分析约需 1–5 秒。
 - 节拍分析为实验特性，BPM / 拍号置信度对稀疏素材可能偏低；节拍器为辅助核对工具，不作专业节拍器使用。
@@ -230,3 +227,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\release.ps1 -Version 1
 开发工具：
 
 - **DeepSeek Harness** —— 本项目全程使用的 AI Agent 编程环境。
+
