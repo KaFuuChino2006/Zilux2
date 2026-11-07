@@ -15,7 +15,7 @@
 - Rhine Music Windows（MIT）—— 架构与工程方法参考
 - Mineradio（GPL-3.0）—— 设计思路参考
 
-### 凝彩 / Tempera（2026-11-06 移植）
+### 拼合 / Tempera（2026-11-06 移植）
 
 `web/src/ui/lumiere-folia/components/visualizer/tempera/` 及所需的 `sonnet/`、Pixi 公共辅助模块来自本地 Folia v0.7.21 源码快照（上游：https://github.com/chthollyphile/folia-major）。原作者保留版权，许可全文保存在 `web/src/ui/lumiere-folia/LICENSE`。本地快照没有可验证的 commit 元数据。
 

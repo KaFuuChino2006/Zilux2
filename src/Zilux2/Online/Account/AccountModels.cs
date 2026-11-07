@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
@@ -103,6 +103,11 @@ internal sealed class LoginQrResponse
     [JsonPropertyName("source")] public string Source { get; init; } = AccountSources.Netease;
 
     // netease renders "content" with a QR library; qq ships a ready-made PNG.
+    // ptlogin 为手机 QQ 扫码（QQ 音乐、网易云均支持）；qqmusic/wechat 仅用于 QQ 音乐。
+    [JsonPropertyName("channel")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Channel { get; init; }
+
     [JsonPropertyName("mode")] public string Mode { get; init; } = "code";
 
     [JsonPropertyName("key")] public string Key { get; init; } = string.Empty;
@@ -598,3 +603,4 @@ internal static class AvatarEncoding
 internal sealed partial class AccountJsonContext : JsonSerializerContext
 {
 }
+

@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Creates convenient launch shortcuts for the published Zilux2 build.
@@ -42,7 +42,7 @@ function New-ZiluxShortcut([string]$Path) {
     $lnk.TargetPath = $Exe
     $lnk.WorkingDirectory = Split-Path $Exe -Parent
     $lnk.IconLocation = "$Exe,0"
-    $lnk.Description = 'Zilux2 沉浸式音乐播放器'
+    $lnk.Description = 'Zilux2 新一代创意播放器'
     $lnk.WindowStyle = 1
     $lnk.Save()
     Write-Host "shortcut: $Path"
@@ -51,3 +51,4 @@ function New-ZiluxShortcut([string]$Path) {
 New-ZiluxShortcut $desktopLnk
 if ($StartMenu) { New-ZiluxShortcut $startLnk }
 Write-Host "target: $Exe"
+

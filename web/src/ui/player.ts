@@ -9,6 +9,7 @@
  */
 
 import { onMediaControl, reportMedia, type MediaControl } from '../core/bridge';
+import { registerAppAudioElement } from '../core/audioOutput';
 import { fetchStreamInfo, onlineInfo, qualityForSource, streamUrl, checkLiked, addLikedTrack, removeLikedTrack, recordRecent } from '../online/client';
 import { analyzeTrack, cachedAnalysis, type AnalysisResult } from '../online/analysis';
 import type { OnlineTrack } from '../online/types';
@@ -150,6 +151,8 @@ function createDeck(): HTMLAudioElement {
   // 页面侧取流（AirPlay 只投送本软件声音）需要拿到 <audio> 的 PCM：媒体走 CORS 请求，
   // 否则跨域资源接进 Web Audio 后只会输出静音。宿主 /api/stream 已带 Access-Control-Allow-Origin。
   element.crossOrigin = 'anonymous';
+  // 本软件输出通道：设备切换时统一改这个元素的 sinkId（没接 Web Audio 图时也生效）。
+  registerAppAudioElement(element);
   return element;
 }
 
@@ -316,7 +319,7 @@ async function applyLoudnessFor(track: OnlineTrack): Promise<void> {
   if (!ensureEqualizerGraph()) return;
   setNightCompressor(nightModeEnabled());
   const result = await analysisFor(track).catch(() => null);
-  const db = compensationDbFor(result?.analysis?.loudnessLufs) ?? 0;
+  const db = compensationDbFor(result?.analysis?.loudnessLufs, result?.analysis?.peakDb) ?? 0;
   // 响度补偿写在当前 deck 自己的 trim 节点上，全局增益保持 0 dB：
   // 过渡期间两首歌各带各的补偿，切换曲目时不会因为「全局增益换值 + 过渡 trim 消失」出现音量台阶。
   setLoudnessGainDb(0);
@@ -1375,7 +1378,7 @@ let manualGuard = { key: '', at: 0 };
 const MANUAL_SWITCH_DEBOUNCE_MS = 450;
 
 /**
- * 手动切歌：播放中且无缝衔接开启时，用双 deck 做 1.2–2.0 秒等功率短过渡
+ * 手动切歌：播放中且无缝衔接开启时，用双 deck 做按已缓存 BPM 调整的短过渡
  * （B 从这首开头起播，不等节拍分析、不做 BPM 对齐）；否则回退原来的硬切 load。
  * 连续快速点击时：旧计划的 token 立即失效，只保留最后一次切换。
  */
@@ -1405,6 +1408,15 @@ function manualSwitch(index: number): void {
     return;
   }
   const fromTrack = state.track;
+  const measuredBpms = [fromTrack, target]
+    .map((track) => cachedAnalysis(track)?.analysis)
+    .filter((analysis) => analysis && analysis.bpmConfidence >= 0.5 && analysis.bpm >= 40)
+    .map((analysis) => analysis!.bpm);
+  const averageBpm = measuredBpms.length > 0
+    ? measuredBpms.reduce((sum, bpm) => sum + bpm, 0) / measuredBpms.length : 0;
+  const manualFadeMs = averageBpm > 0
+    ? Math.round(Math.max(2_200, Math.min(7_000, 8 * 60_000 / averageBpm)))
+    : MANUAL_FADE_DEFAULT_MS;
   const fromDeck = audio;
   const nextDeck = standby;
   // 旧计划/预取先作废（之后所有异步回调看到 token 变化就放弃）。
@@ -1418,7 +1430,7 @@ function manualSwitch(index: number): void {
     nextTitle: target.title,
     nextStartFileMs: Math.max(0, Number(target.startAt ?? 0)) * 1000,
     currentPositionMs: positionMs(),
-    fadeMs: MANUAL_FADE_DEFAULT_MS,
+    fadeMs: manualFadeMs,
     nextUrl,
     baseVolume: () => state.volume,
     baseRate: () => userRate,
@@ -1442,7 +1454,7 @@ function manualSwitch(index: number): void {
     return;
   }
   transitionTarget = target;
-  console.debug(`[player] manual crossfade → ${target.title}（${MANUAL_FADE_DEFAULT_MS} ms）`);
+  console.debug(`[player] manual crossfade → ${target.title}（${manualFadeMs} ms）`);
 }
 
 function advance(plannedIndex: number | null = null): void {

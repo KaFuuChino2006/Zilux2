@@ -135,8 +135,14 @@
 ## 6. 前端行为
 
 - 设置页新增「更新」分区：当前版本、检查按钮、状态文案、下载进度条、更新日志、安装按钮、自动检查开关、更新方式、更新源输入框、打开 Release 页。
-- `auto` 模式：宿主检查到新版本会自动下载；下载完成（`downloaded`）时前端弹一次确认框「新版本 vX 已就绪，立即安装并重启？」，确认后发 `install`。
-- `notify` 模式：`available` 时 toast 提示「发现新版本 vX」，并引导到设置页查看/打开 Release 页。
+- **版本更新面板**（`ui/updateNotes.ts`，三个时机共用）：
+  - `available`：弹出「发现新版本 vX」，正文是该 Release 的更新内容（宿主快照里的 `notes`）；`auto` 模式显示「正在后台下载…」，`notify` 模式给「下载更新 / 稍后」。
+  - `downloaded`：弹出「新版本已就绪 vX」+ 同一份更新内容，给「立即安装并重启 / 稍后」。
+  - `up-to-date` 且 `currentVersion` 与上次记录不同（`localStorage['zilux2.whatsNewSeen']`）：弹出「已更新到 vX」+ 当前版本更新内容，并把版本记为已读，之后不再重复弹。
+  - 关闭方式：点空白处、Esc、右上角 × 都行；面板底部按钮是可选项，不点即等于「稍后」。
+  - 提醒选项（`available` / `downloaded`）：面板底部可勾「不再提示这个版本」（只跳过当前版本，出现更新的版本仍提示），或选择「关闭后 1 / 3 / 7 / 30 天内不再提示」（到点恢复）。状态存在 `localStorage['zilux2.updateIgnoredVersion']` 与 `['zilux2.updateSnoozeUntil']`，可在「设置 → 更新 → 更新提示」一键恢复。点「下载更新 / 立即安装 / 知道了」等主动操作不会触发稍后提醒。
+- `auto` 模式：宿主检查到新版本会自动下载；下载完成后用上面的面板提示安装，确认后发 `install`。
+- `notify` 模式：`available` 时用同一块面板提示新版本与更新内容。
 - 无宿主（浏览器预览）时更新模块静默降级，不报错。
 
 ## 7. 发布流程（GitHub Actions）

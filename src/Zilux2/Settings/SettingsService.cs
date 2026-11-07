@@ -22,6 +22,9 @@ internal sealed class SettingsService : IDisposable
     /// <summary>快捷键字符串的最大长度；超长按非法值回落，避免把垃圾写进 settings.json。</summary>
     private const int MaxShortcutChars = 64;
 
+    /// <summary>音频设备 ID 的最大长度（WASAPI 端点 ID 约 100 字符，浏览器 deviceId 更长）。</summary>
+    private const int MaxDeviceIdChars = 512;
+
     private readonly object _gate = new();
     private readonly string _path;
     private readonly System.Threading.Timer _saveTimer;
@@ -140,6 +143,18 @@ internal sealed class SettingsService : IDisposable
             lock (_gate)
             {
                 return _state.General.BackgroundLyrics;
+            }
+        }
+    }
+
+    /// <summary>「切换系统输出」快捷键参与轮换的设备 ID（空数组 = 全部活动播放设备）。</summary>
+    internal string[] SystemOutputRotation
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return (string[])_state.General.SystemOutputRotation.Clone();
             }
         }
     }
@@ -612,17 +627,18 @@ internal sealed class SettingsService : IDisposable
         "general" => name is "splash" or "startMaximized" or "autoLaunch" or "autoStartHidden" or "watchLocalFolder"
             or "mediaSession" or "desktopLyrics" or "desktopLyricsLocked" or "desktopLyricsFontSize" or "desktopLyricsTopmost"
             or "desktopLyricsWeight" or "desktopLyricsBackdropOpacity" or "backgroundLyrics"
-            or "desktopLyricsLeft" or "desktopLyricsTop",
+            or "desktopLyricsLeft" or "desktopLyricsTop" or "systemOutputRotation",
         "appearance" => name is "theme" or "reduceMotion" or "glow" or "lyricsSize"
             or "windowAnimation" or "playerBarExpanded" or "miniSize" or "miniAlwaysOnTop",
         "playback" => name is "defaultSource" or "searchLimit" or "volume" or "audioReactive" or "quality"
             or "eqEnabled" or "eqPreset" or "eqGains" or "fadeEnabled" or "fadeMs"
             or "fadeOutMs" or "fadeInMs" or "fadeCurve" or "fadeVocal" or "fadeVocalTailMs"
-            or "sleepFadeSeconds" or "sleepAction",
+            or "sleepFadeSeconds" or "sleepAction" or "appOutputMode" or "appOutputDeviceId",
         "downloads" => name is "directory" or "quality" or "maxConcurrent" or "fileNameTemplate" or "openFolderWhenDone",
         "updates" => name is "autoCheck" or "mode" or "repo" or "directConnection",
         "shortcuts" => name is "enabled" or "alwaysHandleMediaKeys" or "playPause" or "prev" or "next" or "toggleWindow"
-            or "volumeUp" or "volumeDown" or "mute" or "like" or "mode" or "mini" or "desktopLyrics" or "crossfade",
+            or "volumeUp" or "volumeDown" or "mute" or "like" or "mode" or "mini" or "desktopLyrics" or "crossfade"
+            or "appOutput" or "systemOutput",
         _ => false,
     };
 
@@ -730,6 +746,9 @@ internal sealed class SettingsService : IDisposable
                 general, "desktopLyricsLeft", state.General.DesktopLyricsLeft, "general.desktopLyricsLeft", keys);
             state.General.DesktopLyricsTop = ReadCoordinate(
                 general, "desktopLyricsTop", state.General.DesktopLyricsTop, "general.desktopLyricsTop", keys);
+            state.General.SystemOutputRotation = ReadStringArray(
+                general, "systemOutputRotation", 32, 256,
+                state.General.SystemOutputRotation, "general.systemOutputRotation", keys);
         }
 
         if (TryGetObject(document, "appearance", out var appearance))
@@ -808,6 +827,11 @@ internal sealed class SettingsService : IDisposable
                 playback, "sleepFadeSeconds", 0, 60, state.Playback.SleepFadeSeconds, "playback.sleepFadeSeconds", keys);
             state.Playback.SleepAction = ReadEnum(
                 playback, "sleepAction", PlaybackSettings.SleepActions, state.Playback.SleepAction, "playback.sleepAction", keys);
+            state.Playback.AppOutputMode = ReadEnum(
+                playback, "appOutputMode", PlaybackSettings.AppOutputModes,
+                state.Playback.AppOutputMode, "playback.appOutputMode", keys);
+            state.Playback.AppOutputDeviceId = ReadDeviceId(
+                playback, "appOutputDeviceId", state.Playback.AppOutputDeviceId, "playback.appOutputDeviceId", keys);
         }
 
         if (TryGetObject(document, "downloads", out var downloads))
@@ -866,6 +890,10 @@ internal sealed class SettingsService : IDisposable
             state.Shortcuts.DesktopLyrics = ReadShortcut(
                 shortcuts, "desktopLyrics", state.Shortcuts.DesktopLyrics, "shortcuts.desktopLyrics", keys);
             state.Shortcuts.Crossfade = ReadShortcut(shortcuts, "crossfade", state.Shortcuts.Crossfade, "shortcuts.crossfade", keys);
+            state.Shortcuts.AppOutput = ReadShortcut(
+                shortcuts, "appOutput", state.Shortcuts.AppOutput, "shortcuts.appOutput", keys);
+            state.Shortcuts.SystemOutput = ReadShortcut(
+                shortcuts, "systemOutput", state.Shortcuts.SystemOutput, "shortcuts.systemOutput", keys);
         }
 
         return keys;
@@ -927,6 +955,74 @@ internal sealed class SettingsService : IDisposable
 
         HostLog.Warn($"[settings] invalid key={key} expected=shortcut fallback={fallback}");
         return fallback;
+    }
+
+    /// <summary>音频设备 ID（浏览器 deviceId / WASAPI 端点 ID）：允许空串，只做长度校验。</summary>
+    private static string ReadDeviceId(JsonElement parent, string name, string fallback, string key, List<string> keys)
+    {
+        if (!parent.TryGetProperty(name, out var value))
+        {
+            return fallback;
+        }
+
+        keys.Add(key);
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            var text = (value.GetString() ?? string.Empty).Trim();
+            if (text.Length <= MaxDeviceIdChars)
+            {
+                return text;
+            }
+        }
+
+        HostLog.Warn($"[settings] invalid key={key} expected=deviceId fallback=<current>");
+        return fallback;
+    }
+
+    /// <summary>字符串数组（最多 32 项、单项 256 字符，去重）；结构不合法时保留当前值。</summary>
+    private static string[] ReadStringArray(
+        JsonElement parent,
+        string name,
+        int maxItems,
+        int maxChars,
+        string[] current,
+        string key,
+        List<string> keys)
+    {
+        var result = (string[])current.Clone();
+        if (!parent.TryGetProperty(name, out var value))
+        {
+            return result;
+        }
+
+        keys.Add(key);
+        if (value.ValueKind != JsonValueKind.Array)
+        {
+            HostLog.Warn($"[settings] invalid key={key} expected=string[] fallback=<current>");
+            return result;
+        }
+
+        var list = new List<string>();
+        foreach (var item in value.EnumerateArray())
+        {
+            if (list.Count >= maxItems)
+            {
+                break;
+            }
+
+            if (item.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+
+            var text = (item.GetString() ?? string.Empty).Trim();
+            if (text.Length is > 0 && text.Length <= maxChars && !list.Contains(text, StringComparer.Ordinal))
+            {
+                list.Add(text);
+            }
+        }
+
+        return list.ToArray();
     }
 
     private static string ReadEnum(

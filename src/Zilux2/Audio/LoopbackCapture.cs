@@ -551,7 +551,7 @@ internal sealed class LoopbackCapture : IDisposable, IAirPlayAudioSource
     internal interface IMMDeviceEnumerator
     {
         [PreserveSig]
-        int EnumAudioEndpoints(int dataFlow, int stateMask, out IntPtr devices);
+        int EnumAudioEndpoints(int dataFlow, int stateMask, out IMMDeviceCollection? devices);
 
         [PreserveSig]
         int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice? device);

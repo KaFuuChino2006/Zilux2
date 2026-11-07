@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IO.Compression;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -9,7 +9,7 @@ namespace Zilux2.Installer;
 internal static class InstallerCore
 {
     public const string AppName = "Zilux2";
-    public const string DisplayName = "Zilux2 沉浸式音乐空间";
+    public const string DisplayName = "Zilux2 新一代创意播放器";
     public static string Version =>
         typeof(InstallerCore).Assembly.GetName().Version?.ToString(3) ?? "2.0.0";
     public const string ExeName = "Zilux2.exe";
@@ -177,15 +177,18 @@ internal static class InstallerCore
         key.SetValue("EstimatedSize", (int)(new DirectoryInfo(targetDir).EnumerateFiles("*", SearchOption.AllDirectories).Sum(f => f.Length) / 1024), RegistryValueKind.DWord);
     }
 
-    public static void Launch(string targetDir)
+    public static bool Launch(string targetDir)
     {
         try
         {
-            Process.Start(new ProcessStartInfo(Path.Combine(targetDir, ExeName)) { WorkingDirectory = targetDir, UseShellExecute = true });
+            var process = Process.Start(new ProcessStartInfo(Path.Combine(targetDir, ExeName)) { WorkingDirectory = targetDir, UseShellExecute = true });
+            return process is not null;
         }
         catch
         {
-            // ignore
+            return false;
         }
     }
 }
+
+

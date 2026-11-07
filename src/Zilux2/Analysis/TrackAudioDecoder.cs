@@ -15,6 +15,7 @@ internal sealed class DecodedTrack
     public long DurationMs { get; init; }
 
     public bool Truncated { get; init; }
+    public LoudnessMeasurement? Loudness { get; init; }
 }
 
 /// <summary>
@@ -55,6 +56,9 @@ internal static class TrackAudioDecoder
             }
 
             var sourceRate = provider.WaveFormat.SampleRate;
+            // Measure before downmixing, resampling or peak normalization. Unknown surround
+            // layouts intentionally retain the labelled approximate fallback.
+            var loudness = sourceChannels <= 2 && sourceRate >= 8000 ? new LoudnessMeter(sourceRate, sourceChannels) : null;
             var step = sourceRate / (double)TargetSampleRate;
             var maxSamples = (int)Math.Ceiling(MaxDurationMs / 1000.0 * TargetSampleRate);
             var samples = new List<float>(EstimateSampleCount(reader, maxSamples));
@@ -76,6 +80,7 @@ internal static class TrackAudioDecoder
                 for (var frame = 0; frame < frames; frame++)
                 {
                     var offset = frame * sourceChannels;
+                    loudness?.PushFrame(interleaved.AsSpan(offset, sourceChannels));
                     var sum = 0f;
                     for (var channel = 0; channel < sourceChannels; channel++)
                     {
@@ -140,6 +145,7 @@ internal static class TrackAudioDecoder
                 SourceChannels = sourceChannels,
                 DurationMs = durationMs,
                 Truncated = truncated,
+                Loudness = loudness?.Finish(),
             };
         }
         catch (Exception exception)

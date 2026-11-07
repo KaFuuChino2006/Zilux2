@@ -20,7 +20,8 @@ import {
   lumiereEffectOn,
 } from './bgLyricsCover';
 import { currentLyricDoc, LyricsView, loadLyricDoc, reloadSharedLyricSettings, setExternalLyricMode, type LyricDoc } from './lyrics';
-import { applyExternalPlayback, onPlayer, playerState } from './player';
+import { applyExternalPlayback, getTransitionTarget, onPlayer, peekUpcoming, playerState } from './player';
+import { readCrossfadeDebug } from './crossfadeDeck';
 
 /** 主窗口解析好的歌词文档快照键（含曲目与逐字时间轴）。 */
 const DOC_KEY = 'zilux2.bgLyricsDoc';
@@ -116,8 +117,20 @@ let publishedSignature = '';
  * 关掉开关时不必清理快照，下次打开会按当前曲目重写。
  */
 export function installBackgroundLyricsPublisher(): void {
-  onPlayer(() => publishCurrent());
-  onSettingsChange(() => publishCurrent(true));
+  let upcomingSignature='';
+  let cueCheckedAt=-Infinity,cue={phase:'idle',nextTitle:'',bStartFileMs:0};
+  const publishUpcoming=()=>{
+    if(!getSettings().general.backgroundLyrics)return;
+    const state=playerState();if(!state.track)return;
+    const target=getTransitionTarget()??peekUpcoming()?.track??null;
+    if(performance.now()-cueCheckedAt>=500){cue=readCrossfadeDebug();cueCheckedAt=performance.now();}
+    const positionMs=target&&(cue.phase==='prepared'||cue.phase==='fading')&&cue.nextTitle===target.title?Math.max(0,cue.bStartFileMs-(target.startAt??0)*1000):0;
+    const value=JSON.stringify({forTrack:trackKey(state.track),track:target,positionMs});
+    if(value===upcomingSignature)return;
+    upcomingSignature=value;try{localStorage.setItem('zilux2.flowUpcoming',value);}catch{/* Storage unavailable. */}
+  };
+  onPlayer(() => {publishUpcoming();publishCurrent();});
+  onSettingsChange(() => {publishUpcoming();publishCurrent(true);});
   // 宿主端口/token 比页面 ready 晚到；到了以后把当前曲目重发一次（封面地址也会换成新端口）。
   onOnlineChange(() => publishCurrent(true));
 }

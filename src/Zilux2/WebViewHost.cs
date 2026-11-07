@@ -427,6 +427,23 @@ internal sealed class WebViewHost : IDisposable
             }
 
             HostLog.Info("webview2 initialized");
+            // 音频输出选择依赖 Chromium 的 enumerateDevices 完整列表：只有拿到麦克风权限后，
+            // 页面才会列出全部播放设备与名称（否则只有一条「默认值」）。这里只授权、不开麦，
+            // 页面也不会去调 getUserMedia。
+            try
+            {
+                var origin = new Uri(_plan.NavigationUrl).GetLeftPart(UriPartial.Authority);
+                await core.Profile.SetPermissionStateAsync(
+                    CoreWebView2PermissionKind.Microphone,
+                    origin,
+                    CoreWebView2PermissionState.Allow);
+                HostLog.Info($"webview2.microphonePermission granted origin={origin}");
+            }
+            catch (Exception exception)
+            {
+                HostLog.Warn($"webview2.microphonePermission failed: {exception.Message}");
+            }
+
             core.Navigate(_plan.NavigationUrl);
         }
         catch (Exception exception)
@@ -525,7 +542,8 @@ internal sealed class WebViewHost : IDisposable
     public void PostCommand(string action)
     {
         if (action is not ("togglePlay" or "prev" or "next" or "volumeUp" or "volumeDown" or "mute" or "like"
-            or "mode" or "mini" or "desktopLyrics" or "crossfade" or "stop" or "openSettings"))
+            or "mode" or "mini" or "desktopLyrics" or "crossfade" or "stop" or "openSettings"
+            or "navBack" or "navForward" or "appOutput"))
         {
             HostLog.Warn($"command.post ignored action={action}");
             return;
@@ -781,6 +799,12 @@ internal sealed class WebViewHost : IDisposable
                     HandlePageLog(root);
                     break;
 
+                // 系统默认播放设备（设置页「系统音频输出」）。与 type:"audio"（AirPlay 采集）
+                // 分开，避免和投送那条通道抢消息。
+                case "audioOutput":
+                    HandleAudioOutputMessage(root);
+                    break;
+
                 case "media":
                     HandleMediaMessage(root);
                     // 桌面背景歌词窗口没有自己的播放引擎：把主页面这一份媒体快照原样转发过去。
@@ -803,10 +827,25 @@ internal sealed class WebViewHost : IDisposable
                     break;
 
                 case "lyrics":
-                    // 桌面歌词只推「当前句 + 翻译」，窗口的开关/字号/锁定/置顶由设置驱动。
+                    // 桌面歌词显示相邻句、当前句和译文；样式及窗口行为由设置驱动。
+                    var lyricWords = new List<DesktopLyricWord>();
+                    if (root.TryGetProperty("words", out var wordArray) && wordArray.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var word in wordArray.EnumerateArray())
+                        {
+                            if (word.ValueKind != JsonValueKind.Object || lyricWords.Count >= 512) break;
+                            var text = ReadString(word, "text") ?? string.Empty;
+                            var space = word.TryGetProperty("spaceBefore", out var spaceValue) && spaceValue.ValueKind == JsonValueKind.True;
+                            lyricWords.Add(new DesktopLyricWord(text, space));
+                        }
+                    }
                     _window.UpdateDesktopLyrics(
                         ReadString(root, "now") ?? string.Empty,
-                        ReadString(root, "translation") ?? string.Empty);
+                        ReadString(root, "translation") ?? string.Empty,
+                        ReadString(root, "previous") ?? string.Empty,
+                        ReadString(root, "next") ?? string.Empty,
+                        lyricWords,
+                        ReadInt(root, "activeWord", -1));
                     break;
 
                 case "update":
@@ -1146,11 +1185,12 @@ internal sealed class WebViewHost : IDisposable
 
     private static void OnPermissionRequested(object? sender, CoreWebView2PermissionRequestedEventArgs e)
     {
-        // 摄像头手势需要相机权限；其余权限保持默认（拒绝）
-        if (e.PermissionKind == CoreWebView2PermissionKind.Camera)
+        // 摄像头手势需要相机权限；麦克风只用于「列出全部播放设备」（不开麦），同样放行。
+        // 其余权限保持默认（拒绝）。
+        if (e.PermissionKind is CoreWebView2PermissionKind.Camera or CoreWebView2PermissionKind.Microphone)
         {
             e.State = CoreWebView2PermissionState.Allow;
-            HostLog.Info("[web] camera permission allowed");
+            HostLog.Info($"[web] {e.PermissionKind} permission allowed");
         }
     }
 
@@ -1427,6 +1467,75 @@ internal sealed class WebViewHost : IDisposable
                 // only ever get silence. End the session and surface the documented code.
                 airplay.ReportCaptureFailure(ReadString(root, "error"));
                 break;
+        }
+    }
+
+    /// <summary>
+    /// 系统默认播放设备：设置页「系统音频输出」需要设备列表与当前默认项。设备枚举/切换都在
+    /// 宿主侧（WASAPI + IPolicyConfig），页面只负责展示与勾选轮换集合。
+    /// </summary>
+    private void HandleAudioOutputMessage(JsonElement root)
+    {
+        switch (ReadString(root, "action"))
+        {
+            case "list":
+                PostAudioOutputState();
+                break;
+
+            case "setDefault":
+                var id = ReadString(root, "id") ?? string.Empty;
+                if (id.Length == 0 || !SystemAudioOutputService.SetDefault(id))
+                {
+                    HostLog.Warn($"[audioOutput] setDefault failed id={id}");
+                }
+
+                PostAudioOutputState();
+                break;
+
+            case "cycle":
+                // 快捷键与页面共用同一条轮换逻辑（含设置里的参与设备）。
+                _window.CycleSystemOutput();
+                break;
+
+            default:
+                HostLog.Info($"[audioOutput] ignored action={ReadString(root, "action")}");
+                break;
+        }
+    }
+
+    /// <summary>把当前系统默认设备与全部活动播放设备推给页面（设置页打开时刷新用）。</summary>
+    internal void PostAudioOutputState()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            var devices = SystemAudioOutputService.List();
+            var payload = new
+            {
+                defaultId = devices.FirstOrDefault(device => device.IsDefault)?.Id ?? string.Empty,
+                devices = devices.Select(device => new
+                {
+                    id = device.Id,
+                    name = device.Name,
+                    @default = device.IsDefault,
+                }).ToArray(),
+            };
+            var json = JsonSerializer.Serialize(new
+            {
+                v = 1,
+                type = "host",
+                @event = "audioOutput",
+                payload,
+            });
+            PostJson(json);
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[audioOutput] state push failed: {exception.Message}");
         }
     }
 

@@ -14,18 +14,20 @@ namespace Zilux2.Hotkeys;
 /// </summary>
 internal sealed class GlobalHotkeyHookService : IDisposable
 {
+    /// <summary>按住不放时，超过这个时长还没收到抬起就当作「抬起丢了」，允许下一次触发。</summary>
+    private const int HoldTimeoutMs = 1500;
+
     private readonly Action<string> _fire;
     private readonly NativeMethods.LowLevelKeyboardProc _callback;
     private readonly ManualResetEventSlim _ready = new(false);
     private readonly object _gate = new();
     private readonly HashSet<uint> _swallowedVks = new();
+    private readonly Dictionary<uint, int> _heldSince = new();
     private HotkeyHookBinding[] _bindings = Array.Empty<HotkeyHookBinding>();
     private Thread? _thread;
     private uint _threadId;
     private IntPtr _hook;
     private volatile bool _running;
-    private uint _lastVirtualKey;
-    private int _lastFireTick;
 
     public GlobalHotkeyHookService(Action<string> fire)
     {
@@ -140,6 +142,7 @@ internal sealed class GlobalHotkeyHookService : IDisposable
 
         if (message is NativeMethods.WmKeyUp or NativeMethods.WmSysKeyUp)
         {
+            _heldSince.Remove(data.VirtualKeyCode);
             // 命中时按下与抬起都吞掉，别让前台程序只收到半次按键。
             if (_swallowedVks.Remove(data.VirtualKeyCode))
             {
@@ -181,16 +184,23 @@ internal sealed class GlobalHotkeyHookService : IDisposable
             return NativeMethods.CallNextHookEx(_hook, nCode, wParam, lParam);
         }
 
-        // 按住不放的系统重复：只吞掉，不重复触发。
+        // 按住不放的自动重复：同一个键在收到抬起之前只吞不触发；但快速连按（按下-抬起-再按下）
+        // 必须立刻响应，所以这里不看时间窗口，只看「这次按下之前有没有抬起」。
         var now = Environment.TickCount;
-        if (_lastVirtualKey == data.VirtualKeyCode && now - _lastFireTick < 450)
+        if (_swallowedVks.Contains(data.VirtualKeyCode))
         {
-            return (IntPtr)1;
+            _heldSince.TryGetValue(data.VirtualKeyCode, out var heldSince);
+            if (now - heldSince < HoldTimeoutMs)
+            {
+                return (IntPtr)1;
+            }
+
+            // 抬起消息丢了（例如钩子刚装上/切了前台）：超过握持上限就当新的一次按下。
+            _swallowedVks.Remove(data.VirtualKeyCode);
         }
 
-        _lastVirtualKey = data.VirtualKeyCode;
-        _lastFireTick = now;
         _swallowedVks.Add(data.VirtualKeyCode);
+        _heldSince[data.VirtualKeyCode] = now;
 
         try
         {

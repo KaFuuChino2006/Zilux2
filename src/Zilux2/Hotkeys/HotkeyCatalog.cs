@@ -32,6 +32,9 @@ internal static class HotkeyCatalog
         new(10, "mini", "mini", string.Empty, Array.Empty<string>()),
         new(11, "desktopLyrics", "desktopLyrics", string.Empty, Array.Empty<string>()),
         new(12, "crossfade", "crossfade", string.Empty, Array.Empty<string>()),
+        // 音频通路：appOutput 切本软件输出（跟随系统 ↔ 指定设备），systemOutput 切 Windows 默认输出。
+        new(13, "appOutput", "appOutput", string.Empty, Array.Empty<string>()),
+        new(14, "systemOutput", "systemOutput", string.Empty, Array.Empty<string>()),
     };
 
     /// <summary>读取 settings.shortcuts 中对应字段（switch 而不是反射，热键应用只在 UI 线程跑）。</summary>
@@ -49,6 +52,8 @@ internal static class HotkeyCatalog
         "mini" => settings.Mini,
         "desktopLyrics" => settings.DesktopLyrics,
         "crossfade" => settings.Crossfade,
+        "appOutput" => settings.AppOutput,
+        "systemOutput" => settings.SystemOutput,
         _ => string.Empty,
     };
 }

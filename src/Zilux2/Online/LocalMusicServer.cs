@@ -1,4 +1,4 @@
-using System.Buffers;
+﻿using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
@@ -282,6 +282,9 @@ internal sealed class LocalMusicServer : IDisposable
                 "/api/local/tag" => isPost ? await HandleLocalTagAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/account" => isGet ? WriteAccount(context) : MethodNotAllowed(context),
                 "/api/account/login/qr" => isPost ? await HandleAccountLoginQrAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
+                "/api/account/login/web" => isPost ? await HandleAccountLoginWebAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
+                "/api/account/quick-account" => isGet ? await HandleAccountQuickAccountAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
+                "/api/account/login/quick" => isPost ? await HandleAccountQuickLoginAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/account/login/status" => isGet ? await HandleAccountLoginStatusAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/account/logout" => isPost ? HandleAccountLogout(context) : MethodNotAllowed(context),
                 "/api/account/import" => isPost ? await HandleAccountImportAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
@@ -408,8 +411,10 @@ internal sealed class LocalMusicServer : IDisposable
         try
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token);
-            timeout.CancelAfter(AccountQrTimeout);
-            var qr = await accounts.CreateLoginQrAsync(source, timeout.Token).ConfigureAwait(false);
+            var channel = (context.Request.QueryString["channel"] ?? string.Empty).Trim();
+            timeout.CancelAfter(source == AccountSources.Netease && channel == "ptlogin"
+                ? TimeSpan.FromSeconds(30) : AccountQrTimeout);
+            var qr = await accounts.CreateLoginQrAsync(source, channel, timeout.Token).ConfigureAwait(false);
             WriteJson(context, 200, JsonSerializer.Serialize(qr, AccountJsonContext.Default.LoginQrResponse));
             return 200;
         }
@@ -425,6 +430,110 @@ internal sealed class LocalMusicServer : IDisposable
         }
     }
 
+    private async Task<int> HandleAccountLoginWebAsync(HttpListenerContext context)
+    {
+        var accounts = _accounts;
+        if (accounts is null)
+        {
+            return WriteError(context, 503, "account-unavailable", "账号服务不可用");
+        }
+
+        var source = (context.Request.QueryString["source"] ?? string.Empty).Trim();
+        if (!AccountSources.IsKnown(source))
+        {
+            return WriteError(context, 400, "bad-request", "暂不支持该音乐平台");
+        }
+
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token);
+            timeout.CancelAfter(TimeSpan.FromMinutes(10));
+            var list = await accounts.WebLoginAsync(source, timeout.Token).ConfigureAwait(false);
+            WriteJson(context, 200, JsonSerializer.Serialize(list, AccountJsonContext.Default.AccountListResponse));
+            return 200;
+        }
+        catch (AccountException exception)
+        {
+            OnlineHttp.Error($"api account web login failed source={source} code={exception.Code}", exception);
+            return WriteError(context, exception.StatusCode, exception.Code, exception.Message);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException || !_shutdown.IsCancellationRequested)
+        {
+            OnlineHttp.Error($"api account web login failed source={source}", exception);
+            return WriteError(context, 502, "upstream-failed", "快捷登录失败，请重试");
+        }
+    }
+    private async Task<int> HandleAccountQuickLoginAsync(HttpListenerContext context)
+    {
+        var accounts = _accounts;
+        if (accounts is null)
+        {
+            return WriteError(context, 503, "account-unavailable", "账号服务不可用");
+        }
+
+        var source = (context.Request.QueryString["source"] ?? string.Empty).Trim();
+        if (!AccountSources.IsKnown(source))
+        {
+            return WriteError(context, 400, "bad-request", "暂不支持该音乐平台");
+        }
+
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token);
+            timeout.CancelAfter(TimeSpan.FromMinutes(2));
+            var accountId = context.Request.QueryString["accountId"] ?? string.Empty;
+            if (accountId.Length != 64 || !accountId.All(Uri.IsHexDigit))
+                return WriteError(context, 400, "bad-request", "请选择本机 QQ 账号");
+            var list = await accounts.QuickWebLoginAsync(source, accountId, timeout.Token).ConfigureAwait(false);
+            WriteJson(context, 200, JsonSerializer.Serialize(list, AccountJsonContext.Default.AccountListResponse));
+            return 200;
+        }
+        catch (AccountException exception)
+        {
+            OnlineHttp.Warn($"api account quick login failed source={source} code={exception.Code}: {exception.Message}");
+            return WriteError(context, exception.StatusCode, exception.Code, exception.Message);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException || !_shutdown.IsCancellationRequested)
+        {
+            OnlineHttp.Warn($"api account quick login failed source={source} type={exception.GetType().Name}");
+            return WriteError(context, 502, "quick-login-failed", "本机 QQ 登录未完成，请重试或在当前页面扫码登录");
+        }
+    }
+    private async Task<int> HandleAccountQuickAccountAsync(HttpListenerContext context)
+    {
+        var source = (context.Request.QueryString["source"] ?? string.Empty).Trim();
+        if (!AccountSources.IsKnown(source))
+        {
+            return WriteError(context, 400, "bad-request", "暂不支持该音乐平台");
+        }
+
+        var app = System.Windows.Application.Current;
+        if (app is null)
+        {
+            WriteJson(context, 200, "{\"available\":false}");
+            return 200;
+        }
+
+        try
+        {
+            var probe = await app.Dispatcher
+                .InvokeAsync(new Func<Task<IReadOnlyList<QuickAccount>>>(() => QuickLoginProbe.GetAsync(source, _shutdown.Token)))
+                .Task.Unwrap()
+                .ConfigureAwait(false);
+            WriteJson(context, 200, JsonSerializer.Serialize(new
+            {
+                available = probe.Count > 0,
+                accounts = probe.Select(account => new { id = account.Id, nickname = account.Nickname, avatarUrl = account.AvatarUrl }),
+            }));
+            return 200;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException || !_shutdown.IsCancellationRequested)
+        {
+            OnlineHttp.Warn($"api account quick-account failed source={source}: {OnlineHttp.Describe(exception)}");
+            WriteJson(context, 200, "{\"available\":false}");
+            return 200;
+        }
+    }
     private async Task<int> HandleAccountLoginStatusAsync(HttpListenerContext context)
     {
         var accounts = _accounts;
@@ -441,7 +550,7 @@ internal sealed class LocalMusicServer : IDisposable
         }
 
         var key = (query["key"] ?? string.Empty).Trim();
-        if (key.Length is 0 or > 64)
+        if (key.Length is 0 or > 512)
         {
             return WriteError(context, 400, "bad-request", "key 参数非法");
         }
@@ -3832,3 +3941,7 @@ internal sealed class LocalMusicServer : IDisposable
 
     private sealed record CoverCacheEntry(byte[] Bytes, string ContentType, DateTimeOffset ExpiresAt);
 }
+
+
+
+

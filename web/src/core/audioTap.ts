@@ -11,6 +11,7 @@
  */
 
 import { postMessage } from './bridge';
+import { registerAppAudioContext } from './audioOutput';
 import { bindAirplayMediaFlush, unbindAirplayMediaFlush } from '../airplay';
 
 /** 页面取流的固定目标采样率；宿主按同样格式重采样到 44.1k。 */
@@ -98,6 +99,8 @@ interface DeckGraphNodes {
   presence: BiquadFilterNode;
   /** 单个 deck 的响度补偿（线性增益）：每首曲子独立对齐 LUFS，随 deck 切换各带各的补偿。 */
   trim: GainNode;
+  match: GainNode;
+  matchSource?: string;
   gain: GainNode;
   /** 元素取流支路：真实人声分离接管时降到 0，让分离音轨独占输出。 */
   mixGain: GainNode;
@@ -177,6 +180,7 @@ function buildDeckChain(
     high: BiquadFilterNode;
     presence: BiquadFilterNode;
     trim: GainNode;
+    match: GainNode;
     gain: GainNode;
     mixGain: GainNode;
     stemGain: GainNode;
@@ -210,6 +214,8 @@ function buildDeckChain(
     presence.gain.value = 0;
     const trim = ctx.createGain();
     trim.gain.value = 1;
+    const match = ctx.createGain();
+    match.gain.value = 1;
     const gain = ctx.createGain();
     gain.gain.value = 1;
     // 元素与分离音轨在滤镜链前汇合：mixGain 静音元素、stemGain 放行分离音轨，
@@ -227,8 +233,9 @@ function buildDeckChain(
     low.connect(high);
     high.connect(presence);
     presence.connect(trim);
-    trim.connect(gain);
-    return { chain: { lowpass, highpass, bass, low, high, presence, trim, gain, mixGain, stemGain } };
+    trim.connect(match);
+    match.connect(gain);
+    return { chain: { lowpass, highpass, bass, low, high, presence, trim, match, gain, mixGain, stemGain } };
   } catch (err) {
     console.warn('[audioTap] buildDeckChain failed', err);
     return null;
@@ -385,6 +392,11 @@ export function setDeckStemGain(element: HTMLAudioElement, value: number, rampMs
  */export function setDeckTrimGain(element: HTMLAudioElement, db: number): void {
   const node = deckNodes.get(element);
   if (!node) return;
+  if (node.matchSource !== element.src) {
+    node.matchSource = element.src;
+    node.match.gain.cancelScheduledValues(context?.currentTime ?? 0);
+    node.match.gain.setValueAtTime(1, context?.currentTime ?? 0);
+  }
   const clamped = Number.isFinite(db) ? Math.max(-18, Math.min(12, db)) : 0;
   const target = Math.pow(10, clamped / 20);
   try {
@@ -397,6 +409,19 @@ export function setDeckStemGain(element: HTMLAudioElement, value: number, rampMs
       /* 忽略 */
     }
   }
+}
+
+/** Separate from track normalization: hold the regional correction across the transition,
+ * then return to neutral over four seconds. Deck commit must not cancel this envelope. */
+export function scheduleDeckMatch(element: HTMLAudioElement, clock: number, db: number, fadeMs: number): void {
+  const node = deckNodes.get(element);
+  if (!node) return;
+  const gain = 10 ** (Math.max(-3, Math.min(3, Number.isFinite(db) ? db : 0)) / 20);
+  const param = node.match.gain;
+  param.cancelScheduledValues(clock);
+  param.setValueAtTime(gain, clock);
+  param.setValueAtTime(gain, clock + fadeMs / 1000);
+  param.exponentialRampToValueAtTime(1, clock + fadeMs / 1000 + 4);
 }
 
 /** 调试：各 deck 的响度补偿（dB）与当前增益，供 CDP 验收用。 */
@@ -537,6 +562,8 @@ export function detachDeckFromGraph(element: HTMLAudioElement): void {
     // 摘下来时把「交融」的扫频与「人声/伴奏分离」的搁架滤波一起复位，避免下一首继承过渡期的滤镜。
     releaseDeckFx(element);
     node.gain.disconnect();
+    node.match.gain.cancelScheduledValues(context?.currentTime ?? 0);
+    node.match.gain.setValueAtTime(1, context?.currentTime ?? 0);
   } catch {
     /* 忽略 */
   }
@@ -798,6 +825,8 @@ function ensureContext(): AudioContext | null {
       return null;
     }
   }
+  // 本软件输出通道：设备切换时统一改这条 AudioContext 的 sinkId。
+  registerAppAudioContext(context);
   return context;
 }
 

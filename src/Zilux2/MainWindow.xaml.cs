@@ -39,17 +39,14 @@ public partial class MainWindow : Window
     private long _dragGeneration;
     private bool _dragPending;
 
-    // Window control animations (maximize / restore / minimize / close). The page only asks for
-    // the operation; the motion is driven here with SetWindowPos frames so the WebView2 child
-    // HWND travels with the window instead of being left behind by a WPF-only transform.
-    private const int MaximizeAnimationMs = 200;
-    // 窗口过渡：custom=应用内自绘（快照缩放/淡出），native=Windows 原生过渡。
+    // 常规窗口状态由 Windows 合成器负责。逐帧改窗口大小会让 WebView2 每帧重新布局，
+    // 屏幕截图过渡又会拍到遮挡窗口，均不适合作为常规窗口动画。
+    // 应用内模式只为「关闭到托盘」补一个短暂整窗淡出。
     // 设置项在「设置 → 外观 → 窗口动画」，这里每次动作时读取，切换后立即生效。
     private bool NativeWindowAnim =>
         string.Equals(_settings?.WindowAnimation, AppearanceSettings.WindowAnimationNative, StringComparison.Ordinal);
 
-    private const int MinimizeAnimationMs = 180;
-    private const int CloseAnimationMs = 140;
+    private const int CloseAnimationMs = 150;
     private DispatcherTimer? _windowAnim;
     private EventHandler? _windowAnimRendering;
     private long _windowAnimGeneration;
@@ -87,10 +84,10 @@ public partial class MainWindow : Window
     private double _miniSavedMinHeight = 700;
 
     // 后台常驻：关闭窗口只隐藏到托盘，进程继续跑（听歌/下载/热键）；只有托盘「退出」或更新安装
-    // 才真正退出。_pendingHideToTray 用于让自绘关闭动画结束后走「隐藏」而不是「关闭」。
+    // 才真正退出。
     private bool _isHiddenToTray;
     private bool _isExiting;
-    private bool _pendingHideToTray;
+    private bool _closePending;
 
     // 启动/托盘恢复的「先隐藏、有内容再淡入」：WebView2 初始化 + 首帧大约要 1~3 秒，
     // 直接 Show 会先露出空白的主题底色窗壳。窗口先以 Opacity=0 显示（WebView2 需要已加载
@@ -116,10 +113,13 @@ public partial class MainWindow : Window
     private MediaKeyHookService? _mediaKeyHook;
 
     // 全局热键的底层钩子兜底（详见 GlobalHotkeyHookService）：RegisterHotKey 在组合被抢占或
-    // 前台是管理员窗口时会失效，钩子仍能看到物理按键。_lastHookFireTicks 用于和 WM_HOTKEY 去重。
+    // 前台是管理员窗口时会失效，钩子仍能看到物理按键。两条通路各记一份触发时间，只做跨通路去重。
     private GlobalHotkeyHookService? _hotkeyHook;
     private int _hotkeyHookAttempts;
     private readonly Dictionary<string, int> _lastHookFireTicks = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> _lastRegisteredFireTicks = new(StringComparer.Ordinal);
+    // 鼠标侧键前进/后退（WH_MOUSE_LL）：Chromium 会把侧键当浏览器历史，这里先截下来交给页面。
+    private MouseNavigationHookService? _mouseNavHook;
 
     internal MainWindow(
         WebContentPlan plan,
@@ -166,6 +166,7 @@ public partial class MainWindow : Window
         // 任务栏重建时会广播 TaskbarCreated，收到后重新挂一层。
         _taskbarCreatedMessage = NativeMethods.RegisterWindowMessage("TaskbarCreated");
         StartHotkeyHook();
+        StartMouseNavigationHook();
         ApplyShortcutSettings("startup");
         InstallMediaKeyHook();
     }
@@ -358,8 +359,35 @@ public partial class MainWindow : Window
     private void OnHookHotkey(string action)
     {
         HostLog.Info($"hotkey.hook.fire action={action}");
-        // 统一走 FireHotkey：由它写入去重时间戳（B22）。
-        FireHotkey(action);
+        // 统一走 FireHotkey：由它做跨通路去重并写入时间戳。
+        FireHotkey(action, "hook");
+    }
+
+    /// <summary>
+    /// 鼠标侧键（后退 / 前进）全局钩子：只在本机窗口被指到时拦截，转成页面 command。
+    /// 页面自己维护前进/后退历史（不依赖浏览器历史，避免整页重载）。
+    /// </summary>
+    private void StartMouseNavigationHook()
+    {
+        if (_mouseNavHook is not null)
+        {
+            return;
+        }
+
+        var hook = new MouseNavigationHookService(forward =>
+            Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(() =>
+            {
+                HostLog.Info($"mouseNav.fire action={(forward ? "navForward" : "navBack")}");
+                SendCommand(forward ? "navForward" : "navBack");
+            })));
+        if (hook.Start())
+        {
+            _mouseNavHook = hook;
+        }
+        else
+        {
+            hook.Dispose();
+        }
     }
 
     private void DispatchHotkeyAction(string action)
@@ -370,7 +398,25 @@ public partial class MainWindow : Window
             return;
         }
 
+        // 系统输出切换完全在宿主侧完成（不经过页面），切完把最新状态推给设置页。
+        if (action == "systemOutput")
+        {
+            CycleSystemOutput();
+            return;
+        }
+
         SendCommand(action);
+    }
+
+    /// <summary>快捷键：轮换 Windows 默认播放设备（保持本软件自己的输出通道不变）。</summary>
+    internal void CycleSystemOutput()
+    {
+        var rotation = _settings?.SystemOutputRotation ?? Array.Empty<string>();
+        var next = SystemAudioOutputService.Cycle(rotation);
+        HostLog.Info(next is null
+            ? "[audioOutput] shortcut cycle failed"
+            : $"[audioOutput] shortcut cycle -> {next.Name}");
+        _host?.PostAudioOutputState();
     }
 
     /// <summary>把「当前实际生效的组合」同步给钩子：注册失败/回落时钩子用同一份配置兜底。</summary>
@@ -409,7 +455,7 @@ public partial class MainWindow : Window
         ApplyBackgroundLyricsSettings();
     }
 
-    // 桌面歌词窗口开关/样式都从设置里读；页面只负责推当前句（见 UpdateDesktopLyrics）。
+    // 桌面歌词窗口开关/样式都从设置里读；页面推当前句及相邻句。
     private DesktopLyricsWindow? _desktopLyricsWindow;
     private double _desktopLyricsLeft = double.NaN;
     private double _desktopLyricsTop = double.NaN;
@@ -483,9 +529,10 @@ public partial class MainWindow : Window
             options?.BackdropOpacity ?? 40);
     }
 
-    internal void UpdateDesktopLyrics(string now, string translation)
+    internal void UpdateDesktopLyrics(string now, string translation, string previous, string next,
+        IReadOnlyList<DesktopLyricWord> words, int activeWord)
     {
-        _desktopLyricsWindow?.UpdateLines(now, translation);
+        _desktopLyricsWindow?.UpdateLines(now, translation, previous, next, words, activeWord);
     }
 
     /// <summary>把桌面歌词最后一次位置写回设置（P3-13）；非有限值直接忽略。</summary>
@@ -819,6 +866,8 @@ public partial class MainWindow : Window
         _mediaKeyHook = null;
         _hotkeyHook?.Dispose();
         _hotkeyHook = null;
+        _mouseNavHook?.Dispose();
+        _mouseNavHook = null;
         HostLog.Info("window.closed dispose begin");
         try
         {
@@ -871,77 +920,34 @@ public partial class MainWindow : Window
     public void ToggleMaximize()
     {
         CancelPendingDrag("toggleMaximize");
-
-        if (NativeWindowAnim)
-        {
-            WindowState = IsMaximized ? WindowState.Normal : WindowState.Maximized;
-            HostLog.Info("window.native maximize");
-            return;
-        }
-
-        if (_hwnd == IntPtr.Zero || !NativeMethods.GetWindowRect(_hwnd, out var current))
-        {
-            WindowState = IsMaximized ? WindowState.Normal : WindowState.Maximized;
-            return;
-        }
-
         if (!IsMaximized)
         {
-            _restoreRect = current;
-            _hasRestoreRect = true;
-
-            // Animate while still in Normal state, then flip the state once the window already
-            // covers the work area: WPF's maximize would apply the same rect, so there is no
-            // one-frame jump. Flipping first would snap to full screen before the first frame.
-            _restoreRect = current;
-            _hasRestoreRect = true;
-            var work = WorkAreaOf(current);
-            BeginWindowMotion(
-                current,
-                work,
-                MaximizeAnimationMs,
-                EaseOutCubic,
-                () => WindowState = WindowState.Maximized);
-            HostLog.Info(
-                $"window.animate maximize from={DescribeRect(current)} to={DescribeRect(work)}");
-            return;
+            if (_hwnd != IntPtr.Zero && NativeMethods.GetWindowRect(_hwnd, out var current))
+            {
+                _restoreRect = current;
+                _hasRestoreRect = true;
+            }
+            WindowState = WindowState.Maximized;
+            HostLog.Info("window.compositor maximize");
         }
-
-        var target = _hasRestoreRect ? _restoreRect : RestoreRectInPixels(current);
-        // RestoreBounds equals the current (maximized) rect here, so this does not move the
-        // window; the animation below is what brings it back to the saved normal rect.
-        WindowState = WindowState.Normal;
-        BeginWindowMotion(current, target, MaximizeAnimationMs, EaseOutCubic, null);
-        HostLog.Info(
-            $"window.animate restore from={DescribeRect(current)} to={DescribeRect(target)}");
+        else
+        {
+            var target = _hasRestoreRect ? _restoreRect : RestoreRectInPixels(CurrentWindowRect());
+            WindowState = WindowState.Normal;
+            if (target.Right > target.Left && target.Bottom > target.Top)
+            {
+                TrySetWindowRect(target.Left, target.Top, target.Right - target.Left, target.Bottom - target.Top);
+            }
+            HostLog.Info("window.compositor restore");
+        }
     }
 
     public void MinimizeFromPage()
     {
         CancelPendingDrag("minimize");
 
-        if (_hwnd == IntPtr.Zero || !NativeMethods.GetWindowRect(_hwnd, out var current))
-        {
-            WindowState = WindowState.Minimized;
-            return;
-        }
-
-        if (NativeWindowAnim)
-        {
-            WindowState = WindowState.Minimized;
-            HostLog.Info("window.native minimize");
-            return;
-        }
-
-        // A pure rect animation reflows the page on every frame, which reads as a jumpy resize
-        // rather than the window going away. Play a screenshot of the window instead: the pixels
-        // scale/fade like the real compositor would, the WebView2 content never reflows.
-        if (!PlaySnapshotTransition(current, minimize: true))
-        {
-            WindowState = WindowState.Minimized;
-        }
-
-        HostLog.Info("window.animate minimize (snapshot)");
+        WindowState = WindowState.Minimized;
+        HostLog.Info("window.compositor minimize");
     }
 
     /// <summary>
@@ -952,34 +958,24 @@ public partial class MainWindow : Window
     {
         CancelPendingDrag("close");
 
+        if (_closePending || _isHiddenToTray) return;
+
         if (_isExiting)
         {
             Close();
             return;
         }
 
-        if (_hwnd == IntPtr.Zero || !NativeMethods.GetWindowRect(_hwnd, out var current))
+        _closePending = true;
+        if (!NativeWindowAnim && _hwnd != IntPtr.Zero)
         {
-            // Hide from a dispatcher turn: never tear the WebView2 control down inside its own callback.
-            Dispatcher.BeginInvoke(new Action(HideToTray));
-            return;
+            // AnimateWindow 淡出整个 HWND（包括 WebView2 子窗口），不截取屏幕，也不创建置顶浮层。
+            // 若系统关闭了动画或调用失败，直接隐藏即可。
+            NativeMethods.AnimateWindow(_hwnd, CloseAnimationMs,
+                NativeMethods.AwBlend | NativeMethods.AwHide);
         }
-
-        if (NativeWindowAnim)
-        {
-            HostLog.Info("window.native close -> tray");
-            HideToTray();
-            return;
-        }
-
-        _pendingHideToTray = true;
-        if (!PlaySnapshotTransition(current, minimize: false))
-        {
-            _pendingHideToTray = false;
-            Dispatcher.BeginInvoke(new Action(HideToTray));
-        }
-
-        HostLog.Info("window.animate close (snapshot)");
+        Dispatcher.BeginInvoke(new Action(HideToTray));
+        HostLog.Info(NativeWindowAnim ? "window.native close -> tray" : "window.fade close -> tray");
     }
 
     // ---------------------------------------------------------------------------------------
@@ -1400,6 +1396,7 @@ public partial class MainWindow : Window
     /// <summary>隐藏主窗口到托盘；UI 线程调用，幂等。</summary>
     internal void HideToTray()
     {
+        _closePending = false;
         if (_isExiting || _isHiddenToTray)
         {
             return;
@@ -1433,9 +1430,6 @@ public partial class MainWindow : Window
         {
             return;
         }
-
-        // 关闭动画还没结束就被托盘/热键叫回来时，别让动画收尾再隐藏一次。
-        _pendingHideToTray = false;
 
         try
         {
@@ -1540,7 +1534,8 @@ public partial class MainWindow : Window
     internal void SendCommand(string action)
     {
         if (action is not ("togglePlay" or "prev" or "next" or "volumeUp" or "volumeDown" or "mute" or "like"
-            or "mode" or "mini" or "desktopLyrics" or "crossfade" or "stop" or "openSettings"))
+            or "mode" or "mini" or "desktopLyrics" or "crossfade" or "stop" or "openSettings"
+            or "navBack" or "navForward" or "appOutput"))
         {
             HostLog.Warn($"tray.command ignored action={action}");
             return;
@@ -1596,7 +1591,6 @@ public partial class MainWindow : Window
         }
 
         _isExiting = true;
-        _pendingHideToTray = false;
         HostLog.Info("app.exit reason=sessionEnding");
     }
 
@@ -1754,7 +1748,8 @@ public partial class MainWindow : Window
 
     private bool TryRegisterHotkey(int id, string action, HotkeyBinding binding)
     {
-        if (NativeMethods.RegisterHotKey(_hwnd, id, binding.Modifiers, binding.VirtualKey))
+        // MOD_NOREPEAT：按住不放时系统不再重复投递；快速连按仍然每次都来。
+        if (NativeMethods.RegisterHotKey(_hwnd, id, binding.Modifiers | NativeMethods.ModNoRepeat, binding.VirtualKey))
         {
             _registeredHotkeys.Add(id);
             HostLog.Info($"hotkey.register id={id} ok action={action} key={binding.Key}");
@@ -1824,24 +1819,30 @@ public partial class MainWindow : Window
             return;
         }
 
-        FireHotkey(spec.Action);
+        FireHotkey(spec.Action, "registered");
     }
 
     /// <summary>
     /// 钩子与 WM_HOTKEY 双通路的去重：钩子命中后会吞键，但 Windows 可能仍投一条 WM_HOTKEY，
-    /// 600ms 内同动作只处理一次，避免「按一下切两首」。
+    /// 同一次物理按键会在两条通路上各来一次。
+    ///
+    /// 这里只做「跨通路」去重，窗口收紧到 250ms：同一通路上的快速连按必须立刻生效，
+    /// 否则连按加减音量 / 连续切歌会被误吞（旧的 600ms 同动作去重就是这么丢按键的）。
+    /// 按住不放的自动重复由钩子自己吞（未抬起不触发），RegisterHotKey 用 MOD_NOREPEAT 关掉。
     /// </summary>
-    private void FireHotkey(string action)
+    private void FireHotkey(string action, string source = "registered")
     {
         var now = Environment.TickCount;
-        if (_lastHookFireTicks.TryGetValue(action, out var last) && now - last < 600)
+        var mine = source == "hook" ? _lastHookFireTicks : _lastRegisteredFireTicks;
+        var other = source == "hook" ? _lastRegisteredFireTicks : _lastHookFireTicks;
+        if (other.TryGetValue(action, out var otherTick) && now - otherTick < 250)
         {
-            HostLog.Info($"hotkey.fire skipped action={action} reason=hook-dedupe");
+            HostLog.Info($"hotkey.fire skipped action={action} reason=cross-path-dedupe");
             return;
         }
 
-        _lastHookFireTicks[action] = now;
-        HostLog.Info($"hotkey.fire action={action}");
+        mine[action] = now;
+        HostLog.Info($"hotkey.fire action={action} source={source}");
         DispatchHotkeyAction(action);
     }
 
@@ -2036,182 +2037,6 @@ public partial class MainWindow : Window
         }
 
         return current;
-    }
-
-    private System.Windows.Window? _snapWindow;
-    private System.Windows.Controls.Image? _snapImage;
-    private System.Windows.Media.ScaleTransform? _snapScale;
-    private System.Windows.Media.TranslateTransform? _snapTranslate;
-
-    /// <summary>
-    /// Grabs the current window pixels, shows them in a transparent topmost WPF window and
-    /// animates that snapshot (scale towards the taskbar + fade), while the real window is
-    /// hidden/minimized underneath. Only WPF draws the snapshot, so the WebView2 airspace and
-    /// per-frame reflow problems of a real window-rect animation do not apply.
-    /// Returns false when the screenshot could not be taken (caller falls back to an instant
-    /// state change).
-    /// </summary>
-    private bool PlaySnapshotTransition(NativeMethods.Rect bounds, bool minimize)
-    {
-        var hwnd = _hwnd;
-        if (hwnd == IntPtr.Zero)
-        {
-            return false;
-        }
-
-        var width = Math.Max(1, bounds.Right - bounds.Left);
-        var height = Math.Max(1, bounds.Bottom - bounds.Top);
-
-        System.Windows.Media.Imaging.BitmapSource snapshot;
-        try
-        {
-            using var bitmap = new System.Drawing.Bitmap(
-                width,
-                height,
-                System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
-            using (var graphics = System.Drawing.Graphics.FromImage(bitmap))
-            {
-                graphics.CopyFromScreen(
-                    bounds.Left,
-                    bounds.Top,
-                    0,
-                    0,
-                    new System.Drawing.Size(width, height),
-                    System.Drawing.CopyPixelOperation.SourceCopy);
-            }
-
-            using var stream = new System.IO.MemoryStream();
-            bitmap.Save(stream, System.Drawing.Imaging.ImageFormat.Png);
-            stream.Position = 0;
-            var image = new System.Windows.Media.Imaging.BitmapImage();
-            image.BeginInit();
-            image.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
-            image.StreamSource = stream;
-            image.EndInit();
-            image.Freeze();
-            snapshot = image;
-        }
-        catch (Exception exception)
-        {
-            HostLog.Warn($"window.snapshot failed: {exception.GetType().Name}");
-            return false;
-        }
-
-        EnsureSnapshotWindow();
-        var (scaleX, scaleY) = CurrentDpiScale();
-        _snapImage!.Source = snapshot;
-        _snapScale!.ScaleX = 1;
-        _snapScale.ScaleY = 1;
-        _snapTranslate!.X = 0;
-        _snapTranslate.Y = 0;
-        _snapWindow!.Opacity = 1;
-        _snapWindow.Left = bounds.Left / scaleX;
-        _snapWindow.Top = bounds.Top / scaleY;
-        _snapWindow.Width = width / scaleX;
-        _snapWindow.Height = height / scaleY;
-        _snapWindow.Show();
-        HostLog.Info($"window.snapshot shown {width}x{height} at {bounds.Left},{bounds.Top}");
-
-        // Cover the real window before it disappears: order matters, otherwise the desktop would
-        // flash through between "hide window" and "show snapshot".
-        var duration = TimeSpan.FromMilliseconds(minimize ? 220 : 180);
-        var easing = new System.Windows.Media.Animation.CubicEase
-        {
-            EasingMode = System.Windows.Media.Animation.EasingMode.EaseIn,
-        };
-
-        var targetScale = minimize ? 0.38 : 0.92;
-        var targetFade = minimize ? 0.25 : 0.0;
-        var targetShift = minimize ? height / scaleY * 0.55 : 0.0;
-
-        var scaleAnimation = new System.Windows.Media.Animation.DoubleAnimation(targetScale, duration)
-        {
-            EasingFunction = easing,
-        };
-        _snapScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleXProperty, scaleAnimation);
-        _snapScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleYProperty, scaleAnimation);
-        _snapTranslate.BeginAnimation(
-            System.Windows.Media.TranslateTransform.YProperty,
-            new System.Windows.Media.Animation.DoubleAnimation(targetShift, duration)
-            {
-                EasingFunction = easing,
-            });
-        var fade = new System.Windows.Media.Animation.DoubleAnimation(targetFade, duration)
-        {
-            EasingFunction = easing,
-        };
-        fade.Completed += (_, _) => FinishSnapshotTransition(minimize);
-        _snapWindow.BeginAnimation(System.Windows.Window.OpacityProperty, fade);
-
-        // Hide the real window on the same frame the snapshot appears.
-        if (minimize)
-        {
-            WindowState = WindowState.Minimized;
-        }
-        else
-        {
-            NativeMethods.ShowWindow(hwnd, 0); // SW_HIDE
-        }
-
-        return true;
-    }
-
-    private void FinishSnapshotTransition(bool minimize)
-    {
-        var overlay = _snapWindow;
-        if (overlay is not null)
-        {
-            overlay.BeginAnimation(System.Windows.Window.OpacityProperty, null);
-            overlay.Hide();
-        }
-
-        if (minimize)
-        {
-            WindowState = WindowState.Minimized;
-            return;
-        }
-
-        if (_pendingHideToTray)
-        {
-            _pendingHideToTray = false;
-            HideToTray();
-            return;
-        }
-
-        Dispatcher.BeginInvoke(new Action(Close));
-    }
-
-    private void EnsureSnapshotWindow()
-    {
-        if (_snapWindow is not null)
-        {
-            return;
-        }
-
-        _snapImage = new System.Windows.Controls.Image
-        {
-            Stretch = System.Windows.Media.Stretch.Fill,
-        };
-        _snapScale = new System.Windows.Media.ScaleTransform(1, 1);
-        _snapTranslate = new System.Windows.Media.TranslateTransform(0, 0);
-        var transform = new System.Windows.Media.TransformGroup();
-        transform.Children.Add(_snapScale);
-        transform.Children.Add(_snapTranslate);
-        _snapImage.RenderTransformOrigin = new System.Windows.Point(0.5, 0.55);
-        _snapImage.RenderTransform = transform;
-
-        _snapWindow = new System.Windows.Window
-        {
-            WindowStyle = System.Windows.WindowStyle.None,
-            ResizeMode = System.Windows.ResizeMode.NoResize,
-            AllowsTransparency = true,
-            Background = System.Windows.Media.Brushes.Transparent,
-            ShowInTaskbar = false,
-            Topmost = true,
-            WindowStartupLocation = System.Windows.WindowStartupLocation.Manual,
-            UseLayoutRounding = false,
-            Content = _snapImage,
-        };
     }
 
     private static NativeMethods.Rect BlendRect(

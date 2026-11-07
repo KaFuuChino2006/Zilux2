@@ -274,6 +274,9 @@ export interface TemperaShot {
      * reads as one continuous move rather than as an edit.
      */
     flowAngle: number;
+    /** Rotation shots turn in place instead of sliding across the viewport. */
+    cameraMotion?: 'slide' | 'rotation';
+    rotationSign?: 1 | -1;
     /** Deterministic screentone decor description for the MG layer. */
     decor: TemperaDecorSpec;
 }

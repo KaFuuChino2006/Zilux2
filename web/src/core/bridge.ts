@@ -483,9 +483,9 @@ export function reportMedia(state: MediaState): void {
   post({ v: 1, type: 'media', payload });
 }
 
-/** 桌面歌词：把「正在唱的一句 + 翻译」推给宿主窗口（开关/字号/锁定由设置驱动）。 */
-export function updateDesktopLyrics(now: string, translation: string): void {
-  post({ v: 1, type: 'lyrics', event: 'line', now, translation });
+/** 桌面歌词：把相邻两句、当前句和译文推给宿主窗口。 */
+export function updateDesktopLyrics(now: string, translation: string, previous = '', next = '', words: Array<{ text: string; spaceBefore?: boolean }> = [], activeWord = -1): void {
+  post({ v: 1, type: 'lyrics', event: 'line', now, translation, previous, next, words: words.map(({ text, spaceBefore }) => ({ text, spaceBefore })), activeWord });
 }
 
 /**

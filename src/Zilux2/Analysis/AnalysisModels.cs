@@ -101,6 +101,10 @@ internal sealed class BeatAnalysisPayload
     /// <summary>峰值电平（dBFS）。</summary>
     public double PeakDb { get; set; }
 
+    public string LoudnessMethod { get; set; } = "mono-rms-approximation";
+    public double[] LoudnessTimesMs { get; set; } = Array.Empty<double>();
+    public double[] MomentaryLufs { get; set; } = Array.Empty<double>();
+
     public AnalysisSectionPayload[] Sections { get; set; } = Array.Empty<AnalysisSectionPayload>();
 
     public string[] Warnings { get; set; } = Array.Empty<string>();
