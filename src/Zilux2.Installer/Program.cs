@@ -24,13 +24,23 @@ internal static class Program
             var noShortcuts = args.Contains("--no-shortcuts", StringComparer.OrdinalIgnoreCase);
             var launch = args.Contains("--launch", StringComparer.OrdinalIgnoreCase);
             var progress = new Progress<(int Percent, string Message)>(_ => { });
-            InstallerCore.KillRunning();
-            // D-25：--no-shortcuts 只跳过快捷方式；卸载注册表仍须刷新，
-            // 否则自动更新后 DisplayVersion/InstallLocation 会停留在旧版本。
-            InstallerCore.Install(targetDir, progress, createShortcuts: !noShortcuts, register: true);
-            if (launch)
+            InstallerCore.Log($"silent start dir={targetDir} shortcuts={!noShortcuts} launch={launch}");
+            try
             {
-                InstallerCore.Launch(targetDir);
+                InstallerCore.KillRunning();
+                // D-25：--no-shortcuts 只跳过快捷方式；卸载注册表仍须刷新，
+                // 否则自动更新后 DisplayVersion/InstallLocation 会停留在旧版本。
+                InstallerCore.Install(targetDir, progress, createShortcuts: !noShortcuts, register: true);
+                InstallerCore.Log("silent install ok");
+                if (launch)
+                {
+                    InstallerCore.Launch(targetDir);
+                }
+            }
+            catch (Exception exception)
+            {
+                InstallerCore.LogFailure(exception);
+                Environment.ExitCode = 1;
             }
             return;
         }

@@ -1,4 +1,4 @@
-﻿/** 新前端入口：启动序列 + 全局快捷键 + 宿主就绪握手。 */
+/** 新前端入口：启动序列 + 全局快捷键 + 宿主就绪握手。 */
 
 import { host, hostAvailable, type UpdateSnapshot } from './core/bridge';
 import { initAccount } from './core/account';
@@ -16,7 +16,7 @@ import { installChorusPreview } from './ui/chorusPreview';
 import { refreshArtworkCovers } from './online/artwork';
 import { initUpdates, downloadUpdate, installUpdate, openReleasePage, onUpdateChange, updateSnapshot } from './ui/updates';
 import { showUpdateNotes } from './ui/updateNotes';
-import { ignoreUpdateVersion, shouldPromptUpdate, snoozeUpdateReminder } from './ui/updateReminders';
+import { ignoreUpdateVersion, shouldPromptUpdate } from './ui/updateReminders';
 import { bootBackgroundLyricsScene, installBackgroundLyricsPublisher, isBackgroundLyricsScene } from './ui/backgroundLyrics';
 
 // 更新提示去重：同一个版本只提示一次，宿主重复推送也不会反复弹窗。
@@ -68,7 +68,6 @@ function handleUpdatePrompt(update: UpdateSnapshot): void {
       allowSnooze: true,
       onDismiss: (choice) => {
         if (choice.ignore) ignoreUpdateVersion(version);
-        else snoozeUpdateReminder(choice.days);
       },
       onDownload: auto ? undefined : downloadUpdate,
       onOpenRelease: openReleasePage,
@@ -89,7 +88,6 @@ function handleUpdatePrompt(update: UpdateSnapshot): void {
       allowSnooze: true,
       onDismiss: (choice) => {
         if (choice.ignore) ignoreUpdateVersion(version);
-        else snoozeUpdateReminder(choice.days);
       },
       onInstall: installUpdate,
       onOpenRelease: openReleasePage,
@@ -340,4 +338,5 @@ main().catch((err: unknown) => {
     );
   }
 });
+
 

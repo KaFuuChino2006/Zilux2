@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.IO.Compression;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -17,6 +17,40 @@ internal static class InstallerCore
 
     public static string DefaultInstallDir =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Zilux2");
+
+    private static string StateDir =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Zilux2");
+
+    public static string LogPath => Path.Combine(StateDir, "installer.log");
+    private static string FailurePath => Path.Combine(StateDir, "installer.failed");
+
+    /// <summary>静默安装没有界面，把关键步骤写到 installer.log，失败时再留一个标记文件。</summary>
+    public static void Log(string message)
+    {
+        try
+        {
+            Directory.CreateDirectory(StateDir);
+            File.AppendAllText(LogPath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} {message}{Environment.NewLine}");
+        }
+        catch
+        {
+            // 日志写不进去不能影响安装本身。
+        }
+    }
+
+    public static void LogFailure(Exception exception)
+    {
+        Log($"silent install failed: {exception}");
+        try
+        {
+            Directory.CreateDirectory(StateDir);
+            File.WriteAllText(FailurePath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}{Environment.NewLine}{exception}");
+        }
+        catch
+        {
+            // ignore
+        }
+    }
 
     public static void KillRunning()
     {

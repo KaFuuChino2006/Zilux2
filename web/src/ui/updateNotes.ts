@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 版本更新提示面板：发现新版本 / 新版本已下载 / 刚更新完，都复用这一块。
  *
  * 交互约定（按需求）：点空白处、按 Esc、点右上角 × 都能关掉，不需要非得点「确定」；
@@ -15,10 +15,10 @@ export interface UpdateNotesOptions {
   notes: string;
   /** 后台自动下载中：显示但不需要按钮。 */
   downloading?: boolean;
-  /** 显示「不再提示 / 多少天内不再提示」选项（仅 available / downloaded）。 */
+  /** 显示「当前版本不再提醒」选项（仅 available / downloaded）。 */
   allowSnooze?: boolean;
   /** 被动关闭（点空白 / Esc / × / 稍后）时回调；点下载、安装、知道了不算。 */
-  onDismiss?: (choice: { ignore: boolean; days: number }) => void;
+  onDismiss?: (choice: { ignore: boolean }) => void;
   onDownload?: () => void;
   onInstall?: () => void;
   onOpenRelease?: () => void;
@@ -121,26 +121,15 @@ export function showUpdateNotes(options: UpdateNotesOptions): () => void {
     }
   }
 
-  // 提醒选项：不再提示这个版本 / 关闭后 N 天内不再提示。
+  // 提醒选项：只保留「当前版本不再提醒」，不再提供 N 天内不提醒。
   let reminder: HTMLElement | null = null;
   let ignoreBox: HTMLInputElement | null = null;
-  let daysSelect: HTMLSelectElement | null = null;
   if (options.allowSnooze && options.kind !== 'installed') {
     ignoreBox = h('input', { class: 'update-notes-checkbox', type: 'checkbox' }) as HTMLInputElement;
-    daysSelect = h(
-      'select',
-      { class: 'update-notes-select', title: '关闭后多久内不再提示' },
-      ...[1, 3, 7, 30].map((days) => h('option', { value: String(days), text: `${days} 天` })),
-    ) as HTMLSelectElement;
-    daysSelect.value = '3';
-    ignoreBox.addEventListener('change', () => {
-      daysSelect!.disabled = ignoreBox!.checked;
-    });
     reminder = h(
       'div',
       { class: 'update-notes-remind' },
-      h('label', { class: 'update-notes-check' }, ignoreBox, h('span', { text: '不再提示这个版本' })),
-      h('label', { class: 'update-notes-days' }, h('span', { text: '关闭后' }), daysSelect, h('span', { text: '内不再提示' })),
+      h('label', { class: 'update-notes-check' }, ignoreBox, h('span', { text: '当前版本不再提醒' })),
     );
   }
 
@@ -168,12 +157,14 @@ export function showUpdateNotes(options: UpdateNotesOptions): () => void {
     reminder,
     actions,
   );
+  // 同一时间只保留一个更新面板：自动检查从 available 切到 downloaded 时，旧面板先移除，避免弹出两层。
+  for (const stale of Array.from(document.querySelectorAll('.update-notes-overlay'))) stale.remove();
   const root = h('div', { class: 'update-notes-overlay' }, panel);
 
   const close = (passive = false): void => {
     if (current?.root !== root) return;
     if (passive && options.onDismiss) {
-      options.onDismiss({ ignore: Boolean(ignoreBox?.checked), days: Number(daysSelect?.value) || 3 });
+      options.onDismiss({ ignore: Boolean(ignoreBox?.checked) });
     }
     current = null;
     document.removeEventListener('keydown', onKey, true);
@@ -196,3 +187,5 @@ export function showUpdateNotes(options: UpdateNotesOptions): () => void {
   current = { root, close };
   return close;
 }
+
+
