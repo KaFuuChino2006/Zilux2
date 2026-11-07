@@ -1,4 +1,4 @@
-# Zilux2 Release CI
+﻿# Zilux2 Release CI
 #
 # 触发方式：
 #   1) push 形如 v1.0.1 的 tag（推荐，正常发版路径）；
@@ -122,6 +122,18 @@ jobs:
       # -SkipWebBuild：前端已在上一步构建好，避免 publish.ps1 再跑一遍。
       # -UpdateRepo：把实际仓库名编译进 exe，替换 Directory.Build.props 里的占位
       # zilux2/Zilux2（见 docs/zilux2-update-channel.md §1）。
+      - name: 下载人声分离模型
+        shell: pwsh
+        run: |
+          $name = 'htdemucs-dft-fp16-transparent.onnx'
+          $dir = Join-Path $PWD 'models'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $file = Join-Path $dir $name
+          if (-not (Test-Path $file)) {
+            $url = 'https://hf-mirror.com/itamiArika/htdemucs-int8-memory/resolve/main/' + $name
+            Invoke-WebRequest -Uri $url -OutFile $file -MaximumRetryCount 3 -RetryIntervalSec 5
+          }
+          Write-Host ("model: {0:N0} bytes" -f (Get-Item $file).Length)
       - name: 发布宿主程序（tools/publish.ps1）
         shell: pwsh
         env:
@@ -193,3 +205,4 @@ jobs:
             dist/Zilux2-Setup-${{ steps.version.outputs.version }}.exe
             dist/Zilux2-Setup-${{ steps.version.outputs.version }}.exe.sha256
             dist/Zilux2-Portable-${{ steps.version.outputs.version }}.zip
+
