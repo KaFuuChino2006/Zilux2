@@ -1,4 +1,4 @@
-﻿import { decryptQrc } from 'qrc-decoder';
+import { decryptQrc } from 'qrc-decoder';
 import { fetchLyric, searchOnline } from '../online/client';
 import { extractQrcPayload, parseCharLyric, parseLrc, parseQrcLyric } from '../online/lrc';
 import { onlineArtwork } from '../online/artwork';
@@ -12,6 +12,8 @@ import { onPlayer, playerState, seek } from './player';
 interface Candidate {
   track: OnlineTrack;
   score: number;
+  /** 该候选来自 AMLL TTML DB（同曲目逐字），应用时走 amll=1。 */
+  amll?: boolean;
 }
 
 interface PreviewWord {
@@ -195,6 +197,7 @@ export function openLyricPicker(track: OnlineTrack | null): void {
     tabs.textContent = '';
     const items: Array<{ id: string; label: string }> = [
       { id: 'auto', label: '自动推荐' },
+      { id: 'amll', label: 'AMLL TTML DB' },
       ...lyricSourceIds().map((id) => ({ id, label: sourceMeta(id)?.label ?? SOURCE_LABEL[id] ?? id })),
     ];
     for (const item of items) {
@@ -272,7 +275,7 @@ export function openLyricPicker(track: OnlineTrack | null): void {
     preview.append(lines);
     track.append(h('div', { class: 'lp-preview-loading', text: '歌词加载中…' }));
     try {
-      const lyric = await fetchLyric(item.track.source, item.track.id);
+      const lyric = await fetchLyric(item.track.source, item.track.id, item.amll ? { amll: true } : undefined);
       const parsed = previewLines(lyric);
       track.textContent = '';
       if (parsed.lines.length === 0) {
@@ -337,6 +340,16 @@ export function openLyricPicker(track: OnlineTrack | null): void {
           found.push(...result.map((item) => ({ track: item, score: metaMatchScore(track, item) })));
         }
         found = found.sort((a, b) => b.score - a.score).slice(0, 20);
+      } else if (activeTab === 'amll') {
+        // AMLL TTML DB 按平台 ID 直接取同曲目逐字歌词，不需要跨平台搜索。
+        try {
+          const lyric = await fetchLyric(track.source, track.id, { amll: true });
+          if ((lyric.yrc ?? '').trim() || (lyric.lrc ?? '').trim()) {
+            found = [{ track: { ...track }, score: 1, amll: true }];
+          }
+        } catch {
+          found = [];
+        }
       } else {
         let result: OnlineTrack[] = [];
         for (const q of candidateQueries(track)) {
@@ -387,22 +400,11 @@ export function openLyricPicker(track: OnlineTrack | null): void {
     ),
     h('div', { class: 'lp-right' }, preview, progressRow),
   );
-  const amllBtn = h('button', { class: 'btn is-quiet', type: 'button', text: 'AMLL 逐字歌词', title: '来源：AMLL TTML DB（CC0）https://github.com/amll-dev/amll-ttml-db' });
-  amllBtn.addEventListener('click', () => {
-    void (async () => {
-      const ok = await applyManualAmllLyric(track);
-      if (ok) {
-        toast('已切换为 AMLL TTML DB 歌词');
-        close();
-      } else {
-        toast('AMLL TTML DB 里没有这首歌的逐字歌词', 'error');
-      }
-    })();
-  });  const foot = h(
+  const foot = h(
     'div',
     { class: 'lp-foot' },
     h('div', { class: 'lp-current', text: manualLyricLabelOf() ? `当前：手动选择 ${manualLyricLabelOf()}` : `当前：${currentLyricSource() || '自动'}` }),
-    h('div', { class: 'lp-foot-actions' }, amllBtn, autoBtn, cancelBtn, saveBtn),
+    h('div', { class: 'lp-foot-actions' }, autoBtn, cancelBtn, saveBtn),
   );
   panel.append(head, body, foot);
   root.append(panel);
@@ -427,14 +429,17 @@ export function openLyricPicker(track: OnlineTrack | null): void {
     const picked = selected;
     if (!picked) return;
     saveBtn.disabled = true;
-    void applyManualLyric(track, picked.track.source, picked.track.id, SOURCE_LABEL[picked.track.source] ?? picked.track.source)
+    const apply = picked.amll
+      ? applyManualAmllLyric(track)
+      : applyManualLyric(track, picked.track.source, picked.track.id, SOURCE_LABEL[picked.track.source] ?? picked.track.source);
+    void apply
       .then((ok) => {
         if (!ok) {
           toast('这份歌词没有可用内容，换一份试试', 'error');
           saveBtn.disabled = false;
           return;
         }
-        toast(`已切换到 ${SOURCE_LABEL[picked.track.source] ?? picked.track.source} 的歌词`);
+        toast(picked.amll ? '已切换到 AMLL TTML DB 歌词' : `已切换到 ${SOURCE_LABEL[picked.track.source] ?? picked.track.source} 的歌词`);
         close();
       })
       .catch(() => {
