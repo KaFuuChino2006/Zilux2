@@ -60,3 +60,10 @@
 
 - 取流：`/v5/url` 返回 `err signature`；web `play/getdata` 返回 `30020` + SSA 风控；移动端 `getSongInfo` 无 `url`。需要 `register_dev`（AES+RSA）与 SSA 模拟，或改用本地 Node 侧车。
 - npm 侧车：本机 npm 损坏（`Cannot find module ./selectors/root`），`npm install` 失败，暂无法用 Node 方案。
+
+## 7. 应用内验证（2026-11-08 08:22）
+
+- `GET /api/search?source=kugou&q=周杰伦&limit=5` → HTTP 200，5 条真实结果（首条《晴天》/周杰伦，id 为 hash 编码），耗时 114ms，日志 `GET kugou/search q=周杰伦 ok 5 tracks 114ms`；
+- 结果 `playable=false`：取流仍被风控拦截；
+- Web `wwwapi.kugou.com/yy/index.php?r=play/getdata` 带 `kg_mid`/`kg_dfid`/`kg_mid_temp` cookie 仍返回 `err_code=30020`（SSA），确认需要行为指纹或 register_dev 的 dfid；
+- 结论：搜索/歌词/登录可用，**播放链路需要 SSA 模拟或本地 Node 侧车**。
