@@ -1,4 +1,4 @@
-using System.Buffers;
+﻿using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
@@ -284,6 +284,7 @@ internal sealed class LocalMusicServer : IDisposable
                 "/api/account/login/qr" => isPost ? await HandleAccountLoginQrAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/account/login/web" => isPost ? await HandleAccountLoginWebAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/account/quick-account" => isGet ? await HandleAccountQuickAccountAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
+                "/api/kugou/playlists" => isGet ? await HandleKugouPlaylistsAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/account/login/quick" => isPost ? await HandleAccountQuickLoginAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/account/login/status" => isGet ? await HandleAccountLoginStatusAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/account/logout" => isPost ? HandleAccountLogout(context) : MethodNotAllowed(context),
@@ -497,6 +498,36 @@ internal sealed class LocalMusicServer : IDisposable
         {
             OnlineHttp.Warn($"api account quick login failed source={source} type={exception.GetType().Name}");
             return WriteError(context, 502, "quick-login-failed", "本机 QQ 登录未完成，请重试或在当前页面扫码登录");
+        }
+    }
+    // 酷狗用户歌单（联调用）：需要账号库里有 kugou 的 token/userid。
+    private async Task<int> HandleKugouPlaylistsAsync(HttpListenerContext context)
+    {
+        var accounts = _accounts;
+        if (accounts is null)
+        {
+            return WriteError(context, 503, "account-unavailable", "账号服务不可用");
+        }
+
+        var cookie = accounts.CookieHeader("kugou", "kugou.com");
+        var token = System.Text.RegularExpressions.Regex.Match(cookie, "(?:^|;\\s*)token=([^;]+)").Groups[1].Value;
+        var userId = System.Text.RegularExpressions.Regex.Match(cookie, "(?:^|;\\s*)userid=([^;]+)").Groups[1].Value;
+        if (string.IsNullOrEmpty(token) || string.IsNullOrEmpty(userId))
+        {
+            return WriteError(context, 409, "login-required", "请先登录酷狗音乐");
+        }
+
+        try
+        {
+            using var client = new Zilux2.Online.Kugou.KugouClient();
+            var body = await client.GetUserPlaylistsAsync(userId, token, 1, 30, _shutdown.Token).ConfigureAwait(false);
+            WriteJson(context, 200, body);
+            return 200;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException || !_shutdown.IsCancellationRequested)
+        {
+            OnlineHttp.Warn($"api kugou playlists failed: {OnlineHttp.Describe(exception)}");
+            return WriteError(context, 502, "upstream-failed", "酷狗歌单获取失败");
         }
     }
     private async Task<int> HandleAccountQuickAccountAsync(HttpListenerContext context)
@@ -3959,6 +3990,7 @@ internal sealed class LocalMusicServer : IDisposable
 
     private sealed record CoverCacheEntry(byte[] Bytes, string ContentType, DateTimeOffset ExpiresAt);
 }
+
 
 
 
