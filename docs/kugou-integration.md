@@ -47,3 +47,16 @@
 1. 抓取 `util/config.json`、`util/helper.js`、`util/crypto.js`、`util/util.js`，把盐值、appid、clientver 固化到 C#；
 2. 先做 `KugouSignature` + `KugouDevice` + 搜索（最小闭环），用真机请求验证签名；
 3. 再做二维码登录与用户歌单，最后接取流与歌词。
+
+## 6. 真机验证记录（2026-11-08）
+
+已跑通：
+
+- **搜索**：`GET https://gateway.kugou.com/v2/search/song`，Android 签名 + 默认参数 + `x-router: complexsearch.kugou.com`，匿名返回真实结果。
+- **二维码 key**：`GET https://login-user.kugou.com/v2/qrcode`，参数 `appid=1001&type=1&plat=4&qrcode_txt=...&srcappid=2919`，并且**必须**附上默认参数（`dfid/mid/uuid/clientver/clienttime`）与请求头（`mid/dfid/clienttime/kg-rc/kg-thash`），web 签名；返回 `qrcode` 与 `qrcode_img`（base64）。
+- **扫码状态**：`GET https://login-user.kugou.com/v2/get_userinfo_qrcode`，参数 `plat=4&appid=1005&srcappid=2919&qrcode=<key>` + 默认参数 + 同款请求头；返回 `{"data":{"status":1}}`（1 等待、2 待确认、4 成功带 token）。
+
+未跑通：
+
+- 取流：`/v5/url` 返回 `err signature`；web `play/getdata` 返回 `30020` + SSA 风控；移动端 `getSongInfo` 无 `url`。需要 `register_dev`（AES+RSA）与 SSA 模拟，或改用本地 Node 侧车。
+- npm 侧车：本机 npm 损坏（`Cannot find module ./selectors/root`），`npm install` 失败，暂无法用 Node 方案。
