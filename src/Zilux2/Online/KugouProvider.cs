@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
@@ -290,10 +290,11 @@ internal sealed class KugouProvider : IOnlineMusicProvider
     }
 
     public Task<StreamResolution> ResolveStreamAsync(string id, string? quality, CancellationToken cancellationToken) =>
-        Task.FromResult(StreamResolution.NotPlayable("酷狗仅用于歌词搜索，不提供播放"));
+        Task.FromResult(StreamResolution.NotPlayable("酷狗暂不支持播放（受平台风控限制），搜索与歌词可正常使用"));
 
     private static string ReadString(JsonElement element, string name) =>
         element.TryGetProperty(name, out var node) && node.ValueKind == JsonValueKind.String
             ? node.GetString() ?? string.Empty
             : string.Empty;
 }
+
