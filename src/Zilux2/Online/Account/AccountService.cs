@@ -4,12 +4,13 @@
 // QR-login providers, and answers the loopback API with already-shaped DTOs.
 internal sealed class AccountService : IDisposable
 {
-    private static readonly string[] AllSources = [AccountSources.Netease, AccountSources.Qq];
+    private static readonly string[] AllSources = [AccountSources.Netease, AccountSources.Qq, AccountSources.Kugou];
 
     private readonly AccountStore _store;
     private readonly NeteaseLoginProvider _netease;
     private readonly NeteaseQqLoginProvider _neteaseQq;
     private readonly QqLoginProvider _qq;
+    private readonly KugouLoginProvider _kugou;
     private readonly QqMusicAppLoginProvider _qqMusic;
     private readonly QqMusicWechatLoginProvider _qqWechat;
     private readonly AccountImporter _importer;
@@ -22,6 +23,7 @@ internal sealed class AccountService : IDisposable
         _netease = new NeteaseLoginProvider(_store);
         _neteaseQq = new NeteaseQqLoginProvider(_netease);
         _qq = new QqLoginProvider(_store);
+        _kugou = new KugouLoginProvider(_store);
         _qqMusic = new QqMusicAppLoginProvider(_store, _qq);
         _qqWechat = new QqMusicWechatLoginProvider(_qq);
         _importer = new AccountImporter(_store);
@@ -97,6 +99,7 @@ internal sealed class AccountService : IDisposable
             AccountSources.Qq when string.Equals(channel, "wechat", StringComparison.OrdinalIgnoreCase)
                 => CreateQqWechatQrAsync(cancellationToken),
             AccountSources.Qq => _qq.CreateQrAsync(cancellationToken),
+            AccountSources.Kugou => _kugou.CreateQrAsync(cancellationToken),
             _ => _netease.CreateQrAsync(cancellationToken),
         };
 
@@ -142,6 +145,11 @@ internal sealed class AccountService : IDisposable
         if (normalized == AccountSources.Qq && key.StartsWith("qm:", StringComparison.Ordinal))
         {
             return Task.FromResult(_qqMusic.Poll(key[3..]));
+        }
+
+        if (normalized == AccountSources.Kugou && key.StartsWith("kg:", StringComparison.Ordinal))
+        {
+            return _kugou.PollAsync(key, cancellationToken);
         }
 
         if (normalized == AccountSources.Qq && key.StartsWith("wx:", StringComparison.Ordinal))
@@ -370,10 +378,20 @@ internal sealed class AccountService : IDisposable
         return results;
     }
 
-    private static string NormalizeSource(string source) =>
-        string.Equals(source, AccountSources.Qq, StringComparison.OrdinalIgnoreCase)
-            ? AccountSources.Qq
-            : AccountSources.Netease;
+    private static string NormalizeSource(string source)
+    {
+        if (string.Equals(source, AccountSources.Qq, StringComparison.OrdinalIgnoreCase))
+        {
+            return AccountSources.Qq;
+        }
+
+        if (string.Equals(source, AccountSources.Kugou, StringComparison.OrdinalIgnoreCase))
+        {
+            return AccountSources.Kugou;
+        }
+
+        return AccountSources.Netease;
+    }
 
     public void Dispose()
     {
@@ -389,6 +407,9 @@ internal sealed class AccountService : IDisposable
         _store.Dispose();
     }
 }
+
+
+
 
 
 
