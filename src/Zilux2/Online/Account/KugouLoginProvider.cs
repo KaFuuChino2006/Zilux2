@@ -64,6 +64,23 @@ internal sealed class KugouLoginProvider
 
     public async Task<LoginStatusResponse> PollAsync(string key, CancellationToken cancellationToken)
     {
+        try
+        {
+            return await PollCoreAsync(key, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            OnlineHttp.Error($"[account] kugou poll failed key={key[..Math.Min(6, key.Length)]}", exception);
+            return new LoginStatusResponse { State = "error", Message = "酷狗登录失败，请刷新二维码重试" };
+        }
+    }
+
+    private async Task<LoginStatusResponse> PollCoreAsync(string key, CancellationToken cancellationToken)
+    {
         var qrKey = key.StartsWith("kg:", StringComparison.Ordinal) ? key[3..] : key;
         var parameters = Merge(new Dictionary<string, string>(StringComparer.Ordinal)
         {
@@ -73,13 +90,26 @@ internal sealed class KugouLoginProvider
             ["qrcode"] = qrKey,
         });
         var body = await SendAsync("https://login-user.kugou.com/v2/get_userinfo_qrcode", parameters, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return ParseStatus(body);
+        }
+        catch (Exception exception)
+        {
+            OnlineHttp.Error($"[account] kugou poll parse failed raw={body[..Math.Min(300, body.Length)]} exception={exception}", exception);
+            return new LoginStatusResponse { State = "error", Message = "酷狗登录状态解析失败" };
+        }
+    }
+
+    private LoginStatusResponse ParseStatus(string body)
+    {
         using var document = JsonDocument.Parse(body);
         if (!document.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object)
         {
             return Waiting("等待扫码…");
         }
 
-        var status = data.TryGetProperty("status", out var statusElement) && statusElement.TryGetInt32(out var value) ? value : 1;
+        var status = ReadStatus(data);
         return status switch
         {
             0 => new LoginStatusResponse { State = "expired", Message = "二维码已过期，请刷新" },
@@ -90,6 +120,20 @@ internal sealed class KugouLoginProvider
         };
     }
 
+    private static int ReadStatus(JsonElement data)
+    {
+        if (!data.TryGetProperty("status", out var node))
+        {
+            return 1;
+        }
+
+        return node.ValueKind switch
+        {
+            JsonValueKind.Number => node.GetInt32(),
+            JsonValueKind.String => int.TryParse(node.GetString(), out var parsed) ? parsed : 1,
+            _ => 1,
+        };
+    }
     private LoginStatusResponse Authorize(JsonElement data)
     {
         var token = ReadString(data, "token");
@@ -111,6 +155,8 @@ internal sealed class KugouLoginProvider
         _store.SaveLogin(AccountSources.Kugou, account, [
             new StoredCookie("kugou", "token", token),
             new StoredCookie("kugou", "userid", userId),
+            new StoredCookie("kugou", "mid", _mid),
+            new StoredCookie("kugou", "dfid", _dfid),
         ]);
         OnlineHttp.Info($"[account] login source=kugou userId={userId}");
         return new LoginStatusResponse { State = "authorized", Message = "登录成功", Account = account };
@@ -167,4 +213,7 @@ internal sealed class KugouLoginProvider
             ? node.GetString() ?? string.Empty
             : string.Empty;
 }
+
+
+
 

@@ -512,6 +512,8 @@ internal sealed class LocalMusicServer : IDisposable
         var cookie = accounts.CookieHeader("kugou", "kugou.com");
         var token = System.Text.RegularExpressions.Regex.Match(cookie, "(?:^|;\\s*)token=([^;]+)").Groups[1].Value;
         var userId = System.Text.RegularExpressions.Regex.Match(cookie, "(?:^|;\\s*)userid=([^;]+)").Groups[1].Value;
+        var mid = System.Text.RegularExpressions.Regex.Match(cookie, "(?:^|;\\s*)mid=([^;]+)").Groups[1].Value;
+        var dfid = System.Text.RegularExpressions.Regex.Match(cookie, "(?:^|;\\s*)dfid=([^;]+)").Groups[1].Value;
         if (string.IsNullOrEmpty(token) || string.IsNullOrEmpty(userId))
         {
             return WriteError(context, 409, "login-required", "请先登录酷狗音乐");
@@ -519,7 +521,7 @@ internal sealed class LocalMusicServer : IDisposable
 
         try
         {
-            using var client = new Zilux2.Online.Kugou.KugouClient();
+            using var client = new Zilux2.Online.Kugou.KugouClient(mid, dfid);
             var body = await client.GetUserPlaylistsAsync(userId, token, 1, 30, _shutdown.Token).ConfigureAwait(false);
             WriteJson(context, 200, body);
             return 200;
@@ -3990,6 +3992,7 @@ internal sealed class LocalMusicServer : IDisposable
 
     private sealed record CoverCacheEntry(byte[] Bytes, string ContentType, DateTimeOffset ExpiresAt);
 }
+
 
 
 
