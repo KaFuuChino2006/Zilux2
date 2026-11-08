@@ -1,4 +1,4 @@
-using System.Linq;
+﻿using System.Linq;
 using System.Net.Http;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -31,10 +31,21 @@ internal static class AccountVerifier
     public static Task<AccountSessionCheck> CheckAsync(
         string source,
         IReadOnlyList<StoredCookie> cookies,
-        CancellationToken cancellationToken) =>
-        string.Equals(source, AccountSources.Qq, StringComparison.OrdinalIgnoreCase)
-            ? CheckQqAsync(cookies, cancellationToken)
-            : CheckNeteaseAsync(cookies, cancellationToken);
+        CancellationToken cancellationToken)
+    {
+        if (string.Equals(source, AccountSources.Qq, StringComparison.OrdinalIgnoreCase))
+        {
+            return CheckQqAsync(cookies, cancellationToken);
+        }
+
+        // 酷狗暂时没有稳定的资料校验接口：保留会话，避免刚登录就被误判失效。
+        if (string.Equals(source, AccountSources.Kugou, StringComparison.OrdinalIgnoreCase))
+        {
+            return Task.FromResult(AccountSessionCheck.Valid());
+        }
+
+        return CheckNeteaseAsync(cookies, cancellationToken);
+    }
 
     private static async Task<AccountSessionCheck> CheckNeteaseAsync(
         IReadOnlyList<StoredCookie> cookies,
@@ -246,3 +257,5 @@ internal static class AccountVerifier
         };
     }
 }
+
+
