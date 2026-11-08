@@ -1,4 +1,4 @@
-using System.Net.Http;
+﻿using System.Net.Http;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -42,18 +42,21 @@ internal sealed class AccountImporter
         }
 
         var isQq = string.Equals(source, AccountSources.Qq, StringComparison.OrdinalIgnoreCase);
-        var normalized = isQq ? AccountSources.Qq : AccountSources.Netease;
+        var isKugou = string.Equals(source, AccountSources.Kugou, StringComparison.OrdinalIgnoreCase);
+        var normalized = isKugou ? AccountSources.Kugou : isQq ? AccountSources.Qq : AccountSources.Netease;
         // Both platforms issue the useful cookies as domain cookies; matching every host they call
         // (c.y.qq.com/u.y.qq.com) keeps provider requests and validation on the same cookie set.
-        var cookies = ParseCookies(raw, isQq ? "qq.com" : "music.163.com");
+        var cookies = ParseCookies(raw, isKugou ? "kugou.com" : isQq ? "qq.com" : "music.163.com");
         if (cookies.Count == 0)
         {
             throw new AccountException("invalid-cookie", "cookie 格式不正确，请粘贴浏览器请求头里的 Cookie 值", 400);
         }
 
-        var info = isQq
-            ? await ImportQqAsync(cookies, raw, cancellationToken).ConfigureAwait(false)
-            : await ImportNeteaseAsync(cookies, raw, cancellationToken).ConfigureAwait(false);
+        var info = isKugou
+            ? await ImportKugouAsync(cookies, raw, cancellationToken).ConfigureAwait(false)
+            : isQq
+                ? await ImportQqAsync(cookies, raw, cancellationToken).ConfigureAwait(false)
+                : await ImportNeteaseAsync(cookies, raw, cancellationToken).ConfigureAwait(false);
         _store.SaveLogin(normalized, info, cookies);
         OnlineHttp.Info($"[account] import source={normalized} ok nickname={info.Nickname ?? "-"} userId={info.UserId ?? "-"}");
         return info;
@@ -126,6 +129,39 @@ internal sealed class AccountImporter
         };
     }
 
+    /// <summary>酷狗 Cookie 导入兜底：cookie 里必须有 token 与 userid，调用用户歌单接口验证。</summary>
+    private static async Task<AccountInfo> ImportKugouAsync(
+        IReadOnlyList<StoredCookie> cookies,
+        string cookieHeader,
+        CancellationToken cancellationToken)
+    {
+        var token = System.Text.RegularExpressions.Regex.Match(cookieHeader, "(?:^|;\\s*)token=([^;]+)").Groups[1].Value.Trim();
+        var userId = System.Text.RegularExpressions.Regex.Match(cookieHeader, "(?:^|;\\s*)userid=([^;]+)").Groups[1].Value.Trim();
+        if (token.Length == 0 || userId.Length == 0)
+        {
+            throw new AccountException("invalid-cookie", "酷狗 cookie 需要包含 token 与 userid", 400);
+        }
+
+        try
+        {
+            using var client = new Zilux2.Online.Kugou.KugouClient();
+            await client.GetUserPlaylistsAsync(userId, token, 1, 1, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            OnlineHttp.Warn($"[account] import kugou validate failed: {OnlineHttp.Describe(exception)}");
+            throw new AccountException("invalid-cookie", "酷狗 cookie 已失效，请在浏览器重新登录后复制", 400);
+        }
+
+        OnlineHttp.Info($"[account] import kugou validated userId={userId}");
+        return new AccountInfo
+        {
+            Source = AccountSources.Kugou,
+            LoggedIn = true,
+            Nickname = "酷狗音乐用户",
+            UserId = userId,
+        };
+    }
     private static async Task<AccountInfo> ImportQqAsync(
         IReadOnlyList<StoredCookie> cookies,
         string cookieHeader,
@@ -565,3 +601,4 @@ internal sealed class AccountImporter
         return null;
     }
 }
+
