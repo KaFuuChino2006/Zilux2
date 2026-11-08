@@ -22,7 +22,7 @@ internal sealed class KugouClient : IDisposable
     {
         _mid = string.IsNullOrWhiteSpace(mid) ? KugouSignature.CalculateMid(Guid.NewGuid().ToString()) : mid;
         _dfid = string.IsNullOrWhiteSpace(dfid) ? "-" : dfid;
-        _http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+        _http = new HttpClient(new HttpClientHandler { UseProxy = false }) { Timeout = TimeSpan.FromSeconds(20) };
         _http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", UserAgent);
     }
 
@@ -130,4 +130,5 @@ internal sealed class KugouClient : IDisposable
     }
     public void Dispose() => _http.Dispose();
 }
+
 

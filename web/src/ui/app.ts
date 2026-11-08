@@ -7418,7 +7418,7 @@ export class App {
       { class: 'login-panel' },
       ...(source === 'netease' ? [channels] : []),
       ...(cookieBtn ? [cookieBtn] : []),
-      h('div', { class: 'login-qr-row' }, qrHost, quickRow),
+      h('div', { class: 'login-qr-row' }, qrHost, source === 'kugou' ? null : quickRow),
       note,
       action,
       hints,
@@ -11595,6 +11595,7 @@ export class App {
 }
 
 export type { App as ZiluxApp };
+
 
 
 

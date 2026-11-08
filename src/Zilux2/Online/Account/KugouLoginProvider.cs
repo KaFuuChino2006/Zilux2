@@ -20,7 +20,7 @@ internal sealed class KugouLoginProvider
     {
         _store = store;
         _mid = KugouSignature.CalculateMid(Guid.NewGuid().ToString());
-        _http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+        _http = new HttpClient(new HttpClientHandler { UseProxy = false }) { Timeout = TimeSpan.FromSeconds(15) };
         _http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", UserAgent);
         _http.DefaultRequestHeaders.TryAddWithoutValidation("Referer", "https://www.kugou.com/");
     }
@@ -152,12 +152,15 @@ internal sealed class KugouLoginProvider
             Nickname = nickname.Length > 0 ? nickname : null,
             UserId = userId,
         };
-        _store.SaveLogin(AccountSources.Kugou, account, [
-            new StoredCookie("kugou", "token", token),
-            new StoredCookie("kugou", "userid", userId),
-            new StoredCookie("kugou", "mid", _mid),
-            new StoredCookie("kugou", "dfid", _dfid),
-        ]);
+        // 必须传 List（CookieJar.Serialize 用源生成的 List<StoredCookie>，数组会在序列化时抛 InvalidCast）。
+        var cookies = new List<StoredCookie>
+        {
+            new("kugou", "token", token),
+            new("kugou", "userid", userId),
+            new("kugou", "mid", _mid),
+            new("kugou", "dfid", _dfid),
+        };
+        _store.SaveLogin(AccountSources.Kugou, account, cookies);
         OnlineHttp.Info($"[account] login source=kugou userId={userId}");
         return new LoginStatusResponse { State = "authorized", Message = "登录成功", Account = account };
     }
@@ -213,6 +216,8 @@ internal sealed class KugouLoginProvider
             ? node.GetString() ?? string.Empty
             : string.Empty;
 }
+
+
 
 
 
