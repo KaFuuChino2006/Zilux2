@@ -7276,14 +7276,23 @@ export class App {
       action.disabled = true;
       syncChannels();
 
-      const primaryChannel = source === 'qq' ? 'qqmusic' : neteaseChannel === 'ptlogin' ? 'ptlogin' : undefined;
+      const primaryChannel = source === 'qq'
+        ? 'qqmusic'
+        : source === 'netease'
+          ? neteaseChannel === 'ptlogin' ? 'ptlogin' : undefined
+          : undefined;
       void requestQr(source, primaryChannel)
         .then((next) => {
           if (cancelled) return;
           session = next;
           showQr();
-          if (!quickBusy) note.textContent = source === 'qq' ? '支持手机 QQ、微信、QQ 音乐 App 扫码登录'
-            : primaryChannel === 'ptlogin' ? '使用手机 QQ 扫码登录网易云音乐' : '使用网易云音乐 App 扫一扫登录';
+          if (!quickBusy) note.textContent = source === 'qq'
+            ? '支持手机 QQ、微信、QQ 音乐 App 扫码登录'
+            : source === 'kugou'
+              ? '使用酷狗 App 扫一扫登录'
+              : primaryChannel === 'ptlogin'
+                ? '使用手机 QQ 扫码登录网易云音乐'
+                : '使用网易云音乐 App 扫一扫登录';
           timer = window.setInterval(() => void poll(), 2000);
         })
         .catch(async (err: unknown) => {
@@ -11595,6 +11604,7 @@ export class App {
 }
 
 export type { App as ZiluxApp };
+
 
 
 
