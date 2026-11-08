@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 跨平台歌词匹配：播放某平台歌曲时，后台去另一个平台按「歌名 + 歌手」找同一首歌的歌词。
  * 优先使用带逐字数据的版本（QQ QRC / 网易云 YRC），没有逐字就保留当前平台的歌词；
  * 无论是否替换，都返回一个匹配度（0~1），供界面显示。
@@ -413,6 +413,30 @@ async function runMatch(
   }
   const cacheKey = `${track.source}:${track.id}`;
   if (cache.has(cacheKey)) return cache.get(cacheKey) ?? null;
+  // 同曲目 AMLL TTML DB：当前没有逐字轨时，优先用同平台 ID 的 AMLL 版本。
+  if (track.source === 'netease' || track.source === 'qq') {
+    try {
+      const amll = await fetchLyric(track.source, track.id, { amll: true });
+      const word = wordDocOf(amll);
+      if (word && word.lines.length > 0) {
+        const result: LyricMatchResult = {
+          score: 1,
+          label: 'AMLL TTML DB',
+          kind: word.kind,
+          lines: word.lines,
+          hasWord: true,
+          hasTranslation: word.hasTranslation,
+          source: track.source,
+          id: track.id,
+        };
+        cache.set(cacheKey, result);
+        return result;
+      }
+    } catch {
+      // AMLL 没有这首歌就继续原有匹配流程。
+    }
+  }
+
 
   const baseText = docText(baseLines);
   // 当前平台歌词是否带翻译：带翻译的整行歌词优先于「只是有逐字、没翻译」的候选。
@@ -595,3 +619,5 @@ export function candidateQueries(track: OnlineTrack): string[] {
 export function matchCacheSize(): number {
   return cache.size;
 }
+
+
