@@ -387,7 +387,7 @@ export function openLyricPicker(track: OnlineTrack | null): void {
     ),
     h('div', { class: 'lp-right' }, preview, progressRow),
   );
-  const amllBtn = h('button', { class: 'btn is-quiet', type: 'button', text: 'AMLL 逐字歌词' });
+  const amllBtn = h('button', { class: 'btn is-quiet', type: 'button', text: 'AMLL 逐字歌词', title: '来源：AMLL TTML DB（CC0）https://github.com/amll-dev/amll-ttml-db' });
   amllBtn.addEventListener('click', () => {
     void (async () => {
       const ok = await applyManualAmllLyric(track);
@@ -450,4 +450,5 @@ export function openLyricPicker(track: OnlineTrack | null): void {
   renderTabs();
   void runSearch();
 }
+
 

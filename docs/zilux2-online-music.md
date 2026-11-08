@@ -219,3 +219,8 @@ Base：`http://127.0.0.1:<port>/api/...`，除 `/api/health` 外都必须带 `&t
 - 回退日志：`[online] qq search fallback=search_for_qq_cp ok n=<n> <ms>ms primary=<status>`；主备都失败时记 `qq search failed: primary=... fallback=...`（含两路状态）并返回 `/api/search` 502（`upstream-failed`）。
 - 2026-10-18 20:12 复测：`tools/online-selftest.ps1` 57 项断言全绿，本轮 QQ 搜索走主端点（5 条，1066ms）；备选端点用 curl 实测 200，字段形状如上（含 `pay.playplay`）。
 
+
+## 歌词来源：AMLL TTML DB
+
+/api/lyric 在平台没有逐字轨时，会用 [AMLL TTML DB](https://github.com/amll-dev/amll-ttml-db)（CC0）按平台 ID 拉取预生成的 .yrc 兜底；mll=1 可强制只取该来源。歌词选择器里的「AMLL 逐字歌词」入口与其它来源并列。
+
