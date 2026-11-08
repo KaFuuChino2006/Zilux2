@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
@@ -108,5 +108,26 @@ internal sealed class KugouClient : IDisposable
         return GetAsync("/v2/search/song", parameters, "android", headers, cancellationToken);
     }
 
+
+    /// <summary>登录用户歌单（/v7/get_all_list）。token/userid 来自账号库，未登录时调用方应先拒绝。</summary>
+    public Task<string> GetUserPlaylistsAsync(
+        string userId,
+        string token,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken)
+    {
+        var parameters = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["userid"] = userId,
+            ["token"] = token,
+            ["total_ver"] = "979",
+            ["type"] = "2",
+            ["page"] = page.ToString(CultureInfo.InvariantCulture),
+            ["pagesize"] = pageSize.ToString(CultureInfo.InvariantCulture),
+        };
+        return GetAsync("/v7/get_all_list", parameters, "android", null, cancellationToken);
+    }
     public void Dispose() => _http.Dispose();
 }
+
