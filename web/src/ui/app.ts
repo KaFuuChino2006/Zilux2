@@ -7398,10 +7398,26 @@ export class App {
     };
     quickRefresh.addEventListener('click', () => void detectQuickAccounts());
     void detectQuickAccounts();
+    const cookieBtn = source === 'kugou'
+      ? h('button', { class: 'login-quick-refresh', type: 'button', text: '导入 Cookie' })
+      : null;
+    cookieBtn?.addEventListener('click', () => {
+      const cookie = window.prompt('粘贴浏览器里的酷狗 Cookie（需要 token、userid）', '');
+      if (!cookie || !cookie.trim()) return;
+      void this.importCookieFor(source, cookie.trim())
+        .then(() => {
+          toast('酷狗 Cookie 已导入');
+          onAccountChanged();
+        })
+        .catch((error: unknown) => {
+          toast(`导入失败：${error instanceof Error ? error.message : String(error)}`, 'error');
+        });
+    });
     const root = h(
       'div',
       { class: 'login-panel' },
       ...(source === 'netease' ? [channels] : []),
+      ...(cookieBtn ? [cookieBtn] : []),
       h('div', { class: 'login-qr-row' }, qrHost, quickRow),
       note,
       action,
@@ -11579,6 +11595,7 @@ export class App {
 }
 
 export type { App as ZiluxApp };
+
 
 
 
