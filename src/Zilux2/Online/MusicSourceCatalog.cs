@@ -1,4 +1,4 @@
-using System.Text.Json.Serialization;
+﻿using System.Text.Json.Serialization;
 
 namespace Zilux2.Online;
 
@@ -160,3 +160,4 @@ internal static class MusicSourceCatalog
 
     public static string Normalize(string source) => Find(source)?.Id ?? source.Trim().ToLowerInvariant();
 }
+

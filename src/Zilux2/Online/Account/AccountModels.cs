@@ -11,6 +11,7 @@ internal static class AccountSources
 {
     public const string Netease = "netease";
     public const string Qq = "qq";
+    public const string Kugou = "kugou";
 
     // 平台清单统一登记在 MusicSourceCatalog：新增平台只改那里。
     public static readonly string[] All = MusicSourceCatalog.All.Select(item => item.Id).ToArray();
@@ -603,4 +604,5 @@ internal static class AvatarEncoding
 internal sealed partial class AccountJsonContext : JsonSerializerContext
 {
 }
+
 
