@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -159,7 +159,7 @@ internal static class QuickLoginProbe
                 var cookies = await core.CookieManager.GetCookiesAsync("https://music.163.com");
                 foreach (var cookie in cookies.Where(c => c.Name == "MUSIC_U")) core.CookieManager.DeleteCookie(cookie);
             }
-            var url = source == AccountSources.Netease
+            var url = source == AccountSources.Netease || source == AccountSources.Qq
                 ? "https://music.163.com/api/sns/authorize?snsType=5&clientType=web2&callbackType=Login&forcelogin=true"
                 : "https://graph.qq.com/oauth2.0/authorize?client_id=100497308&response_type=code&redirect_uri=" +
                     Uri.EscapeDataString(QqLoginProvider.RedirectUri) + "&state=" + _state + "&forcelogin=true";
@@ -390,3 +390,4 @@ internal static class QuickLoginProbe
         }
     }
 }
+
