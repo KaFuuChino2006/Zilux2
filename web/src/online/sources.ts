@@ -83,13 +83,15 @@ const DEFAULT_SOURCES: SourceDescriptor[] = [
     short: '酷',
     accent: '#2fb0ff',
     loginMode: 'image',
-    loginHint: '仅用于歌词搜索',
+    loginHint: '用酷狗 App 扫码登录',
     feedKinds: [],
     supportsWordLyrics: true,
     supportsLikedWrite: false,
     hasDaily30: false,
-    qualities: [],
-    hidden: true,
+    qualities: [
+      { id: '128', label: '标准', detail: '128 kbps · MP3' },
+      { id: '320', label: '高', detail: '320 kbps · MP3' },
+    ],
   },
 ];
 
@@ -214,3 +216,4 @@ export function sourceQualities(id: string): SourceQuality[] {
 export function sourceSupportsQualitySwitch(id: string): boolean {
   return sourceQualities(id).length > 1;
 }
+

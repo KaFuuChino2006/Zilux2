@@ -1,4 +1,4 @@
-﻿using System.Text.Json.Serialization;
+using System.Text.Json.Serialization;
 
 namespace Zilux2.Online;
 
@@ -120,10 +120,10 @@ internal static class MusicSourceCatalog
             Label = "酷狗音乐",
             Short = "酷",
             Accent = "#2fb0ff",
-            // 酷狗只当歌词来源：不做登录 / 播放 / 收藏。
-            Hidden = true,
-            LoginMode = "",
-            LoginHint = "仅用于歌词搜索",
+            // 酷狗：扫码登录 + 歌词；播放与歌单逐步接入。
+            Hidden = false,
+            LoginMode = "image",
+            LoginHint = "用酷狗 App 扫码登录",
             FeedKinds = [],
             // KRC 逐字歌词可解密，前端能逐字点亮
             SupportsWordLyrics = true,
