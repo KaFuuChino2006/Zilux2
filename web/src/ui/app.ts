@@ -7168,7 +7168,11 @@ export class App {
     qrHost.append(spinner);
     const note = h('div', {
       class: 'qr-note',
-      text: source === 'qq' ? '支持手机 QQ、微信、QQ 音乐 App 扫码登录' : '使用手机 QQ 扫码登录网易云音乐',
+      text: source === 'qq'
+        ? '支持手机 QQ、微信、QQ 音乐 App 扫码登录'
+        : source === 'kugou'
+          ? '使用酷狗 App 扫一扫登录'
+          : '使用手机 QQ 扫码登录网易云音乐',
     });
     const action = h('button', { class: 'btn is-primary', text: '刷新二维码' }) as HTMLButtonElement;
     let session: LoginSession | null = null;
@@ -7188,8 +7192,13 @@ export class App {
         if (selected) button.classList.add('is-on'); else button.classList.remove('is-on');
       }
       hints.textContent = '';
-      const labels = source === 'qq' ? ['手机 QQ 扫码', '微信扫一扫', 'QQ 音乐 App 扫码']
-        : neteaseChannel === 'ptlogin' ? ['手机 QQ 扫一扫', '在手机上确认登录网易云'] : ['网易云音乐 App 扫一扫'];
+      const labels = source === 'qq'
+        ? ['手机 QQ 扫码', '微信扫一扫', 'QQ 音乐 App 扫码']
+        : source === 'kugou'
+          ? ['酷狗 App 扫一扫']
+          : neteaseChannel === 'ptlogin'
+            ? ['手机 QQ 扫一扫', '在手机上确认登录网易云']
+            : ['网易云音乐 App 扫一扫'];
       hints.append(...labels.map(text => h('span', { class: 'login-scan-hint', text })));
     };
     const pollRequests = new Set<string>();
@@ -11570,6 +11579,7 @@ export class App {
 }
 
 export type { App as ZiluxApp };
+
 
 
 
