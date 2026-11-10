@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 账号登录客户端（Account v1，docs/zilux2-account-login.md）。
  *
  * 宿主在回环 HTTP 服务上提供 /api/account、/api/account/login/qr、/api/account/login/status、
@@ -316,7 +316,7 @@ export interface QuickAccountInfo {
 export async function quickAccount(source: AccountSource): Promise<QuickAccountInfo> {
   if (isMockOnline()) return { available: false, accounts: [] };
   try {
-    return await request<QuickAccountInfo>('/api/account/quick-account', { source }, 'GET', 20_000);
+    return await request<QuickAccountInfo>('/api/account/quick-account', { source }, 'GET', 35_000);
   } catch {
     return { available: false, accounts: [] };
   }

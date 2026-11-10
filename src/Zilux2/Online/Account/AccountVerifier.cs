@@ -1,7 +1,8 @@
-﻿using System.Linq;
+using System.Linq;
 using System.Net.Http;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Zilux2.Online.Kugou;
 
 namespace Zilux2.Online.Account;
 
@@ -38,13 +39,70 @@ internal static class AccountVerifier
             return CheckQqAsync(cookies, cancellationToken);
         }
 
-        // 酷狗暂时没有稳定的资料校验接口：保留会话，避免刚登录就被误判失效。
+        // 酷狗：get_all_list 是登录态+设备 dfid 的真实校验；返回 20017/20018 说明
+        // token 与 dfid 不匹配或已过期，必须让页面显示「重新登录」，不能继续假装有效。
         if (string.Equals(source, AccountSources.Kugou, StringComparison.OrdinalIgnoreCase))
         {
-            return Task.FromResult(AccountSessionCheck.Valid());
+            return CheckKugouAsync(cookies, cancellationToken);
         }
 
         return CheckNeteaseAsync(cookies, cancellationToken);
+    }
+
+    private static async Task<AccountSessionCheck> CheckKugouAsync(
+        IReadOnlyList<StoredCookie> cookies,
+        CancellationToken cancellationToken)
+    {
+        string Find(params string[] names)
+        {
+            foreach (var name in names)
+            {
+                var cookie = cookies.LastOrDefault(item => string.Equals(item.Name, name, StringComparison.OrdinalIgnoreCase));
+                if (cookie is not null && !string.IsNullOrWhiteSpace(cookie.Value))
+                {
+                    return cookie.Value;
+                }
+            }
+
+            return string.Empty;
+        }
+
+        var token = Find("token", "t");
+        var userId = Find("userid", "KugooID");
+        if (token.Length == 0 || userId.Length == 0)
+        {
+            return AccountSessionCheck.Expired("本地缺少酷狗 token/userid");
+        }
+
+        var mid = Find("mid", "kg_mid");
+        if (mid.Length == 0) mid = KugouDevice.Current.Mid;
+        var dfid = KugouDevice.ResolveDfid(Find("dfid", "kg_dfid"));
+        try
+        {
+            using var client = new KugouClient(mid, dfid);
+            var body = await client
+                .GetUserPlaylistsAsync(userId, token, 1, 30, cancellationToken)
+                .ConfigureAwait(false);
+            using var document = JsonDocument.Parse(body);
+            var root = document.RootElement;
+            if (root.TryGetProperty("status", out var status) && status.ToString() == "1")
+            {
+                return AccountSessionCheck.Valid();
+            }
+
+            var code = root.TryGetProperty("error_code", out var codeNode) ? codeNode.ToString() : "?";
+            return code is "20017" or "20018" or "20015"
+                ? AccountSessionCheck.Expired($"酷狗登录凭证失效（{code}）")
+                : AccountSessionCheck.Unknown($"酷狗校验未通过（{code}）");
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            var message = exception.Message;
+            return message.Contains("HTTP 401", StringComparison.Ordinal) ||
+                   message.Contains("HTTP 403", StringComparison.Ordinal)
+                ? AccountSessionCheck.Expired("酷狗登录凭证已过期")
+                : AccountSessionCheck.Unknown($"酷狗校验请求失败：{message}");
+        }
     }
 
     private static async Task<AccountSessionCheck> CheckNeteaseAsync(

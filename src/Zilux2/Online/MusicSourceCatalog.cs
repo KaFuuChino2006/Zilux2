@@ -124,10 +124,10 @@ internal static class MusicSourceCatalog
             Hidden = false,
             LoginMode = "image",
             LoginHint = "用酷狗 App 扫码登录",
-            FeedKinds = [],
+            FeedKinds = ["recent", "daily"],
             // KRC 逐字歌词可解密，前端能逐字点亮
             SupportsWordLyrics = true,
-            SupportsLikedWrite = false,
+            SupportsLikedWrite = true,
             HasDaily30 = false,
             Qualities = [],
         },

@@ -254,11 +254,11 @@ function hasShortcutsSection(raw: unknown): boolean {
 }
 
 /**
- * 校验并规范化快捷键串：`ctrl+alt+space` → `Ctrl+Alt+Space`。
+ * 校验并规范化快捷键串：`ctrl+alt+space` → `Ctrl+Alt+Space`，`a` → `A`。
  *
  * 规则（与宿主解析器一致）：
  * - 空串合法，表示「不绑定」；
- * - 至少 1 个修饰键（Ctrl/Control/Alt/Shift/Win/Meta）+ 恰好 1 个主键；
+ * - 可以只有 1 个主键（单键），也可以带任意个修饰键（Ctrl/Control/Alt/Shift/Win/Meta）；
  * - 主键白名单：A-Z、0-9、F1-F24、Space/Tab/Enter/Esc/Backspace/Delete/Insert/Home/End/PageUp/PageDown/Up/Down/Left/Right；
  * - 修饰键按 Ctrl → Alt → Shift → Win 顺序输出；非法串返回 fallback。
  */
@@ -268,7 +268,7 @@ export function normalizeShortcutBinding(value: unknown, fallback: string): stri
   if (!trimmed) return '';
   if (trimmed.length > 64) return fallback;
   const parts = trimmed.split('+').map((part) => part.trim()).filter(Boolean);
-  if (parts.length < 2) return fallback;
+  if (parts.length === 0) return fallback;
   const modifiers = new Set<ShortcutModifier>();
   let key: string | null = null;
   for (const part of parts) {
@@ -282,7 +282,7 @@ export function normalizeShortcutBinding(value: unknown, fallback: string): stri
     if (!token || key !== null) return fallback;
     key = token;
   }
-  if (!key || modifiers.size === 0) return fallback;
+  if (!key) return fallback;
   return [...SHORTCUT_MODIFIERS.filter((modifier) => modifiers.has(modifier)), key].join('+');
 }
 
@@ -318,6 +318,10 @@ export interface Settings {
   version: 1;
   general: {
     splash: boolean;
+    /** 启动画面主标题；空串回退 ZILUX2。 */
+    splashTitle: string;
+    /** 启动画面副标题；空串回退默认文案。 */
+    splashSubtitle: string;
     startMaximized: boolean;
     /** 开机自启（HKCU Run）；关闭时启动即注销注册项。 */
     autoLaunch: boolean;
@@ -430,7 +434,7 @@ export type SettingsPatch = {
 
 export const DEFAULT_SETTINGS: Settings = {
   version: 1,
-  general: { splash: true, startMaximized: false, autoLaunch: false, autoStartHidden: true, watchLocalFolder: true, mediaSession: true, desktopLyrics: false, desktopLyricsLocked: false, desktopLyricsFontSize: 40, desktopLyricsWeight: 'normal', desktopLyricsBackdropOpacity: 40, desktopLyricsTopmost: true, backgroundLyrics: false, systemOutputRotation: [] },
+  general: { splash: true, splashTitle: 'ZILUX2', splashSubtitle: '新一代创意播放器', startMaximized: false, autoLaunch: false, autoStartHidden: true, watchLocalFolder: true, mediaSession: true, desktopLyrics: false, desktopLyricsLocked: false, desktopLyricsFontSize: 40, desktopLyricsWeight: 'normal', desktopLyricsBackdropOpacity: 40, desktopLyricsTopmost: true, backgroundLyrics: false, systemOutputRotation: [] },
   appearance: {
     theme: 'frost',
     reduceMotion: false,
@@ -611,6 +615,12 @@ export function normalizeSettings(raw: unknown): Settings {
     version: 1,
     general: {
       splash: asBool(general.splash, DEFAULT_SETTINGS.general.splash),
+      splashTitle: typeof general.splashTitle === 'string'
+        ? general.splashTitle.slice(0, 48)
+        : DEFAULT_SETTINGS.general.splashTitle,
+      splashSubtitle: typeof general.splashSubtitle === 'string'
+        ? general.splashSubtitle.slice(0, 48)
+        : DEFAULT_SETTINGS.general.splashSubtitle,
       startMaximized: asBool(general.startMaximized, DEFAULT_SETTINGS.general.startMaximized),
       autoLaunch: asBool(general.autoLaunch, DEFAULT_SETTINGS.general.autoLaunch),
       autoStartHidden: asBool(general.autoStartHidden, DEFAULT_SETTINGS.general.autoStartHidden),

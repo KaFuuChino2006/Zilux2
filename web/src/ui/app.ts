@@ -1,4 +1,4 @@
-﻿import { openFlowSettingsSheet } from './flowSettingsPanel';
+import { openFlowSettingsSheet } from './flowSettingsPanel';
 /// <reference types="vite/client" />
 /**
  * 应用外壳：顶栏 / 左 rail / 墙面 / 播放条 / 弹层（搜索、设置、账号、登录）。
@@ -118,6 +118,7 @@ import {
   sourceSupportsLikedWrite,
 } from '../online/sources';
 import { onlineArtwork } from '../online/artwork';
+import { resolveMixSources, saveMixSources, type MixKind } from './mixSources';
 import { buildAnalysisSection } from './analysisSection';
 import { autoPlaySettings, listAutoPlayPlaylists, onAutoPlayChange, saveAutoPlaySettings, type AutoPlayPlaylistGroup, type AutoPlaySource } from './autoPlay';
 import {
@@ -152,6 +153,7 @@ import {
 import { lookupCover } from '../online/coverLookup';
 import { h, icon, toast, fmtTime, Disposers } from './dom';
 import { createAppOutputControl, createSystemAudioPanel } from './audioOutputControls';
+import { createMicMixPanel } from './micMixPanel';
 import { createShortcutRows } from './shortcutRow';
 import { airplay, disposeAirplaySubscription } from '../airplay';
 import { disposeAudioTap, startAudioTap, stopAudioTap } from '../core/audioTap';
@@ -220,9 +222,13 @@ import {
 import { buildSleepTimerPanel, completeSleepTimer, getSleepTimerState, subscribeSleepTimer } from './sleepTimer';
 import { bgLyricsCoverStyle, setBgLyricsCoverStyle, type BgLyricsCoverStyle } from './bgLyricsCover';
 import {
+  BG_BRIGHTNESS_MAX,
+  BG_BRIGHTNESS_MIN,
   bgLyricsBlurLevel,
+  bgLyricsBrightness,
   bgLyricsFillMode,
   setBgLyricsBlurLevel,
+  setBgLyricsBrightness,
   setBgLyricsFillMode,
   type BgLyricsBlurLevel,
   type BgLyricsFillMode,
@@ -465,7 +471,7 @@ interface SettingsSubnav {
 /** 每个主分类的子选项分组。字段标签必须与构建代码里的字符串完全一致。 */
 const SETTINGS_SUBNAV: Record<string, SettingsSubGroupSpec[]> = {
   general: [
-    { key: 'startup', label: '启动', labels: ['启动动画', '启动时最大化', '开机自启', '自启动时不显示窗口'] },
+    { key: 'startup', label: '启动', labels: ['启动动画', '启动标题', '启动副标题', '启动时最大化', '开机自启', '自启动时不显示窗口'] },
     {
       key: 'desktop',
       label: '桌面歌词',
@@ -675,6 +681,13 @@ export class App {
   private homeData: HomeData | null = null;
   private feedRailKey: string | null = null;
   private wallHost: HTMLDivElement;
+  /** 歌曲墙右下角悬浮操作：返回顶部 / 定位当前播放。 */
+  private wallShortcuts!: HTMLDivElement;
+  private wallToTopBtn!: HTMLButtonElement;
+  private wallLocateBtn!: HTMLButtonElement;
+  private wallLocateTimer = 0;
+  /** 上一次歌曲墙滚动位置：用来判断方向，控制整行标题/控件收起。 */
+
   /** 「发现」页（懒创建，渲染在 wallHost 里）。 */
   private discover: DiscoverView | null = null;
   private wallPager: WallPager | null = null;
@@ -720,6 +733,9 @@ export class App {
   private likedCache = new Map<OnlineSource, OnlineTrack[]>();
   /** 我喜欢的音乐显示模式：融合（多平台）或单个平台 */
   private likedMode: 'all' | OnlineSource = 'all';
+  /** 融合来源选择浮层（今日推荐 / 我喜欢共用）。 */
+  private mixPicker: HTMLDivElement | null = null;
+  private mixPickerCleanup: (() => void) | null = null;
   /** 封面显示方式：网格卡片 / 横条列表（与首页热门歌单共用偏好） */
   private wallLayout: PosterLayout = readPosterLayout();
   private localQuery = '';
@@ -924,7 +940,25 @@ export class App {
     installStagePulse(this.root);
     this.stage = h('div', { class: 'stage' });
     this.wallHost = h('div', { class: 'wall' });
-    this.wallHost.addEventListener('scroll', () => this.maybeLoadMoreWall(), { passive: true });
+    this.buildWallShortcuts();
+    this.wallHost.addEventListener(
+      'wheel',
+      (event) => {
+        const head = this.wallHost.querySelector<HTMLElement>('.wall-head');
+        if (!head) return;
+        if (event.deltaY < 0) head.classList.remove('is-scrolled-away');
+        else if (this.wallHost.scrollTop > 64) head.classList.add('is-scrolled-away');
+      },
+      { passive: true },
+    );
+    this.wallHost.addEventListener(
+      'scroll',
+      () => {
+        this.maybeLoadMoreWall();
+        this.refreshWallTopState();
+      },
+      { passive: true },
+    );
     this.buildTopbar();
     this.buildMain();
     this.buildPlayerBar();
@@ -947,6 +981,7 @@ export class App {
     // 墙面歌曲行（.track-row）统一走右键菜单：行上带 data-track-key，曲目从当前 wall 里回查。
     this.root.addEventListener('contextmenu', (event) => this.onWallTrackContextMenu(event));
     this.watchSegments();
+    this.bindChoiceDrag();
     // 调试/自动化用：暴露只读播放状态与当前发声元素，便于真机验证。
     (window as unknown as { __ziluxPlayer?: typeof playerState }).__ziluxPlayer = playerState;
     (window as unknown as { __ziluxAudio?: typeof activeAudioElement }).__ziluxAudio = activeAudioElement;
@@ -1464,6 +1499,7 @@ export class App {
       onRecent: () => void this.showRecentWall(),
       onRecommend: () => void this.openRecommendPage(),
       onDaily: () => void this.showDailyWall(),
+      onDailyFilter: (anchor) => this.openMixPicker(anchor, 'daily'),
       onDaily30: () => void this.showDailyWall(true),
       onRadar: () => void this.showRadarWall(),
       onSearch: () => this.focusSearch(),
@@ -1615,6 +1651,7 @@ export class App {
     this.closeLyrics();
     this.homeHost.classList.remove('is-hidden');
     this.wallHost.classList.add('is-hidden');
+    this.wallShortcuts?.classList.remove('is-visible');
     this.setRailActive('home');
     await this.loadHomeData();
   }
@@ -1630,6 +1667,7 @@ export class App {
     this.closeLyrics();
     this.homeHost.classList.add('is-hidden');
     this.wallHost.classList.remove('is-hidden');
+    this.wallShortcuts?.classList.remove('is-visible');
     this.setRailActive('discover');
     if (!this.discover) {
       this.discover = new DiscoverView(this.wallHost, {
@@ -1661,16 +1699,19 @@ export class App {
       try {
         const overview = await fetchLibraryOverview();
         const states = new Map(overview.sources.map((state) => [state.source, state] as const));
-        const likedSources: OnlineSource[] = ['netease', 'qq'];
+        const likedSources = getAccounts()
+          .filter((account) => account.loggedIn && sourceSupportsLikedWrite(account.source))
+          .map((account) => account.source as OnlineSource);
         const loaded = await Promise.all(
           likedSources.map(async (source) => {
             const state = states.get(source);
-            if (!state?.loggedIn) return null;
+            if (!state?.loggedIn || state.error) return null;
             const liked = state.liked;
+            const meta = sourceMeta(source);
             const base: HomeCollection = {
               source,
-              label: source === 'netease' ? '网易云收藏' : 'QQ 音乐收藏',
-              kicker: `${source === 'netease' ? '网易云音乐' : 'QQ 音乐'} · 我喜欢的音乐`,
+              label: `${SOURCE_LABEL[source] ?? meta.label}收藏`,
+              kicker: '我喜欢的音乐',
               loggedIn: true,
               count: liked?.count ?? 0,
               tracks: [],
@@ -1691,10 +1732,11 @@ export class App {
         console.warn('[app] home overview failed', err);
       }
     }
+    const hotSections: LibraryPlaylist[][] = [];
     try {
-      const hot = await fetchHotPlaylists('qq', 14);
-      playlists.push(
-        ...hot.map((item) => ({
+      const hot = await fetchHotPlaylists('qq', 8);
+      hotSections.push(
+        hot.map((item) => ({
           source: item.source,
           id: item.id,
           title: item.title,
@@ -1705,6 +1747,28 @@ export class App {
       );
     } catch (err) {
       console.warn('[app] hot playlists failed', err);
+    }
+    try {
+      const hotKugou = await fetchHotPlaylists('kugou', 8);
+      hotSections.push(
+        hotKugou.map((item) => ({
+          source: item.source,
+          id: item.id,
+          title: item.title,
+          cover: item.cover,
+          count: item.count,
+          creator: item.creator,
+        })),
+      );
+    } catch (err) {
+      console.warn('[app] kugou hot playlists failed', err);
+    }
+    const hotLongest = Math.max(0, ...hotSections.map((items) => items.length));
+    for (let index = 0; index < hotLongest; index += 1) {
+      for (const items of hotSections) {
+        const item = items[index];
+        if (item) playlists.push(item);
+      }
     }
     try {
       const hotNetease = await fetchHotPlaylists('netease', 14);
@@ -1801,7 +1865,7 @@ export class App {
       radarLoading: false,
       radar,
       recent,
-      playlists: playlists.slice(0, 14),
+      playlists: playlists.slice(0, 21),
       neteasePlaylists: neteasePlaylists.slice(0, 14),
       recommendPlaylists: recommendPlaylists.slice(0, 14),
     };
@@ -1828,14 +1892,14 @@ export class App {
         ? [preferred]
         : []
       : this.likedMode === 'all'
-        ? sourceIds().filter((id) => sourceSupportsLikedWrite(id))
+        ? this.likedMixSources()
         : [this.likedMode];
     let tracks: OnlineTrack[] = [];
     for (const source of modes) {
       const list = await this.fetchLikedTracks(source);
-      if (list && list.length > 0) tracks = tracks.concat(list);
+      if (list && list.length > 0) tracks = tracks.concat(list.filter((track) => track.playable));
     }
-    if (tracks.length === 0) tracks = this.homeData?.collections.flatMap((item) => item.tracks).slice(0, 30) ?? [];
+    if (tracks.length === 0) tracks = this.homeData?.collections.flatMap((item) => item.tracks).filter((track) => track.playable).slice(0, 30) ?? [];
     if (tracks.length === 0) {
       toast('收藏列表还没有歌曲', 'error');
       return;
@@ -1919,12 +1983,7 @@ export class App {
 
   /** 取所有已登录平台的今日推荐并合并；返回轨道 + 展示用的平台名。 */
   private async fetchDailyMerged(limitPerSource: number): Promise<{ tracks: OnlineTrack[]; label: string; sources: string[] }> {
-    const known = sourceIds();
-    const sources = getAccounts()
-      .filter((item) => item.loggedIn && known.includes(item.source))
-      // 只合并真正提供「每日推荐」流的平台（酷狗等无推荐流的平台跳过，避免空请求）。
-      .filter((item) => (sourceMeta(item.source)?.feedKinds ?? []).includes('daily'))
-      .map((item) => item.source);
+    const sources = this.dailyMixSources();
     if (sources.length === 0) return { tracks: [], label: '', sources: [] };
     const lists = await Promise.all(
       sources.map(async (source) => {
@@ -1984,6 +2043,139 @@ export class App {
     }
   }
 
+  /** 切换今日推荐融合平台后，只刷新首页今日推荐卡，或当前今日推荐墙。 */
+  private async refreshDailyMix(): Promise<void> {
+    if (this.wall.kind === 'feed' && this.wall.title === '今日推荐') {
+      void this.showDailyWall();
+      return;
+    }
+
+    const data = this.homeData;
+    if (!data) return;
+    const merged = await this.fetchDailyMerged(60);
+    const next: HomeData = {
+      ...data,
+      daily: merged.tracks,
+      dailySource: merged.label,
+      dailyLoading: false,
+    };
+    this.homeData = next;
+    this.classicHome?.updateDaily(next);
+  }
+
+  /** 今日推荐 / 我喜欢「融合」的平台选择浮层。 */
+  private openMixPicker(anchor: HTMLElement, kind: MixKind): void {
+    this.closeMixPicker();
+    const available = (kind === 'daily' ? this.dailyAllSources() : this.likedAllSources()).filter((source) =>
+      kind === 'daily'
+        ? (sourceMeta(source)?.feedKinds ?? []).includes('daily')
+        : sourceSupportsLikedWrite(source),
+    );
+    if (available.length === 0) {
+      toast(kind === 'daily' ? '登录后才可以选择今日推荐的平台' : '登录后才可以选择喜欢的平台');
+      return;
+    }
+
+    const selected = new Set(resolveMixSources(kind, available));
+    const picker = h('div', {
+      class: 'mix-picker',
+      role: 'dialog',
+      'aria-label': kind === 'daily' ? '今日推荐混合平台' : '我喜欢混合平台',
+    });
+    const title = kind === 'daily' ? '今日推荐 · 混合平台' : '我喜欢的音乐 · 混合平台';
+    const closeBtn = h('button', { class: 'mix-picker-close', type: 'button', title: '关闭' }, icon('close', 15));
+    closeBtn.addEventListener('click', () => this.closeMixPicker());
+    const head = h(
+      'div',
+      { class: 'mix-picker-head' },
+      h('div', { class: 'mix-picker-title', text: title }),
+      closeBtn,
+    );
+    const list = h('div', { class: 'mix-picker-list' });
+    const note = h('div', { class: 'mix-picker-note', text: '勾选参与融合的平台；全部取消时融合列表会为空。' });
+
+    const apply = (): void => {
+      saveMixSources(kind, available, [...selected]);
+      if (kind === 'daily') void this.refreshDailyMix();
+      else if (this.wall.kind === 'liked' && this.likedMode === 'all') void this.showLiked('all');
+    };
+
+    const renderRows = (): void => {
+      list.textContent = '';
+      for (const source of available) {
+        const on = selected.has(source);
+        const meta = sourceMeta(source);
+        const row = h(
+          'button',
+          {
+            class: `mix-picker-row${on ? ' is-on' : ''}`,
+            type: 'button',
+            role: 'checkbox',
+            'aria-checked': on ? 'true' : 'false',
+          },
+          h('span', { class: 'mix-picker-check', text: on ? '✓' : '' }),
+          h('span', { class: `source-dot ${source}`, text: meta.short }),
+          h('span', { class: 'mix-picker-name', text: meta.label }),
+          h('span', { class: 'mix-picker-state', text: on ? '参与融合' : '已隐藏' }),
+        );
+        row.addEventListener('click', () => {
+          if (selected.has(source)) selected.delete(source);
+          else selected.add(source);
+          renderRows();
+          apply();
+        });
+        list.append(row);
+      }
+    };
+    renderRows();
+
+    const selectAll = h('button', { class: 'mix-picker-link', type: 'button', text: '全选' });
+    selectAll.addEventListener('click', () => {
+      available.forEach((source) => selected.add(source));
+      renderRows();
+      apply();
+    });
+    const clear = h('button', { class: 'mix-picker-link', type: 'button', text: '清空' });
+    clear.addEventListener('click', () => {
+      selected.clear();
+      renderRows();
+      apply();
+    });
+    const foot = h('div', { class: 'mix-picker-foot' }, selectAll, clear);
+
+    picker.append(head, list, foot, note);
+    document.body.append(picker);
+    this.mixPicker = picker;
+    const rect = anchor.getBoundingClientRect();
+    const width = 252;
+    const left = Math.min(Math.max(12, rect.right - width), Math.max(12, window.innerWidth - width - 12));
+    const top = Math.min(Math.max(12, rect.bottom + 8), Math.max(12, window.innerHeight - 320));
+    picker.style.left = `${Math.round(left)}px`;
+    picker.style.top = `${Math.round(top)}px`;
+
+    const onPointerDown = (event: PointerEvent): void => {
+      if (!(event.target instanceof Node)) return;
+      if (picker.contains(event.target) || anchor.contains(event.target)) return;
+      this.closeMixPicker();
+    };
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') this.closeMixPicker();
+    };
+    document.addEventListener('pointerdown', onPointerDown, true);
+    document.addEventListener('keydown', onKeyDown, true);
+    this.mixPickerCleanup = () => {
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      document.removeEventListener('keydown', onKeyDown, true);
+    };
+  }
+
+  private closeMixPicker(): void {
+    this.mixPickerCleanup?.();
+    this.mixPickerCleanup = null;
+    this.mixPicker?.remove();
+    this.mixPicker = null;
+  }
+
   private async showDailyWall(qqDaily = false): Promise<void> {
     this.navBefore();
     this.wallPager = null;
@@ -2014,12 +2206,26 @@ export class App {
     }
 
     // 多平台合并的今日推荐
-    const merged = await this.fetchDailyMerged(60);
-    if (merged.tracks.length === 0) {
+    const allSources = this.dailyAllSources();
+    if (allSources.length === 0) {
       toast('登录后才有今日推荐');
       this.openLogin();
       return;
     }
+
+    const merged = await this.fetchDailyMerged(60);
+    const selected = this.dailyMixSources();
+    if (selected.length === 0) {
+      this.wall = {
+        kind: 'feed',
+        title,
+        subtitle: '未选择融合平台 · 点右上角「平台」选择',
+        tracks: [],
+      };
+      this.renderWall();
+      return;
+    }
+
     this.wall = {
       kind: 'feed',
       title,
@@ -2099,6 +2305,104 @@ export class App {
   }
 
   /* ------------------------------------------------------------------ */
+  /* 歌曲墙右下角快捷操作                                                */
+  /* ------------------------------------------------------------------ */
+
+  private buildWallShortcuts(): void {
+    this.wallToTopBtn = h('button', {
+      class: 'wall-shortcut',
+      type: 'button',
+      title: '快速返回顶部',
+      'aria-label': '快速返回顶部',
+    }) as HTMLButtonElement;
+    this.wallToTopBtn.append(icon('chevronUp', 18));
+    this.wallToTopBtn.addEventListener('click', () => {
+      this.wallHost.scrollTo({ top: 0, behavior: 'smooth' });
+      const head = this.wallHost.querySelector<HTMLElement>('.wall-head');
+      head?.classList.remove('is-scrolled-away');
+      this.refreshWallShortcuts();
+    });
+
+    this.wallLocateBtn = h('button', {
+      class: 'wall-shortcut',
+      type: 'button',
+      title: '定位到当前播放歌曲',
+      'aria-label': '定位到当前播放歌曲',
+    }) as HTMLButtonElement;
+    this.wallLocateBtn.append(icon('target', 18));
+    this.wallLocateBtn.addEventListener('click', () => {
+      const current = playerState().track;
+      if (!current) {
+        toast('先播放一首歌再定位', 'info');
+        return;
+      }
+      const nodes = Array.from(
+        this.wallHost.querySelectorAll<HTMLElement>('.poster[data-track-key],.track-row[data-track-key]'),
+      ).filter((node) => node.dataset.trackKey === `${current.source}:${current.id}`);
+      if (!nodes.length) {
+        toast('当前播放歌曲不在这个列表里', 'info');
+        return;
+      }
+      const node = nodes[0];
+      window.clearTimeout(this.wallLocateTimer);
+      nodes.forEach((item) => item.classList.remove('is-located'));
+      // 重新触发 CSS animation：即使目标没有换，也要先清空类、强制一次布局再挂回。
+      nodes.forEach((item) => void item.offsetWidth);
+      nodes.forEach((item) => item.classList.add('is-located'));
+      const host = this.wallHost;
+      const hostRect = host.getBoundingClientRect();
+      const nodeRect = node.getBoundingClientRect();
+      const centered =
+        host.scrollTop + nodeRect.top - hostRect.top - (host.clientHeight - nodeRect.height) / 2;
+      host.scrollTo({ top: Math.max(0, centered), behavior: 'smooth' });
+      // 动画 3.2s；多留 300ms，确保徽标和光环完全淡出后再摘类。
+      this.wallLocateTimer = window.setTimeout(
+        () => nodes.forEach((item) => item.classList.remove('is-located')),
+        3500,
+      );
+    });
+
+    this.wallShortcuts = h('div', { class: 'wall-shortcuts', 'aria-hidden': 'true' }, this.wallToTopBtn, this.wallLocateBtn);
+    this.root.append(this.wallShortcuts);
+  }
+
+  /** 当前播放歌曲在当前墙体 DOM 里的节点；不在这个列表时就返回 null。 */
+  private currentWallTrackNode(): HTMLElement | null {
+    const current = playerState().track;
+    if (!current) return null;
+    const key = `${current.source}:${current.id}`;
+    const nodes = this.wallHost.querySelectorAll<HTMLElement>('.poster[data-track-key],.track-row[data-track-key]');
+    for (const node of Array.from(nodes)) {
+      if (node.dataset.trackKey === key) return node;
+    }
+    return null;
+  }
+
+  /** 滚动时只更新「回到顶部」的暗显状态，避免每帧遍历整面歌曲墙。 */
+  private refreshWallTopState(): void {
+    this.wallToTopBtn?.classList.toggle('is-idle', this.wallHost.scrollTop < 8);
+  }
+
+  /** 同步右下角两个按钮的可见/可用状态；滚动、换歌、换墙、开歌词都会调用。 */
+  private refreshWallShortcuts(): void {
+    if (!this.wallShortcuts) return;
+    const hasWall = !this.wallHost.classList.contains('is-hidden') && !this.root.classList.contains('is-lyrics-open');
+    const hasTracks = this.wall.tracks.length > 0 && !['recommend', 'moods', 'stats', 'playlists'].includes(this.wall.kind);
+    const visible = hasWall && hasTracks;
+    this.wallShortcuts.classList.toggle('is-visible', visible);
+    this.wallShortcuts.setAttribute('aria-hidden', visible ? 'false' : 'true');
+    this.wallToTopBtn.classList.toggle('is-idle', this.wallHost.scrollTop < 8);
+    const canLocate = !!this.currentWallTrackNode();
+    this.wallLocateBtn.disabled = false;
+    this.wallLocateBtn.classList.toggle('is-unavailable', !canLocate);
+    this.wallLocateBtn.title = canLocate
+      ? '定位到当前播放歌曲'
+      : playerState().track
+        ? '当前播放歌曲不在这个列表里'
+        : '当前没有播放歌曲';
+  }
+
+  /* ------------------------------------------------------------------ */
   /* 墙面                                                                */
   /* ------------------------------------------------------------------ */
 
@@ -2124,6 +2428,8 @@ export class App {
       const needle = this.localQuery.trim().toLowerCase();
       tracks = tracks.filter((track) => track.title.toLowerCase().includes(needle) || (track.artist ?? '').toLowerCase().includes(needle));
     }
+    this.refreshWallShortcuts();
+    queueMicrotask(() => this.refreshWallShortcuts());
     const actions: HTMLElement[] = [];
     if (this.wall.kind !== 'search' && tracks.length > 0 && !this.isLocalArtistGrid()) {
       const seg = h('div', { class: 'seg seg-sm layout-modes' });
@@ -2149,11 +2455,21 @@ export class App {
       });
       actions.push(seg);
     }
+    if (this.wall.kind === 'feed' && this.wall.title === '今日推荐' && this.dailyAllSources().length > 1) {
+      const filter = h(
+        'button',
+        { class: 'pill mix-filter-btn', type: 'button', title: '选择今日推荐融合哪些平台' },
+        icon('sliders', 15),
+        h('span', { text: '平台' }),
+      );
+      filter.addEventListener('click', () => this.openMixPicker(filter, 'daily'));
+      actions.push(filter);
+    }
     if (this.wall.kind === 'liked') {
       const modes: Array<{ id: 'all' | OnlineSource; label: string }> = [{ id: 'all', label: '融合' }];
       for (const account of getAccounts()) {
         if (!account.loggedIn) continue;
-        // 酷狗等没有「我喜欢的音乐」曲库的平台不参与喜欢墙的平台切换。
+        // 只有真正能读写「我喜欢的音乐」的平台参与喜欢墙的平台切换。
         if (!sourceSupportsLikedWrite(account.source)) continue;
         modes.push({ id: account.source as OnlineSource, label: sourceMeta(account.source).short });
       }
@@ -2172,6 +2488,16 @@ export class App {
           seg.append(btn);
         });
         actions.push(seg);
+      }
+      if (this.likedMode === 'all' && modes.length > 2) {
+        const filter = h(
+          'button',
+          { class: 'pill mix-filter-btn', type: 'button', title: '选择融合哪些平台的喜欢' },
+          icon('sliders', 15),
+          h('span', { text: '平台' }),
+        );
+        filter.addEventListener('click', () => this.openMixPicker(filter, 'liked'));
+        actions.push(filter);
       }
     }
     if (this.wall.kind === 'local') {
@@ -2378,7 +2704,7 @@ export class App {
         this.wall.kind === 'local'
           ? '选择本地歌曲文件夹后，会在这里生成海报墙'
           : this.wall.kind === 'liked'
-            ? '还没有同步到「我喜欢的音乐」\n登录网易云 / QQ 音乐后会自动填充'
+            ? '还没有同步到「我喜欢的音乐」\n登录在线平台后会自动填充'
             : '没有结果';
       this.wallHost.append(h('div', { class: 'wall-empty', text: hint }));
       return;
@@ -2562,6 +2888,26 @@ export class App {
     }
   }
 
+  private likedAllSources(): OnlineSource[] {
+    return getAccounts()
+      .filter((item) => item.loggedIn && sourceSupportsLikedWrite(item.source))
+      .map((item) => item.source as OnlineSource);
+  }
+
+  private likedMixSources(): OnlineSource[] {
+    return resolveMixSources('liked', this.likedAllSources()) as OnlineSource[];
+  }
+
+  private dailyAllSources(): OnlineSource[] {
+    return getAccounts()
+      .filter((item) => item.loggedIn && (sourceMeta(item.source)?.feedKinds ?? []).includes('daily'))
+      .map((item) => item.source as OnlineSource);
+  }
+
+  private dailyMixSources(): OnlineSource[] {
+    return resolveMixSources('daily', this.dailyAllSources()) as OnlineSource[];
+  }
+
   private async showLiked(mode?: 'all' | OnlineSource): Promise<void> {
     this.navBefore();
     this.wallPager = null;
@@ -2615,12 +2961,14 @@ export class App {
   private async playRailList(kind: 'liked' | 'recent'): Promise<void> {
     if (kind === 'liked') {
       await this.showLiked();
-      if (this.wall.kind === 'liked' && this.wall.tracks.length > 0) playQueue(this.wall.tracks, 0, true);
+      const playable = this.wall.kind === 'liked' ? this.wall.tracks.filter((track) => track.playable) : [];
+      if (playable.length > 0) playQueue(playable, 0, true);
       else toast('收藏列表还没有可播放的歌曲', 'error');
       return;
     }
     await this.showRecentWall();
-    if (this.wall.kind === 'recent' && this.wall.tracks.length > 0) playQueue(this.wall.tracks, 0, true);
+    const playable = this.wall.kind === 'recent' ? this.wall.tracks.filter((track) => track.playable) : [];
+    if (playable.length > 0) playQueue(playable, 0, true);
     else toast('最近播放还没有可播放的歌曲', 'error');
   }
 
@@ -2642,14 +2990,25 @@ export class App {
 
   /** 融合显示：各登录平台轮流取一首，按平台交错排列。 */
   private async loadLikedMerged(): Promise<void> {
-    const sources = getAccounts()
-      .filter((item) => item.loggedIn && sourceSupportsLikedWrite(item.source))
-      .map((item) => item.source as OnlineSource);
-    if (sources.length === 0) {
-      this.wall = { kind: 'liked', title: '我喜欢的音乐', subtitle: '登录网易云 / QQ 音乐后自动同步', tracks: [] };
+    const allSources = this.likedAllSources();
+    const sources = resolveMixSources('liked', allSources) as OnlineSource[];
+    if (allSources.length === 0) {
+      this.wall = { kind: 'liked', title: '我喜欢的音乐', subtitle: '登录在线平台后自动同步', tracks: [] };
       this.renderWall();
       return;
     }
+
+    if (sources.length === 0) {
+      this.wall = {
+        kind: 'liked',
+        title: '我喜欢的音乐',
+        subtitle: '未选择融合平台 · 点右上角「平台」选择',
+        tracks: [],
+      };
+      this.renderWall();
+      return;
+    }
+
     const lists = await Promise.all(sources.map((source) => this.fetchLikedTracks(source)));
     const available = sources
       .map((source, index) => ({ source, tracks: lists[index] ?? [] }))
@@ -2698,7 +3057,7 @@ export class App {
         this.wall = {
           kind: 'liked',
           title: '我喜欢的音乐',
-          subtitle: state?.loggedIn ? '这个平台还没有喜欢的歌曲' : `${SOURCE_LABEL[source]} 未登录`,
+          subtitle: state?.error ?? (state?.loggedIn ? '这个平台还没有喜欢的歌曲' : `${SOURCE_LABEL[source]} 未登录`),
           tracks: [],
         };
         this.renderWall();
@@ -3152,7 +3511,7 @@ export class App {
       });
       host.append(
         h('h3', { class: 'section-title', text: '在线歌单' }),
-        h('div', { class: 'empty', text: '登录网易云 / QQ 音乐后，这里会显示在线歌单' }),
+        h('div', { class: 'empty', text: '登录在线平台后，这里会显示在线歌单' }),
         h('div', { class: 'local-playlist-login' }, loginBtn),
       );
       return;
@@ -3162,6 +3521,8 @@ export class App {
       const overview = await fetchLibraryOverview();
       if (!host.isConnected) return;
       host.textContent = '';
+      const jump = h('div', { class: 'online-playlist-jump' });
+      host.append(jump);
       let any = false;
       for (const state of overview.sources) {
         if (!state.loggedIn) continue;
@@ -3170,7 +3531,17 @@ export class App {
         items.push(...state.playlists);
         if (items.length === 0) continue;
         any = true;
-        host.append(h('h3', { class: 'section-title', text: `${SOURCE_LABEL[state.source]} · ${items.length} 个歌单` }));
+        const heading = h('h3', { class: 'section-title', text: `${SOURCE_LABEL[state.source]} · ${items.length} 个歌单` });
+        const jumpBtn = h('button', {
+          class: 'online-playlist-jump-btn',
+          type: 'button',
+          text: `${SOURCE_LABEL[state.source]} ${items.length}`,
+        });
+        jumpBtn.addEventListener('click', () => {
+          heading.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+        jump.append(jumpBtn);
+        host.append(heading);
         const grid = h('div', { class: 'disc-grid' });
         items.forEach((item) => {
           const cover =
@@ -3198,7 +3569,8 @@ export class App {
         });
         host.append(grid);
       }
-      if (!any) host.append(h('div', { class: 'empty', text: '这两个平台暂时没有歌单' }));
+      jump.hidden = !any || jump.childElementCount < 2;
+      if (!any) host.append(h('div', { class: 'empty', text: '这些平台暂时没有歌单' }));
     } catch (err) {
       console.warn('[app] playlists failed', err);
       if (!host.isConnected) return;
@@ -3256,7 +3628,7 @@ export class App {
         h('div', { class: 'row-artist', text: track.artist || '未知歌手' }),
       ),
       options?.badge ? this.sourceTag(track.source) : null,
-      h('div', { class: 'row-dur', text: fmtTime(track.durationMs) }),
+      h('div', { class: 'row-dur', text: track.durationMs > 0 ? fmtTime(track.durationMs) : '--:--' }),
     );
     row.addEventListener('click', () => {
       playQueue(queue, index, true);
@@ -3529,7 +3901,7 @@ export class App {
       return;
     }
     try {
-      if (liked) await addLikedTrack(track.source, track.id);
+      if (liked) await addLikedTrack(track.source, track.id, { title: track.title, artist: track.artist });
       else await removeLikedTrack(track.source, track.id);
       this.searchLiked.set(`${track.source}:${track.id}`, liked);
       this.likedCache.clear();
@@ -4045,7 +4417,7 @@ export class App {
           h('div', { class: 'track-artist', text: track.artist || '未知歌手' }),
         ),
         this.sourceTag(track.source),
-        h('div', { class: 'track-dur', text: fmtTime(track.durationMs) }),
+        h('div', { class: 'track-dur', text: track.durationMs > 0 ? fmtTime(track.durationMs) : '--:--' }),
         infoBtn,
         localRow ? likeBtn : downloadBtn,
         localRow ? moreBtn : likeBtn,
@@ -4344,7 +4716,7 @@ export class App {
     this.searchLikeBusy.add(key);
     this.applyLikeVisual(track, next, button);
     try {
-      if (next) await addLikedTrack(track.source, track.id);
+      if (next) await addLikedTrack(track.source, track.id, { title: track.title, artist: track.artist });
       else await removeLikedTrack(track.source, track.id);
       this.searchLiked.set(key, next);
       this.likedCache.clear();
@@ -4982,6 +5354,44 @@ export class App {
           h('div', { class: 'set-row-control' }, sw.root),
         );
       };
+      const textField = (
+        label: string,
+        hint: string,
+        value: string,
+        onSave: (next: string) => void,
+      ): HTMLDivElement => {
+        const input = h('input', {
+          class: 'updates-input',
+          type: 'text',
+          maxlength: '48',
+          spellcheck: 'false',
+        });
+        input.value = value;
+        const save = (): void => {
+          const next = input.value.trim();
+          if (next === value) return;
+          onSave(next);
+        };
+        input.addEventListener('change', save);
+        input.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            save();
+            input.blur();
+          }
+        });
+        return h(
+          'div',
+          { class: 'field set-row' },
+          h(
+            'div',
+            { class: 'set-row-main' },
+            h('div', { class: 'field-label set-row-label', text: label }),
+            h('div', { class: 'field-hint set-row-hint', text: hint }),
+          ),
+          h('div', { class: 'set-row-control' }, input),
+        );
+      };
       const segField = <T extends string>(label: string, options: Array<{ value: T; label: string }>, value: T, onChange: (next: T) => void, hint?: string): HTMLDivElement => {
         const seg = h('div', { class: 'seg set-seg' });
         options.forEach((option) => {
@@ -5064,6 +5474,12 @@ export class App {
         '通用',
         toggleField('启动动画', '打开软件时播放启动画面', settings.general.splash, (value) => {
           patchSettings({ general: { splash: value } });
+        }),
+        textField('启动标题', '启动画面的大标题，留空则使用 ZILUX2', settings.general.splashTitle, (value) => {
+          patchSettings({ general: { splashTitle: value } });
+        }),
+        textField('启动副标题', '启动画面标题下的一行小字，留空则不显示', settings.general.splashSubtitle, (value) => {
+          patchSettings({ general: { splashSubtitle: value } });
         }),
         toggleField('启动时最大化', '下次启动直接铺满屏幕', settings.general.startMaximized, (value) => {
           patchSettings({ general: { startMaximized: value } });
@@ -5481,6 +5897,16 @@ export class App {
         })(),
       );
 
+      // 麦克风混音：把本软件音乐 + 物理麦克风送到虚拟音频线，语音软件选 CABLE Output。
+      const micMix = section(
+        '麦克风混音',
+        (() => {
+          const panel = createMicMixPanel();
+          this.sheetScope?.add(() => panel.dispose());
+          return panel.root;
+        })(),
+      );
+
       // 音效（渐变 / 响度）
       const sound = section(
         '音效',
@@ -5655,17 +6081,24 @@ export class App {
         accountSection.append(
           h(
             'div',
-            { class: 'field' },
-            h('div', {
-              class: 'field-label',
-              text: `${SOURCE_LABEL[source]}${
-                info.loggedIn
-                  ? ` · ${info.nickname ?? ''}`
-                  : expired
-                    ? ' · 登录已失效'
-                    : ' · 未登录'
-              }`,
-            }),
+            { class: 'field account-setting-row' },
+            h(
+              'div',
+              { class: 'account-setting-id' },
+              info.avatarDataUrl
+                ? h('img', { class: 'account-row-avatar', src: info.avatarDataUrl, alt: '' })
+                : h('span', { class: 'account-row-avatar account-dot', text: sourceMeta(source).short }),
+              h('div', {
+                class: 'field-label',
+                text: `${SOURCE_LABEL[source]}${
+                  info.loggedIn
+                    ? ` · ${info.nickname ?? ''}`
+                    : expired
+                      ? ' · 登录已失效'
+                      : ' · 未登录'
+                }`,
+              }),
+            ),
             action,
           ),
         );
@@ -6095,6 +6528,7 @@ export class App {
         { key: 'appearance', label: '外观', node: appearance },
         { key: 'playback', label: '播放', node: playback },
         { key: 'systemAudio', label: '系统音频', node: systemAudio },
+        { key: 'micMix', label: '麦克风混音', node: micMix },
         { key: 'sound', label: '音效', node: sound },
         { key: 'preview', label: '试听', node: preview },
         { key: 'transition', label: '过渡', node: transitionPage },
@@ -6228,7 +6662,7 @@ export class App {
           status.remove();
           const usable = groups.filter((group) => group.loggedIn && group.playlists.length > 0);
           if (usable.length === 0) {
-            list.append(h('div', { class: 'field-hint', text: '没有可选的个人歌单：先登录网易云 / QQ 音乐，让个人库同步后再来。' }));
+            list.append(h('div', { class: 'field-hint', text: '没有可选的个人歌单：先登录在线平台，让个人库同步后再来。' }));
             return;
           }
           usable.forEach((group) => {
@@ -6509,7 +6943,7 @@ export class App {
         refs.row.classList.toggle('is-recording', recording === action);
         refs.row.classList.toggle('is-disabled', !current.shortcuts.enabled);
         refs.record.disabled = !current.shortcuts.enabled;
-        refs.record.textContent = recording === action ? '按下按键或组合…（Esc 取消）' : '重新录制';
+        refs.record.textContent = recording === action ? '按下单键或组合…（Esc 取消）' : '重新录制';
         if (recording === action) {
           refs.status.textContent = recordHint || '按下单个按键或组合；Backspace / Delete 清除，Esc 取消';
           refs.status.dataset.kind = 'recording';
@@ -6554,7 +6988,12 @@ export class App {
       const label = SHORTCUT_LABELS[action].label;
       patchShortcut(action, normalized);
       stopRecording();
-      toast(`快捷键已更新：${label} → ${formatShortcutForDisplay(normalized)}`);
+      const single = !normalized.includes('+');
+      toast(
+        single
+          ? `快捷键已更新：${label} → ${formatShortcutForDisplay(normalized)}（单键全局生效，输入文字时也会触发）`
+          : `快捷键已更新：${label} → ${formatShortcutForDisplay(normalized)}`,
+      );
     }
 
     function startRecording(action: ShortcutAction): void {
@@ -6645,7 +7084,7 @@ export class App {
         { class: 'field' },
         h('div', {
           class: 'shortcut-tip',
-          text: '全局快捷键在应用后台 / 最小化到托盘时也会生效；组合被系统或其它程序占用时，宿主会回落到默认组合或在行内提示占用；修改后立即生效，仅保存在本机设置里。',
+          text: '全局快捷键在应用后台 / 最小化到托盘时也会生效；支持单个按键（如 F5、A、Space）或任意组合。单键会全局触发，输入文字时也会响应，建议优先用 F1–F24 或搭配 Ctrl / Alt / Shift / Win；组合被系统或其它程序占用时，宿主会回落到默认组合或在行内提示占用；修改后立即生效，仅保存在本机设置里。',
         }),
       ),
       h(
@@ -7346,6 +7785,9 @@ export class App {
     const quickRefresh = h('button', { class: 'login-quick-refresh', type: 'button', text: '重新检测' });
     const quickRow = h('div', { class: 'login-quick' },
       h('div', { class: 'login-quick-title', text: '本机 QQ 快捷登录' }), quickStatus, quickAccounts, quickRefresh);
+    // WebView2 是 Chromium，QQ 的本地快捷登录插件加载不了；没有可用头像时直接隐藏整块，
+    // 不再在扫码框旁边显示“内嵌浏览器不支持”这种技术提示。扫码登录仍然完整可用。
+    quickRow.hidden = true;
     let detecting = false;
     const detectQuickAccounts = async (): Promise<void> => {
       if (cancelled || quickBusy || detecting) return;
@@ -7357,7 +7799,9 @@ export class App {
       if (cancelled) return;
       quickRefresh.disabled = false;
       quickAccounts.textContent = '';
-      quickStatus.textContent = info.available && info.accounts?.length ? '选择头像直接登录' : '未检测到可用 QQ，请先登录电脑 QQ';
+      const hasQuickAccounts = info.available && (info.accounts?.length ?? 0) > 0;
+      quickRow.hidden = !hasQuickAccounts;
+      quickStatus.textContent = hasQuickAccounts ? '选择头像直接登录' : '未检测到可用 QQ，请扫码登录';
       for (const account of info.accounts ?? []) {
         const avatar = h('img', { class: 'login-quick-avatar', src: account.avatarUrl, alt: account.nickname, referrerpolicy: 'no-referrer' });
         const button = h(
@@ -7427,7 +7871,7 @@ export class App {
       { class: 'login-panel' },
       ...(source === 'netease' ? [channels] : []),
       ...(cookieBtn ? [cookieBtn] : []),
-      h('div', { class: 'login-qr-row' }, qrHost, source === 'kugou' ? null : quickRow),
+      h('div', { class: 'login-qr-row' }, qrHost, quickRow),
       note,
       action,
       hints,
@@ -8616,6 +9060,30 @@ export class App {
         bgFillControl,
         h('div', { class: 'quick-hint', text: '模糊铺满：右侧不再露出壁纸，整屏都是封面的模糊延伸' }),
       );
+      // 亮度独立于「桌面背景歌词」开关：软件内歌词页的关闭效果也直接用它。
+      const brightnessValue = h('span', {
+        class: 'quick-value',
+        text: `${Math.round(bgLyricsBrightness())}%`,
+      });
+      const brightnessInput = h('input', {
+        class: 'slider quick-slider',
+        type: 'range',
+        min: String(BG_BRIGHTNESS_MIN),
+        max: String(BG_BRIGHTNESS_MAX),
+        step: '1',
+        value: String(Math.round(bgLyricsBrightness())),
+      });
+      brightnessInput.addEventListener('input', () => {
+        const next = Number(brightnessInput.value);
+        brightnessValue.textContent = `${next}%`;
+        setBgLyricsBrightness(next);
+      });
+      const brightnessCell = cell(
+        '歌词背景亮度',
+        true,
+        h('div', { class: 'quick-slider-row' }, brightnessInput, brightnessValue),
+        h('div', { class: 'quick-hint', text: '播放效果为「关闭」时生效；只调节背景图案，不影响歌词文字' }),
+      );
       // 三项目只对「播放效果=关闭」且「桌面背景歌词=开」生效：其它状态下禁用并给出原因，
       // 避免用户点了没反应。
       const syncBackgroundLyricsCells = (): void => {
@@ -8653,6 +9121,7 @@ export class App {
           bgStyleCell,
           bgBlurCell,
           bgFillCell,
+          brightnessCell,
         ),
       );
       return;
@@ -9025,6 +9494,9 @@ export class App {
         const active = effectBtns[index];
         if (!active) return;
         effectThumb.style.width = `${active.offsetWidth}px`;
+        effectThumb.style.top = `${active.offsetTop}px`;
+        effectThumb.style.height = `${active.offsetHeight}px`;
+        effectThumb.style.bottom = 'auto';
         effectThumb.style.transform = `translateX(${active.offsetLeft}px)`;
       };
       const effectControl = h('div', { class: 'quick-seg-slider quick-effect-seg' }, effectThumb, ...effectBtns);
@@ -10451,6 +10923,7 @@ export class App {
     this.pbArtist.classList.toggle('is-linkable', artistLinkable);
     this.pbArtist.title = artistLinkable ? `查看 ${track.artist} 的本地歌曲` : '';
     if (trackChanged) this.playTrackEnter();
+    if (trackChanged) this.refreshWallShortcuts();
     this.pbPlayBtn.textContent = '';
     this.pbPlayBtn.append(icon(state.playing ? 'pause' : 'play', 20));
     const ratio = state.durationMs > 0 ? Math.min(1, state.positionMs / state.durationMs) : 0;
@@ -11145,6 +11618,8 @@ export class App {
   }
 
   private openLyrics(): void {
+    this.closeUpNext();
+    this.closeSearchDock();
     this.navBefore();
     if (this.lyrics) return;
     if (getSettings().general.backgroundLyrics) {
@@ -11158,6 +11633,7 @@ export class App {
     // 挂到根节点：歌词页要整窗覆盖（含左侧栏区域），背景是整屏模糊封面
     this.root.append(view.root);
     this.root.classList.add('is-lyrics-open');
+    this.wallShortcuts?.classList.remove('is-visible');
     view.bindSeek();
   }
 
@@ -11171,11 +11647,102 @@ export class App {
     // 先播退场动画，再真正卸载
     view.root.classList.add('is-leaving');
     window.setTimeout(() => view.dispose(), 300);
+    window.setTimeout(() => this.refreshWallShortcuts(), 320);
   }
 
   /* ------------------------------------------------------------------ */
   /* 生命周期                                                            */
   /* ------------------------------------------------------------------ */
+
+  /**
+   * 按住选择控件横向/纵向拖过多个选项时，鼠标经过的选项跟随选中。
+   * 单击保持原行为；只有真正拖到另一个选项才接管，避免影响普通点击。
+   */
+  private bindChoiceDrag(): void {
+    const OPTION = '.seg-btn,.quick-seg-btn,.ts-seg-btn,.settings-nav-btn,.quick-tab,.settings-subtab,.search-tab,.disc-tab,.lp-tab,.theme-swatch,.room-preset-chip,[role="radio"],[role="tab"]';
+    const GROUP = '.seg,.quick-seg-slider,.ts-seg,.settings-nav,.quick-tabs,.settings-subtabs,.search-tabs,.disc-tabs,.lp-tabs,.theme-swatches,.room-preset-chips,[role="radiogroup"],[role="tablist"]';
+    let group: HTMLElement | null = null;
+    let groupClass = '';
+    let groupRect: DOMRect | null = null;
+    let lastOption: HTMLElement | null = null;
+    let armed = false;
+    let moved = false;
+    const optionAt = (target: EventTarget | null): HTMLElement | null => {
+      if (!(target instanceof Element)) return null;
+      const option = target.closest<HTMLElement>(OPTION);
+      if (!option || option.classList.contains('is-custom') || option.closest('.is-disabled,[disabled]')) return null;
+      const owner = option.closest<HTMLElement>(GROUP);
+      if (!owner || owner.querySelectorAll(OPTION).length < 2) return null;
+      return option;
+    };
+    const sameGroup = (owner: HTMLElement): boolean => {
+      if (owner === group) return true;
+      if (!groupRect || owner.className !== groupClass) return false;
+      const rect = owner.getBoundingClientRect();
+      return Math.abs(rect.top - groupRect.top) < 24
+        && Math.abs(rect.left - groupRect.left) < 24
+        && Math.abs(rect.width - groupRect.width) < 24;
+    };
+    const removeClass = (): void => document.documentElement.classList.remove('is-choice-dragging');
+    const suppressNextClick = (): void => {
+      const stop = (event: MouseEvent): void => {
+        event.preventDefault();
+        event.stopPropagation();
+        document.removeEventListener('click', stop, true);
+      };
+      document.addEventListener('click', stop, true);
+      window.setTimeout(() => document.removeEventListener('click', stop, true), 80);
+    };
+    const end = (): void => {
+      if (!armed) return;
+      armed = false;
+      removeClass();
+      if (moved) suppressNextClick();
+      group = null;
+      groupRect = null;
+      lastOption = null;
+      moved = false;
+    };
+    const down = (event: PointerEvent): void => {
+      if (event.button !== 0) return;
+      const option = optionAt(event.target);
+      if (!option) return;
+      group = option.closest<HTMLElement>(GROUP);
+      if (!group) return;
+      groupClass = group.className;
+      groupRect = group.getBoundingClientRect();
+      lastOption = option;
+      armed = true;
+      moved = false;
+      document.documentElement.classList.add('is-choice-dragging');
+    };
+    const move = (event: PointerEvent): void => {
+      if (!armed || !group) return;
+      const option = optionAt(document.elementFromPoint(event.clientX, event.clientY));
+      if (!option || option === lastOption) return;
+      const owner = option.closest<HTMLElement>(GROUP);
+      if (!owner || !sameGroup(owner)) return;
+      moved = true;
+      lastOption = option;
+      group = owner;
+      groupRect = owner.getBoundingClientRect();
+      option.click();
+      event.preventDefault();
+    };
+    document.addEventListener('pointerdown', down, true);
+    document.addEventListener('pointermove', move, true);
+    document.addEventListener('pointerup', end, true);
+    document.addEventListener('pointercancel', end, true);
+    window.addEventListener('blur', end);
+    this.disposers.add(() => {
+      document.removeEventListener('pointerdown', down, true);
+      document.removeEventListener('pointermove', move, true);
+      document.removeEventListener('pointerup', end, true);
+      document.removeEventListener('pointercancel', end, true);
+      window.removeEventListener('blur', end);
+      removeClass();
+    });
+  }
 
   /**
    * 给所有分段控件（.seg）装上可滑动的白色胶囊滑块。

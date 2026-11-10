@@ -1022,9 +1022,9 @@ internal sealed class QqProvider : IOnlineMusicProvider
                 payPlay = legacyPayPlay;
             }
 
-            var intervalSeconds = item.TryGetProperty("interval", out var intervalElement) && intervalElement.TryGetInt64(out var interval)
-                ? interval
-                : 0;
+            // QQ 搜索的 interval 可能是数字，也可能是字符串（不同端点/新旧字段）；
+            // 只按数字读会让一批结果在 UI 里显示 0:00。
+            var intervalSeconds = TryReadInt(item, "interval", out var intervalValue) ? intervalValue : 0;
 
             tracks.Add(new OnlineTrack
             {

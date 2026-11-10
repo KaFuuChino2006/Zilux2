@@ -21,6 +21,14 @@ internal static class KugouSignature
     public static string Md5(string text)
         => Convert.ToHexString(MD5.HashData(Encoding.UTF8.GetBytes(text))).ToLowerInvariant();
 
+    // 取流用的 signKey：md5(hash + salt + appid + mid + userid)。
+    public static string SignKey(string hash, string mid, string userId, int appId = 1005)
+        => Md5($"{hash}57ae12eb6890223e355ccfcb74edf70d{appId}{mid}{userId}");
+
+    // special_recommend 的 key：md5(appid + salt + clientver + clienttime)。
+    public static string SignParamsKey(string data, int appId = 1005, int clientVer = 20489)
+        => Md5($"{appId}{AndroidSalt}{clientVer}{data}");
+
     /// <summary>设备 MID：MD5(guid) 的十六进制按 16 进制大数转成十进制字符串。</summary>
     public static string CalculateMid(string guid)
     {

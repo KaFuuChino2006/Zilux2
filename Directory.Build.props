@@ -1,4 +1,4 @@
-﻿<Project>
+<Project>
 
   <!--
     Single source of truth for the app version.
@@ -9,7 +9,7 @@
       release CI  : dotnet publish ... -p:Version=<tag> -p:ZiluxUpdateRepo=<owner>/<repo>
   -->
   <PropertyGroup>
-    <Version>1.1.100</Version>
+    <Version>1.1.103</Version>
 
     <!-- GitHub repository (owner/name) used by the built-in update channel.
          Local builds default to the real repo below; CI overrides it with
@@ -23,5 +23,6 @@
   </ItemGroup>
 
 </Project>
+
 
 

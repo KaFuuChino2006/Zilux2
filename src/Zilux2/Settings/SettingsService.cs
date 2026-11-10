@@ -624,7 +624,7 @@ internal sealed class SettingsService : IDisposable
 
     private static bool IsKnownField(string section, string name) => section switch
     {
-        "general" => name is "splash" or "startMaximized" or "autoLaunch" or "autoStartHidden" or "watchLocalFolder"
+        "general" => name is "splash" or "splashTitle" or "splashSubtitle" or "startMaximized" or "autoLaunch" or "autoStartHidden" or "watchLocalFolder"
             or "mediaSession" or "desktopLyrics" or "desktopLyricsLocked" or "desktopLyricsFontSize" or "desktopLyricsTopmost"
             or "desktopLyricsWeight" or "desktopLyricsBackdropOpacity" or "backgroundLyrics"
             or "desktopLyricsLeft" or "desktopLyricsTop" or "systemOutputRotation",
@@ -717,6 +717,10 @@ internal sealed class SettingsService : IDisposable
         if (TryGetObject(document, "general", out var general))
         {
             state.General.Splash = ReadBool(general, "splash", state.General.Splash, "general.splash", keys);
+            state.General.SplashTitle = ReadSplashText(
+                general, "splashTitle", state.General.SplashTitle, "general.splashTitle", keys);
+            state.General.SplashSubtitle = ReadSplashText(
+                general, "splashSubtitle", state.General.SplashSubtitle, "general.splashSubtitle", keys);
             state.General.StartMaximized = ReadBool(general, "startMaximized", state.General.StartMaximized, "general.startMaximized", keys);
             state.General.AutoLaunch = ReadBool(general, "autoLaunch", state.General.AutoLaunch, "general.autoLaunch", keys);
             state.General.AutoStartHidden = ReadBool(
@@ -954,6 +958,33 @@ internal sealed class SettingsService : IDisposable
         }
 
         HostLog.Warn($"[settings] invalid key={key} expected=shortcut fallback={fallback}");
+        return fallback;
+    }
+
+    /// <summary>启动画面文案：允许空串（隐藏该行），最长 48 字符，避免把启动画面撑破。</summary>
+    private static string ReadSplashText(
+        JsonElement parent,
+        string name,
+        string fallback,
+        string key,
+        List<string> keys)
+    {
+        if (!parent.TryGetProperty(name, out var value))
+        {
+            return fallback;
+        }
+
+        keys.Add(key);
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            var text = (value.GetString() ?? string.Empty).Trim();
+            if (text.Length <= 48)
+            {
+                return text;
+            }
+        }
+
+        HostLog.Warn($"[settings] invalid key={key} expected=splash-text fallback={fallback}");
         return fallback;
     }
 

@@ -17,6 +17,7 @@ internal sealed class LibraryService : IDisposable
     private readonly AccountService? _accounts;
     private readonly NeteaseLibraryProvider _netease;
     private readonly QqLibraryProvider _qq;
+    private readonly KugouLibraryProvider _kugou;
     private readonly object _gate = new();
     private readonly Dictionary<string, SnapshotEntry> _snapshots = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DetailEntry> _details = new(StringComparer.Ordinal);
@@ -27,9 +28,10 @@ internal sealed class LibraryService : IDisposable
         _accounts = accounts;
         _netease = new NeteaseLibraryProvider(accounts);
         _qq = new QqLibraryProvider(accounts);
+        _kugou = new KugouLibraryProvider(accounts);
     }
 
-    public static string[] Sources => [AccountSources.Netease, AccountSources.Qq];
+    public static string[] Sources => [AccountSources.Netease, AccountSources.Qq, AccountSources.Kugou];
 
     public void Dispose() => _disposed = true;
 
@@ -71,7 +73,7 @@ internal sealed class LibraryService : IDisposable
         }
 
         var providerId = id;
-        if (string.Equals(id, "liked", StringComparison.OrdinalIgnoreCase) && source == AccountSources.Netease)
+        if (string.Equals(id, "liked", StringComparison.OrdinalIgnoreCase))
         {
             var snapshot = await GetSnapshotAsync(source, cancellationToken).ConfigureAwait(false);
             if (snapshot?.Liked is null || snapshot.Liked.Id.Length == 0)
@@ -151,6 +153,7 @@ internal sealed class LibraryService : IDisposable
                 var removed = _snapshots.Count + _details.Count;
                 _snapshots.Clear();
                 _details.Clear();
+                _kugou.Invalidate();
                 HostLog.Info($"[library] refresh all entries={removed}");
                 return;
             }
@@ -162,6 +165,11 @@ internal sealed class LibraryService : IDisposable
             foreach (var key in keys)
             {
                 _details.Remove(key);
+            }
+
+            if (normalized == AccountSources.Kugou)
+            {
+                _kugou.Invalidate();
             }
 
             HostLog.Info($"[library] refresh source={normalized} details={keys.Count}");
@@ -240,6 +248,7 @@ internal sealed class LibraryService : IDisposable
     {
         AccountSources.Netease => _netease.GetSnapshotAsync(cancellationToken),
         AccountSources.Qq => _qq.GetSnapshotAsync(cancellationToken),
+        AccountSources.Kugou => _kugou.GetSnapshotAsync(cancellationToken),
         _ => throw new OnlineUpstreamException("暂不支持该音乐平台的该能力", 400),
     };
 
@@ -247,6 +256,7 @@ internal sealed class LibraryService : IDisposable
     {
         AccountSources.Netease => _netease.GetPlaylistAsync(id, offset, limit, cancellationToken),
         AccountSources.Qq => _qq.GetPlaylistAsync(id, offset, limit, cancellationToken),
+        AccountSources.Kugou => _kugou.GetPlaylistAsync(id, offset, limit, cancellationToken),
         _ => throw new OnlineUpstreamException("暂不支持该音乐平台的该能力", 400),
     };
 
@@ -294,12 +304,13 @@ internal sealed class LibraryService : IDisposable
         {
             AccountSources.Netease => await _netease.CheckLikedAsync(trackId, cancellationToken).ConfigureAwait(false),
             AccountSources.Qq => await _qq.CheckLikedAsync(trackId, cancellationToken).ConfigureAwait(false),
+            AccountSources.Kugou => await _kugou.CheckLikedAsync(trackId, cancellationToken).ConfigureAwait(false),
             _ => false,
         };
     }
 
     // 「加入我喜欢」写入接口：成功后失效该音源缓存，下一次读取就能看到新数据。
-    public async Task AddLikedAsync(string source, string trackId, CancellationToken cancellationToken)
+    public async Task AddLikedAsync(string source, string trackId, string? title, string? artist, CancellationToken cancellationToken)
     {
         ThrowIfDisposed();
         source = NormalizeSource(source);
@@ -320,6 +331,9 @@ internal sealed class LibraryService : IDisposable
                 break;
             case AccountSources.Qq:
                 await _qq.AddLikedAsync(trackId, cancellationToken).ConfigureAwait(false);
+                break;
+            case AccountSources.Kugou:
+                await _kugou.AddLikedAsync(trackId, title, artist, cancellationToken).ConfigureAwait(false);
                 break;
             default:
                 throw new OnlineUpstreamException("未知音源", 400);
@@ -355,6 +369,7 @@ internal sealed class LibraryService : IDisposable
         {
             AccountSources.Netease => await _netease.CheckLikedManyAsync(ids, cancellationToken).ConfigureAwait(false),
             AccountSources.Qq => await _qq.CheckLikedManyAsync(ids, cancellationToken).ConfigureAwait(false),
+            AccountSources.Kugou => await _kugou.CheckLikedManyAsync(ids, cancellationToken).ConfigureAwait(false),
             _ => new Dictionary<string, bool>(StringComparer.Ordinal),
         };
     }
@@ -381,6 +396,9 @@ internal sealed class LibraryService : IDisposable
                 break;
             case AccountSources.Qq:
                 await _qq.RemoveLikedAsync(trackId, cancellationToken).ConfigureAwait(false);
+                break;
+            case AccountSources.Kugou:
+                await _kugou.RemoveLikedAsync(trackId, cancellationToken).ConfigureAwait(false);
                 break;
             default:
                 throw new OnlineUpstreamException("未知音源", 400);
@@ -415,6 +433,8 @@ internal sealed class LibraryService : IDisposable
         {
             AccountSources.Netease => await _netease.GetFeedAsync(kind, limit, cancellationToken).ConfigureAwait(false),
             AccountSources.Qq => await _qq.GetFeedAsync(kind, limit, cancellationToken).ConfigureAwait(false),
+            AccountSources.Kugou when kind == "recent" => await _kugou.GetRecentAsync(limit, cancellationToken).ConfigureAwait(false),
+            AccountSources.Kugou when kind == "daily" => await _kugou.GetDailyAsync(limit, cancellationToken).ConfigureAwait(false),
             _ => throw new OnlineUpstreamException("暂不支持该音乐平台的该能力", 400),
         };
         return new LibraryFeed(source, kind, tracks);

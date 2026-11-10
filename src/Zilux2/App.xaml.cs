@@ -154,9 +154,8 @@ public partial class App : Application
             e.Args,
             static arg => string.Equals(arg, "--hidden", StringComparison.OrdinalIgnoreCase));
 
-        // 所有启动方式都先透明：WebView2 环境创建 + 首次导航要 1~3 秒，先画出来只会让用户
-        // 看到一块空的主题色窗壳。MainWindow 在页面首个 ready / 导航完成后淡入（5 秒兜底）。
-        window.Opacity = 0;
+        // 启动时窗口先显示纯色遮罩（MainWindow.StartupVeil），WebView2 首帧就绪后再淡出遮罩。
+        // 不再把整个窗口设为 Opacity=0，否则用户会先看到桌面/黑屏再等页面加载。
         if (startHidden)
         {
             window.ShowInTaskbar = false;

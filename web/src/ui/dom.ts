@@ -117,6 +117,8 @@ const ICONS: Record<string, string> = {
   more:
     '<circle cx="6.2" cy="12" r="1.55" fill="currentColor"/><circle cx="12" cy="12" r="1.55" fill="currentColor"/><circle cx="17.8" cy="12" r="1.55" fill="currentColor"/>',
   plus: '<path d="M12 5.4v13.2M5.4 12h13.2" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" fill="none"/>',
+  target:
+    '<circle cx="12" cy="12" r="6.2" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><path d="M12 2.4v3.2M12 18.4v3.2M2.4 12h3.2M18.4 12h3.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>',
 };
 
 /** 生成 SVG 图标（16×16 viewBox 24，随 currentColor）。 */

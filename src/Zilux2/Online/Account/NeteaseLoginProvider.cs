@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
 
@@ -214,6 +214,7 @@ internal sealed class NeteaseLoginProvider : IDisposable
 
         string nickname = string.Empty;
         string userId = string.Empty;
+        string avatarUrl = string.Empty;
         bool? vip = null;
         try
         {
@@ -223,6 +224,7 @@ internal sealed class NeteaseLoginProvider : IDisposable
             {
                 if (profile.TryGetProperty("nickname", out var nick)) nickname = nick.GetString() ?? string.Empty;
                 if (profile.TryGetProperty("userId", out var uid)) userId = uid.ToString();
+                avatarUrl = ReadString(profile, "avatarUrl");
                 if (profile.TryGetProperty("vipType", out var vipType) && vipType.TryGetInt32(out var type)) vip = type > 0;
             }
 
@@ -241,11 +243,15 @@ internal sealed class NeteaseLoginProvider : IDisposable
             throw new AccountException("invalid-cookie", "网易云登录没有返回账号信息");
         }
 
+        var avatarDataUrl = await AvatarEncoding
+            .ToDataUrlAsync(session, avatarUrl, cancellationToken)
+            .ConfigureAwait(false);
         var account = new AccountInfo
         {
             Source = AccountSources.Netease,
             LoggedIn = true,
             Nickname = string.IsNullOrWhiteSpace(nickname) ? null : nickname,
+            AvatarDataUrl = avatarDataUrl,
             UserId = userId,
             Vip = vip,
         };

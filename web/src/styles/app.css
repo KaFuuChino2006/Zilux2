@@ -1,4 +1,4 @@
-﻿/* app.css —— 由已部署产物恢复（重建样式源），后续样式统一追加在文件末尾 */
+/* app.css —— 由已部署产物恢复（重建样式源），后续样式统一追加在文件末尾 */
 
 @font-face{font-family:Zilux2 Sans SC;src:url(/fonts/zilux2-sans-sc-regular.ttf) format("truetype");font-weight:400;font-style:normal;font-display:swap}
 :root{color-scheme:dark;--bg: #08090c;--bg-soft: #0d0e12;--panel: rgba(18, 19, 24, .72);--panel-solid: #121318;--panel-raised: rgba(30, 31, 38, .86);--line: rgba(255, 255, 255, .08);--line-strong: rgba(255, 255, 255, .16);--text: #f2f3f6;--text-soft: #c3c6ce;--muted: #858a95;--accent: #d9c08d;--accent-soft: rgba(217, 192, 141, .16);--danger: #ff6b6b;--radius-sm: 8px;--radius: 14px;--radius-lg: 22px;--radius-pill: 999px;--shadow: 0 18px 48px rgba(0, 0, 0, .55);--ease: cubic-bezier(.22, .8, .28, 1);--rail-w: 72px;--topbar-h: 76px;--player-h: 106px}
@@ -47,7 +47,8 @@ img{display:block}
 .rail-spacer{flex:1}
 .stage{position:relative;min-width:0;min-height:0;overflow:hidden}
 .wall{position:absolute;inset:0;overflow-y:auto;overflow-x:hidden;padding:4px 26px calc(var(--player-h) + 34px) 6px;scroll-behavior:smooth}
-.wall-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;padding:4px 0 18px}
+.wall-head{position:sticky;top:0;z-index:14;display:flex;align-items:flex-end;justify-content:space-between;gap:16px;padding:10px 0 16px;transition:opacity .22s var(--ease),transform .22s var(--ease)}
+.wall-head.is-scrolled-away{opacity:0;transform:translateY(-8px);pointer-events:none}
 .wall-title{margin:0;font-size:clamp(28px,3.2vw,44px);font-weight:700;letter-spacing:-.03em;line-height:1.02}
 .wall-sub{margin-top:8px;color:var(--muted);font-size:13px;letter-spacing:.02em}
 .wall-grid{display:grid;gap:8px;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));align-content:start}
@@ -131,7 +132,7 @@ img{display:block}
 .volume-rail{position:absolute;left:0;right:0;height:3px;border-radius:999px;background:rgb(var(--overlay-rgb) / .14);overflow:hidden}
 .volume-fill{height:100%;background:rgb(var(--overlay-rgb) / .55)}
 .lyrics-view{position:absolute;inset:0;z-index:40;display:flex;flex-direction:column;background:var(--bg-soft);overflow:hidden;animation:fade-in .35s var(--ease)}
-.lyrics-bg{position:absolute;inset:-8%;background-size:cover;background-position:center;filter:blur(64px) saturate(1.3) brightness(.5);transform:scale(1.08);opacity:.85}
+.lyrics-bg{position:absolute;inset:-8%;background-size:cover;background-position:center;filter:blur(64px) saturate(1.3) brightness(var(--lyrics-bg-brightness, .92));transform:scale(1.08);opacity:.85}
 .lyrics-scrim{position:absolute;inset:0;background:radial-gradient(80% 60% at 50% 42%,rgb(var(--ink-rgb) / .18),rgb(var(--ink-rgb) / .88) 78%),linear-gradient(180deg,rgb(var(--ink-rgb) / .72),rgb(var(--ink-rgb) / .4) 30%,rgb(var(--ink-rgb) / .86))}
 .lyrics-head{position:relative;z-index:2;display:flex;align-items:center;justify-content:space-between;padding:22px 28px}
 .lyrics-song{display:flex;align-items:center;gap:14px;min-width:0}
@@ -760,7 +761,7 @@ to{opacity:0;transform:scale(.985) translateY(10px)}
 @keyframes wall-poster-in{0%{opacity:0;transform:translateY(10px) scale(.96)}
 to{opacity:1;transform:translateY(0) scale(1)}
 }
-.poster{transition:transform .46s cubic-bezier(.22,1.28,.36,1),box-shadow .46s var(--ease),filter .46s var(--ease);will-change:transform}
+.poster{transition:transform .46s cubic-bezier(.22,1.28,.36,1),box-shadow .46s var(--ease),filter .46s var(--ease),scale .3s var(--ease);will-change:transform}
 .poster img{transition:transform .6s var(--ease),filter .5s var(--ease)}
 .playerbar{width:452px}
 .playerbar .pb-actions{display:flex;align-items:center;gap:2px;flex:none}
@@ -899,6 +900,9 @@ to{opacity:1;transform:none}
 }
 .quick-row-between{justify-content:space-between;align-items:center;gap:10px}
 .quick-value{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px}
+.quick-slider-row{display:flex;align-items:center;gap:10px;min-width:0}
+.quick-slider-row .quick-slider{flex:1 1 auto;min-width:0;margin:0}
+.quick-slider-row .quick-value{min-width:38px;text-align:right;font-variant-numeric:tabular-nums}
 .quick-offset-wrap{display:inline-flex;align-items:center;gap:6px}
 .quick-reset{padding:2px 8px;border-radius:999px;border:1px solid var(--line);background:transparent;color:var(--muted);font-size:10px;cursor:pointer}
 .quick-reset:hover{color:var(--accent);border-color:var(--accent)}
@@ -1088,7 +1092,7 @@ to{opacity:1;transform:none}
 .playerbar .pb-source[data-source=local]{color:var(--muted);background:rgb(var(--overlay-rgb) / .09)}
 :root{--topbar-total: calc(var(--topbar-h) + 8px)}
 .topbar{height:var(--topbar-total);padding:18px 18px 0;background:color-mix(in srgb,var(--surface-strong) 64%,transparent);backdrop-filter:blur(26px) saturate(1.42);-webkit-backdrop-filter:blur(26px) saturate(1.42);border-bottom:1px solid rgb(var(--overlay-rgb) / .05)}
-.lyrics-bg.is-plain{inset:0;transform:none;filter:none;opacity:1;background-size:cover;background-position:center;transition:opacity .5s var(--ease)}
+.lyrics-bg.is-plain{inset:0;transform:none;filter:brightness(var(--lyrics-bg-brightness, .92));opacity:1;background-size:cover;background-position:center;transition:opacity .5s var(--ease)}
 .lyrics-view[data-bg=cover] .lyrics-scrim,.lyrics-view[data-bg=gradient] .lyrics-scrim{background:radial-gradient(90% 70% at 50% 34%,rgb(var(--ink-rgb) / .12),rgb(var(--ink-rgb) / .8) 82%),linear-gradient(180deg,rgb(var(--ink-rgb) / .56),rgb(var(--ink-rgb) / .3) 32%,rgb(var(--ink-rgb) / .74))}
 .lyrics-bg-control{position:absolute;left:26px;top:24px;z-index:7;display:flex;align-items:center;gap:4px;padding:5px 6px 5px 12px;border-radius:999px;background:rgb(var(--overlay-rgb) / .08);border:1px solid rgb(var(--overlay-rgb) / .12);backdrop-filter:blur(16px) saturate(1.3);-webkit-backdrop-filter:blur(16px) saturate(1.3)}
 .lyrics-bg-label{font-size:11px;color:var(--muted);margin-right:2px}
@@ -1215,6 +1219,10 @@ to{transform:translate(28px);opacity:0}
     rgb(var(--overlay-rgb) / 0.3) 100%
   );
 }
+/* 自定义页面背景在歌词页里也走同一个亮度；只影响歌词打开时的背景层。 */
+.app.is-lyrics-open.is-app-bg .app-bg-layer {
+  filter: blur(64px) saturate(1.4) brightness(var(--lyrics-bg-brightness, 1));
+}
 
 /* 歌词页：整窗覆盖 + 整屏模糊封面，背后内容隐退 */
 .lyrics-view {
@@ -1224,7 +1232,7 @@ to{transform:translate(28px);opacity:0}
 .lyrics-view .lyrics-bg {
   inset: -12%;
   opacity: 1;
-  filter: blur(72px) saturate(1.25) brightness(0.92);
+  filter: blur(72px) saturate(1.25) brightness(var(--lyrics-bg-brightness, .92));
   transform: scale(1.12);
 }
 .lyrics-view .lyrics-scrim {
@@ -1373,7 +1381,7 @@ body,
 .lyrics-view .lyrics-bg {
   inset: -8%;
   opacity: 1;
-  filter: blur(38px) saturate(1.2) brightness(0.98);
+  filter: blur(38px) saturate(1.2) brightness(var(--lyrics-bg-brightness, .92));
   transform: scale(1.06);
 }
 
@@ -1422,6 +1430,10 @@ body,
   inset: 0;
   opacity: 1;
   transition: none;
+}
+/* 兜底：自定义页面背景在歌词页里也吃亮度变量。放在最后覆盖旧滤镜声明。 */
+.app.is-lyrics-open.is-app-bg .app-bg-fade .app-bg-layer {
+  filter: blur(var(--app-bg-blur, 64px)) saturate(1.4) brightness(var(--lyrics-bg-brightness, 1)) !important;
 }
 
 /* 歌词页整窗覆盖时，左侧导航仍浮在最上层、可点可用 */
@@ -7496,7 +7508,7 @@ html.is-bg-lyrics-scene #app{display:none}
   mask-image:linear-gradient(90deg,#000 0%,#000 40%,rgb(0 0 0 / .5) 62%,transparent 78%);
 }
 .lyrics-view.is-background-lyrics .bg-cover-blur{
-  filter:blur(var(--bg-cover-blur, 44px)) saturate(1.1) brightness(.96);
+  filter:blur(var(--bg-cover-blur, 44px)) saturate(1.1) brightness(var(--lyrics-bg-brightness, .92));
   transform:scale(1.12);transform-origin:left center;
   -webkit-mask-image:linear-gradient(90deg,transparent 16%,rgb(0 0 0 / .5) 36%,rgb(0 0 0 / .95) 58%,#000 76%);
   mask-image:linear-gradient(90deg,transparent 16%,rgb(0 0 0 / .5) 36%,rgb(0 0 0 / .95) 58%,#000 76%);
@@ -7599,7 +7611,7 @@ html.is-bg-lyrics-scene #app{display:none}
   mask-image:linear-gradient(90deg,#000 0%,#000 40%,rgb(0 0 0 / .5) 62%,transparent 78%);
 }
 .lyrics-view.is-background-lyrics .bg-cover-blur{
-  filter:blur(var(--bg-cover-blur, 44px)) saturate(1.1) brightness(.96);
+  filter:blur(var(--bg-cover-blur, 44px)) saturate(1.1) brightness(var(--lyrics-bg-brightness, .92));
   transform:scale(1.12);transform-origin:left center;
   -webkit-mask-image:linear-gradient(90deg,transparent 16%,rgb(0 0 0 / .5) 36%,rgb(0 0 0 / .95) 58%,#000 76%);
   mask-image:linear-gradient(90deg,transparent 16%,rgb(0 0 0 / .5) 36%,rgb(0 0 0 / .95) 58%,#000 76%);
@@ -7688,7 +7700,7 @@ html.is-bg-lyrics-scene #app{display:none}
 .lyrics-view.is-cover-left:not(.is-background-lyrics):not(.is-lumiere) .lyrics-cover-blur{
   position:absolute;inset:0;z-index:0;
   background-position:center;background-size:cover;
-  filter:blur(var(--cover-blur, 44px)) saturate(1.1) brightness(.96);
+  filter:blur(var(--cover-blur, 44px)) saturate(1.1) brightness(var(--lyrics-bg-brightness, .92));
   transform:scale(1.08);
   opacity:0;
 }
@@ -7950,6 +7962,59 @@ html.is-bg-lyrics-scene #app{display:none}
   .home .home-row .home-collections > .home-liked .daily-actions { margin-top: 8px; }
 }
 
+/* 三个平台并存时的收藏卡：缩封面、收紧按钮，避免第三张把前两张挤到换行溢出 */
+.home .home-collections {
+  gap: 14px;
+}
+.home .home-collections > .home-liked .daily-card {
+  gap: 12px;
+  padding: 14px 16px;
+  min-height: 150px;
+}
+.home .home-collections > .home-liked .daily-deck {
+  width: 96px;
+  height: 96px;
+  margin-right: 16px;
+}
+/* 三张卡并排时不再向右叠放封面，否则层叠封面会压住标题和按钮 */
+.home .home-collections > .home-liked .daily-cover-1,
+.home .home-collections > .home-liked .daily-cover-2,
+.home .home-collections > .home-liked .daily-cover-3,
+.home .home-collections > .home-liked .daily-cover-4 {
+  display: none;
+}
+.home .home-collections > .home-liked .daily-kicker {
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.home .home-collections > .home-liked .daily-title {
+  font-size: clamp(16px, 1.05vw, 20px);
+}
+.home .home-collections > .home-liked .daily-meta {
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.home .home-collections > .home-liked .daily-actions {
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+.home .home-collections > .home-liked .daily-actions .ui-btn {
+  flex: 0 0 auto;
+  padding: 7px 10px;
+  min-height: 30px;
+  font-size: 12px;
+}
+@media (min-width: 1600px) {
+  .home .home-row .home-collections > .home-liked .daily-card { gap: 12px; }
+  .home .home-row .home-collections > .home-liked .daily-card > .daily-deck { margin-right: 16px; }
+}
+
 /* 已播放歌词与待播放歌词保持同样的可见度，避免“过去的高亮、未来的发灰” */
 .lyrics-view.lyric-style-spin .lyrics-right .lyric-line:not(.is-active) {
   opacity: 0.2 !important;
@@ -8076,3 +8141,160 @@ html.is-bg-lyrics-scene #app{display:none}
 .login-quick-text{display:flex;flex-direction:column;gap:2px}
 .login-quick-name{font-size:13px;font-weight:600;color:var(--text);max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .login-quick-hint{font-size:11px;color:var(--muted)}
+
+/* ===== 多平台「融合」来源选择（今日推荐 / 我喜欢） ===== */
+.mix-filter-btn{display:inline-flex;align-items:center;gap:6px}
+.mix-picker{position:fixed;z-index:120;width:252px;padding:12px;border-radius:16px;border:1px solid var(--line-strong);background:var(--surface-strong);backdrop-filter:blur(28px) saturate(1.2);box-shadow:var(--shadow-2);display:flex;flex-direction:column;gap:8px;color:var(--text)}
+.mix-picker-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:0 2px}
+.mix-picker-title{font-size:12px;font-weight:650;letter-spacing:.02em}
+.mix-picker-close{width:24px;height:24px;border-radius:50%;border:1px solid transparent;background:transparent;color:var(--muted);display:grid;place-items:center;cursor:pointer}
+.mix-picker-close:hover{color:var(--text);background:var(--line)}
+.mix-picker-list{display:flex;flex-direction:column;gap:3px;max-height:250px;overflow:auto}
+.mix-picker-row{display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:10px;border:1px solid transparent;background:transparent;color:var(--text);text-align:left;cursor:pointer;transition:background .15s var(--ease),border-color .15s var(--ease)}
+.mix-picker-row:hover{background:var(--line)}
+.mix-picker-row.is-on{background:var(--accent-soft);border-color:rgba(217,192,141,.22)}
+.mix-picker-check{flex:none;width:16px;height:16px;border-radius:5px;border:1px solid var(--line-strong);display:grid;place-items:center;font-size:11px;line-height:1;color:var(--accent-contrast)}
+.mix-picker-row.is-on .mix-picker-check{background:var(--accent);border-color:var(--accent)}
+.mix-picker-name{flex:1 1 auto;min-width:0;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mix-picker-state{flex:none;font-size:10px;color:var(--muted)}
+.mix-picker-row.is-on .mix-picker-state{color:var(--accent)}
+.mix-picker-foot{display:flex;align-items:center;gap:14px;padding:2px 4px}
+.mix-picker-link{border:0;background:transparent;padding:0;color:var(--muted);font-size:11px;cursor:pointer}
+.mix-picker-link:hover{color:var(--text)}
+.mix-picker-note{padding:0 4px 2px;color:var(--muted);font-size:10px;line-height:1.4}
+
+/* ===== 麦克风混音 ===== */
+.mic-mix-panel{display:flex;flex-direction:column;gap:2px}
+.mic-mix-status[data-kind="ok"]{color:var(--accent)}
+.mic-mix-status[data-kind="warn"]{color:var(--danger)}
+.mic-mix-panel .field:first-child{align-items:flex-start;gap:10px}
+.mic-mix-panel .field:first-child .btn{flex:none}
+.mic-mix-sliders{display:flex;flex-direction:column;gap:2px}
+.mic-mix-note{display:flex;flex-direction:column;gap:6px;margin:10px 0 2px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:rgb(var(--overlay-rgb) / .04);color:var(--muted);font-size:12px;line-height:1.55}
+.mic-mix-panel .btn.is-danger{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 45%,transparent)}
+.mic-mix-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+
+/* 长镜流诗：背景与文字共用一个连续舞台，播放控件保留清晰对比。 */
+.lyrics-view.is-poem .lyrics-bg,
+.lyrics-view.is-poem .lyrics-scrim { opacity: 0; }
+.lyrics-view.is-poem .lyrics-close { background: rgb(8 14 25 / .72); color: #fff7e9; }
+.lyrics-view.is-poem .lyrics-progress { background: rgb(8 14 25 / .72); border-radius: 18px; padding: 12px 18px; }
+.lyrics-view.is-poem .lyrics-progress-time { color: #dce3ec; }
+
+/* 声压：演唱会文字 PV，自带舞台底色；控制栏在亮色分镜中保持可读。 */
+.lyrics-view.is-pressure .lyrics-bg,
+.lyrics-view.is-pressure .lyrics-scrim { opacity: 0; }
+.lyrics-view.is-pressure .lyrics-close { background: rgb(17 17 17 / .88); color: #f1ecdf; }
+.lyrics-view.is-pressure .lyrics-progress { background: rgb(17 17 17 / .88); border-radius: 14px; padding: 12px 18px; }
+.lyrics-view.is-pressure .lyrics-progress-time { color: #f1ecdf; }
+.quick-effect-seg { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); height: auto; gap: 3px 0; }
+.quick-effect-seg .quick-seg-btn { min-width: 0; height: 28px; }
+.quick-effect-seg .quick-seg-thumb { transition: transform .26s var(--ease), top .26s var(--ease), width .26s var(--ease); }
+
+/* 设置 → 账号：登录后也要显示头像，不能只有一行昵称文字。 */
+.account-setting-row { display: flex; align-items: center; gap: 12px; }
+.account-setting-id { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1; }
+.account-setting-id .account-row-avatar { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; flex: none; }
+.account-setting-id .account-row-avatar.account-dot { display: grid; place-items: center; }
+
+/* 我的歌单：平台较多时给一排跳转按钮，避免酷狗分区在折叠下面被误认为没加载。 */
+.online-playlist-jump { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 12px; }
+.online-playlist-jump-btn {
+  height: 28px; padding: 0 11px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--surface);
+  color: var(--text-soft); font-size: 12px;
+  transition: background .18s var(--ease), color .18s var(--ease), border-color .18s var(--ease);
+}
+.online-playlist-jump-btn:hover { color: var(--accent); border-color: var(--line-strong); background: var(--surface-hover); }
+.online-playlist-jump-btn + .online-playlist-jump-btn { margin-left: 0; }
+.disc-grid { scroll-margin-top: 18px; }
+
+/* 窄窗口播放条：优先保住歌名/歌手，评论和队列在 <=1380px 收起。
+   之前 pb-meta 被 flex 压到只剩一两个字符（实测标题显示“为...”）。 */
+@media (max-width: 1380px) {
+  .playerbar .pb-comment,
+  .playerbar .pb-queue,
+  .playerbar .pb-download,
+  .playerbar .pb-stem {
+    display: none !important;
+  }
+
+  .playerbar .pb-meta {
+    width: 150px;
+    flex: 0 0 150px;
+    min-width: 150px;
+  }
+}
+
+/* ---------- 歌曲墙右下角快捷操作 ---------- */
+.wall-shortcuts{
+  position:fixed;right:22px;bottom:calc(var(--player-h) + 18px);z-index:32;
+  display:flex;flex-direction:column;gap:8px;
+  opacity:0;visibility:hidden;pointer-events:none;
+  transform:translateY(8px);
+  transition:opacity .18s var(--ease),transform .18s var(--ease),visibility .18s;
+}
+.wall-shortcuts.is-visible{opacity:1;visibility:visible;pointer-events:auto;transform:none}
+.wall-shortcut{
+  width:40px;height:40px;display:grid;place-items:center;flex:0 0 auto;
+  border:1px solid var(--line-strong);border-radius:13px;
+  background:var(--panel-solid);color:var(--text-soft);
+  box-shadow:0 10px 26px rgb(0 0 0 / .28);
+  cursor:pointer;transition:background .15s,color .15s,border-color .15s,opacity .15s;
+}
+.wall-shortcut:hover:not(:disabled){background:var(--panel-raised);color:var(--text);border-color:color-mix(in srgb,var(--accent) 45%,var(--line-strong))}
+.wall-shortcut:active:not(:disabled){background:var(--accent-soft);color:var(--accent)}
+.wall-shortcut:disabled{opacity:.32;cursor:default}
+.wall-shortcut.is-idle{opacity:.42}
+.wall-shortcut.is-idle:hover{opacity:1}
+.poster.is-located{
+  outline:3px solid transparent;outline-offset:3px;z-index:8;
+  scale:1.16;
+  animation:wall-located-poster 3.2s cubic-bezier(.22,.9,.28,1) .22s both;
+}
+.poster.is-located::before{
+  content:"正在播放";position:absolute;left:50%;top:50%;z-index:7;
+  padding:7px 15px;border-radius:999px;
+  color:#fff;background:color-mix(in srgb,var(--accent) 92%,#000 8%);
+  border:1px solid rgb(255 255 255 / .5);
+  box-shadow:0 12px 38px color-mix(in srgb,var(--accent) 34%,transparent),0 2px 10px rgb(0 0 0 / .32);
+  font-size:13px;font-weight:800;letter-spacing:.1em;white-space:nowrap;
+  pointer-events:none;
+  animation:wall-located-label 3.2s cubic-bezier(.22,.9,.28,1) .22s both;
+}
+.track-row.is-located{
+  border-color:color-mix(in srgb,var(--accent) 62%,var(--line-strong));
+  animation:wall-row-located 3.2s var(--ease) both;
+}
+.track-row.is-located .track-title{color:var(--accent);font-weight:800}
+@keyframes wall-located-poster{
+  0%{outline-color:transparent;box-shadow:0 0 0 0 transparent;filter:brightness(1) saturate(1)}
+  14%{outline-color:var(--accent);box-shadow:0 0 0 4px var(--accent),0 0 0 17px color-mix(in srgb,var(--accent) 18%,transparent),0 0 38px color-mix(in srgb,var(--accent) 32%,transparent);filter:brightness(1.07) saturate(1.05)}
+  30%{outline-color:var(--accent);box-shadow:0 0 0 4px var(--accent),0 0 0 22px transparent,0 0 30px color-mix(in srgb,var(--accent) 18%,transparent);filter:brightness(1)}
+  78%{outline-color:var(--accent);box-shadow:0 0 0 4px var(--accent),0 0 0 8px transparent,0 0 18px transparent;filter:brightness(1)}
+  100%{outline-color:transparent;box-shadow:0 0 0 0 transparent;filter:brightness(1) saturate(1)}
+}
+@keyframes wall-located-label{
+  0%{opacity:0;transform:translate(-50%,-40%) scale(.86);filter:blur(4px)}
+  16%{opacity:1;transform:translate(-50%,-50%) scale(1.02);filter:blur(0)}
+  28%{opacity:1;transform:translate(-50%,-50%) scale(1);filter:blur(0)}
+  84%{opacity:1;transform:translate(-50%,-50%) scale(1);filter:blur(0)}
+  100%{opacity:0;transform:translate(-50%,-58%) scale(.98);filter:blur(2px)}
+}
+@keyframes wall-row-located{
+  0%{background:transparent;box-shadow:inset 0 0 0 0 transparent}
+  14%{background:color-mix(in srgb,var(--accent) 20%,var(--panel-solid));box-shadow:inset 5px 0 0 var(--accent),0 0 0 1px color-mix(in srgb,var(--accent) 52%,transparent),0 0 20px color-mix(in srgb,var(--accent) 18%,transparent)}
+  80%{background:color-mix(in srgb,var(--accent) 14%,var(--panel-solid));box-shadow:inset 5px 0 0 var(--accent),0 0 0 1px transparent,0 0 12px transparent}
+  100%{background:transparent;box-shadow:inset 0 0 0 0 transparent}
+}
+@media(max-width:900px){
+  .wall-shortcuts{right:14px;bottom:calc(var(--player-h) + 12px)}
+  .wall-shortcut{width:36px;height:36px;border-radius:12px}
+}
+
+.app.is-mini .wall-shortcuts{display:none}
+
+.wall-shortcut.is-unavailable{opacity:1;color:var(--text-soft)}
+.wall-shortcut.is-unavailable:hover{opacity:1;color:var(--text)}
+
+html.is-choice-dragging,html.is-choice-dragging *{user-select:none!important;cursor:grabbing!important}

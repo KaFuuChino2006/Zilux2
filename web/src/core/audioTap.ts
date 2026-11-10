@@ -164,6 +164,32 @@ export function audioTapGraphActive(): boolean {
 }
 
 /**
+ * 确保播放器的本地音频图已建立，并返回共享 AudioContext。
+ * 麦克风混音从这里取本软件的音乐（不采集系统里其它应用的声音）。
+ */
+export function ensureAppAudioGraph(): AudioContext | null {
+  const ctx = ensureContext();
+  if (!ctx) return null;
+  if (!buildLocalGraph(ctx)) return null;
+  return ctx;
+}
+
+/** 音乐混音取流点：EQ / 响度处理之后、本地音量之前；调用方只 connect，不要 disconnect。 */
+export function appMusicOutputNode(): AudioNode | null {
+  return nightCompressor;
+}
+
+/** 诊断：当前本地播放图状态（麦克风混音排查用）。 */
+export function audioTapState(): { running: boolean; localVolume: number; localGain: number; context: string } {
+  return {
+    running,
+    localVolume,
+    localGain: localGain?.gain.value ?? -1,
+    context: context?.state ?? 'none',
+  };
+}
+
+/**
  * 单个 deck 的图内链路：源 → 低通 → 高通 → 低频架 → 低架（伴奏）→ 高架（伴奏）→ 临场感 → deck gain。
  * 低通/高通/低频架平时直通（20 kHz / 20 Hz / 0 dB），只在「交融」风格过渡期间做互补扫频与低频交接；
  * 搁架滤波平时 0 dB（直通），只在交叉淡化期间用来做人声/伴奏分离。
@@ -844,9 +870,13 @@ function buildLocalGraph(ctx: AudioContext): boolean {
     const source = mediaSource;
     if (!source) return false;
     // 元素音量改由本地 gain 接管，避免「元素 × gain」双重衰减。
+    // 注意：localVolume 可能来自上一次淡出/暂停时的 0；建图瞬间以元素当前音量为准，
+    // 否则麦克风混音触发建图后本机音乐会一直是静音。
+    const initialVolume = Number.isFinite(audio.volume) ? audio.volume : localVolume;
+    localVolume = initialVolume;
     audio.volume = 1;
     localGain = ctx.createGain();
-    localGain.gain.value = running ? 0 : localVolume;
+    localGain.gain.value = running ? 0 : initialVolume;
     // 所有 deck 的 gain 先汇到 deckMix，再统一进 EQ：交叉淡化时两首共用同一条 EQ/分析链路。
     deckMix = ctx.createGain();
     deckMix.gain.value = 1;

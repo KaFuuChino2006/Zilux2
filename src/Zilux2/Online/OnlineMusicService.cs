@@ -28,7 +28,7 @@ internal sealed class OnlineMusicService : IDisposable
     {
         // Account state is created first: both providers read persisted cookies from it.
         Accounts = new AccountService();
-        foreach (var provider in new IOnlineMusicProvider[] { new NeteaseProvider(Accounts), new QqProvider(Accounts), new KugouProvider(), new Mvmp3Provider() })
+        foreach (var provider in new IOnlineMusicProvider[] { new NeteaseProvider(Accounts), new QqProvider(Accounts), new KugouProvider(Accounts), new Mvmp3Provider() })
         {
             _providers[provider.Name] = provider;
         }

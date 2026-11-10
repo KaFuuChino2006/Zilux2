@@ -25,7 +25,7 @@ export function lumiereEffectOn(): boolean {
   try {
     const raw = window.localStorage.getItem(LUMIERE_KEY);
     // 与 lumiereMode() 同一套归一化：'off'、旧版 'lightfield' 以及已删除的 'geo'/'pv'/'collage'
-    // 都算关闭，其它非空值（text/room/vinyl/flow）都算开启。两处判定必须一致，
+    // 都算关闭，其它非空值（text/room/vinyl/flow/poem/pressure）都算开启。两处判定必须一致，
     // 否则旧存档升级后会出现「封面在左被禁用、却没有任何播放效果」。
     return raw !== null && raw !== ''
       && raw !== 'off' && raw !== 'lightfield'
@@ -56,6 +56,32 @@ export type BgLyricsFillMode = 'edge' | 'fill';
 
 export const BG_BLUR_KEY = 'zilux2.bgLyricsBlur';
 export const BG_FILL_KEY = 'zilux2.bgLyricsFill';
+
+/** 关闭效果下歌词页背景图案的亮度（百分数，30–140）。 */
+export const BG_BRIGHTNESS_KEY = 'zilux2.bgLyricsBrightness';
+export const BG_BRIGHTNESS_MIN = 30;
+export const BG_BRIGHTNESS_MAX = 140;
+const BG_BRIGHTNESS_DEFAULT = 92;
+
+export function bgLyricsBrightness(): number {
+  try {
+    const raw = Number(window.localStorage.getItem(BG_BRIGHTNESS_KEY));
+    if (Number.isFinite(raw) && raw >= BG_BRIGHTNESS_MIN && raw <= BG_BRIGHTNESS_MAX) return raw;
+  } catch {
+    /* 存储不可用时用默认值 */
+  }
+  return BG_BRIGHTNESS_DEFAULT;
+}
+
+export function setBgLyricsBrightness(percent: number): void {
+  const next = Math.min(BG_BRIGHTNESS_MAX, Math.max(BG_BRIGHTNESS_MIN, Math.round(percent)));
+  try {
+    window.localStorage.setItem(BG_BRIGHTNESS_KEY, String(next));
+  } catch {
+    /* 存储不可用时仍让当前页面即时生效 */
+  }
+  window.dispatchEvent(new CustomEvent<BgLyricsCoverStyle>(BG_COVER_EVENT, { detail: bgLyricsCoverStyle() }));
+}
 
 export const BG_BLUR_PX: Record<BgLyricsBlurLevel, number> = {
   off: 0,
