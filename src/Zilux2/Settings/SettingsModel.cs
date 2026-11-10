@@ -28,6 +28,11 @@ internal sealed class GeneralSettings
 {
     public bool Splash { get; set; } = true;
 
+    // 启动画面文案（设置 → 启动可改）；标题短一些，避免超出画面。
+    public string SplashTitle { get; set; } = "ZILUX2";
+
+    public string SplashSubtitle { get; set; } = "新一代创意播放器";
+
     public bool StartMaximized { get; set; }
 
     // 开机自启（HKCU\Software\Microsoft\Windows\CurrentVersion\Run 值 Zilux2）。追加在最后，

@@ -27,7 +27,10 @@
              handled by a host-injected pointerdown listener in the page (5px edges / 12px
              corners, posting the existing {type:'resize'} message). WindowChrome's 6px border
              still covers the plain-WPF ErrorPanel shown when WebView2 cannot start. -->
-        <wv2:WebView2 x:Name="Browser" Margin="0" />
+        <wv2:WebView2 x:Name="Browser" Margin="0" Visibility="Hidden" />
+
+        <!-- 启动遮罩：窗口一出现就是纯色，等 WebView2 首帧后再淡出，避免黑底或桌面闪一下。 -->
+        <Border x:Name="StartupVeil" Background="#F3F1EA" IsHitTestVisible="False" />
 
         <!-- Plain WPF fallback (no WebView2 runtime / browser process gone): the user must
              never be left staring at an empty frame, and the host must not crash. -->

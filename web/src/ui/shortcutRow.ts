@@ -3,7 +3,7 @@
  * 不用来回切页签。
  *
  * 与「快捷键」页完全共用同一份设置：两边都订阅 settings / 宿主注册回执，任一处改完另一处
- * 立即同步；录制逻辑与「快捷键」页保持一致（Esc 取消、Backspace 清除、至少一个修饰键）。
+ * 立即同步；录制逻辑与「快捷键」页保持一致（Esc 取消、Backspace 清除；支持单键和组合键）。
  */
 import { h, toast } from './dom';
 import {
@@ -84,9 +84,9 @@ export function createShortcutRow(action: ShortcutAction): ShortcutRowHandle {
     root.classList.toggle('is-recording', recording);
     root.classList.toggle('is-disabled', !current.shortcuts.enabled);
     record.disabled = !current.shortcuts.enabled;
-    record.textContent = recording ? '按下新组合…' : display ? '重录' : '录制';
+    record.textContent = recording ? '按下单个按键或组合…' : display ? '重录' : '录制';
     if (recording) {
-      status.textContent = hint || '按下组合；Backspace / Delete 清除，Esc 取消';
+      status.textContent = hint || '按下单个按键或组合；Backspace / Delete 清除，Esc 取消';
       status.dataset.kind = 'recording';
       status.title = '';
       return;
@@ -129,11 +129,6 @@ export function createShortcutRow(action: ShortcutAction): ShortcutRowHandle {
       toast(`已清除「${meta.label}」快捷键`);
       return;
     }
-    if (noModifier) {
-      hint = '请搭配 Ctrl / Alt / Shift / Win 使用';
-      paint();
-      return;
-    }
     const combo = shortcutBindingFromEvent(event);
     const normalized = combo ? normalizeShortcutBinding(combo, '') : '';
     if (!combo || !normalized) {
@@ -143,7 +138,12 @@ export function createShortcutRow(action: ShortcutAction): ShortcutRowHandle {
     }
     patchSettings({ shortcuts: { [action]: normalized } as Partial<Record<ShortcutAction, string>> });
     stopRecording();
-    toast(`快捷键已更新：${meta.label} → ${formatShortcutForDisplay(normalized)}`);
+    const single = !normalized.includes('+');
+    toast(
+      single
+        ? `快捷键已更新：${meta.label} → ${formatShortcutForDisplay(normalized)}（单键全局生效，输入文字时也会触发）`
+        : `快捷键已更新：${meta.label} → ${formatShortcutForDisplay(normalized)}`,
+    );
   }
 
   record.addEventListener('click', () => {

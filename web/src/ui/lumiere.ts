@@ -40,8 +40,8 @@ import { lyricTextSettings, textSettingsToTuning, type LyricTextSettings } from 
 for (const profile of LUMIERE_PROFILES) profile.typography = 'horizontal';
 
 
-/** 播放效果：关闭 / 纯字（folia 绘光的文字特效）/ 房间（薄荷绿纵深 + 长条地毯，逐词飘浮 + 镜头跟随，可细调）/ 唱片（暖褐聆听室 + 33⅓ 转黑胶 + 黄铜唱臂，可细调）/ 拼合（Folia Tempera 渲染）。 */
-export type LumiereMode = 'off' | 'text' | 'room' | 'vinyl' | 'flow';
+/** 播放效果：关闭 / 纯字 / 房间 / 唱片 / 拼合（声压、长镜流诗已从当前版本移除）。 */
+export type LumiereMode = 'off' | 'text' | 'room' | 'vinyl' | 'flow' | 'poem' | 'pressure';
 
 export const LUMIERE_MODES: Array<{ id: LumiereMode; label: string; hint: string }> = [
   { id: 'flow', label: '拼合', hint: 'Folia 渲染：分镜排版、连续运镜、逐字入场、网点几何与反色文字' },
@@ -62,6 +62,8 @@ export function lumiereMode(): LumiereMode {
     if (raw === 'room') return 'room';
     if (raw === 'vinyl') return 'vinyl';
     if (raw === 'flow') return 'flow';
+    // 声压 / 长镜流诗已从当前版本移除，旧存档统一回落到关闭。
+    if (raw === 'poem' || raw === 'pressure') return 'off';
     if (raw === 'off' || raw === 'lightfield') return 'off';
     if (raw === 'geo' || raw === 'pv' || raw === 'collage') return 'off';
     if (raw) return 'text';

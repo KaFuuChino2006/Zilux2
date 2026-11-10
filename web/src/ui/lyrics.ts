@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 沉浸式歌词页：全屏、封面模糊背景、逐行 +（有逐字数据时）逐字高亮。
  * 数据来源：QQ QRC（解密）→ 网易云 yrc → 普通 LRC → 本地同名 .lrc。
  */
@@ -27,10 +27,12 @@ import { createLumiereStage, lumiereMode, lumiereThemeForCover, setLumiereMode, 
 import { createRoomStage, setRoomLyricTintProvider, type RoomStage } from './room';
 import { createVinylStage, setVinylLyricTintProvider, type VinylStage } from './vinyl';
 import { createFlowStage, type FlowStage } from './flow';
+import { createPoemStage, type PoemStage } from './poem';
+import { createPressureStage, type PressureStage } from './pressure';
 import type { Theme } from './lumiere-folia/types';
 import type { LyricTextSettings } from './lumiereSettings';
 import { LYRIC_STYLES, lyricStyle, lyricStyleNeedsCharTiming, onLyricStyle, reloadLyricStyle } from './lyricStyle';
-import { BG_BLUR_PX, BG_COVER_EVENT, bgLyricsBlurLevel, effectiveBgLyricsCoverStyle, lumiereEffectOn } from './bgLyricsCover';
+import { BG_BLUR_PX, BG_COVER_EVENT, bgLyricsBlurLevel, bgLyricsBrightness, effectiveBgLyricsCoverStyle, lumiereEffectOn } from './bgLyricsCover';
 
 /** 歌词页播放效果（纯字）；导出给快捷设置用。 */
 export type { LumiereMode };
@@ -1217,6 +1219,8 @@ export class LyricsView {
   /** 播放效果（唱片）舞台：暖褐聆听室 + 33⅓ 转黑胶 + 黄铜唱臂，歌词压在唱片下方。 */
   private vinylStage: VinylStage | null = null;
   private flowStage: FlowStage | null = null;
+  private poemStage: PoemStage | null = null;
+  private pressureStage: PressureStage | null = null;
   /** 进页时等画布第一次出像的监听（见 watchStagePaint）。 */
   private stageObserver: MutationObserver | null = null;
   /** 默认歌词页的播放样式（见 lyricStyle.ts）：只切 root 上的 lyric-style-<id> class，动画全在 CSS 里。 */
@@ -1237,6 +1241,7 @@ export class LyricsView {
   private tintPaintAt = 0;
   /** 上一次交给播放效果舞台的歌词快照，用于挡掉高频重复的 setSong。 */
   private lumiereSongKey = '';
+  private lumiereSongOffset = 0;
   private lumiereSongDoc: LyricDoc | null = null;
   private lumiereSongDuration = 0;
   /** 长歌词的行偏移/行高缓存：同步时只读缓存，避免每帧对活动行读 offsetTop 强制布局。 */
@@ -1287,6 +1292,8 @@ export class LyricsView {
     this.roomStage = createRoomStage();
     this.vinylStage = createVinylStage();
     this.flowStage = createFlowStage();
+    this.poemStage = createPoemStage();
+    this.pressureStage = createPressureStage();
 
     this.root = h(
       'div',
@@ -1297,6 +1304,8 @@ export class LyricsView {
       this.roomStage.root,
       this.vinylStage.root,
       this.flowStage.root,
+      this.poemStage.root,
+      this.pressureStage.root,
       closeBtn,
       h(
         'div',
@@ -1344,7 +1353,11 @@ export class LyricsView {
 
     // 「封面在左」：软件内歌词页和桌面背景歌词保持一致，共用 bgLyricsCover 里的样式选择。
     this.applyCoverStyle();
-    const onCoverStyle = (): void => this.applyCoverStyle();
+    this.applyBgBrightness();
+    const onCoverStyle = (): void => {
+      this.applyCoverStyle();
+      this.applyBgBrightness();
+    };
     window.addEventListener(BG_COVER_EVENT, onCoverStyle);
     this.coverStyleUnsub = () => window.removeEventListener(BG_COVER_EVENT, onCoverStyle);
 
@@ -1658,6 +1671,15 @@ export class LyricsView {
     return el ? { top: el.offsetTop, height: el.offsetHeight } : { top: 0, height: 0 };
   }
 
+  /** 关闭效果下背景图案亮度：写到歌词视图，CSS 用它乘到封面/壁纸的 brightness 上。 */
+  private applyBgBrightness(): void {
+    if (this.disposed) return;
+    const value = String(bgLyricsBrightness() / 100);
+    this.root.style.setProperty('--lyrics-bg-brightness', value);
+    // 自定义页面背景在 .app 外层，借同一个变量在歌词打开时一起压暗/提亮。
+    document.documentElement.style.setProperty('--lyrics-bg-brightness', value);
+  }
+
   /** 封面模糊强度（和桌面背景歌词共用设置）：只改 root 上的 CSS 变量与开关类。 */
   private applyCoverBlurStyle(): void {
     if (this.disposed) return;
@@ -1734,7 +1756,9 @@ export class LyricsView {
     const roomOn = mode === 'room';
     const vinylOn = mode === 'vinyl';
     const flowOn = mode === 'flow';
-    const anyOn = textOn || roomOn || vinylOn || flowOn;
+    const poemOn = mode === 'poem';
+    const pressureOn = mode === 'pressure';
+    const anyOn = textOn || roomOn || vinylOn || flowOn || poemOn || pressureOn;
     // 纯字 / 房间 / 唱片都由 canvas 画歌词，DOM 歌词与封面栏让位；什么时候藏由 CSS 的 is-painted 门槛决定，
     // 画布还没出像时默认歌词页仍然可见，不会闪灰。
     this.root.classList.toggle('is-lumiere', anyOn);
@@ -1743,6 +1767,8 @@ export class LyricsView {
     this.root.classList.toggle('is-room', roomOn);
     this.root.classList.toggle('is-vinyl', vinylOn);
     this.root.classList.toggle('is-flow', flowOn);
+    this.root.classList.toggle('is-poem', poemOn);
+    this.root.classList.toggle('is-pressure', pressureOn);
     // 播放效果开启/关闭会改变「封面在左」是否生效，切完模式立即重算一次。
     if (this.coverEl) {
       this.applyCoverStyle();
@@ -1773,7 +1799,13 @@ export class LyricsView {
       if (flowOn) flow.activate();
       else flow.deactivate();
     }
-    const stageRoot = flowOn ? flow?.root : roomOn ? room?.root : vinylOn ? vinyl?.root : stage?.root;
+    const poem = this.poemStage;
+    if (poemOn) poem?.activate();
+    else poem?.deactivate();
+    const pressure = this.pressureStage;
+    if (pressureOn) pressure?.activate();
+    else pressure?.deactivate();
+    const stageRoot = pressureOn ? pressure?.root : poemOn ? poem?.root : flowOn ? flow?.root : roomOn ? room?.root : vinylOn ? vinyl?.root : stage?.root;
     const painted = stageRoot ? stageRoot.classList.contains('is-painted') : false;
     const failed = stageRoot ? stageRoot.classList.contains('is-failed') : false;
     if (anyOn && stageRoot && !painted && !failed) {
@@ -1882,11 +1914,13 @@ export class LyricsView {
     const track = this.state?.track ?? null;
     const key = this.doc.trackKey || trackKeyOf(track);
     const duration = this.state?.durationMs || track?.durationMs || 0;
+    const offset = lyricOffsetOf(key);
     // onPlayer 在背景场景是 100ms 一次：曲目/歌词/时长都没变就不必重编译整首歌。
-    if (key === this.lumiereSongKey && this.doc === this.lumiereSongDoc && duration === this.lumiereSongDuration) {
+    if (key === this.lumiereSongKey && this.doc === this.lumiereSongDoc && duration === this.lumiereSongDuration && offset === this.lumiereSongOffset) {
       return;
     }
     this.lumiereSongKey = key;
+    this.lumiereSongOffset = offset;
     this.lumiereSongDoc = this.doc;
     this.lumiereSongDuration = duration;
     const input = this.buildLumiereSong();
@@ -1894,6 +1928,8 @@ export class LyricsView {
     this.roomStage?.setSong(input);
     this.vinylStage?.setSong(input);
     this.flowStage?.setSong(input);
+    this.poemStage?.setSong(input);
+    this.pressureStage?.setSong(input);
   }
 
 
@@ -1902,7 +1938,11 @@ export class LyricsView {
     const token = ++this.bgToken;
     const flowTrack = this.state?.track ?? null;
     void coverColorsOf(flowTrack).then(colors => {
-      if (!this.disposed && token === this.bgToken) this.flowStage?.setPalette((colors ?? fallbackColors(`${flowTrack?.title ?? ""}|${flowTrack?.artist ?? ""}`)).palette);
+      if (!this.disposed && token === this.bgToken) {
+        const palette = (colors ?? fallbackColors(`${flowTrack?.title ?? ""}|${flowTrack?.artist ?? ""}`)).palette;
+        this.flowStage?.setPalette(palette);
+        this.poemStage?.setPalette(palette);
+      }
     }).catch(() => {});
     const mode = this.bgMode;
     if (mode === 'solid') {
@@ -2425,7 +2465,7 @@ export class LyricsView {
   private lumiereCoversLyrics(): boolean {
     const mode = lumiereMode();
     if (mode === 'off') return false;
-    const stage = mode === 'flow' ? this.flowStage : mode === 'room' ? this.roomStage : mode === 'vinyl' ? this.vinylStage : this.lumiereText;
+    const stage = mode === 'pressure' ? this.pressureStage : mode === 'poem' ? this.poemStage : mode === 'flow' ? this.flowStage : mode === 'room' ? this.roomStage : mode === 'vinyl' ? this.vinylStage : this.lumiereText;
     if (!stage) return false;
     const classes = stage.root.classList;
     return classes.contains('is-on') && classes.contains('is-ready')
@@ -2771,6 +2811,10 @@ export class LyricsView {
     this.vinylStage = null;
     this.flowStage?.dispose();
     this.flowStage = null;
+    this.poemStage?.dispose();
+    this.poemStage = null;
+    this.pressureStage?.dispose();
+    this.pressureStage = null;
     this.stageObserver?.disconnect();
     this.stageObserver = null;
     this.styleUnsub?.();

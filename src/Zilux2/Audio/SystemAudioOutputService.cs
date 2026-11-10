@@ -1,4 +1,4 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 
 namespace Zilux2.Audio;
 
@@ -101,6 +101,115 @@ internal static class SystemAudioOutputService
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// 设置指定播放端点的系统音量（0–1）。麦克风混音使用：CABLE Input 端点音量经常被 Windows
+    /// 或用户压到 20–50%，页面增益再高也会被端点音量乘掉。
+    /// </summary>
+    public static bool SetEndpointVolume(string deviceId, float volume)
+    {
+        if (string.IsNullOrWhiteSpace(deviceId))
+        {
+            return false;
+        }
+
+        LoopbackCapture.IMMDeviceEnumerator? enumerator = null;
+        LoopbackCapture.IMMDevice? device = null;
+        IAudioEndpointVolume? endpoint = null;
+        try
+        {
+            enumerator = (LoopbackCapture.IMMDeviceEnumerator)new LoopbackCapture.MMDeviceEnumeratorComObject();
+            if (enumerator.GetDevice(deviceId, out device) < 0 || device is null)
+            {
+                return false;
+            }
+
+            var iid = typeof(IAudioEndpointVolume).GUID;
+            if (device.Activate(ref iid, 23, IntPtr.Zero, out var activated) < 0 ||
+                activated is not IAudioEndpointVolume endpointVolume)
+            {
+                return false;
+            }
+
+            endpoint = endpointVolume;
+            endpoint.SetMasterVolumeLevelScalar(Math.Clamp(volume, 0f, 1f), Guid.Empty);
+            endpoint.SetMute(false, Guid.Empty);
+            HostLog.Info($"[audioOutput] endpoint volume device={deviceId} volume={Math.Clamp(volume, 0f, 1f):F2}");
+            return true;
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[audioOutput] set endpoint volume failed: {exception.GetType().Name}: {exception.Message}");
+            return false;
+        }
+        finally
+        {
+            if (endpoint is not null)
+            {
+                Marshal.ReleaseComObject(endpoint);
+            }
+
+            if (device is not null)
+            {
+                Marshal.ReleaseComObject(device);
+            }
+
+            if (enumerator is not null)
+            {
+                Marshal.ReleaseComObject(enumerator);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 按友好名设置播放端点音量。页面拿到的是 Chromium 的 deviceId（哈希），不是 WASAPI 端点 ID，
+    /// 所以麦克风混音用标签匹配 CABLE Input / VoiceMeeter Input。
+    /// </summary>
+    public static bool SetEndpointVolumeByName(string name, float volume)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return false;
+        }
+
+        var devices = List();
+        var exact = devices.FirstOrDefault(device =>
+            string.Equals(device.Name, name, StringComparison.OrdinalIgnoreCase));
+        if (exact is not null)
+        {
+            return SetEndpointVolume(exact.Id, volume);
+        }
+
+        var loose = devices.FirstOrDefault(device =>
+            device.Name.Contains(name, StringComparison.OrdinalIgnoreCase) ||
+            name.Contains(device.Name, StringComparison.OrdinalIgnoreCase));
+        return loose is not null && SetEndpointVolume(loose.Id, volume);
+    }
+
+    [ComImport]
+    [Guid("5CDF2C82-841E-4546-9722-0CF74078229A")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IAudioEndpointVolume
+    {
+        int RegisterControlChangeNotify(IntPtr notify);
+        int UnregisterControlChangeNotify(IntPtr notify);
+        int GetChannelCount(out uint count);
+        int SetMasterVolumeLevel(float level, Guid context);
+        int SetMasterVolumeLevelScalar(float level, Guid context);
+        int GetMasterVolumeLevel(out float level);
+        int GetMasterVolumeLevelScalar(out float level);
+        int SetChannelVolumeLevel(uint channel, float level, Guid context);
+        int SetChannelVolumeLevelScalar(uint channel, float level, Guid context);
+        int GetChannelVolumeLevel(uint channel, out float level);
+        int GetChannelVolumeLevelScalar(uint channel, out float level);
+        int SetMute(bool mute, Guid context);
+        int GetMute(out bool mute);
+        int GetVolumeStepInfo(out uint step, out uint stepCount);
+        int VolumeStepUp(Guid context);
+        int VolumeStepDown(Guid context);
+        int QueryHardwareSupport(out uint mask);
+        int GetVolumeRange(out float min, out float max, out float increment);
     }
 
     /// <summary>把系统默认播放设备（控制台/多媒体/通信三个角色）切换到 <paramref name="deviceId"/>。</summary>

@@ -84,9 +84,9 @@ const DEFAULT_SOURCES: SourceDescriptor[] = [
     accent: '#2fb0ff',
     loginMode: 'image',
     loginHint: '用酷狗 App 扫码登录',
-    feedKinds: [],
+    feedKinds: ['recent', 'daily'],
     supportsWordLyrics: true,
-    supportsLikedWrite: false,
+    supportsLikedWrite: true,
     hasDaily30: false,
     qualities: [
       { id: '128', label: '标准', detail: '128 kbps · MP3' },
@@ -99,6 +99,7 @@ const DEFAULT_SOURCES: SourceDescriptor[] = [
 export const SOURCE_LABEL: Record<string, string> = {
   netease: '网易云',
   qq: 'QQ 音乐',
+  kugou: '酷狗',
   local: '本地',
 };
 

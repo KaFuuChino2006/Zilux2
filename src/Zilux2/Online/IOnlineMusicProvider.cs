@@ -58,6 +58,9 @@ internal sealed class StreamResolution
     // 实际下发的音质（用于界面显示，例如「无损 · FLAC 999k」）。
     public string QualityLabel { get; private init; } = string.Empty;
 
+    // 上游只给了试听片段（例如酷狗付费歌曲的 60 秒 free_part），下载应拒绝。
+    public bool IsTrial { get; private init; }
+
     public int Bitrate { get; private init; }
 
     public string Format { get; private init; } = string.Empty;
@@ -74,7 +77,8 @@ internal sealed class StreamResolution
         int bitrate = 0,
         string format = "",
         string encryptionKey = "",
-        string encryptionMode = "") =>
+        string encryptionMode = "",
+        bool isTrial = false) =>
         new()
         {
             IsPlayable = true,
@@ -85,6 +89,7 @@ internal sealed class StreamResolution
             Format = format,
             EncryptionKey = encryptionKey,
             EncryptionMode = encryptionMode,
+            IsTrial = isTrial,
         };
 
     public static StreamResolution NotPlayable(string message) =>

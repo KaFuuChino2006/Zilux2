@@ -1,0 +1,132 @@
+<Window x:Class="Zilux2.SystemAudioOsdWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Zilux2 系统音频"
+        Width="470"
+        Height="116"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ShowInTaskbar="False"
+        ShowActivated="False"
+        Focusable="False"
+        IsHitTestVisible="False"
+        ResizeMode="NoResize"
+        Topmost="True"
+        WindowStartupLocation="Manual"
+        UseLayoutRounding="True"
+        TextOptions.TextFormattingMode="Display">
+    <!-- 留出 10px 透明边，阴影才不会被窗口边缘切成方角 -->
+    <Border x:Name="Shell"
+            Margin="10"
+            Padding="14,9,14,7"
+            CornerRadius="15"
+            Background="#F7F4EC"
+            BorderBrush="#2E1B1D23"
+            BorderThickness="1">
+        <Border.Effect>
+            <DropShadowEffect Color="#1B1D23" BlurRadius="20" ShadowDepth="4" Opacity="0.22" />
+        </Border.Effect>
+        <Border.RenderTransform>
+            <TranslateTransform x:Name="ShellShift" />
+        </Border.RenderTransform>
+
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="14" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="2" />
+            </Grid.RowDefinitions>
+
+            <Grid Grid.Row="0">
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <Border Width="4" Height="4" CornerRadius="2" Background="#3C66AA" />
+                    <TextBlock Margin="6,0,0,0"
+                               FontSize="10"
+                               FontWeight="SemiBold"
+                               Foreground="#7A7F88"
+                               Text="系统音频" />
+                </StackPanel>
+                <TextBlock x:Name="StatusText"
+                           HorizontalAlignment="Right"
+                           VerticalAlignment="Center"
+                           FontSize="10"
+                           FontWeight="Medium"
+                           Foreground="#3C66AA"
+                           Text="正在切换" />
+            </Grid>
+
+            <Grid Grid.Row="1" Margin="0,7,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="1.05*" />
+                    <ColumnDefinition Width="36" />
+                    <ColumnDefinition Width="1.1*" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel x:Name="FromStack" Grid.Column="0" VerticalAlignment="Center">
+                    <StackPanel.RenderTransform>
+                        <TranslateTransform x:Name="FromShift" />
+                    </StackPanel.RenderTransform>
+                    <TextBlock x:Name="FromCaption"
+                               FontSize="9"
+                               Foreground="#8A8F98"
+                               Text="当前播放" />
+                    <TextBlock x:Name="FromName"
+                               Margin="0,2,0,0"
+                               FontSize="12"
+                               FontWeight="SemiBold"
+                               Foreground="#1B1D23"
+                               TextTrimming="CharacterEllipsis"
+                               Text="—" />
+                </StackPanel>
+
+                <Canvas x:Name="ArrowCanvas"
+                        Grid.Column="1"
+                        Width="36"
+                        Height="16"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center">
+                    <Line x:Name="ArrowLine"
+                          X1="1" Y1="8" X2="0" Y2="8"
+                          Stroke="#3C66AA"
+                          StrokeThickness="2"
+                          StrokeStartLineCap="Round"
+                          StrokeEndLineCap="Round" />
+                    <Polygon x:Name="ArrowHead"
+                             Points="21,2.5 30,8 21,13.5"
+                             Fill="#3C66AA"
+                             Opacity="0" />
+                </Canvas>
+
+                <StackPanel x:Name="ToStack" Grid.Column="2" VerticalAlignment="Center">
+                    <StackPanel.RenderTransform>
+                        <TranslateTransform x:Name="ToShift" />
+                    </StackPanel.RenderTransform>
+                    <TextBlock x:Name="ToCaption"
+                               FontSize="9"
+                               Foreground="#8A8F98"
+                               Text="切换到" />
+                    <TextBlock x:Name="ToName"
+                               Margin="0,2,0,0"
+                               FontSize="12"
+                               FontWeight="SemiBold"
+                               Foreground="#3C66AA"
+                               TextTrimming="CharacterEllipsis"
+                               Text="—" />
+                </StackPanel>
+            </Grid>
+
+            <Border Grid.Row="2"
+                    Height="2"
+                    Margin="0,7,0,0"
+                    CornerRadius="1"
+                    Background="#1F1B1D23">
+                <Border x:Name="ProgressFill"
+                        Width="0"
+                        HorizontalAlignment="Left"
+                        CornerRadius="1"
+                        Background="#3C66AA" />
+            </Border>
+        </Grid>
+    </Border>
+</Window>

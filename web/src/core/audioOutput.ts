@@ -7,7 +7,8 @@
  *    type:'audioOutput' 的宿主消息；它改的是整台机器的默认输出，不碰本软件的第 1 条链路。
  *
  * 设备列表：Chromium 只有在宿主授予麦克风权限后才会列出全部播放设备与名称（WebView2 启动时
- * 已授权，且不会真的开麦）。因此这里直接读 enumerateDevices()。
+ * 已授权；平时不开麦，只有用户主动开启「麦克风混音」时才会 getUserMedia）。
+ * 因此这里直接读 enumerateDevices()。
  */
 import { host, postMessage } from './bridge';
 import { getSettings, onSettingsChange } from './settings';

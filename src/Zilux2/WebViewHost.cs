@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Text.Json;
@@ -224,6 +225,9 @@ internal sealed class WebViewHost : IDisposable
     /// <summary>页面首帧可用（页面发出 ready 或首次导航成功）：窗口用它从透明淡入。</summary>
     public event Action? FirstContentReady;
 
+    /// <summary>系统默认播放设备变化（设置页直接点选设备时触发 OSD）。</summary>
+    internal event Action<SystemAudioOutputDevice?, SystemAudioOutputDevice>? SystemAudioOutputChanged;
+
     /// <summary>
     /// 接管窗口四边/四角 5px 的缩放热区。WebView2 是子 HWND，WPF 的 WindowChrome 命中不到它；
     /// 旧实现把页面缩进 6px 露出主题色边条来换取可缩放——那条边就是用户看到的「框」。
@@ -428,8 +432,8 @@ internal sealed class WebViewHost : IDisposable
 
             HostLog.Info("webview2 initialized");
             // 音频输出选择依赖 Chromium 的 enumerateDevices 完整列表：只有拿到麦克风权限后，
-            // 页面才会列出全部播放设备与名称（否则只有一条「默认值」）。这里只授权、不开麦，
-            // 页面也不会去调 getUserMedia。
+            // 页面才会列出全部播放设备与名称（否则只有一条「默认值」）。这里先授权；页面平时
+            // 不调 getUserMedia，只有用户主动开启「麦克风混音」时才会真正采集麦克风。
             try
             {
                 var origin = new Uri(_plan.NavigationUrl).GetLeftPart(UriPartial.Authority);
@@ -812,6 +816,10 @@ internal sealed class WebViewHost : IDisposable
                     break;
                 case "audio":
                     HandleAudioMessage(root);
+                    break;
+
+                case "audioMix":
+                    HandleAudioMixMessage(root);
                     break;
 
                 case "airplay":
@@ -1474,6 +1482,45 @@ internal sealed class WebViewHost : IDisposable
     /// 系统默认播放设备：设置页「系统音频输出」需要设备列表与当前默认项。设备枚举/切换都在
     /// 宿主侧（WASAPI + IPolicyConfig），页面只负责展示与勾选轮换集合。
     /// </summary>
+    /// <summary>页面 → 宿主：麦克风混音的虚拟音频线端点音量（WASAPI endpoint volume）。</summary>
+    private void HandleAudioMixMessage(JsonElement root)
+    {
+        var action = ReadString(root, "action");
+        if (string.Equals(action, "openCableDownload", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo("https://vb-audio.com/Cable/") { UseShellExecute = true })?.Dispose();
+            }
+            catch (Exception exception)
+            {
+                HostLog.Warn($"[audioMix] open cable download failed: {exception.GetType().Name}: {exception.Message}");
+            }
+
+            return;
+        }
+
+        if (!string.Equals(action, "setEndpointVolume", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var deviceId = ReadString(root, "deviceId") ?? string.Empty;
+        var deviceName = ReadString(root, "deviceName") ?? string.Empty;
+        var volume = 1f;
+        if (root.TryGetProperty("volume", out var volumeElement) && volumeElement.TryGetDouble(out var parsed))
+        {
+            volume = (float)Math.Clamp(parsed, 0, 1);
+        }
+
+        var ok = (deviceName.Length > 0 && SystemAudioOutputService.SetEndpointVolumeByName(deviceName, volume)) ||
+                 SystemAudioOutputService.SetEndpointVolume(deviceId, volume);
+        if (!ok)
+        {
+            HostLog.Warn($"[audioMix] setEndpointVolume failed device={deviceId} name={deviceName} volume={volume:F2}");
+        }
+    }
+
     private void HandleAudioOutputMessage(JsonElement root)
     {
         switch (ReadString(root, "action"))
@@ -1484,9 +1531,17 @@ internal sealed class WebViewHost : IDisposable
 
             case "setDefault":
                 var id = ReadString(root, "id") ?? string.Empty;
+                var before = SystemAudioOutputService.CurrentDefault();
                 if (id.Length == 0 || !SystemAudioOutputService.SetDefault(id))
                 {
                     HostLog.Warn($"[audioOutput] setDefault failed id={id}");
+                }
+                else if (before is null || !string.Equals(before.Id, id, StringComparison.Ordinal))
+                {
+                    var next = SystemAudioOutputService.List()
+                        .FirstOrDefault(device => string.Equals(device.Id, id, StringComparison.Ordinal))
+                        ?? new SystemAudioOutputDevice(id, id, true);
+                    SystemAudioOutputChanged?.Invoke(before, next);
                 }
 
                 PostAudioOutputState();

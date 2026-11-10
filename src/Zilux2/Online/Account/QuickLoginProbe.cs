@@ -1,4 +1,4 @@
-﻿using System.IO;
+using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -18,7 +18,7 @@ internal static class QuickLoginProbe
     private static readonly Dictionary<string, Session> Sessions = new();
     private static readonly Dictionary<string, SemaphoreSlim> Gates = new()
     {
-        [AccountSources.Qq] = new(1, 1), [AccountSources.Netease] = new(1, 1),
+        [AccountSources.Qq] = new(1, 1), [AccountSources.Netease] = new(1, 1), [AccountSources.Kugou] = new(1, 1),
     };
     private static DispatcherTimer? _cleanup;
 
@@ -36,9 +36,8 @@ internal static class QuickLoginProbe
         }).slice(0,8))()
         """;
 
-    public static async Task<IReadOnlyList<QuickAccount>> GetAsync(string source, CancellationToken cancellationToken)
-    {
-        var gate = Gates[source];
+    public static async Task<IReadOnlyList<QuickAccount>> GetAsync(string source, CancellationToken cancellationToken)    {
+        if (!Gates.TryGetValue(source, out var gate)) return Array.Empty<QuickAccount>();
         await gate.WaitAsync(cancellationToken);
         try
         {
@@ -58,7 +57,7 @@ internal static class QuickLoginProbe
 
     public static async Task<WebLoginResult> LoginAsync(string source, string accountId, CancellationToken cancellationToken)
     {
-        var gate = Gates[source];
+        if (!Gates.TryGetValue(source, out var gate)) throw new AccountException("unavailable", "该平台暂不支持 QQ 快捷登录");
         if (!await gate.WaitAsync(0, cancellationToken))
             throw new AccountException("login-busy", "正在登录，请稍候", 409);
         try { return await (await GetSessionAsync(source, cancellationToken)).LoginAsync(accountId, cancellationToken); }
@@ -159,15 +158,29 @@ internal static class QuickLoginProbe
                 var cookies = await core.CookieManager.GetCookiesAsync("https://music.163.com");
                 foreach (var cookie in cookies.Where(c => c.Name == "MUSIC_U")) core.CookieManager.DeleteCookie(cookie);
             }
-            var url = source == AccountSources.Netease || source == AccountSources.Qq
+            if (source == AccountSources.Kugou)
+            {
+                var cookies = await core.CookieManager.GetCookiesAsync("https://www.kugou.com");
+                foreach (var cookie in cookies.Where(c => c.Name.Equals("KuGoo", StringComparison.OrdinalIgnoreCase) || c.Name is "token" or "userid"))
+                    core.CookieManager.DeleteCookie(cookie);
+            }
+            var url = source == AccountSources.Kugou
+                ? "https://openplat-user.kugou.com/qq/?appid=1058&platid=4&dfid=-&mid=" + _state +
+                    "&force_login=1&callbackurl=https%3A%2F%2Fm3ws.kugou.com%2Findex.php%3Faflogin%3Dtrue&https=1"
+                : source == AccountSources.Netease
                 ? "https://music.163.com/api/sns/authorize?snsType=5&clientType=web2&callbackType=Login&forcelogin=true"
                 : "https://graph.qq.com/oauth2.0/authorize?client_id=100497308&response_type=code&redirect_uri=" +
                     Uri.EscapeDataString(QqLoginProvider.RedirectUri) + "&state=" + _state + "&forcelogin=true";
             core.Navigate(url);
         }
 
-        private static bool IsPlatformUrl(string url) => Uri.TryCreate(url, UriKind.Absolute, out var uri) &&
-            uri.Scheme == Uri.UriSchemeHttps && uri.Host is "music.163.com" or "y.qq.com";
+        private bool IsPlatformUrl(string url) => Uri.TryCreate(url, UriKind.Absolute, out var uri) &&
+            uri.Scheme == Uri.UriSchemeHttps && (source switch
+            {
+                AccountSources.Kugou => uri.Host == "kugou.com" || uri.Host.EndsWith(".kugou.com", StringComparison.OrdinalIgnoreCase),
+                AccountSources.Qq => uri.Host == "y.qq.com",
+                _ => uri.Host == "music.163.com",
+            });
 
         private async void CaptureQrResponse(object? sender, CoreWebView2WebResourceResponseReceivedEventArgs e)
         {
@@ -277,6 +290,20 @@ internal static class QuickLoginProbe
                 if (accounts.Count > 0) { Touch(); return accounts; }
                 await Task.Delay(350, cancellationToken);
             }
+
+            var debugContexts = await GetContextsAsync();
+            var debugText = string.Empty;
+            foreach (var context in debugContexts)
+            {
+                using var evaluated = await EvaluateAsync(context, "(() => document.body ? document.body.innerText.slice(0,240) : '')()", true);
+                if (TryValue(evaluated, out var value) && value.ValueKind == JsonValueKind.String)
+                {
+                    debugText = value.GetString() ?? string.Empty;
+                    if (debugText.Length > 0) break;
+                }
+            }
+
+            OnlineHttp.Warn($"[account] quick probe no accounts source={source} url={_web.Source?.AbsoluteUri ?? "-"} contexts={debugContexts.Count} text={debugText.Replace('\n', ' ').Replace('\r', ' ')}");
             return Array.Empty<QuickAccount>();
         }
 
@@ -301,6 +328,14 @@ internal static class QuickLoginProbe
                 token.ThrowIfCancellationRequested();
                 if (_result.Task.IsCompleted) return await _result.Task;
                 if (await ReadNeteaseResultAsync() is { } netease) return netease;
+                if (source == AccountSources.Kugou && IsPlatformUrl(_web.Source?.AbsoluteUri ?? ""))
+                {
+                    var cookies = await _web.CoreWebView2.CookieManager.GetCookiesAsync("https://www.kugou.com");
+                    if (cookies.Any(c => c.Name.Equals("KuGoo", StringComparison.OrdinalIgnoreCase) && c.Value.Length > 0) ||
+                        cookies.Any(c => c.Name == "token" && c.Value.Length > 0))
+                        return new WebLoginResult(cookies.Where(c => c.Value.Length > 0)
+                            .Select(c => new WebLoginCookie(c.Name, c.Value, c.Domain)).ToList(), _web.Source?.AbsoluteUri ?? "");
+                }
                 // Only official OAuth confirmation, after the user has chosen a QQ account.
                 await ConfirmConsentAsync();
                 await Task.Delay(500, token);

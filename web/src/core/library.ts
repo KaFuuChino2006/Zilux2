@@ -55,7 +55,7 @@ export interface PlaylistDetail {
   hasMore: boolean;
 }
 
-export const LIBRARY_SOURCES: MusicSource[] = ['netease', 'qq'];
+export const LIBRARY_SOURCES: MusicSource[] = ['netease', 'qq', 'kugou'];
 
 const PAGE_LIMIT = 200;
 // D-44：网易歌单详情可能是「v6 详情 + 500 一批补歌」串行多跳，30s 才能覆盖宿主预算。

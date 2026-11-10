@@ -109,3 +109,15 @@ web/arc-proto/
 tools/stems-proto/bin/
 tools/stems-proto/obj/
 tools/stems-proto/models/
+
+# Driver build artifacts
+driver/**/bin/
+driver/**/obj/
+driver/**/x64/
+driver/**/ARM64/
+driver/**/*.sys
+driver/**/*.cat
+driver/**/*.pdb
+driver/**/out/
+driver/src/control/package/*.sys
+driver/src/control/package/*.cat

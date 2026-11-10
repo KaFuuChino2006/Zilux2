@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Zilux2.Online.Account;
+using Zilux2.Online.Kugou;
 using Zilux2.Online.Netease;
 using Zilux2.Online.Qq;
 
@@ -1958,6 +1959,11 @@ internal sealed class DiscoverService
             return await GetQqCommentsAsync(id, offset, limit, cancellationToken).ConfigureAwait(false);
         }
 
+        if (source == "kugou")
+        {
+            return await GetKugouCommentsAsync(id, offset, limit, cancellationToken).ConfigureAwait(false);
+        }
+
         if (id.Length == 0)
         {
             throw new DiscoverException(400, "bad-request", "缺少歌曲 id");
@@ -2064,6 +2070,94 @@ internal sealed class DiscoverService
             OnlineHttp.Warn($"discover qq hot comments failed song={songId}: {OnlineHttp.Describe(exception)}");
             return [];
         }
+    }
+
+    private async Task<DiscoverCommentsResponse> GetKugouCommentsAsync(
+        string id,
+        int offset,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        var parts = id.Split('|');
+        if (parts.Length < 4 || !long.TryParse(parts[3], NumberStyles.Integer, CultureInfo.InvariantCulture, out var mixSongId) || mixSongId <= 0)
+        {
+            throw new DiscoverException(400, "bad-request", "酷狗评论需要歌曲的 mixsongid");
+        }
+
+        var cookies = _accounts?.GetCookies(AccountSources.Kugou) ?? [];
+        string Find(params string[] names)
+        {
+            foreach (var name in names)
+            {
+                var cookie = cookies.LastOrDefault(item => string.Equals(item.Name, name, StringComparison.OrdinalIgnoreCase));
+                if (cookie is not null && !string.IsNullOrWhiteSpace(cookie.Value))
+                {
+                    return cookie.Value;
+                }
+            }
+
+            return string.Empty;
+        }
+
+        var userId = Find("userid", "KugooID");
+        var token = Find("token", "t");
+        if (userId.Length == 0 || token.Length == 0)
+        {
+            throw new DiscoverException(401, "login-required", "请先登录酷狗音乐");
+        }
+
+        var mid = Find("mid", "kg_mid");
+        if (mid.Length == 0)
+        {
+            mid = KugouDevice.Current.Mid;
+        }
+
+        var dfid = KugouDevice.ResolveDfid(Find("dfid", "kg_dfid"));
+        var page = offset <= 0 ? 1 : (offset / Math.Max(1, limit)) + 1;
+        using var client = new KugouClient(mid, dfid);
+        var body = await client
+            .GetCommentsAsync(mixSongId, page, limit, userId, token, cancellationToken)
+            .ConfigureAwait(false);
+        using var document = JsonDocument.Parse(body);
+        var root = document.RootElement;
+        if (!root.TryGetProperty("status", out var status) || status.ToString() != "1")
+        {
+            throw new DiscoverException(502, "upstream-error", "酷狗评论拉取失败");
+        }
+
+        var comments = new List<DiscoverComment>();
+        if (root.TryGetProperty("list", out var list) && list.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in list.EnumerateArray())
+            {
+                var liked = 0L;
+                if (item.TryGetProperty("like", out var like) && like.ValueKind == JsonValueKind.Object)
+                {
+                    liked = ReadLong(like, "count");
+                }
+
+                comments.Add(new DiscoverComment
+                {
+                    User = ReadString(item, "user_name"),
+                    Avatar = KugouCover.Normalize(ReadString(item, "user_pic")) ?? string.Empty,
+                    Content = ReadString(item, "content"),
+                    Liked = liked,
+                    Time = ReadString(item, "addtime"),
+                    Hot = false,
+                });
+            }
+        }
+
+        var total = ReadLong(root, "count");
+        OnlineHttp.Info($"discover kugou comments mixsongid={mixSongId} page={page} count={comments.Count} total={total}");
+        return new DiscoverCommentsResponse
+        {
+            Source = "kugou",
+            Id = id,
+            Total = total > 0 ? total : comments.Count,
+            Comments = comments,
+            HasMore = total > 0 ? offset + comments.Count < total : comments.Count >= limit,
+        };
     }
 
     private async Task<DiscoverCommentsResponse> GetQqCommentsAsync(

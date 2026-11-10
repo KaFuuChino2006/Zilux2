@@ -1,4 +1,4 @@
-﻿using System.Buffers;
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
@@ -509,11 +509,12 @@ internal sealed class LocalMusicServer : IDisposable
             return WriteError(context, 503, "account-unavailable", "账号服务不可用");
         }
 
-        var cookie = accounts.CookieHeader("kugou", "kugou.com");
-        var token = System.Text.RegularExpressions.Regex.Match(cookie, "(?:^|;\\s*)token=([^;]+)").Groups[1].Value;
-        var userId = System.Text.RegularExpressions.Regex.Match(cookie, "(?:^|;\\s*)userid=([^;]+)").Groups[1].Value;
-        var mid = System.Text.RegularExpressions.Regex.Match(cookie, "(?:^|;\\s*)mid=([^;]+)").Groups[1].Value;
-        var dfid = System.Text.RegularExpressions.Regex.Match(cookie, "(?:^|;\\s*)dfid=([^;]+)").Groups[1].Value;
+        var cookies = accounts.GetCookies("kugou") ?? [];
+        string Cookie(string name) => cookies.LastOrDefault(item => string.Equals(item.Name, name, StringComparison.OrdinalIgnoreCase))?.Value ?? string.Empty;
+        var token = Cookie("token");
+        var userId = Cookie("userid");
+        var mid = Cookie("mid");
+        var dfid = Zilux2.Online.Kugou.KugouDevice.ResolveDfid(Cookie("dfid"));
         if (string.IsNullOrEmpty(token) || string.IsNullOrEmpty(userId))
         {
             return WriteError(context, 409, "login-required", "请先登录酷狗音乐");
@@ -593,6 +594,30 @@ internal sealed class LocalMusicServer : IDisposable
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token);
             timeout.CancelAfter(AccountQrTimeout);
             var status = await accounts.PollLoginAsync(source, key, timeout.Token).ConfigureAwait(false);
+            if (string.Equals(status.State, "authorized", StringComparison.OrdinalIgnoreCase))
+            {
+                // 登录成功立刻补昵称/头像，避免页面先显示单字头像，必须重启才刷新。
+                try
+                {
+                    using var profileTimeout = CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token);
+                    profileTimeout.CancelAfter(TimeSpan.FromSeconds(10));
+                    var refreshed = await accounts.RefreshProfileAsync(source, profileTimeout.Token).ConfigureAwait(false);
+                    if (refreshed is not null)
+                    {
+                        status = new LoginStatusResponse
+                        {
+                            State = status.State,
+                            Message = status.Message,
+                            Account = refreshed,
+                        };
+                    }
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException || !_shutdown.IsCancellationRequested)
+                {
+                    OnlineHttp.Warn($"api account status profile refresh failed source={source}: {OnlineHttp.Describe(exception)}");
+                }
+            }
+
             WriteJson(context, 200, JsonSerializer.Serialize(status, AccountJsonContext.Default.LoginStatusResponse));
             return 200;
         }
@@ -1133,9 +1158,9 @@ internal sealed class LocalMusicServer : IDisposable
     {
         var query = context.Request.QueryString;
         var source = (query["source"] ?? "qq").Trim().ToLowerInvariant();
-        if (source != AccountSources.Qq && source != AccountSources.Netease)
+        if (source != AccountSources.Qq && source != AccountSources.Netease && source != AccountSources.Kugou)
         {
-            return WriteError(context, 400, "bad-request", "热门歌单目前支持 QQ 音乐与网易云音乐");
+            return WriteError(context, 400, "bad-request", "热门歌单目前支持 QQ 音乐、网易云音乐与酷狗音乐");
         }
 
         var limit = 24;
@@ -1152,6 +1177,11 @@ internal sealed class LocalMusicServer : IDisposable
             {
                 var neteaseProvider = (NeteaseProvider)GetProvider(AccountSources.Netease)!;
                 items = await neteaseProvider.GetHotPlaylistsAsync(limit, _shutdown.Token).ConfigureAwait(false);
+            }
+            else if (source == AccountSources.Kugou)
+            {
+                var kugouProvider = (KugouProvider)GetProvider(AccountSources.Kugou)!;
+                items = await kugouProvider.GetHotPlaylistsAsync(limit, _shutdown.Token).ConfigureAwait(false);
             }
             else
             {
@@ -1421,10 +1451,10 @@ internal sealed class LocalMusicServer : IDisposable
     private async Task<int> HandleDiscoverCommentsAsync(HttpListenerContext context)
     {
         var query = context.Request.QueryString;
-        var source = ReadSource(query["source"]);
-        if (source.Length == 0)
+        var source = (query["source"] ?? string.Empty).Trim().ToLowerInvariant();
+        if (source is not (AccountSources.Netease or AccountSources.Qq or AccountSources.Kugou))
         {
-            return WriteError(context, 400, "bad-request", "source 只支持 netease / qq");
+            return WriteError(context, 400, "bad-request", "source 只支持 netease / qq / kugou");
         }
 
         var id = (query["id"] ?? string.Empty).Trim();
@@ -2444,7 +2474,13 @@ internal sealed class LocalMusicServer : IDisposable
 
         try
         {
-            await library.AddLikedAsync(source, id, _shutdown.Token).ConfigureAwait(false);
+            await library.AddLikedAsync(
+                    source,
+                    id,
+                    (query["title"] ?? string.Empty).Trim(),
+                    (query["artist"] ?? string.Empty).Trim(),
+                    _shutdown.Token)
+                .ConfigureAwait(false);
             WriteJson(context, 200, JsonSerializer.Serialize(new LibraryRefreshResponse(), LibraryJsonContext.Default.LibraryRefreshResponse));
             return 200;
         }
@@ -2630,15 +2666,24 @@ internal sealed class LocalMusicServer : IDisposable
         }
         else if (source == "kugou")
         {
-            if (key.Length == 0 || key.Length > 32 || !key.All(char.IsAsciiDigit))
+            if (key.Length is > 0 and <= 32 && key.All(char.IsAsciiDigit))
+            {
+                upstreamUrl = $"https://imge.kugou.com/stdmusic/{(highResCover ? "800" : "400")}/{key}.jpg";
+                referer = KugouProvider.RefererUrl;
+                cacheKey = "kugou|" + key;
+            }
+            else if (Zilux2.Online.Kugou.KugouCover.IsAllowedHost(key))
+            {
+                // 酷狗搜索/云歌单直接给完整图床地址（imge.kugou.com / singerimg.kugou.com / *.kgimg.com）。
+                upstreamUrl = highResCover ? Zilux2.Online.Kugou.KugouCover.UpgradeSize(key) : key;
+                referer = KugouProvider.RefererUrl;
+                cacheKey = "kugou|" + key;
+            }
+            else
             {
                 OnlineHttp.Warn($"[cover] reject kugou key={Describe(key)}");
-                return WriteError(context, 400, "bad-request", "key 必须是酷狗专辑数字 id");
+                return WriteError(context, 400, "bad-request", "key 必须是酷狗专辑数字 id 或酷狗图床地址");
             }
-
-            upstreamUrl = $"https://imge.kugou.com/stdmusic/240/{key}.jpg";
-            referer = KugouProvider.RefererUrl;
-            cacheKey = "kugou|" + key;
         }
         else if (source == "mvmp3")
         {
@@ -3512,7 +3557,11 @@ internal sealed class LocalMusicServer : IDisposable
             host.Equals("gtimg.cn", StringComparison.OrdinalIgnoreCase) ||
             host.EndsWith(".gtimg.cn", StringComparison.OrdinalIgnoreCase) ||
             host.Equals("gtimg.com", StringComparison.OrdinalIgnoreCase) ||
-            host.EndsWith(".gtimg.com", StringComparison.OrdinalIgnoreCase);
+            host.EndsWith(".gtimg.com", StringComparison.OrdinalIgnoreCase) ||
+            host.Equals("kugou.com", StringComparison.OrdinalIgnoreCase) ||
+            host.EndsWith(".kugou.com", StringComparison.OrdinalIgnoreCase) ||
+            host.Equals("kgimg.com", StringComparison.OrdinalIgnoreCase) ||
+            host.EndsWith(".kgimg.com", StringComparison.OrdinalIgnoreCase);
         return knownCoverHost ? "https://" + key["http://".Length..] : key;
     }
 

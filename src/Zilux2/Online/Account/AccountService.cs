@@ -1,4 +1,4 @@
-﻿namespace Zilux2.Online.Account;
+namespace Zilux2.Online.Account;
 
 // Contract docs/zilux2-account-login.md §1/§3: owns the persisted account store plus the two
 // QR-login providers, and answers the loopback API with already-shaped DTOs.
@@ -27,7 +27,7 @@ internal sealed class AccountService : IDisposable
         _qqMusic = new QqMusicAppLoginProvider(_store, _qq);
         _qqWechat = new QqMusicWechatLoginProvider(_qq);
         _importer = new AccountImporter(_store);
-        OnlineHttp.Info($"[account] ready sources=netease,qq path={_store.FilePath}");
+        OnlineHttp.Info($"[account] ready sources={string.Join(",", AllSources)} path={_store.FilePath}");
 
         // Best effort, never delays startup: an already logged-in account picks up nickname,
         // avatar and membership without asking for a new scan.
@@ -39,34 +39,46 @@ internal sealed class AccountService : IDisposable
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(25));
         foreach (var source in AllSources)
         {
-            if (!IsLoggedIn(source))
-            {
-                continue;
-            }
-
-            var cookies = _store.GetCookies(source);
-            if (cookies is null || cookies.Count == 0)
-            {
-                continue;
-            }
-
             try
             {
-                var refreshed = source switch
-                {
-                    AccountSources.Qq => await _qq.RefreshAsync(cookies, timeout.Token).ConfigureAwait(false),
-                    _ => await _netease.RefreshAsync(cookies, timeout.Token).ConfigureAwait(false),
-                };
-                if (refreshed is not null)
-                {
-                    _store.UpdateProfile(source, refreshed);
-                }
+                await RefreshProfileAsync(source, timeout.Token).ConfigureAwait(false);
             }
             catch (Exception exception) when (exception is not OperationCanceledException || !timeout.IsCancellationRequested)
             {
                 OnlineHttp.Warn($"[account] refresh {source} failed: {OnlineHttp.Describe(exception)}");
             }
         }
+    }
+
+    /// <summary>登录完成后立刻补齐昵称/头像（公开方法，供登录轮询与快捷登录复用）。</summary>
+    public async Task<AccountInfo?> RefreshProfileAsync(string source, CancellationToken cancellationToken)
+    {
+        source = NormalizeSource(source);
+        if (!IsLoggedIn(source))
+        {
+            return null;
+        }
+
+        var cookies = _store.GetCookies(source);
+        if (cookies is null || cookies.Count == 0)
+        {
+            return null;
+        }
+
+        var refreshed = source switch
+        {
+            AccountSources.Qq => await _qq.RefreshAsync(cookies, cancellationToken).ConfigureAwait(false),
+            AccountSources.Kugou => await _kugou.RefreshAsync(cookies, cancellationToken).ConfigureAwait(false),
+            AccountSources.Netease => await _netease.RefreshAsync(cookies, cancellationToken).ConfigureAwait(false),
+            _ => null,
+        };
+        if (refreshed is null)
+        {
+            return _store.GetAccountInfo(source);
+        }
+
+        _store.UpdateProfile(source, refreshed);
+        return _store.GetAccountInfo(source);
     }
 
     public IReadOnlyList<string> Sources => AllSources;
@@ -87,6 +99,9 @@ internal sealed class AccountService : IDisposable
     public string? GetUserId(string source) => _store.GetUserId(source);
 
     public string CookieHeader(string source, string host) => _store.CookieHeader(source, host);
+
+    /// <summary>读取某平台的原始 cookie 列表（酷狗这类 cookie 域不是标准 host 的场景用）。</summary>
+    public IReadOnlyList<StoredCookie>? GetCookies(string source) => _store.GetCookies(source);
 
     public Task<LoginQrResponse> CreateLoginQrAsync(string source, string? channel, CancellationToken cancellationToken) =>
         NormalizeSource(source) switch
@@ -266,7 +281,11 @@ internal sealed class AccountService : IDisposable
     private async Task SaveWebLoginResultAsync(string normalized, WebLoginResult result, CancellationToken cancellationToken)
     {
         var cookies = result.Cookies;
-        if (normalized == AccountSources.Netease)
+        if (normalized == AccountSources.Kugou)
+        {
+            await _kugou.SaveWebCookiesAsync(cookies, cancellationToken).ConfigureAwait(false);
+        }
+        else if (normalized == AccountSources.Netease)
         {
             if (cookies.Count == 0)
             {

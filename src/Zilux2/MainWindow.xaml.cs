@@ -35,6 +35,9 @@ public partial class MainWindow : Window
     private readonly MediaSessionService? _media;
     private readonly AirPlayService? _airplay;
     private WebViewHost? _host;
+    private SystemAudioOsdWindow? _systemAudioOsd;
+    private DispatcherTimer? _systemAudioWatch;
+    private SystemAudioOutputDevice? _lastSystemAudioDevice;
     private IntPtr _hwnd;
     private long _dragGeneration;
     private bool _dragPending;
@@ -255,19 +258,13 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 页面首帧/导航完成前窗口不可见：以 Opacity=0 显示（WebView2 必须已加载才能初始化），
-    /// 内容就绪后淡入。5 秒兜底，避免页面异常时窗口一直不出现（错误面板会自己提前揭示）。
+    /// 页面首帧/导航完成前窗口保持可见，但盖着纯色 StartupVeil；内容就绪后淡出遮罩。
+    /// 5 秒兜底，避免页面异常时遮罩一直不消失（错误面板会自己提前揭示）。
     /// </summary>
     private void StartStartupRevealWatchdog()
     {
         if (_startupRevealed)
         {
-            return;
-        }
-
-        if (Opacity >= 1)
-        {
-            _startupRevealed = true;
             return;
         }
 
@@ -285,7 +282,7 @@ public partial class MainWindow : Window
 
     private void OnHostFirstContentReady()
     {
-        // 页面已经渲染出首帧：让 WPF 走完这一轮布局/呈现再淡入，别闪一帧空白。
+        // 页面已经渲染出首帧：让 WPF 走完这一轮布局/呈现再揭示，别闪一帧空白。
         Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() => RevealWindow("first-content")));
     }
 
@@ -299,7 +296,24 @@ public partial class MainWindow : Window
         }
 
         _startupRevealed = true;
-        FadeWindowIn(reason);
+        StartupVeil.IsHitTestVisible = false;
+        if (ErrorPanel.Visibility != Visibility.Visible)
+        {
+            Browser.Visibility = Visibility.Visible;
+        }
+
+        HostLog.Info($"window.reveal reason={reason} veil=out");
+        var animation = new DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(260))
+        {
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+        };
+        animation.Completed += (_, _) =>
+        {
+            StartupVeil.BeginAnimation(OpacityProperty, null);
+            StartupVeil.Visibility = Visibility.Collapsed;
+            StartupVeil.Opacity = 0;
+        };
+        StartupVeil.BeginAnimation(OpacityProperty, animation);
     }
 
     /// <summary>窗口从不可见/空白状态恢复时淡入；窗口本身已经可见时不做任何事。</summary>
@@ -412,11 +426,76 @@ public partial class MainWindow : Window
     internal void CycleSystemOutput()
     {
         var rotation = _settings?.SystemOutputRotation ?? Array.Empty<string>();
+        var before = SystemAudioOutputService.CurrentDefault();
         var next = SystemAudioOutputService.Cycle(rotation);
         HostLog.Info(next is null
             ? "[audioOutput] shortcut cycle failed"
             : $"[audioOutput] shortcut cycle -> {next.Name}");
+        if (next is not null)
+        {
+            ShowSystemAudioOsd(before, next);
+        }
+
         _host?.PostAudioOutputState();
+    }
+
+    /// <summary>显示系统音频切换 OSD；同一个设备不重复弹。</summary>
+    private void ShowSystemAudioOsd(SystemAudioOutputDevice? from, SystemAudioOutputDevice to)
+    {
+        if (to is null || Dispatcher.HasShutdownStarted)
+        {
+            return;
+        }
+
+        if (from is not null && string.Equals(from.Id, to.Id, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _lastSystemAudioDevice = to;
+        HostLog.Info($"[audioOsd] show from={from?.Name ?? "?"} to={to.Name}");
+        try
+        {
+            _systemAudioOsd ??= new SystemAudioOsdWindow();
+            _systemAudioOsd.ShowTransition(from, to);
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[audioOsd] show failed: {exception.GetType().Name}: {exception.Message}");
+        }
+    }
+
+    private void StartSystemAudioWatch()
+    {
+        if (_systemAudioWatch is not null)
+        {
+            return;
+        }
+
+        _lastSystemAudioDevice = SystemAudioOutputService.CurrentDefault();
+        _systemAudioWatch = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = TimeSpan.FromMilliseconds(2500),
+        };
+        _systemAudioWatch.Tick += (_, _) =>
+        {
+            var current = SystemAudioOutputService.CurrentDefault();
+            if (current is null)
+            {
+                return;
+            }
+
+            var previous = _lastSystemAudioDevice;
+            if (previous is not null && !string.Equals(previous.Id, current.Id, StringComparison.Ordinal))
+            {
+                ShowSystemAudioOsd(previous, current);
+            }
+            else
+            {
+                _lastSystemAudioDevice = current;
+            }
+        };
+        _systemAudioWatch.Start();
     }
 
     /// <summary>把「当前实际生效的组合」同步给钩子：注册失败/回落时钩子用同一份配置兜底。</summary>
@@ -449,6 +528,8 @@ public partial class MainWindow : Window
         _host = new WebViewHost(this, Browser, _plan, _settings, _audio, _media, _airplay);
         _host.SharedEnvironmentReady += OnHostEnvironmentReady;
         _host.FirstContentReady += OnHostFirstContentReady;
+        _host.SystemAudioOutputChanged += ShowSystemAudioOsd;
+        StartSystemAudioWatch();
         _ = _host.InitializeAsync();
         StartStartupRevealWatchdog();
         ApplyDesktopLyricsSettings();
@@ -855,6 +936,14 @@ public partial class MainWindow : Window
     private void OnClosed(object? sender, EventArgs e)
     {
         CloseBackgroundLyrics();
+
+        _systemAudioWatch?.Stop();
+        _systemAudioWatch = null;
+        if (_systemAudioOsd is not null)
+        {
+            _systemAudioOsd.Close();
+            _systemAudioOsd = null;
+        }
 
         if (_settings is not null)
         {

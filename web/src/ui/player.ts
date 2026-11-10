@@ -676,7 +676,7 @@ export async function toggleLiked(): Promise<LikeResult> {
       setState({ liked: false });
       return 'unliked';
     }
-    await addLikedTrack(track.source, track.id);
+    await addLikedTrack(track.source, track.id, { title: track.title, artist: track.artist });
     setState({ liked: true });
     return 'liked';
   } catch (err) {

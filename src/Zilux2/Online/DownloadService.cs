@@ -582,6 +582,11 @@ internal sealed class DownloadService : IDisposable
                     : resolution.NotPlayableMessage);
         }
 
+        if (resolution.IsTrial)
+        {
+            throw new InvalidOperationException("该歌曲当前只能试听，无法下载完整音频");
+        }
+
         var directory = Directory;
         System.IO.Directory.CreateDirectory(directory);
         var extension = GuessExtension(resolution.Url, resolution.Format);

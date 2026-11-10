@@ -31,6 +31,8 @@ export interface HomeCallbacks {
   onRecent(): void;
   onRecommend(): void;
   onDaily(): void;
+  /** 选择「今日推荐」融合哪些平台。 */
+  onDailyFilter(anchor: HTMLElement): void;
   onDaily30(): void;
   onRadar(): void;
   onSearch(): void;
@@ -131,7 +133,7 @@ export class HomeView {
     }
     this.bindRecentScroll();
 
-    // 左中：网易云收藏 / QQ 音乐收藏；右侧：最近播放（窄栏，内部滚动）。下面每日推荐、热门歌单。
+    // 左中：各平台收藏；右侧：最近播放（窄栏，内部滚动）。下面每日推荐、热门歌单。
 
     const recommendPlaylists = this.buildPlaylistSection(data.recommendPlaylists, '每日推荐歌单', true);
     if (recommendPlaylists) this.root.append(recommendPlaylists);
@@ -144,6 +146,19 @@ export class HomeView {
 
     this.syncDailyDeck(playerState().track, false);
     this.syncLikedDeck(playerState().track, false);
+  }
+
+  /** 只刷新今日推荐卡（切换混合平台时用，避免整页重建）。 */
+  updateDaily(data: HomeData): void {
+    this.dailyTracks = data.daily;
+    this.deckEl = null;
+    this.titleEl = null;
+    this.deckKey = [];
+    const current = this.root.firstElementChild;
+    const next = this.buildDaily(data);
+    if (current) current.replaceWith(next);
+    else this.root.prepend(next);
+    this.syncDailyDeck(playerState().track, false);
   }
 
   /* ------------------------------------------------------------------ */
@@ -196,12 +211,27 @@ export class HomeView {
       const login = h('button', { class: ui.btn({ variant: 'primary' }) }, icon('user', 16), h('span', { text: '登录' }));
       login.addEventListener('click', () => this.callbacks.onLogin());
       actions.append(login);
-    } else if (data.daily.length > 0) {
-      const playAll = h('button', { class: ui.btn({ variant: 'primary' }) }, icon('play', 16), h('span', { text: '播放全部' }));
-      playAll.addEventListener('click', () => this.callbacks.onPlay(data.daily, 0, 'daily'));
-      const more = h('button', { class: ui.btn({ variant: 'ghost' }) }, h('span', { text: '查看全部' }));
-      more.addEventListener('click', () => this.callbacks.onDaily());
-      actions.append(playAll, more);
+    } else {
+      if (data.daily.length > 0) {
+        const playAll = h('button', { class: ui.btn({ variant: 'primary' }) }, icon('play', 16), h('span', { text: '播放全部' }));
+        playAll.addEventListener('click', () => this.callbacks.onPlay(data.daily, 0, 'daily'));
+        actions.append(playAll);
+      }
+
+      const filter = h(
+        'button',
+        { class: ui.btn({ variant: 'ghost' }), title: '选择今日推荐混合哪些平台' },
+        icon('sliders', 16),
+        h('span', { text: '混合平台' }),
+      );
+      filter.addEventListener('click', () => this.callbacks.onDailyFilter(filter));
+      actions.append(filter);
+
+      if (data.daily.length > 0) {
+        const more = h('button', { class: ui.btn({ variant: 'ghost' }) }, h('span', { text: '查看全部' }));
+        more.addEventListener('click', () => this.callbacks.onDaily());
+        actions.append(more);
+      }
     }
 
     const card = h(
@@ -495,6 +525,7 @@ export class HomeView {
   private buildCollectionCard(item: HomeCollection): HTMLElement | null {
     if (!item.loggedIn && item.count <= 0) return null;
     const covers = item.tracks.slice(0, 5);
+    const canPlay = item.tracks.some((track) => track.playable);
     const deck = h('div', { class: 'daily-deck' });
 
     if (covers.length > 0) {
@@ -504,13 +535,15 @@ export class HomeView {
         .forEach(({ track, index }) => {
           const layer = h('div', { class: `daily-cover daily-cover-${index}` });
           layer.append(h('img', { src: track.cover || onlineArtwork(track, 300), loading: 'lazy', alt: '' }));
-          if (index === 0) {
+          if (index === 0 && canPlay) {
             const play = h('button', { class: 'daily-play', type: 'button', title: `播放${item.label}` }, icon('play', 18));
             play.addEventListener('click', (event) => {
               event.stopPropagation();
               this.callbacks.onLiked(item.source);
             });
             layer.append(play);
+            layer.addEventListener('click', () => this.callbacks.onLiked(item.source));
+          } else {
             layer.addEventListener('click', () => this.callbacks.onLiked(item.source));
           }
           deck.append(layer);
@@ -524,7 +557,7 @@ export class HomeView {
     playAll.addEventListener('click', () => this.callbacks.onPlayLiked(item.source));
     const more = h('button', { class: ui.btn({ variant: 'ghost' }) }, h('span', { text: '查看全部' }));
     more.addEventListener('click', () => this.callbacks.onLiked(item.source));
-    actions.append(playAll);
+    if (canPlay) actions.append(playAll);
     if (item.source === 'netease' && item.loggedIn) {
       // 心动模式是网易云独有的智能续播：以「我喜欢的音乐 + 当前歌曲」为种子。
       const heartbeat = h(

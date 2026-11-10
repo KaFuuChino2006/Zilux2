@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 在线音乐客户端：与宿主回环 HTTP 服务（docs/zilux2-online-music.md §5）通信。
  * 宿主在页面 ready 后推送 {type:'host', event:'online', payload:{port, token, sources}}。
  * 本地预览（无宿主）时可用 ?mock=1 打开内置演示数据，仅用于 UI 验收。
@@ -328,11 +328,17 @@ export async function removeLikedTrack(source: OnlineSource, id: string): Promis
 }
 
 /** 加入「我喜欢的音乐」（宿主写入平台收藏）。 */
-export async function addLikedTrack(source: OnlineSource, id: string): Promise<void> {
+export async function addLikedTrack(
+  source: OnlineSource,
+  id: string,
+  meta?: { title?: string; artist?: string },
+): Promise<void> {
   if (mockMode) return;
   const current = info;
   if (!current) throw new OnlineError('not-ready', '在线源尚未就绪');
   const query = new URLSearchParams({ source, id, token: current.token });
+  if (meta?.title) query.set('title', meta.title);
+  if (meta?.artist) query.set('artist', meta.artist);
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), 12_000);
   try {

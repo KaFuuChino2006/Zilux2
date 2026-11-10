@@ -16,6 +16,7 @@ import { fetchFeed } from '../online/client';
 import { sourceMeta } from '../online/sources';
 import type { OnlineSource, OnlineTrack } from '../online/types';
 import { toast } from './dom';
+import { resolveMixSources } from './mixSources';
 import { playQueue, playerState } from './player';
 
 export type AutoPlaySource = 'daily' | 'liked' | 'playlist';
@@ -145,10 +146,11 @@ function interleave(lists: readonly OnlineTrack[][]): OnlineTrack[] {
 }
 
 async function resolveDaily(limitPerSource = 60): Promise<OnlineTrack[]> {
-  const sources = getAccounts()
+  const allSources = getAccounts()
     .filter((item) => item.loggedIn)
     .filter((item) => (sourceMeta(item.source)?.feedKinds ?? []).includes('daily'))
     .map((item) => item.source);
+  const sources = resolveMixSources('daily', allSources);
   const lists = await Promise.all(
     sources.map(async (source) => {
       try {
@@ -165,17 +167,20 @@ async function resolveDaily(limitPerSource = 60): Promise<OnlineTrack[]> {
 async function resolveLiked(limitPerSource = 300): Promise<OnlineTrack[]> {
   const overview = await fetchLibraryOverview();
   const entries = overview.sources.filter((state) => state.loggedIn && state.liked);
+  const selected = new Set(resolveMixSources('liked', entries.map((state) => state.source)));
   const lists = await Promise.all(
-    entries.map(async (state) => {
-      const liked = state.liked;
-      if (!liked) return [] as OnlineTrack[];
-      try {
-        return (await fetchPlaylist(state.source, liked.id, 0, limitPerSource, 'liked')).tracks;
-      } catch (err) {
-        console.warn('[autoplay] liked failed', state.source, err);
-        return [] as OnlineTrack[];
-      }
-    }),
+    entries
+      .filter((state) => selected.has(state.source))
+      .map(async (state) => {
+        const liked = state.liked;
+        if (!liked) return [] as OnlineTrack[];
+        try {
+          return (await fetchPlaylist(state.source, liked.id, 0, limitPerSource, 'liked')).tracks;
+        } catch (err) {
+          console.warn('[autoplay] liked failed', state.source, err);
+          return [] as OnlineTrack[];
+        }
+      }),
   );
   return interleave(lists);
 }

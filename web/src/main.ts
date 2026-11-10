@@ -114,15 +114,15 @@ function handleUpdatePrompt(update: UpdateSnapshot): void {
 }
 
 
-function createSplash(): HTMLDivElement {
+function createSplash(title: string, subtitle: string): HTMLDivElement {
   const el = h(
     'div',
     { class: 'splash' },
     h(
       'div',
       { style: 'display:flex;flex-direction:column;align-items:center;gap:4px' },
-      h('div', { class: 'splash-mark', text: 'ZILUX2' }),
-      h('div', { class: 'splash-sub', text: '新一代创意播放器' }),
+      h('div', { class: 'splash-mark', text: title }),
+      subtitle ? h('div', { class: 'splash-sub', text: subtitle }) : null,
     ),
   );
   return el;
@@ -186,7 +186,9 @@ async function main(): Promise<void> {
   host.ready();
   host.setChromeColor('#f3f1ea');
 
-  const splash = settings.general.splash ? createSplash() : null;
+  const splashTitle = settings.general.splashTitle.trim() || 'ZILUX2';
+  const splashSubtitle = settings.general.splashSubtitle.trim();
+  const splash = settings.general.splash ? createSplash(splashTitle, splashSubtitle) : null;
   if (splash) document.body.append(splash);
   const startedAt = performance.now();
 
