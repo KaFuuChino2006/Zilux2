@@ -143,22 +143,6 @@ import {
   suppressNextCrossfade,
 } from './crossfadeDeck';
 import { confirmDialog } from './confirmDialog';
-import { openAdvancedPanel, shouldAutoOpen } from './advancedPanel';
-import {
-  MIX_ENGINE_HINTS,
-  MIX_ENGINE_LABELS,
-  MIX_ENGINE_ORDER,
-  readMixTransitionEngine,
-  writeMixTransitionEngine,
-  MIX_TEMPLATE_HINTS,
-  MIX_TEMPLATE_LABELS,
-  MIX_TEMPLATE_ORDER,
-  MIX_TRANSITION_HINTS,
-  MIX_TRANSITION_LABELS,
-  MIX_TRANSITION_ORDER,
-  readMixTransitionTemplate,
-  writeMixTransitionTemplate,
-} from '../core/mixTransitionMode';
 import { installAdvancedHandoff } from '../audio/installAdvancedHandoff';
 import { createEqCurve } from './eqCurve';
 import { localArtists, localTracks, type LocalArtist } from './localArtists';
@@ -1040,11 +1024,6 @@ export class App {
     });
     this.intervalIds.push(window.setInterval(() => this.warmAdvancedStems(), 12_000));
     window.setTimeout(() => this.warmAdvancedStems(), 6_000);
-    // 高级过渡调参窗：内部测试版跟随启动弹出（可在 localStorage 里置 advancedPanelAuto=0 关掉）。
-    // 延后一拍再弹，避免和首屏渲染抢布局。
-    window.setTimeout(() => {
-      if (shouldAutoOpen()) openAdvancedPanel();
-    }, 1200);
   }
 
   /* ------------------------------------------------------------------ */
@@ -10537,48 +10516,9 @@ export class App {
         writeCrossfadeSettings({ style: value });
       },
     );
-    const crossCueSeg = quickSeg(
-      [
-        { value: 'auto', label: '自动' },
-        { value: 'drop', label: '进 drop' },
-        { value: 'chorus', label: '进副歌' },
-        { value: 'intro', label: '进 intro' },
-      ],
-      cross.cueMode,
-      (value) => {
-        writeCrossfadeSettings({ cueMode: value });
-      },
-    );
     const crossHandoffSwitch = this.pillSwitch(cross.handoff, (next) => {
       writeCrossfadeSettings({ handoff: next });
     });
-    // 进阶过渡（分轨换手）：三档。默认 standard，老用户升级后行为不变。
-    const crossModeSeg = quickSeg(
-      MIX_TRANSITION_ORDER.map((value) => ({ value, label: MIX_TRANSITION_LABELS[value].replace(/（.*）$/, '') })),
-      cross.mixTransitionMode,
-      (value) => {
-        const next = writeCrossfadeSettings({ mixTransitionMode: value as typeof cross.mixTransitionMode });
-        toast(MIX_TRANSITION_HINTS[next.mixTransitionMode]);
-      },
-    );
-
-    const crossEngineSeg = quickSeg(
-      MIX_ENGINE_ORDER.map((value) => ({ value, label: MIX_ENGINE_LABELS[value] })),
-      readMixTransitionEngine(),
-      (value) => {
-        const next = writeMixTransitionEngine(value as Parameters<typeof writeMixTransitionEngine>[0]);
-        toast(MIX_ENGINE_HINTS[next]);
-      },
-    );
-
-    const crossTemplateSeg = quickSeg(
-      MIX_TEMPLATE_ORDER.map((value) => ({ value, label: MIX_TEMPLATE_LABELS[value] })),
-      readMixTransitionTemplate(),
-      (value) => {
-        const next = writeMixTransitionTemplate(value as Parameters<typeof writeMixTransitionTemplate>[0]);
-        toast(MIX_TEMPLATE_HINTS[next]);
-      },
-    );
 
     // 播放页新增：自动播放与媒体键
     const quickAutoPlaySwitch = this.pillSwitch(autoPlaySettings().enabled, (next) => {
@@ -10622,10 +10562,6 @@ export class App {
         cell('过渡时长模式', true, crossLengthModeSeg),
         cell('过渡时长数值', true, crossLengthValueHost),
         cell('过渡风格', true, crossStyleSeg),
-        cell('过渡模式', true, crossModeSeg),
-        cell('换手手法', true, crossTemplateSeg),
-        cell('过渡引擎（内部测试）', true, crossEngineSeg),
-        cell('B 入场时机', true, crossCueSeg),
         cell('无缝衔接', false, crossEnabledSwitch.root),
         cell('歌词衔接', false, crossHandoffSwitch.root),
       ),
@@ -10670,10 +10606,6 @@ export class App {
       ['过渡时长模式', 'transition'],
       ['过渡时长数值', 'transition'],
       ['过渡风格', 'transition'],
-      ['过渡模式', 'transition'],
-      ['换手手法', 'transition'],
-      ['过渡引擎（内部测试）', 'transition'],
-      ['B 入场时机', 'transition'],
       ['歌词衔接', 'transition'],
     ]);
     for (const node of Array.from(body.querySelectorAll<HTMLElement>('.quick-cell'))) {
