@@ -9,13 +9,15 @@ namespace Zilux2.Audio;
 /// </summary>
 internal sealed class AudioFrameSnapshot
 {
-    internal AudioFrameSnapshot(float[] bins, float[] bands, float level, float peak, bool beat)
+    internal AudioFrameSnapshot(float[] bins, float[] bands, float level, float peak, bool beat, float strength, float bpm)
     {
         Bins = bins;
         Bands = bands;
         Level = level;
         Peak = peak;
         Beat = beat;
+        Strength = strength;
+        Bpm = bpm;
     }
 
     internal float[] Bins { get; }
@@ -27,6 +29,12 @@ internal sealed class AudioFrameSnapshot
     internal float Peak { get; }
 
     internal bool Beat { get; }
+
+    /// <summary>本次 onset 的强度（谱通量 / 自适应阈值），1 表示刚好越过阈值。</summary>
+    internal float Strength { get; }
+
+    /// <summary>由 onset 间隔推出来的 BPM；样本不足时为 0。</summary>
+    internal float Bpm { get; }
 }
 
 /// <summary>
@@ -43,7 +51,12 @@ internal sealed class AudioAnalyzer
 
     private const float MinFrequency = 40f;
     private const float MaxFrequency = 16000f;
-    private const float BeatCooldownMilliseconds = 320f;
+    // 真实 onset 检测（第 20 轮 D）：谱通量 + 自适应阈值 + 最小间隔。
+    // 旧实现只看低频能量突增，人声/吉他一类的起音完全漏掉，且阈值固定 0.12 在安静段落狂报。
+    private const float BeatCooldownMilliseconds = 95f;
+    private const float OnsetThresholdSigma = 1.6f;
+    private const int FluxHistorySize = 43;          // ~1.4 s @30 Hz
+    private const int BpmHistorySize = 12;
 
     private static readonly double[] BandEdges = { 0, 60, 120, 250, 500, 1000, 2000, 4000, 20000 };
 
@@ -63,7 +76,16 @@ internal sealed class AudioAnalyzer
     private float _peak;
     private float _bassAverage;
     private bool _beat;
+    private float _beatStrength;
+    private float _bpm;
     private long _lastBeatTimestamp;
+    private readonly float[] _prevMagnitude = new float[WindowSize / 2 + 1];
+    private readonly float[] _fluxHistory = new float[FluxHistorySize];
+    private int _fluxWrite;
+    private int _fluxCount;
+    private readonly float[] _intervalHistory = new float[BpmHistorySize];
+    private int _intervalWrite;
+    private int _intervalCount;
 
     internal AudioAnalyzer()
     {
@@ -87,7 +109,16 @@ internal sealed class AudioAnalyzer
         _peak = 0f;
         _bassAverage = 0f;
         _beat = false;
+        _beatStrength = 0f;
+        _bpm = 0f;
         _lastBeatTimestamp = 0;
+        Array.Clear(_prevMagnitude);
+        Array.Clear(_fluxHistory);
+        Array.Clear(_intervalHistory);
+        _fluxWrite = 0;
+        _fluxCount = 0;
+        _intervalWrite = 0;
+        _intervalCount = 0;
     }
 
     internal void Push(float[] samples, int count)
@@ -188,20 +219,85 @@ internal sealed class AudioAnalyzer
         var peakNext = Normalize(peakAmplitude);
         _peak = peakNext > _peak ? peakNext : _peak * 0.9f;
 
-        // Bass spike detection with a fixed refractory window keeps the flag from flickering on
-        // sustained bass; the adaptive average makes it level-independent.
-        var bass = _bands[1] * 0.6f + _bands[2] * 0.4f;
-        var now = Environment.TickCount64;
-        _beat = bass > 0.12f &&
-                bass > _bassAverage * 1.45f &&
-                now - _lastBeatTimestamp >= BeatCooldownMilliseconds;
-        if (_beat)
+        // ---- 真实 onset：频谱通量 + 自适应阈值 + 最小间隔 ----
+        // 通量只看「这一帧比上一帧多出来的能量」，对鼓、贝斯、人声起音、拨弦都敏感，
+        // 而旧的低频阈值法只认 kick，且固定阈值在安静段落会误报。
+        var flux = 0f;
+        var loudest = 0f;
+        for (var i = 0; i < _magnitude.Length; i++)
         {
-            _lastBeatTimestamp = now;
+            var delta = _magnitude[i] - _prevMagnitude[i];
+            if (delta > 0f) flux += delta;
+            if (_magnitude[i] > loudest) loudest = _magnitude[i];
+            _prevMagnitude[i] = _magnitude[i];
         }
 
+        // 静音段直接压住，避免把噪声底噪当成鼓点。
+        if (loudest < 1e-4f) flux = 0f;
+
+        // 阈值取最近 1.4 秒通量的自适应基线（均值 + k*标准差），这样不用手工标定音量。
+        var fluxSum = 0f;
+        var fluxSquares = 0f;
+        for (var i = 0; i < _fluxCount; i++)
+        {
+            fluxSum += _fluxHistory[i];
+            fluxSquares += _fluxHistory[i] * _fluxHistory[i];
+        }
+
+        var mean = _fluxCount > 0 ? fluxSum / _fluxCount : 0f;
+        var variance = _fluxCount > 0 ? MathF.Max(0f, fluxSquares / _fluxCount - mean * mean) : 0f;
+        var threshold = mean + OnsetThresholdSigma * MathF.Sqrt(variance);
+        // 基线太低时给一个几乎为 0 的地板，避免「全静音 → 一点噪声就 triple」。
+        if (threshold < 1e-3f) threshold = 1e-3f;
+
+        _fluxHistory[_fluxWrite] = flux;
+        _fluxWrite = (_fluxWrite + 1) % FluxHistorySize;
+        if (_fluxCount < FluxHistorySize) _fluxCount++;
+
+        var now = Environment.TickCount64;
+        var cooled = now - _lastBeatTimestamp >= BeatCooldownMilliseconds;
+        _beat = cooled && flux > threshold && _fluxCount >= 4;
+        _beatStrength = threshold > 0f ? Math.Clamp(flux / threshold, 0f, 4f) / 4f : 0f;
+
+        if (_beat)
+        {
+            if (_lastBeatTimestamp > 0)
+            {
+                var interval = now - _lastBeatTimestamp;
+                // 60–200 BPM 之外的间隔（漏拍/静音后重启）不参与估计。
+                if (interval is >= 300 and <= 1000)
+                {
+                    _intervalHistory[_intervalWrite] = interval;
+                    _intervalWrite = (_intervalWrite + 1) % BpmHistorySize;
+                    if (_intervalCount < BpmHistorySize) _intervalCount++;
+                }
+            }
+
+            _lastBeatTimestamp = now;
+            _bpm = EstimateBpm();
+        }
+
+        var bass = _bands[1] * 0.6f + _bands[2] * 0.4f;
         _bassAverage = _bassAverage * 0.97f + bass * 0.03f;
         return Snapshot();
+    }
+
+    /// <summary>用最近若干次 onset 间隔的中位数估 BPM（中位数抗漏拍/多报）。</summary>
+    private float EstimateBpm()
+    {
+        if (_intervalCount < 3) return _bpm;
+
+        Span<float> sorted = stackalloc float[_intervalCount];
+        for (var i = 0; i < _intervalCount; i++) sorted[i] = _intervalHistory[i];
+        sorted.Sort();
+        var median = sorted[_intervalCount / 2];
+        if (median <= 0f) return _bpm;
+
+        var bpm = 60000f / median;
+        // 落在半速/双速区间的结果收敛到 70–180 的常用范围。
+        while (bpm > 180f) bpm *= 0.5f;
+        while (bpm < 70f) bpm *= 2f;
+        return _bpm == 0f ? bpm : _bpm * 0.7f + bpm * 0.3f;
     }
 
     private void DecaySilence()
@@ -220,9 +316,14 @@ internal sealed class AudioAnalyzer
         _peak *= 0.9f;
         _bassAverage *= 0.97f;
         _beat = false;
+        _beatStrength = 0f;
+        Array.Clear(_prevMagnitude);
+        Array.Clear(_fluxHistory);
+        _fluxCount = 0;
+        _fluxWrite = 0;
     }
 
-    private AudioFrameSnapshot Snapshot() => new(_bins, _bands, _level, _peak, _beat);
+    private AudioFrameSnapshot Snapshot() => new(_bins, _bands, _level, _peak, _beat, _beatStrength, _bpm);
 
     private float MaxMagnitude(double lowFrequency, double highFrequency, double binHz)
     {
@@ -324,6 +425,11 @@ internal static class AudioMessage
         AppendNumber(builder, frame.Peak);
         builder.Append(",\"beat\":");
         builder.Append(frame.Beat ? "true" : "false");
+        builder.Append(",\"strength\":");
+        AppendNumber(builder, frame.Strength);
+        builder.Append(",\"bpm\":");
+        // BPM 不在 0..1 之间，不能走 AppendNumber 的归一化 clamp。
+        builder.Append(frame.Bpm.ToString("F1", CultureInfo.InvariantCulture));
         builder.Append("}}");
         return builder.ToString();
     }

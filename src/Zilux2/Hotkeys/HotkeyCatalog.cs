@@ -35,6 +35,9 @@ internal static class HotkeyCatalog
         // 音频通路：appOutput 切本软件输出（跟随系统 ↔ 指定设备），systemOutput 切 Windows 默认输出。
         new(13, "appOutput", "appOutput", string.Empty, Array.Empty<string>()),
         new(14, "systemOutput", "systemOutput", string.Empty, Array.Empty<string>()),
+        // 壁纸（第 39 轮 C）：默认留空，用户在设置里录制后注册。
+        new(15, "wallpaperNext", "wallpaperNext", string.Empty, Array.Empty<string>()),
+        new(16, "wallpaperPause", "wallpaperPause", string.Empty, Array.Empty<string>()),
     };
 
     /// <summary>读取 settings.shortcuts 中对应字段（switch 而不是反射，热键应用只在 UI 线程跑）。</summary>
@@ -54,6 +57,8 @@ internal static class HotkeyCatalog
         "crossfade" => settings.Crossfade,
         "appOutput" => settings.AppOutput,
         "systemOutput" => settings.SystemOutput,
+        "wallpaperNext" => settings.WallpaperNext,
+        "wallpaperPause" => settings.WallpaperPause,
         _ => string.Empty,
     };
 }

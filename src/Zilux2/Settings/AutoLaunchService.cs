@@ -27,9 +27,10 @@ internal static class AutoLaunchService
 
     /// <summary>
     /// 把目标状态幂等地写进 HKCU Run；返回是否已经生效（失败返回 false，只记日志）。
-    /// startHidden 决定命令行是否带 --hidden（开机自启后不显示主界面）。
+    /// startHidden 决定命令行是否带 --hidden（开机自启后不显示主界面）；
+    /// wallpaperOnly 决定是否只跑壁纸（第 68–69 轮：轻量自启 = --wallpaper-host）。
     /// </summary>
-    internal static bool Apply(bool enabled, bool startHidden = false)
+    internal static bool Apply(bool enabled, bool startHidden = false, bool wallpaperOnly = false)
     {
         var exePath = Environment.ProcessPath;
         if (string.IsNullOrWhiteSpace(exePath) || !File.Exists(exePath))
@@ -40,7 +41,8 @@ internal static class AutoLaunchService
 
         // §2: the command is the full exe path, quoted (paths contain spaces on most machines);
         // startHidden 时追加 --hidden，让开机自启只驻留托盘、不弹主界面。
-        var command = "\"" + exePath + "\"" + (startHidden ? " --hidden" : "");
+        var arguments = (startHidden ? " --hidden" : "") + (wallpaperOnly ? " --wallpaper-host" : "");
+        var command = "\"" + exePath + "\"" + arguments;
         var current = ReadCurrentCommand();
 
         if (enabled && string.Equals(current, command, StringComparison.Ordinal))

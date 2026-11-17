@@ -5,6 +5,7 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
+using Microsoft.Win32;
 using Zilux2.AirPlay;
 using Zilux2.Audio;
 using Zilux2.Hotkeys;
@@ -36,6 +37,16 @@ public partial class MainWindow : Window
     private readonly AirPlayService? _airplay;
     private WebViewHost? _host;
     private SystemAudioOsdWindow? _systemAudioOsd;
+    private string _lastTrackKey = string.Empty;
+
+    // 动态壁纸 v2：软件内画布挂在 RootGrid 最底层，WebView2 透明后透出来。
+    private Zilux2.Wallpaper.WallpaperHost? _wallpaperHost;
+
+    // 最近一次曲目 + 已经弹过胶囊的那一首（key 相同就不再弹）：前台切歌先记下，最小化时补弹。
+    private Zilux2.Media.MediaState? _lastMediaState;
+    private string? _lastShownKey;
+    // 上一次弹的是不是「过渡中」形态：过渡收尾的同一首不再重复弹胶囊。
+    private bool _lastShownAsTransition;
     private DispatcherTimer? _systemAudioWatch;
     private SystemAudioOutputDevice? _lastSystemAudioDevice;
     private IntPtr _hwnd;
@@ -89,14 +100,74 @@ public partial class MainWindow : Window
     // 后台常驻：关闭窗口只隐藏到托盘，进程继续跑（听歌/下载/热键）；只有托盘「退出」或更新安装
     // 才真正退出。
     private bool _isHiddenToTray;
+    private double _parkedLeft;
+    private double _parkedTop;
     private bool _isExiting;
     private bool _closePending;
 
     // 启动/托盘恢复的「先隐藏、有内容再淡入」：WebView2 初始化 + 首帧大约要 1~3 秒，
     // 直接 Show 会先露出空白的主题底色窗壳。窗口先以 Opacity=0 显示（WebView2 需要已加载
-    // 才能初始化），首个页面 ready / 导航完成后再淡入；5 秒兜底避免页面异常时窗口一直不出现。
+    // 才能初始化），首个页面 ready / 导航完成后再淡入；12 秒兜底避免页面异常时窗口一直不出现。
     private bool _startupRevealed;
     private DispatcherTimer? _revealTimer;
+
+    /// <summary>
+    /// 启动画面：在 StartupVeil 里把标题/副标题淡入并做一点上浮，底部进度条来回扫。
+    /// 原来这里另开一个半透明 Window 再 Hide() 主窗口，屏幕上只有一块纯色方块，
+    /// 设置里的「启动动画 / 启动标题 / 启动副标题」都没被用上。
+    /// </summary>
+    private void ShowStartupOverlay()
+    {
+        if (_startupRevealed || !IsVisible) return;
+        var splash = _settings?.SplashEnabled ?? true;
+        if (!splash || StartupVeil is null) return;
+
+        var title = _settings?.SplashTitle?.Trim() ?? string.Empty;
+        SplashTitleText.Text = title.Length == 0 ? "ZILUX2" : title;
+        var subtitle = _settings?.SplashSubtitle?.Trim() ?? string.Empty;
+        SplashSubtitleText.Text = subtitle;
+        SplashSubtitleText.Visibility = subtitle.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+
+        // 标题/副标题：0→1 淡入 + 8px 上浮，错开 90ms，看起来像「浮出来」而不是「跳出来」。
+        var rise = new TranslateTransform(0, 8);
+        SplashStack.RenderTransform = rise;
+        var fade = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(520))
+        {
+            BeginTime = TimeSpan.FromMilliseconds(60),
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+        };
+        var lift = new DoubleAnimation(8, 0, TimeSpan.FromMilliseconds(620))
+        {
+            BeginTime = TimeSpan.FromMilliseconds(60),
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+        };
+        SplashStack.BeginAnimation(OpacityProperty, fade);
+        rise.BeginAnimation(TranslateTransform.YProperty, lift);
+
+        // 底部进度条：来回扫，表明还在准备内容（不是卡死）。
+        var sweep = new DoubleAnimation(0, 90, TimeSpan.FromMilliseconds(1100))
+        {
+            AutoReverse = true,
+            RepeatBehavior = RepeatBehavior.Forever,
+            EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut },
+        };
+        var barShift = new TranslateTransform();
+        SplashBar.RenderTransform = barShift;
+        barShift.BeginAnimation(TranslateTransform.XProperty, sweep);
+        SplashBarTrack.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>内容就绪：启动画面整体淡出（不再有第二个窗口需要收）。</summary>
+    private void RevealStartupOverlay()
+    {
+        if (StartupVeil is null || SplashStack is null) return;
+        SplashBarTrack.Visibility = Visibility.Collapsed;
+        var fade = new DoubleAnimation(SplashStack.Opacity, 0, TimeSpan.FromMilliseconds(220))
+        {
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn },
+        };
+        SplashStack.BeginAnimation(OpacityProperty, fade);
+    }
     private WindowState _lastWindowState = WindowState.Normal;
     private readonly List<int> _registeredHotkeys = new();
 
@@ -259,7 +330,7 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// 页面首帧/导航完成前窗口保持可见，但盖着纯色 StartupVeil；内容就绪后淡出遮罩。
-    /// 5 秒兜底，避免页面异常时遮罩一直不消失（错误面板会自己提前揭示）。
+    /// 12 秒兜底，避免页面异常时遮罩一直不消失（错误面板会自己提前揭示）。
     /// </summary>
     private void StartStartupRevealWatchdog()
     {
@@ -270,7 +341,7 @@ public partial class MainWindow : Window
 
         _revealTimer = new DispatcherTimer(DispatcherPriority.Background)
         {
-            Interval = TimeSpan.FromSeconds(5),
+            Interval = TimeSpan.FromSeconds(12),
         };
         _revealTimer.Tick += (_, _) =>
         {
@@ -283,7 +354,12 @@ public partial class MainWindow : Window
     private void OnHostFirstContentReady()
     {
         // 页面已经渲染出首帧：让 WPF 走完这一轮布局/呈现再揭示，别闪一帧空白。
-        Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() => RevealWindow("first-content")));
+        Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+        {
+            RevealWindow("first-content");
+            // 壁纸可能早于页面就绪启动，这里补推一次可见性，避免页面不知道要透明。
+            OnWallpaperStateChanged();
+        }));
     }
 
     private void RevealWindow(string reason)
@@ -296,6 +372,7 @@ public partial class MainWindow : Window
         }
 
         _startupRevealed = true;
+        RevealStartupOverlay();
         StartupVeil.IsHitTestVisible = false;
         if (ErrorPanel.Visibility != Visibility.Visible)
         {
@@ -419,6 +496,19 @@ public partial class MainWindow : Window
             return;
         }
 
+        // 壁纸动作也在宿主侧完成（第 39 轮 C 的全局热键）。
+        if (action == "wallpaperNext")
+        {
+            NextWallpaperFromHotkey();
+            return;
+        }
+
+        if (action == "wallpaperPause")
+        {
+            ToggleWallpaperPauseFromHotkey();
+            return;
+        }
+
         SendCommand(action);
     }
 
@@ -457,6 +547,7 @@ public partial class MainWindow : Window
         try
         {
             _systemAudioOsd ??= new SystemAudioOsdWindow();
+            _systemAudioOsd.SetWorkArea(MonitorWorkAreaDip());
             _systemAudioOsd.ShowTransition(from, to);
         }
         catch (Exception exception)
@@ -522,22 +613,285 @@ public partial class MainWindow : Window
         HostLog.Info($"hotkey.hook bindings={bindings.Count} [{string.Join(", ", bindings.Select(b => b.Action + "=" + b.VirtualKey))}]");
     }
 
+
+    /// <summary>
+    /// 应用内音量胶囊：只反映本软件的音量（播放条滑块、音量热键、M 静音），
+    /// 不看系统端点音量。
+    /// </summary>
+    internal void ShowAppVolume(int percent, bool muted)
+    {
+        _systemAudioOsd ??= new SystemAudioOsdWindow();
+        _systemAudioOsd.SetWorkArea(MonitorWorkAreaDip());
+        _systemAudioOsd.ShowVolume(percent, muted);
+    }
+
+    /// <summary>
+    /// 后台切歌：窗口不在前台（最小化或失焦）时，用系统音频那条胶囊显示歌名/歌手，
+    /// 前台有完整播放条，不抢画面。同一首只弹一次。
+    /// </summary>
+    /// <summary>主窗所在显示器的可用区域，换算成 WPF 的 DIP。</summary>
+    private Rect MonitorWorkAreaDip()
+    {
+        var hwnd = _hwnd;
+        if (hwnd == IntPtr.Zero)
+        {
+            return SystemParameters.WorkArea;
+        }
+
+        var monitor = NativeMethods.MonitorFromWindow(hwnd, NativeMethods.MonitorDefaultToNearest);
+        if (monitor == IntPtr.Zero)
+        {
+            return SystemParameters.WorkArea;
+        }
+
+        var info = new NativeMethods.MonitorInfo { Size = Marshal.SizeOf<NativeMethods.MonitorInfo>() };
+        if (!NativeMethods.GetMonitorInfo(monitor, ref info))
+        {
+            return SystemParameters.WorkArea;
+        }
+
+        var (scaleX, scaleY) = CurrentDpiScale();
+        if (scaleX <= 0)
+        {
+            scaleX = 1;
+        }
+
+        if (scaleY <= 0)
+        {
+            scaleY = 1;
+        }
+
+        return new Rect(
+            info.Work.Left / scaleX,
+            info.Work.Top / scaleY,
+            (info.Work.Right - info.Work.Left) / scaleX,
+            (info.Work.Bottom - info.Work.Top) / scaleY);
+    }
+
+    private bool IsForegroundWindow()
+    {
+        var handle = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        return handle != IntPtr.Zero && NativeMethods.GetForegroundWindow() == handle;
+    }
+
+    internal void NotifyMediaTrack(Zilux2.Media.MediaState state)
+    {
+        var playbackChanged = _lastMediaState is { } last && last.Playing != state.Playing
+            && !string.IsNullOrWhiteSpace(state.Title);
+        // 已显示的同一首曲目，即使主窗恢复前台，也必须收到暂停/过渡结束。
+        if (_lastMediaState is { } previous && previous.Title == state.Title && previous.Artist == state.Artist)
+        {
+            _systemAudioOsd?.UpdatePlayback(state.Playing, state.Transitioning, state.TransitionProgress, state.TransitionRemainingMs);
+        }
+        // 记下最近一次曲目：前台时先不弹，等用户最小化再补上这一条。
+        _lastMediaState = state;
+        var baseKey = (state.Title ?? string.Empty) + "|" + (state.Artist ?? string.Empty);
+        _lastTrackKey = baseKey + (state.Transitioning ? "|t" : string.Empty);
+
+        // 只用「窗口是不是当前前台窗口」来判断：WPF 的 IsActive 在窗口被别的程序盖住时
+        // 仍可能是 true，那样后台切歌就永远不弹。
+        var foreground = WindowState != WindowState.Minimized && IsForegroundWindow();
+        if (foreground && !playbackChanged)
+        {
+            // 前台时用户看得见主界面，不弹；清掉「已弹过」标记，等最小化时再补这一首。
+            _lastShownKey = null;
+            return;
+        }
+
+        if (!playbackChanged && _lastShownKey == _lastTrackKey) return;
+
+        // 过渡收尾会再报一次同一首（transitioning 由 true 变 false）。那不是新的切歌，
+        // 不该再弹一条胶囊：把还在屏上的「过渡中」就地改成「正在播放」。
+        if (!playbackChanged && !state.Transitioning && _lastShownAsTransition && _lastShownKey == baseKey + "|t")
+        {
+            _lastShownKey = _lastTrackKey;
+            _lastShownAsTransition = false;
+            _systemAudioOsd?.ConfirmTransition();
+            _systemAudioOsd?.UpdatePlayback(state.Playing, state.Transitioning, state.TransitionProgress, state.TransitionRemainingMs);
+            return;
+        }
+
+        HostLog.Info($"[osd] track show title={state.Title} active={IsActive} state={WindowState}");
+        _lastShownKey = _lastTrackKey;
+        _lastShownAsTransition = state.Transitioning;
+        _systemAudioOsd ??= new SystemAudioOsdWindow();
+        _systemAudioOsd.SetWorkArea(MonitorWorkAreaDip());
+        _systemAudioOsd.ShowTrack(state.Title ?? string.Empty, state.Artist ?? string.Empty, state.Playing, state.CoverUrl, state.Transitioning);
+        _systemAudioOsd.UpdatePlayback(state.Playing, state.Transitioning, state.TransitionProgress, state.TransitionRemainingMs);
+    }
+
     private void OnLoaded(object? sender, RoutedEventArgs e)
     {
         Loaded -= OnLoaded;
+        Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(ShowStartupOverlay));
         _host = new WebViewHost(this, Browser, _plan, _settings, _audio, _media, _airplay);
         _host.SharedEnvironmentReady += OnHostEnvironmentReady;
         _host.FirstContentReady += OnHostFirstContentReady;
+        _host.StartupPreviewReady += () =>
+        {
+            if (_startupRevealed || ErrorPanel.Visibility == Visibility.Visible) return;
+            // Keep the child HWND hidden until content is ready; it is opaque over glass.
+        };
         _host.SystemAudioOutputChanged += ShowSystemAudioOsd;
         StartSystemAudioWatch();
         _ = _host.InitializeAsync();
         StartStartupRevealWatchdog();
         ApplyDesktopLyricsSettings();
         ApplyBackgroundLyricsSettings();
+        StartWallpaperHost();
+    }
+
+    // 动态壁纸 v2（docs/wallpaper-v2-spec.md §3）：软件内画布只建一次，扫描与首张壁纸由 host
+    // 自己在后台跑；窗口这边只负责把表面挂到 RootGrid 最底层，并按「有没有画面」切换 WebView2
+    // 的透明底——WebView2 是子 HWND，它不透明时下层 WPF 视频表面看不见。
+    private void StartWallpaperHost()
+    {
+        if (_wallpaperHost is not null || _settings is null) return;
+        try
+        {
+            var host = new Zilux2.Wallpaper.WallpaperHost(_settings);
+            // 桌面层也走页面里的 <video>：把主 WebView2 的环境与导航地址借给它。
+            host.WebSurfaceSource = () => (_host?.SharedEnvironment, _host?.SharedNavigationUrl, _host?.SharedFolderPath, _host?.SharedVirtualHost);
+        host.OnlineSource = () => App.Online?.Endpoint is { } endpoint ? (endpoint.Port, endpoint.Token) : null;
+            // 壁纸表面和桌面歌词都插在图标层正下方，谁后插谁在上面。
+            // 壁纸重挂之后让歌词重新挂一次，避免壁纸把歌词盖住。
+            host.DesktopSurfacesReady += () => _backgroundLyricsWindow?.RaiseAboveWallpaper();
+            host.AttachInApp(RootGrid);
+            host.StateChanged += OnWallpaperStateChanged;
+            host.Start();
+            _wallpaperHost = host;
+            if (App.Online is { } online)
+            {
+                online.Wallpaper = host;
+                online.Settings = _settings;
+            }
+
+            OnWallpaperStateChanged();
+
+            // 设置里「桌面层」开着就要在启动时自己接管，而不是等用户点一次「接管桌面」。
+            // 之前只有 --wallpaper-only 分支会调 StartWallpaperDesktopHost()，普通启动一直是关的。
+            if (_settings.WallpaperSnapshot.DesktopEnabled)
+            {
+                Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+                {
+                    try
+                    {
+                        _wallpaperHost?.AttachDesktop();
+                    }
+                    catch (Exception exception)
+                    {
+                        HostLog.Warn($"[wallpaper] auto attach failed: {exception.Message}");
+                    }
+                }));
+            }
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[wallpaper] 启动失败：{exception.GetType().Name}: {exception.Message}");
+        }
+    }
+
+    private void OnWallpaperStateChanged()
+    {
+        if (_wallpaperHost is null) return;
+        bool visible;
+        try
+        {
+            visible = _wallpaperHost.Snapshot().InApp.Running && _settings?.WallpaperSnapshot.Enabled != false;
+        }
+        catch (ObjectDisposedException)
+        {
+            return;
+        }
+
+        // 软件内壁纸改由页面渲染（见 WallpaperHost.BuildLayerPayload 的说明），
+        // WPF 侧不再让窗口透明，也不再把位图铺在 WebView2 底下——那样每帧要吃掉近一个核。
+        _wallpaperHost.SetVisible(visible);
+        _host?.SetTransparentBackdrop(false);
+        NotifyWallpaperState();
+        PublishWallpaperState();
+    }
+
+    /// <summary>
+    /// 把「壁纸层是否可见」推给页面。页面 ready 时也要补推一次：
+    /// 宿主创建壁纸早于 WebView2 核心就绪，早期 PostJson 会被丢弃。
+    /// </summary>
+    internal void PublishWallpaperState()
+    {
+        Zilux2.Wallpaper.WallpaperLayerPayload? payload;
+        try
+        {
+            payload = _wallpaperHost?.BuildLayerPayload();
+            if (payload is not null && _settings?.WallpaperSnapshot.Enabled == false)
+            {
+                payload = payload with { Visible = false };
+            }
+        }
+        catch (ObjectDisposedException)
+        {
+            return;
+        }
+
+        _host?.PostWallpaperState(payload);
+
+        // 桌面背景歌词窗口也要拿到同一份图层状态：它自己把壁纸铺在歌词下面
+        // （layered 窗口里 WebView2 子窗口不参与合成，靠窗口透明是拿不到壁纸的）。
+        // 注意：它跟的是「主屏桌面层」那张，不是软件内背景层——换桌面壁纸时要立刻跟上。
+        var online = _wallpaperHost?.OnlineSource?.Invoke();
+        var desktopPayload = _wallpaperHost?.BuildPrimaryDesktopPayload() ?? payload;
+        _backgroundLyricsWindow?.PostWallpaperState(
+            Zilux2.Wallpaper.WallpaperStateJson.Build(
+                desktopPayload,
+                null,
+                online is { } endpoint ? $"http://127.0.0.1:{endpoint.Port}" : null,
+                online?.Token));
+    }
+
+    /// <summary>壁纸页「添加素材」：弹系统多选文件框，导入到本地库（复制进库目录）。</summary>
+    internal void PickWallpaperFiles()
+    {
+        var host = _wallpaperHost;
+        if (host is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var dialog = new OpenFileDialog
+            {
+                Title = "添加壁纸素材",
+                Multiselect = true,
+                CheckFileExists = true,
+                Filter = "视频与图片|*.mp4;*.webm;*.mkv;*.mov;*.avi;*.m4v;*.wmv;*.flv;*.gif;*.jpg;*.jpeg;*.png;*.webp;*.bmp|所有文件|*.*",
+            };
+            if (dialog.ShowDialog(IsLoaded ? this : null) != true)
+            {
+                HostLog.Info("[wallpaper] file pick cancelled");
+                return;
+            }
+
+            var paths = dialog.FileNames;
+            if (paths.Length == 0)
+            {
+                return;
+            }
+
+            var added = host.Import(paths, copy: true);
+            HostLog.Info($"[wallpaper] imported {added.Count} file(s)");
+            _host?.PostWallpaperImported(added.Count);
+            OnWallpaperStateChanged();
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[wallpaper] import failed: {exception.Message}");
+        }
     }
 
     // 桌面歌词窗口开关/样式都从设置里读；页面推当前句及相邻句。
-    private DesktopLyricsWindow? _desktopLyricsWindow;
+    // 样式二（悬浮扇形）是另一个窗口实现，两者只共享 IDesktopLyricsSurface。
+    private IDesktopLyricsSurface? _desktopLyricsSurface;
+    private string _desktopLyricsStyle = GeneralSettings.DesktopLyricsStyleClassic;
     private double _desktopLyricsLeft = double.NaN;
     private double _desktopLyricsTop = double.NaN;
     private bool _desktopLyricsClosingFromSettings;
@@ -546,74 +900,99 @@ public partial class MainWindow : Window
     {
         var options = _settings?.DesktopLyricsOptions;
         var enabled = options?.Enabled == true;
+        var style = options?.Style ?? GeneralSettings.DesktopLyricsStyleClassic;
         if (!enabled)
         {
-            if (_desktopLyricsWindow is not null)
-            {
-                var closing = _desktopLyricsWindow;
-                // 从设置里关掉桌面歌词时也记住位置：否则下次开启会回到默认位置（用户右键关闭时
-                // 由 OnDesktopLyricsClosedByUser 保存，两条路径要保持一致）。
-                if (!double.IsNaN(closing.Left) && !double.IsNaN(closing.Top))
-                {
-                    _desktopLyricsLeft = closing.Left;
-                    _desktopLyricsTop = closing.Top;
-                }
-
-                _desktopLyricsWindow = null;
-                PersistDesktopLyricsPosition(_desktopLyricsLeft, _desktopLyricsTop);
-                // 从设置关窗也是程序化关闭：ClosedByUser 不再回写 desktopLyrics=false，
-                // 避免第二次 GeneralChanged 与本轮位置 patch 互相触发。
-                _desktopLyricsClosingFromSettings = true;
-                try
-                {
-                    closing.Close();
-                }
-                finally
-                {
-                    _desktopLyricsClosingFromSettings = false;
-                }
-            }
-
+            CloseDesktopLyricsWindow();
             return;
         }
 
-        if (_desktopLyricsWindow is null)
+        if (_desktopLyricsSurface is not null && _desktopLyricsStyle != style)
         {
-            var window = new DesktopLyricsWindow(_settings);
-            window.ClosedByUser += OnDesktopLyricsClosedByUser;
-            if (_settings?.DesktopLyricsPosition is { } saved)
-            {
-                // 设置里的坐标优先：拖动后关闭、重启仍回到上次位置（P3-13）。
-                window.Left = saved.Left;
-                window.Top = saved.Top;
-            }
-            else if (!double.IsNaN(_desktopLyricsLeft) && !double.IsNaN(_desktopLyricsTop))
-            {
-                window.Left = _desktopLyricsLeft;
-                window.Top = _desktopLyricsTop;
-            }
-            else
-            {
-                window.PlaceDefault();
-            }
-
-            _desktopLyricsWindow = window;
-            window.Show();
-            HostLog.Info("[lyrics] desktop window shown");
+            // 换样式＝换实现：程序化关旧窗（记住位置、不回写 desktopLyrics=false），再建新窗。
+            CloseDesktopLyricsWindow();
         }
 
-        _desktopLyricsWindow.ApplyStyle(
+        if (_desktopLyricsSurface is null)
+        {
+            CreateDesktopLyricsWindow(style);
+        }
+
+        _desktopLyricsSurface?.ApplyStyle(
             options?.FontSize ?? 40,
             options?.Locked == true,
             options?.Topmost != false,
             options?.Weight ?? GeneralSettings.DesktopLyricsWeightNormal,
-            options?.BackdropOpacity ?? 40);
+            options?.BackdropOpacity ?? 40,
+            options?.FanLines ?? 9,
+            options?.FanWidth ?? 240);
     }
 
-    internal void UpdateDesktopLyrics(string now, string translation, string previous, string next,
-        IReadOnlyList<DesktopLyricWord> words, int activeWord)
+    private void CreateDesktopLyricsWindow(string style)
     {
-        _desktopLyricsWindow?.UpdateLines(now, translation, previous, next, words, activeWord);
+        IDesktopLyricsSurface window = style == GeneralSettings.DesktopLyricsStyleFan
+            ? new DesktopLyricsFanWindow(_settings)
+            : new DesktopLyricsWindow(_settings);
+        window.ClosedByUser += OnDesktopLyricsClosedByUser;
+        if (_settings?.DesktopLyricsPosition is { } saved)
+        {
+            // 设置里的坐标优先：拖动后关闭、重启仍回到上次位置（P3-13）。
+            window.Left = saved.Left;
+            window.Top = saved.Top;
+        }
+        else if (!double.IsNaN(_desktopLyricsLeft) && !double.IsNaN(_desktopLyricsTop))
+        {
+            window.Left = _desktopLyricsLeft;
+            window.Top = _desktopLyricsTop;
+        }
+        else
+        {
+            window.PlaceDefault();
+        }
+
+        _desktopLyricsStyle = style;
+        _desktopLyricsSurface = window;
+        window.Show();
+        HostLog.Info($"[lyrics] desktop window shown style={style}");
+    }
+
+    /// <summary>
+    /// 程序化关闭：记住位置、不回写 desktopLyrics=false。设置关掉歌词、切换样式都走这里，
+    /// 与用户右键关闭（<see cref="OnDesktopLyricsClosedByUser"/>）区分开。
+    /// </summary>
+    private void CloseDesktopLyricsWindow()
+    {
+        var closing = _desktopLyricsSurface;
+        if (closing is null)
+        {
+            return;
+        }
+
+        if (!double.IsNaN(closing.Left) && !double.IsNaN(closing.Top))
+        {
+            _desktopLyricsLeft = closing.Left;
+            _desktopLyricsTop = closing.Top;
+        }
+
+        _desktopLyricsSurface = null;
+        _desktopLyricsClosingFromSettings = true;
+        try
+        {
+            closing.Close();
+        }
+        finally
+        {
+            _desktopLyricsClosingFromSettings = false;
+        }
+
+        // 位置 patch 放在关窗之后：它会触发一次 GeneralChanged，重入的 Apply 应该看到
+        // 「窗口已关、样式已是最新」，而不是正在关闭的旧窗口。
+        PersistDesktopLyricsPosition(_desktopLyricsLeft, _desktopLyricsTop);
+    }
+
+    internal void UpdateDesktopLyrics(DesktopLyricsFrame frame)
+    {
+        _desktopLyricsSurface?.UpdateLines(frame);
     }
 
     /// <summary>把桌面歌词最后一次位置写回设置（P3-13）；非有限值直接忽略。</summary>
@@ -646,23 +1025,23 @@ public partial class MainWindow : Window
         // 想关歌词，不能把 desktopLyrics 回写成 false，否则下次启动歌词窗不再出现。
         if (_isExiting)
         {
-            _desktopLyricsWindow = null;
+            _desktopLyricsSurface = null;
             return;
         }
 
         if (_desktopLyricsClosingFromSettings)
         {
-            _desktopLyricsWindow = null;
+            _desktopLyricsSurface = null;
             return;
         }
 
-        if (_desktopLyricsWindow is not null)
+        if (_desktopLyricsSurface is not null)
         {
-            _desktopLyricsLeft = _desktopLyricsWindow.Left;
-            _desktopLyricsTop = _desktopLyricsWindow.Top;
+            _desktopLyricsLeft = _desktopLyricsSurface.Left;
+            _desktopLyricsTop = _desktopLyricsSurface.Top;
         }
 
-        _desktopLyricsWindow = null;
+        _desktopLyricsSurface = null;
         HostLog.Info("[lyrics] desktop window hidden by user");
         try
         {
@@ -752,10 +1131,19 @@ public partial class MainWindow : Window
     /// <summary>页面播放状态变化 → 托盘菜单文案同步（B23）。</summary>
     internal void NotifyPlaybackState(bool playing) => App.Tray?.UpdatePlaybackState(playing);
 
+    /// <summary>把当前壁纸状态推给托盘菜单。</summary>
+    private void NotifyWallpaperState()
+    {
+        if (App.Tray is null) return;
+        var (title, paused, running) = WallpaperTrayState();
+        App.Tray.UpdateWallpaperState(title, paused, running);
+    }
+
+
     /// <summary>托盘「解锁桌面歌词」：锁定后窗口鼠标穿透，右键菜单点不到，只能从这里解锁（P2-03）。</summary>
     internal void UnlockDesktopLyrics()
     {
-        var window = _desktopLyricsWindow;
+        var window = _desktopLyricsSurface;
         if (window is not null)
         {
             window.SetLocked(false);
@@ -881,6 +1269,17 @@ public partial class MainWindow : Window
         {
             // P1-10：主窗最小化后停止 AirPlay 推流，避免继续占用接收端/网络。
             StopAirPlayStreaming("minimize");
+
+            // 前台时切歌被跳过了（用户看得见主界面），最小化后补一条，否则这一首就再也不会出现。
+            if (_lastShownKey != _lastTrackKey && _lastMediaState is { } media && !string.IsNullOrWhiteSpace(media.Title))
+            {
+                _lastShownKey = _lastTrackKey;
+                _lastShownAsTransition = media.Transitioning;
+                _systemAudioOsd ??= new SystemAudioOsdWindow();
+                _systemAudioOsd.SetWorkArea(MonitorWorkAreaDip());
+                _systemAudioOsd.ShowTrack(media.Title, media.Artist, media.Playing, media.CoverUrl, media.Transitioning);
+                _systemAudioOsd.UpdatePlayback(media.Playing, media.Transitioning, media.TransitionProgress, media.TransitionRemainingMs);
+            }
         }
         else if (wasMinimized)
         {
@@ -937,6 +1336,26 @@ public partial class MainWindow : Window
     {
         CloseBackgroundLyrics();
 
+        if (_wallpaperHost is not null)
+        {
+            _wallpaperHost.StateChanged -= OnWallpaperStateChanged;
+            if (App.Online is { } online)
+            {
+                online.Wallpaper = null;
+            }
+
+            try
+            {
+                _wallpaperHost.Dispose();
+            }
+            catch (Exception exception)
+            {
+                HostLog.Warn($"[wallpaper] 释放失败：{exception.GetType().Name}: {exception.Message}");
+            }
+
+            _wallpaperHost = null;
+        }
+
         _systemAudioWatch?.Stop();
         _systemAudioWatch = null;
         if (_systemAudioOsd is not null)
@@ -989,8 +1408,11 @@ public partial class MainWindow : Window
             var color = (Color)ColorConverter.ConvertFromString(hex)!;
             var brush = new SolidColorBrush(color);
             brush.Freeze();
-            Background = brush;
-            RootGrid.Background = brush;
+            if (_startupRevealed)
+            {
+                Background = brush;
+                RootGrid.Background = brush;
+            }
             HostLog.Info($"window.chromeColor {hex}");
         }
         catch (Exception exception)
@@ -1096,6 +1518,8 @@ public partial class MainWindow : Window
 
         if (enabled == _miniMode)
         {
+            // 已经在迷你态：允许按内容宽度微调（歌名/歌手变长变短时页面会重发）。
+            if (enabled && width > 0) ResizeMiniWidth(width);
             // 重复指令只补推一次状态：页面导航回来时也会在 ready 里对齐。
             _host?.NotifyMiniMode(_miniMode);
             return;
@@ -1109,6 +1533,19 @@ public partial class MainWindow : Window
         {
             ExitMiniMode();
         }
+    }
+
+    /// <summary>
+    /// 迷你态下按内容宽度微调窗口：保持右边缘不动，宽度夹在 [360, 900]。
+    /// </summary>
+    private void ResizeMiniWidth(double width)
+    {
+        if (width <= 0) return;
+        var target = Math.Clamp(width, 360, 900);
+        if (Math.Abs(Width - target) < 1) return;
+        var right = Left + Width;
+        Width = target;
+        Left = right - target;
     }
 
     private void EnterMiniMode(double width, double height)
@@ -1494,8 +1931,18 @@ public partial class MainWindow : Window
         _isHiddenToTray = true;
         try
         {
-            Hide();
-            HostLog.Info("tray.hide");
+            // 不能真的 Hide()/最小化：WebView2 里的页面会变成 document.hidden，
+            // Chromium 随即暂停媒体播放与计时器 —— 表现就是「状态显示在播、却没声音」，
+            // 必须把窗口点回前台才恢复。改成挪到屏幕外 + 全透明，页面始终 visible。
+            _parkedLeft = Left;
+            _parkedTop = Top;
+            ShowInTaskbar = false;
+            WindowState = WindowState.Normal;
+            Left = SystemParameters.VirtualScreenLeft - Math.Max(ActualWidth, 800) - 4000;
+            Top = SystemParameters.VirtualScreenTop;
+            Opacity = 0;
+            Show();
+            HostLog.Info($"tray.hide parked offscreen left={Left:0} top={Top:0}");
         }
         catch (Exception exception)
         {
@@ -1504,7 +1951,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        _audio?.SetPaused(true);
+        // 隐藏到托盘不再暂停音频：用户要的是后台继续放。
         StopAirPlayStreaming("hide");
         // 隐藏期间把未结束的淡入停掉并复位不透明度，下次显示重新走「先透明、内容就绪再淡入」。
         BeginAnimation(Window.OpacityProperty, null);
@@ -1530,6 +1977,14 @@ public partial class MainWindow : Window
             // 恢复时先透明显示（WebView2 需要窗口已加载才能继续/重画），把表面顶一下再淡入，
             // 避免任务栏/托盘回来先看到一块空窗壳。
             BeginAnimation(Window.OpacityProperty, null);
+            // 从「屏幕外停靠」回来：先把位置放回原处，再走透明淡入。
+            if (_parkedLeft != 0)
+            {
+                Left = _parkedLeft;
+                Top = _parkedTop;
+                _parkedLeft = 0;
+            }
+
             Opacity = 0;
             ShowInTaskbar = true;
             Show();
@@ -1613,6 +2068,79 @@ public partial class MainWindow : Window
         catch (Exception exception)
         {
             HostLog.Warn($"instance.focus failed: {exception.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 轻量自启（--wallpaper-host，第 68–69 轮）：不显示主界面，直接把壁纸挂到桌面。
+    /// 必须在窗口已创建但尚未可见时调用，内部自己补一次 StartWallpaperHost 与 AttachDesktop。
+    /// </summary>
+    internal void StartWallpaperDesktopHost()
+    {
+        try
+        {
+            if (_wallpaperHost is null) StartWallpaperHost();
+            if (_wallpaperHost is null) return;
+
+            // 桌面层需要 UI 线程上的 Dispatcher，等一次 Loaded 之后再挂。
+            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+            {
+                try
+                {
+                    _wallpaperHost?.AttachDesktop();
+                }
+                catch (Exception exception)
+                {
+                    HostLog.Warn($"[wallpaper] desktop attach failed: {exception.Message}");
+                }
+            }));
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[wallpaper] wallpaper-host startup failed: {exception.Message}");
+        }
+    }
+
+    /// <summary>托盘 / 热键：切下一张壁纸。</summary>
+    internal void NextWallpaperFromHotkey()
+    {
+        try
+        {
+            _wallpaperHost?.Next();
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[wallpaper] next failed: {exception.Message}");
+        }
+    }
+
+    /// <summary>托盘 / 热键：暂停或继续壁纸（软件内画布）。</summary>
+    internal void ToggleWallpaperPauseFromHotkey()
+    {
+        try
+        {
+            if (_wallpaperHost is null) return;
+            var paused = _wallpaperHost.Snapshot().InApp.Paused;
+            _wallpaperHost.Pause(Zilux2.Wallpaper.Model.CanvasKind.InApp, !paused);
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[wallpaper] pause failed: {exception.Message}");
+        }
+    }
+
+    /// <summary>托盘菜单用的壁纸状态（标题 + 是否暂停）。</summary>
+    internal (string Title, bool Paused, bool Running) WallpaperTrayState()
+    {
+        try
+        {
+            var snapshot = _wallpaperHost?.Snapshot();
+            if (snapshot is null) return ("未启用", true, false);
+            return (snapshot.InApp.Title ?? "未选择", snapshot.InApp.Paused, snapshot.InApp.Running);
+        }
+        catch
+        {
+            return ("未启用", true, false);
         }
     }
 

@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.IO;
 using System.Windows.Threading;
 using Windows.Media;
@@ -14,7 +14,10 @@ internal sealed record MediaState(
     string? CoverUrl,
     double DurationMs,
     double PositionMs,
-    bool Playing);
+    bool Playing,
+    bool Transitioning = false,
+    double TransitionProgress = 0,
+    double TransitionRemainingMs = 0);
 
 /// <summary>Command coming back from the Windows Now Playing UI / media keys.</summary>
 internal sealed record MediaControlCommand(string Action, double? PositionMs);

@@ -213,8 +213,9 @@ body.is-mini {
 .app.is-mini .playerbar:focus-within .pb-meta,
 html.is-pb-expanded .app.is-mini .playerbar .pb-meta {
   width: auto !important;
-  flex: 1 1 auto !important;
-  max-width: none !important;
+  /* 不抢占剩余空间：让宽度跟着歌名/歌手内容走，窗口再按内容收缩。 */
+  flex: 0 1 auto !important;
+  max-width: 300px !important;
   margin-left: 6px !important;
   min-width: 0;
   overflow: hidden;
@@ -232,7 +233,7 @@ html.is-pb-expanded .app.is-mini .playerbar .pb-meta {
 .app.is-mini .pb-title,
 .app.is-mini-entering .pb-title,
 .app.is-mini-exiting .pb-title {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   font-size: 13.5px;
   font-weight: 650;

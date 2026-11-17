@@ -12,6 +12,7 @@
  */
 
 import { extractLyricKeywords, keywordForWord, type LyricKeyword } from './keywords';
+import { lyricFontStack, lyricLangOf } from './lyricFont';
 import {
   DEFAULT_ROOM_SETTINGS,
   normalizeRoomSettings,
@@ -108,7 +109,8 @@ const FONT_FAMILIES: Record<RoomStyleSettings['fontFamily'], string> = {
   serif: "'Noto Serif CJK SC', 'Source Han Serif SC', SimSun, serif",
   system: FONT_STACK,
 };
-const fontStackOf = (family: RoomStyleSettings['fontFamily']): string => FONT_FAMILIES[family];
+/** 全局歌词字体（若有）优先于房间自带的字体族。 */
+const fontStackOf = (family: RoomStyleSettings['fontFamily'], text?: string): string => lyricFontStack(FONT_FAMILIES[family], text);
 
 /** `#rrggbb` → 三个通道；非法值回落到薄荷绿。 */
 function hexChannels(hex: string): [number, number, number] {
@@ -308,6 +310,10 @@ const STYLE_CSS = `
   font-family:var(--zlr-font,${FONT_STACK});font-weight:var(--zlr-weight,900);letter-spacing:var(--zlr-track,.004em);
   color:var(--zlr-c0,#fff9f2);
   text-shadow:0 2px 22px rgba(255,255,255,.2),0 12px 32px rgba(19,83,66,.22);}
+.zlr-word[data-lang="zh"]{font-family:var(--lyric-font-zh,var(--zlr-font,${FONT_STACK}))}
+.zlr-word[data-lang="ja"]{font-family:var(--lyric-font-ja,var(--zlr-font,${FONT_STACK}))}
+.zlr-word[data-lang="ko"]{font-family:var(--lyric-font-ko,var(--zlr-font,${FONT_STACK}))}
+.zlr-word[data-lang="en"]{font-family:var(--lyric-font-en,var(--zlr-font,${FONT_STACK}))}
 .zlr-word[data-state="1"]{color:var(--zlr-c1,#fffdfa)}
 .zlr-word[data-state="2"]{color:var(--zlr-c2,#ffffff);
   text-shadow:var(--zlr-glow-shadow,0 0 22px rgba(255,255,255,.55),0 0 64px rgba(255,255,255,.26)),0 12px 32px rgba(19,83,66,.24)}
@@ -488,7 +494,7 @@ export function createRoomScene(options: RoomSceneOptions = {}): RoomScene {
   const measureCtx = document.createElement('canvas').getContext('2d');
   const measure = (text: string, sizePx: number): number => {
     if (!measureCtx) return text.length * sizePx * 0.72;
-    measureCtx.font = `${cfg.fontWeight} ${sizePx.toFixed(2)}px ${fontStackOf(cfg.fontFamily)}`;
+    measureCtx.font = `${cfg.fontWeight} ${sizePx.toFixed(2)}px ${fontStackOf(cfg.fontFamily, text)}`;
     return measureCtx.measureText(text).width;
   };
 
@@ -857,6 +863,7 @@ export function createRoomScene(options: RoomSceneOptions = {}): RoomScene {
       const span = document.createElement('span');
       span.className = 'zlr-word';
       span.textContent = word.text;
+      span.dataset.lang = lyricLangOf(word.text) || '';
       span.style.fontSize = `${(word.sizeFrac * sizeH * (cfg.keywordColors && word.keyword ? cfg.keywordScale : 1)).toFixed(2)}px`;
       span.style.opacity = '0';
       span.dataset.state = '0';

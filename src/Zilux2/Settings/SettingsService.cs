@@ -17,13 +17,16 @@ internal sealed class SettingsService : IDisposable
     private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
     private static readonly JsonSerializerOptions FileJsonOptions = new() { WriteIndented = true };
 
-    private static readonly string[] KnownTopLevelKeys = { "version", "general", "appearance", "playback", "downloads", "updates", "shortcuts" };
+    private static readonly string[] KnownTopLevelKeys = { "version", "general", "appearance", "playback", "downloads", "updates", "shortcuts", "remote", "wallpaper" };
 
     /// <summary>快捷键字符串的最大长度；超长按非法值回落，避免把垃圾写进 settings.json。</summary>
     private const int MaxShortcutChars = 64;
 
     /// <summary>音频设备 ID 的最大长度（WASAPI 端点 ID 约 100 字符，浏览器 deviceId 更长）。</summary>
     private const int MaxDeviceIdChars = 512;
+
+    /// <summary>单个文件路径的长度上限（长路径在 Win10+ 合法，留足余量）。</summary>
+    private const int MaxPathChars = 1024;
 
     private readonly object _gate = new();
     private readonly string _path;
@@ -52,6 +55,40 @@ internal sealed class SettingsService : IDisposable
             lock (_gate)
             {
                 return _state.General.StartMaximized;
+            }
+        }
+    }
+
+    /// <summary>启动画面三件套：开关与两行文案（设置 → 启动）。</summary>
+    internal bool SplashEnabled
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _state.General.Splash;
+            }
+        }
+    }
+
+    internal string SplashTitle
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _state.General.SplashTitle;
+            }
+        }
+    }
+
+    internal string SplashSubtitle
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _state.General.SplashSubtitle;
             }
         }
     }
@@ -105,14 +142,17 @@ internal sealed class SettingsService : IDisposable
     }
 
     /// <summary>桌面歌词窗口的显示状态与样式（窗口由 MainWindow 懒创建）。</summary>
-    internal (bool Enabled, bool Locked, int FontSize, bool Topmost, string Weight, int BackdropOpacity) DesktopLyricsOptions
+    internal (bool Enabled, bool Locked, int FontSize, bool Topmost, string Weight, int BackdropOpacity, string Style,
+        int FanLines, int FanWidth) DesktopLyricsOptions
     {
         get
         {
             lock (_gate)
             {
                 var general = _state.General;
-                return (general.DesktopLyrics, general.DesktopLyricsLocked, general.DesktopLyricsFontSize, general.DesktopLyricsTopmost, general.DesktopLyricsWeight, general.DesktopLyricsBackdropOpacity);
+                return (general.DesktopLyrics, general.DesktopLyricsLocked, general.DesktopLyricsFontSize, general.DesktopLyricsTopmost,
+                    general.DesktopLyricsWeight, general.DesktopLyricsBackdropOpacity, general.DesktopLyricsStyle,
+                    general.DesktopLyricsFanLines, general.DesktopLyricsFanWidth);
             }
         }
     }
@@ -327,6 +367,45 @@ internal sealed class SettingsService : IDisposable
     }
 
     /// <summary>
+    /// 手机遥控（<c>remote</c> 段）：开关与固定端口。只由 <c>RemoteService</c> 读写，
+    /// 设置页的卡片走宿主消息而不是 settings patch，避免和设置白名单耦合。
+    /// </summary>
+    internal (bool Enabled, int Port) RemoteOptions
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return (_state.Remote.Enabled, _state.Remote.Port);
+            }
+        }
+    }
+
+    /// <summary>写回手机遥控开关/端口（越界端口按 0 = 自动，交给 RemoteService 挑端口）。</summary>
+    internal void SetRemoteOptions(bool enabled, int port)
+    {
+        var normalized = port is > 0 and <= 65535 ? port : 0;
+        lock (_gate)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            if (_state.Remote.Enabled == enabled && _state.Remote.Port == normalized)
+            {
+                return;
+            }
+
+            _state.Remote.Enabled = enabled;
+            _state.Remote.Port = normalized;
+            MarkDirtyLocked();
+        }
+
+        HostLog.Info($"[settings] remote enabled={(enabled ? 1 : 0)} port={normalized}");
+    }
+
+    /// <summary>
     /// <c>shortcuts</c> 段被 patch/reset 后触发（其它设置的变化不触发，避免拖动音量等操作反复
     /// 注销/注册全局热键）。回调可能来自 UI 线程；MainWindow 负责再切一次 Dispatcher。
     /// </summary>
@@ -337,6 +416,38 @@ internal sealed class SettingsService : IDisposable
     /// 设置）。其它段的变化不触发；回调和 <see cref="ShortcutsChanged"/> 一样在锁外、可能在 UI 线程。
     /// </summary>
     internal event Action? GeneralChanged;
+
+    /// <summary><c>wallpaper</c> 段被 patch/reset 后触发，宿主据此重配壁纸运行时（可能来自 UI 线程）。</summary>
+    internal event Action? WallpaperChanged;
+
+    /// <summary>壁纸设置的完整副本（宿主/端点读取时用，避免持有可变状态）。</summary>
+    internal WallpaperSettings WallpaperSnapshot
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _state.Wallpaper.Clone();
+            }
+        }
+    }
+
+    /// <summary>改写壁纸设置并触发 <see cref="WallpaperChanged"/>；不返回 keys（壁纸段不参与前端白名单校验）。</summary>
+    internal void UpdateWallpaper(Action<WallpaperSettings> mutate)
+    {
+        lock (_gate)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            mutate(_state.Wallpaper);
+            MarkDirtyLocked();
+        }
+
+        RaiseWallpaperChanged();
+    }
 
     internal static string ResolveDefaultPath()
     {
@@ -370,6 +481,7 @@ internal sealed class SettingsService : IDisposable
 
         var shortcutsChanged = false;
         var generalChanged = false;
+        var wallpaperChanged = false;
         lock (_gate)
         {
             if (_disposed)
@@ -378,6 +490,7 @@ internal sealed class SettingsService : IDisposable
             }
 
             var keys = ApplyKnownValues(patch, _state);
+
             if (keys.Count == 0)
             {
                 HostLog.Warn("[settings] patch ignored (no known keys)");
@@ -407,6 +520,7 @@ internal sealed class SettingsService : IDisposable
             MarkDirtyLocked();
             shortcutsChanged = keys.Exists(key => key.StartsWith("shortcuts.", StringComparison.Ordinal));
             generalChanged = keys.Exists(key => key.StartsWith("general.", StringComparison.Ordinal));
+            wallpaperChanged = keys.Exists(key => key.StartsWith("wallpaper.", StringComparison.Ordinal));
         }
 
         // 回调放到锁外：监听方（MainWindow）会回头读 ShortcutsSnapshot 并注销/注册热键，
@@ -419,6 +533,11 @@ internal sealed class SettingsService : IDisposable
         if (generalChanged)
         {
             RaiseGeneralChanged();
+        }
+
+        if (wallpaperChanged)
+        {
+            RaiseWallpaperChanged();
         }
     }
 
@@ -441,6 +560,8 @@ internal sealed class SettingsService : IDisposable
         RaiseShortcutsChanged();
         // general 段同理：开机自启 / 目录监控恢复到默认值。
         RaiseGeneralChanged();
+        // wallpaper 段：壁纸运行时按默认值重配（关掉/回到 60fps 等）。
+        RaiseWallpaperChanged();
     }
 
     public void Dispose()
@@ -505,6 +626,25 @@ internal sealed class SettingsService : IDisposable
         {
             // 开机自启 / 目录监控的即时应用失败也只记日志，不影响设置保存与页面 ACK。
             HostLog.Error("[settings] general changed handler failed", exception);
+        }
+    }
+
+    private void RaiseWallpaperChanged()
+    {
+        var handler = WallpaperChanged;
+        if (handler is null)
+        {
+            return;
+        }
+
+        try
+        {
+            handler();
+        }
+        catch (Exception exception)
+        {
+            // 壁纸运行时重配失败同样只记日志：设置本身已经落地，不该回滚。
+            HostLog.Error("[settings] wallpaper changed handler failed", exception);
         }
     }
 
@@ -627,7 +767,8 @@ internal sealed class SettingsService : IDisposable
         "general" => name is "splash" or "splashTitle" or "splashSubtitle" or "startMaximized" or "autoLaunch" or "autoStartHidden" or "watchLocalFolder"
             or "mediaSession" or "desktopLyrics" or "desktopLyricsLocked" or "desktopLyricsFontSize" or "desktopLyricsTopmost"
             or "desktopLyricsWeight" or "desktopLyricsBackdropOpacity" or "backgroundLyrics"
-            or "desktopLyricsLeft" or "desktopLyricsTop" or "systemOutputRotation",
+            or "desktopLyricsLeft" or "desktopLyricsTop" or "systemOutputRotation"
+            or "desktopLyricsStyle" or "desktopLyricsFanLines" or "desktopLyricsFanWidth",
         "appearance" => name is "theme" or "reduceMotion" or "glow" or "lyricsSize"
             or "windowAnimation" or "playerBarExpanded" or "miniSize" or "miniAlwaysOnTop",
         "playback" => name is "defaultSource" or "searchLimit" or "volume" or "audioReactive" or "quality"
@@ -638,7 +779,22 @@ internal sealed class SettingsService : IDisposable
         "updates" => name is "autoCheck" or "mode" or "repo" or "directConnection",
         "shortcuts" => name is "enabled" or "alwaysHandleMediaKeys" or "playPause" or "prev" or "next" or "toggleWindow"
             or "volumeUp" or "volumeDown" or "mute" or "like" or "mode" or "mini" or "desktopLyrics" or "crossfade"
-            or "appOutput" or "systemOutput",
+            or "appOutput" or "systemOutput" or "wallpaperNext" or "wallpaperPause",
+        "remote" => name is "enabled" or "port",
+        "wallpaper" => name is "enabled" or "inAppEnabled" or "audioEnabled" or "audioVolume" or "audioFollowSystem"
+            or "musicDuckMs" or "musicRestoreMs" or "occludeThreshold" or "closeToTray" or "autoLaunch"
+            or "pageNormal" or "pageImmersive" or "pageRoom" or "pageLogin"
+            or "transitionMode" or "transitionId" or "transitionMs" or "transitionExclude"
+            or "rotationEnabled" or "rotationMinutes" or "rotationOrder" or "rotationFavoriteFirst" or "prewarm"
+            or "desktopEnabled" or "desktopAttached" or "desktopSound" or "edgeBarEnabled" or "edgeBarDelayMs"
+            or "frameRateLimit" or "renderScale" or "hardwareDecode" or "downsampleAbove" or "concurrentDecode"
+            or "pauseOnMinimize" or "idleFpsAfterSec" or "idleFps" or "pauseOnBattery" or "pauseOnFullscreen"
+            or "adaptiveQuality" or "reduceMotion"
+            or "parallax" or "overlayEnabled" or "overlayTemplate" or "dimMode" or "dimBase" or "dimMax" or "dimEmaMs"
+            or "brightness" or "contrast" or "saturation" or "blur" or "accentFromFrame" or "fitMode"
+            or "visualizerEnabled" or "visualizerStyle" or "beatStrength"
+            or "gridDensity" or "thumbConcurrency" or "watchFolders"
+            or "cacheKeepDays" or "diagnosticsOpen",
         _ => false,
     };
 
@@ -753,6 +909,15 @@ internal sealed class SettingsService : IDisposable
             state.General.SystemOutputRotation = ReadStringArray(
                 general, "systemOutputRotation", 32, 256,
                 state.General.SystemOutputRotation, "general.systemOutputRotation", keys);
+            state.General.DesktopLyricsStyle = ReadEnum(
+                general, "desktopLyricsStyle", GeneralSettings.DesktopLyricsStyles,
+                state.General.DesktopLyricsStyle, "general.desktopLyricsStyle", keys);
+            state.General.DesktopLyricsFanLines = ReadIntInRange(
+                general, "desktopLyricsFanLines", 5, 15,
+                state.General.DesktopLyricsFanLines, "general.desktopLyricsFanLines", keys);
+            state.General.DesktopLyricsFanWidth = ReadIntInRange(
+                general, "desktopLyricsFanWidth", 180, 360,
+                state.General.DesktopLyricsFanWidth, "general.desktopLyricsFanWidth", keys);
         }
 
         if (TryGetObject(document, "appearance", out var appearance))
@@ -898,6 +1063,132 @@ internal sealed class SettingsService : IDisposable
                 shortcuts, "appOutput", state.Shortcuts.AppOutput, "shortcuts.appOutput", keys);
             state.Shortcuts.SystemOutput = ReadShortcut(
                 shortcuts, "systemOutput", state.Shortcuts.SystemOutput, "shortcuts.systemOutput", keys);
+            state.Shortcuts.WallpaperNext = ReadShortcut(
+                shortcuts, "wallpaperNext", state.Shortcuts.WallpaperNext, "shortcuts.wallpaperNext", keys);
+            state.Shortcuts.WallpaperPause = ReadShortcut(
+                shortcuts, "wallpaperPause", state.Shortcuts.WallpaperPause, "shortcuts.wallpaperPause", keys);
+        }
+
+        // 手机遥控（remote）：读取也必须登记一次——只写不读会让「开启」在重启后被静默丢掉。
+        if (TryGetObject(document, "remote", out var remote))
+        {
+            state.Remote.Enabled = ReadBool(remote, "enabled", state.Remote.Enabled, "remote.enabled", keys);
+            state.Remote.Port = ReadIntInRange(remote, "port", 0, 65535, state.Remote.Port, "remote.port", keys);
+        }
+
+        // 动态壁纸 v2（docs/wallpaper-v2-spec.md §6）：9 组设置。
+        if (TryGetObject(document, "wallpaper", out var wallpaper))
+        {
+            var w = state.Wallpaper;
+
+            w.Enabled = ReadBool(wallpaper, "enabled", w.Enabled, "wallpaper.enabled", keys);
+            w.InAppEnabled = ReadBool(wallpaper, "inAppEnabled", w.InAppEnabled, "wallpaper.inAppEnabled", keys);
+            w.AudioEnabled = ReadBool(wallpaper, "audioEnabled", w.AudioEnabled, "wallpaper.audioEnabled", keys);
+            w.AudioVolume = ReadIntInRange(wallpaper, "audioVolume", 0, 100, w.AudioVolume, "wallpaper.audioVolume", keys);
+            w.AudioFollowSystem = ReadBool(
+                wallpaper, "audioFollowSystem", w.AudioFollowSystem, "wallpaper.audioFollowSystem", keys);
+            w.MusicDuckMs = ReadIntInRange(wallpaper, "musicDuckMs", 0, 2000, w.MusicDuckMs, "wallpaper.musicDuckMs", keys);
+            w.MusicRestoreMs = ReadIntInRange(
+                wallpaper, "musicRestoreMs", 0, 2000, w.MusicRestoreMs, "wallpaper.musicRestoreMs", keys);
+            w.OccludeThreshold = ReadDoubleInRange(
+                wallpaper, "occludeThreshold", 0.5, 1.0, w.OccludeThreshold, "wallpaper.occludeThreshold", keys);
+            w.CloseToTray = ReadBool(wallpaper, "closeToTray", w.CloseToTray, "wallpaper.closeToTray", keys);
+            w.AutoLaunch = ReadEnum(
+                wallpaper, "autoLaunch", WallpaperSettings.AutoLaunchModes, w.AutoLaunch, "wallpaper.autoLaunch", keys);
+            w.PageNormal = ReadBool(wallpaper, "pageNormal", w.PageNormal, "wallpaper.pageNormal", keys);
+            w.PageImmersive = ReadBool(wallpaper, "pageImmersive", w.PageImmersive, "wallpaper.pageImmersive", keys);
+            w.PageRoom = ReadBool(wallpaper, "pageRoom", w.PageRoom, "wallpaper.pageRoom", keys);
+            w.PageLogin = ReadBool(wallpaper, "pageLogin", w.PageLogin, "wallpaper.pageLogin", keys);
+
+            w.TransitionMode = ReadEnum(
+                wallpaper, "transitionMode", WallpaperSettings.TransitionModes, w.TransitionMode, "wallpaper.transitionMode", keys);
+            w.TransitionId = ReadIdentifier(
+                wallpaper, "transitionId", 64, w.TransitionId, "wallpaper.transitionId", keys);
+            w.TransitionMs = ReadIntInRange(
+                wallpaper, "transitionMs", 0, 2000, w.TransitionMs, "wallpaper.transitionMs", keys);
+            w.TransitionExclude = new List<string>(ReadStringArray(
+                wallpaper, "transitionExclude", 32, 64, w.TransitionExclude.ToArray(), "wallpaper.transitionExclude", keys));
+
+            w.RotationEnabled = ReadBool(
+                wallpaper, "rotationEnabled", w.RotationEnabled, "wallpaper.rotationEnabled", keys);
+            w.RotationMinutes = ReadMinutes(
+                wallpaper, "rotationMinutes", w.RotationMinutes, "wallpaper.rotationMinutes", keys);
+            w.RotationOrder = ReadEnum(
+                wallpaper, "rotationOrder", WallpaperSettings.RotationOrders, w.RotationOrder, "wallpaper.rotationOrder", keys);
+            w.RotationFavoriteFirst = ReadBool(
+                wallpaper, "rotationFavoriteFirst", w.RotationFavoriteFirst, "wallpaper.rotationFavoriteFirst", keys);
+            w.Prewarm = ReadBool(wallpaper, "prewarm", w.Prewarm, "wallpaper.prewarm", keys);
+
+            w.DesktopEnabled = ReadBool(
+                wallpaper, "desktopEnabled", w.DesktopEnabled, "wallpaper.desktopEnabled", keys);
+            w.DesktopAttached = ReadBool(
+                wallpaper, "desktopAttached", w.DesktopAttached, "wallpaper.desktopAttached", keys);
+            w.DesktopSound = ReadBool(wallpaper, "desktopSound", w.DesktopSound, "wallpaper.desktopSound", keys);
+            w.EdgeBarEnabled = ReadBool(
+                wallpaper, "edgeBarEnabled", w.EdgeBarEnabled, "wallpaper.edgeBarEnabled", keys);
+            w.EdgeBarDelayMs = ReadIntInRange(
+                wallpaper, "edgeBarDelayMs", 100, 1000, w.EdgeBarDelayMs, "wallpaper.edgeBarDelayMs", keys);
+
+            w.FrameRateLimit = ReadIntInRange(
+                wallpaper, "frameRateLimit", 0, 240, w.FrameRateLimit, "wallpaper.frameRateLimit", keys);
+            w.RenderScale = ReadIntInRange(
+                wallpaper, "renderScale", 25, 100, w.RenderScale, "wallpaper.renderScale", keys);
+            w.HardwareDecode = ReadBool(
+                wallpaper, "hardwareDecode", w.HardwareDecode, "wallpaper.hardwareDecode", keys);
+            w.DownsampleAbove = ReadIntInRange(
+                wallpaper, "downsampleAbove", 0, 4320, w.DownsampleAbove, "wallpaper.downsampleAbove", keys);
+            w.ConcurrentDecode = ReadIntInRange(
+                wallpaper, "concurrentDecode", -1, 8, w.ConcurrentDecode, "wallpaper.concurrentDecode", keys);
+            w.PauseOnMinimize = ReadBool(
+                wallpaper, "pauseOnMinimize", w.PauseOnMinimize, "wallpaper.pauseOnMinimize", keys);
+            w.IdleFpsAfterSec = ReadIntInRange(
+                wallpaper, "idleFpsAfterSec", 10, 600, w.IdleFpsAfterSec, "wallpaper.idleFpsAfterSec", keys);
+            w.IdleFps = ReadIntInRange(wallpaper, "idleFps", 5, 60, w.IdleFps, "wallpaper.idleFps", keys);
+            w.PauseOnBattery = ReadBool(
+                wallpaper, "pauseOnBattery", w.PauseOnBattery, "wallpaper.pauseOnBattery", keys);
+            w.PauseOnFullscreen = ReadBool(
+                wallpaper, "pauseOnFullscreen", w.PauseOnFullscreen, "wallpaper.pauseOnFullscreen", keys);
+            w.AdaptiveQuality = ReadBool(
+                wallpaper, "adaptiveQuality", w.AdaptiveQuality, "wallpaper.adaptiveQuality", keys);
+            w.ReduceMotion = ReadEnum(
+                wallpaper, "reduceMotion", WallpaperSettings.ReduceMotionModes, w.ReduceMotion, "wallpaper.reduceMotion", keys);
+
+            w.Parallax = ReadDoubleInRange(wallpaper, "parallax", 0, 1, w.Parallax, "wallpaper.parallax", keys);
+            w.OverlayEnabled = ReadBool(
+                wallpaper, "overlayEnabled", w.OverlayEnabled, "wallpaper.overlayEnabled", keys);
+            w.OverlayTemplate = ReadPlainString(
+                wallpaper, "overlayTemplate", 128, w.OverlayTemplate, "wallpaper.overlayTemplate", keys);
+            w.DimMode = ReadEnum(wallpaper, "dimMode", WallpaperSettings.DimModes, w.DimMode, "wallpaper.dimMode", keys);
+            w.DimBase = ReadDoubleInRange(wallpaper, "dimBase", 0, 1, w.DimBase, "wallpaper.dimBase", keys);
+            w.DimMax = ReadDoubleInRange(wallpaper, "dimMax", 0, 1, w.DimMax, "wallpaper.dimMax", keys);
+            w.DimEmaMs = ReadIntInRange(wallpaper, "dimEmaMs", 200, 2000, w.DimEmaMs, "wallpaper.dimEmaMs", keys);
+            w.Brightness = ReadIntInRange(wallpaper, "brightness", -100, 100, w.Brightness, "wallpaper.brightness", keys);
+            w.Contrast = ReadIntInRange(wallpaper, "contrast", -100, 100, w.Contrast, "wallpaper.contrast", keys);
+            w.Saturation = ReadIntInRange(wallpaper, "saturation", -100, 100, w.Saturation, "wallpaper.saturation", keys);
+            w.Blur = ReadIntInRange(wallpaper, "blur", 0, 50, w.Blur, "wallpaper.blur", keys);
+            w.AccentFromFrame = ReadBool(
+                wallpaper, "accentFromFrame", w.AccentFromFrame, "wallpaper.accentFromFrame", keys);
+            w.FitMode = ReadEnum(wallpaper, "fitMode", WallpaperSettings.FitModes, w.FitMode, "wallpaper.fitMode", keys);
+
+            w.VisualizerEnabled = ReadBool(
+                wallpaper, "visualizerEnabled", w.VisualizerEnabled, "wallpaper.visualizerEnabled", keys);
+            w.VisualizerStyle = ReadEnum(
+                wallpaper, "visualizerStyle",
+                WallpaperSettings.VisualizerStyles, w.VisualizerStyle, "wallpaper.visualizerStyle", keys);
+            w.BeatStrength = ReadIntInRange(
+                wallpaper, "beatStrength", 0, 100, w.BeatStrength, "wallpaper.beatStrength", keys);
+
+            w.GridDensity = ReadEnum(
+                wallpaper, "gridDensity", WallpaperSettings.GridDensities, w.GridDensity, "wallpaper.gridDensity", keys);
+            w.ThumbConcurrency = ReadIntInRange(
+                wallpaper, "thumbConcurrency", 1, 4, w.ThumbConcurrency, "wallpaper.thumbConcurrency", keys);
+            w.WatchFolders = new List<string>(ReadStringArray(
+                wallpaper, "watchFolders", 16, 512, w.WatchFolders.ToArray(), "wallpaper.watchFolders", keys));
+
+            w.CacheKeepDays = ReadIntInRange(
+                wallpaper, "cacheKeepDays", 0, 365, w.CacheKeepDays, "wallpaper.cacheKeepDays", keys);
+            w.DiagnosticsOpen = ReadBool(
+                wallpaper, "diagnosticsOpen", w.DiagnosticsOpen, "wallpaper.diagnosticsOpen", keys);
         }
 
         return keys;
@@ -1116,8 +1407,7 @@ internal sealed class SettingsService : IDisposable
         int fallback,
         string key,
         List<string> keys)
-    {
-        if (!parent.TryGetProperty(name, out var value))
+    {        if (!parent.TryGetProperty(name, out var value))
         {
             return fallback;
         }
@@ -1374,6 +1664,125 @@ internal sealed class SettingsService : IDisposable
 
         HostLog.Warn($"[settings] invalid key={key} expected=number 0.0..1.0 fallback={fallback.ToString(CultureInfo.InvariantCulture)}");
         return fallback;
+    }
+
+    /// <summary>double 区间读取（壁纸的暗化/视差/遮挡阈值用），保留两位小数。</summary>
+    private static double ReadDoubleInRange(
+        JsonElement parent,
+        string name,
+        double min,
+        double max,
+        double fallback,
+        string key,
+        List<string> keys)
+    {
+        if (!parent.TryGetProperty(name, out var value))
+        {
+            return fallback;
+        }
+
+        keys.Add(key);
+        if (value.ValueKind == JsonValueKind.Number &&
+            value.TryGetDouble(out var number) &&
+            number >= min &&
+            number <= max)
+        {
+            return Math.Round(number, 2, MidpointRounding.AwayFromZero);
+        }
+
+        HostLog.Warn($"[settings] invalid key={key} expected=number range fallback={fallback.ToString(CultureInfo.InvariantCulture)}");
+        return fallback;
+    }
+
+    /// <summary>轮换间隔：只认 15/30/60/120，其余保留当前值。</summary>
+    private static int ReadMinutes(JsonElement parent, string name, int fallback, string key, List<string> keys)
+    {
+        if (!parent.TryGetProperty(name, out var value))
+        {
+            return fallback;
+        }
+
+        keys.Add(key);
+        if (value.ValueKind == JsonValueKind.Number &&
+            value.TryGetInt32(out var minutes) &&
+            WallpaperSettings.RotationMinutesOptions.Contains(minutes))
+        {
+            return minutes;
+        }
+
+        HostLog.Warn($"[settings] invalid key={key} expected=15|30|60|120 fallback={fallback.ToString(CultureInfo.InvariantCulture)}");
+        return fallback;
+    }
+
+    /// <summary>短标识（转场 id 之类）：只允许字母数字与 -_，超长或非法字符保留当前值。</summary>
+    private static string ReadIdentifier(
+        JsonElement parent,
+        string name,
+        int maxChars,
+        string fallback,
+        string key,
+        List<string> keys)
+    {
+        if (!parent.TryGetProperty(name, out var value))
+        {
+            return fallback;
+        }
+
+        keys.Add(key);
+        if (value.ValueKind != JsonValueKind.String)
+        {
+            HostLog.Warn($"[settings] invalid key={key} expected=identifier fallback={fallback}");
+            return fallback;
+        }
+
+        var text = (value.GetString() ?? string.Empty).Trim();
+        if (text.Length == 0 || text.Length > maxChars)
+        {
+            HostLog.Warn($"[settings] invalid key={key} expected=identifier fallback={fallback}");
+            return fallback;
+        }
+
+        foreach (var ch in text)
+        {
+            if (!char.IsLetterOrDigit(ch) && ch is not ('-' or '_'))
+            {
+                HostLog.Warn($"[settings] invalid key={key} expected=identifier fallback={fallback}");
+                return fallback;
+            }
+        }
+
+        return text;
+    }
+
+    /// <summary>普通文本：去首尾空白，超长或非字符串保留当前值。</summary>
+    private static string ReadPlainString(
+        JsonElement parent,
+        string name,
+        int maxChars,
+        string fallback,
+        string key,
+        List<string> keys)
+    {
+        if (!parent.TryGetProperty(name, out var value))
+        {
+            return fallback;
+        }
+
+        keys.Add(key);
+        if (value.ValueKind != JsonValueKind.String)
+        {
+            HostLog.Warn($"[settings] invalid key={key} expected=string fallback={fallback}");
+            return fallback;
+        }
+
+        var text = (value.GetString() ?? string.Empty).Trim();
+        if (text.Length > maxChars)
+        {
+            HostLog.Warn($"[settings] invalid key={key} expected=string<={maxChars.ToString(CultureInfo.InvariantCulture)} fallback={fallback}");
+            return fallback;
+        }
+
+        return text;
     }
 
     /// <summary>读取原文件失败时尽量复制一份 .unreadable-*；返回 false 表示无法保护原文件。</summary>

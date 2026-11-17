@@ -14,6 +14,8 @@ export type MiniSize = 'compact' | 'standard' | 'wide';
 
 /** 桌面歌词主行粗细。 */
 export type DesktopLyricsWeight = 'normal' | 'semibold' | 'bold';
+/** 桌面歌词样式：classic=原生三行；fan=悬浮扇形。 */
+export type DesktopLyricsStyle = 'classic' | 'fan';
 export const MINI_SIZES: readonly MiniSize[] = ['compact', 'standard', 'wide'];
 export const MINI_SIZE_LABELS: ReadonlyArray<readonly [MiniSize, string]> = [
   ['compact', '小'],
@@ -342,6 +344,12 @@ export interface Settings {
     /** 胶囊底色不透明度百分比，30..90（默认 40）。 */
     desktopLyricsBackdropOpacity: number;
     desktopLyricsTopmost: boolean;
+    /** 桌面歌词样式：classic=原生三行；fan=悬浮扇形。 */
+    desktopLyricsStyle: DesktopLyricsStyle;
+    /** 悬浮扇形可见行数，5..15（默认 9）。 */
+    desktopLyricsFanLines: number;
+    /** 悬浮扇形卡片宽度 px，180..360（默认 240）。 */
+    desktopLyricsFanWidth: number;
     /** 桌面背景歌词：把歌词页效果镜像到桌面壁纸层；开启期间软件内歌词页不显示歌词。 */
     backgroundLyrics: boolean;
     /** 「系统输出轮换」快捷键参与轮换的设备（端点 ID；空数组 = 全部活动设备）。 */
@@ -434,7 +442,7 @@ export type SettingsPatch = {
 
 export const DEFAULT_SETTINGS: Settings = {
   version: 1,
-  general: { splash: true, splashTitle: 'ZILUX2', splashSubtitle: '新一代创意播放器', startMaximized: false, autoLaunch: false, autoStartHidden: true, watchLocalFolder: true, mediaSession: true, desktopLyrics: false, desktopLyricsLocked: false, desktopLyricsFontSize: 40, desktopLyricsWeight: 'normal', desktopLyricsBackdropOpacity: 40, desktopLyricsTopmost: true, backgroundLyrics: false, systemOutputRotation: [] },
+  general: { splash: true, splashTitle: 'ZILUX2', splashSubtitle: '新一代创意播放器', startMaximized: false, autoLaunch: false, autoStartHidden: true, watchLocalFolder: true, mediaSession: true, desktopLyrics: false, desktopLyricsLocked: false, desktopLyricsFontSize: 40, desktopLyricsWeight: 'normal', desktopLyricsBackdropOpacity: 40, desktopLyricsTopmost: true, desktopLyricsStyle: 'classic', desktopLyricsFanLines: 9, desktopLyricsFanWidth: 240, backgroundLyrics: false, systemOutputRotation: [] },
   appearance: {
     theme: 'frost',
     reduceMotion: false,
@@ -543,6 +551,12 @@ function asBackdropOpacity(value: unknown): number {
   return Math.round(Math.min(90, Math.max(30, value)));
 }
 
+/** 通用整数归一化：非法值回落默认值，其余四舍五入并夹到 [min, max]。 */
+function asClampedInt(value: unknown, min: number, max: number, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.round(Math.min(max, Math.max(min, value)));
+}
+
 function asEqGains(value: unknown): number[] {
   const source = Array.isArray(value) ? value : [];
   return EQ_BAND_FREQS.map((_, index) => {
@@ -632,6 +646,9 @@ export function normalizeSettings(raw: unknown): Settings {
       desktopLyricsWeight: asEnum(general.desktopLyricsWeight, ['normal', 'semibold', 'bold'], DEFAULT_SETTINGS.general.desktopLyricsWeight),
       desktopLyricsBackdropOpacity: asBackdropOpacity(general.desktopLyricsBackdropOpacity),
       desktopLyricsTopmost: asBool(general.desktopLyricsTopmost, DEFAULT_SETTINGS.general.desktopLyricsTopmost),
+      desktopLyricsStyle: asEnum(general.desktopLyricsStyle, ['classic', 'fan'], DEFAULT_SETTINGS.general.desktopLyricsStyle),
+      desktopLyricsFanLines: asClampedInt(general.desktopLyricsFanLines, 5, 15, DEFAULT_SETTINGS.general.desktopLyricsFanLines),
+      desktopLyricsFanWidth: asClampedInt(general.desktopLyricsFanWidth, 180, 360, DEFAULT_SETTINGS.general.desktopLyricsFanWidth),
       backgroundLyrics: asBool(general.backgroundLyrics, DEFAULT_SETTINGS.general.backgroundLyrics),
       systemOutputRotation: asDeviceIdList(general.systemOutputRotation),
     },

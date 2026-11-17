@@ -16,15 +16,13 @@ using Zilux2.Settings;
 
 namespace Zilux2;
 
-public readonly record struct DesktopLyricWord(string Text, bool SpaceBefore);
-
 /// <summary>
-/// 桌面歌词：与关闭播放效果时的歌词页保持相同的左对齐三行层级。
+/// 桌面歌词（经典样式）：与关闭播放效果时的歌词页保持相同的左对齐三行层级。
 /// 三行使用各自唯一的文字控件连续移动，逐词强调使用独立的缩放与位移。
 /// 锁定后整窗加 WS_EX_TRANSPARENT 让鼠标真正穿透到其它应用；解锁入口只有
 /// 托盘菜单「解锁桌面歌词」和设置页（锁定态右键菜单同样点不到）。
 /// </summary>
-public partial class DesktopLyricsWindow : Window
+public partial class DesktopLyricsWindow : Window, IDesktopLyricsSurface
 {
     private const int GwlExStyle = -20;
     private const int WsExTransparent = 0x20;
@@ -53,14 +51,21 @@ public partial class DesktopLyricsWindow : Window
     /// <summary>用户从右键菜单关掉窗口时通知宿主把设置里的开关也关掉。</summary>
     public event Action? ClosedByUser;
 
-    public void UpdateLines(string now, string translation, string previous = "", string next = "",
-        IReadOnlyList<DesktopLyricWord>? words = null, int activeWord = -1)
+    public void UpdateLines(DesktopLyricsFrame frame)
     {
+        if (frame is null) return;
         if (!Dispatcher.CheckAccess())
         {
-            Dispatcher.BeginInvoke(new Action(() => UpdateLines(now, translation, previous, next, words, activeWord)));
+            Dispatcher.BeginInvoke(new Action(() => UpdateLines(frame)));
             return;
         }
+
+        var now = frame.Now;
+        var translation = frame.Translation;
+        var previous = frame.Previous;
+        var next = frame.Next;
+        var words = frame.Words;
+        var activeWord = frame.ActiveWord;
 
         now = string.IsNullOrWhiteSpace(now) ? "♪" : now.Trim();
         translation = translation?.Trim() ?? string.Empty;
@@ -294,11 +299,11 @@ public partial class DesktopLyricsWindow : Window
         block.Opacity = text.Length > 0 ? 1 : 0;
     }
 
-    public void ApplyStyle(int fontSize, bool locked, bool topmost, string weight = "normal", int backdropOpacity = 40)
+    public void ApplyStyle(int fontSize, bool locked, bool topmost, string weight, int backdropOpacity, int fanLines, int fanWidth)
     {
         if (!Dispatcher.CheckAccess())
         {
-            Dispatcher.BeginInvoke(new Action(() => ApplyStyle(fontSize, locked, topmost, weight, backdropOpacity)));
+            Dispatcher.BeginInvoke(new Action(() => ApplyStyle(fontSize, locked, topmost, weight, backdropOpacity, fanLines, fanWidth)));
             return;
         }
 
@@ -440,7 +445,7 @@ public partial class DesktopLyricsWindow : Window
     }
 
     /// <summary>外部解除锁定：锁定时窗口鼠标穿透，右键菜单点不到，只能从托盘或设置页进入（P2-03）。</summary>
-    internal void SetLocked(bool locked)
+    public void SetLocked(bool locked)
     {
         if (_locked == locked)
         {

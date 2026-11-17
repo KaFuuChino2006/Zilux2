@@ -97,6 +97,7 @@ import {
   SLEEP_FADE_SECONDS_CHOICES,
   SLEEP_TIMER_ACTIONS,
   shortcutBindingFromEvent,
+  type DesktopLyricsStyle,
   type DesktopLyricsWeight,
   type EqPreset,
   type FadeCurve,
@@ -142,6 +143,23 @@ import {
   suppressNextCrossfade,
 } from './crossfadeDeck';
 import { confirmDialog } from './confirmDialog';
+import { openAdvancedPanel, shouldAutoOpen } from './advancedPanel';
+import {
+  MIX_ENGINE_HINTS,
+  MIX_ENGINE_LABELS,
+  MIX_ENGINE_ORDER,
+  readMixTransitionEngine,
+  writeMixTransitionEngine,
+  MIX_TEMPLATE_HINTS,
+  MIX_TEMPLATE_LABELS,
+  MIX_TEMPLATE_ORDER,
+  MIX_TRANSITION_HINTS,
+  MIX_TRANSITION_LABELS,
+  MIX_TRANSITION_ORDER,
+  readMixTransitionTemplate,
+  writeMixTransitionTemplate,
+} from '../core/mixTransitionMode';
+import { installAdvancedHandoff } from '../audio/installAdvancedHandoff';
 import { createEqCurve } from './eqCurve';
 import { localArtists, localTracks, type LocalArtist } from './localArtists';
 import {
@@ -221,6 +239,8 @@ import {
 } from './cacheSettings';
 import { buildSleepTimerPanel, completeSleepTimer, getSleepTimerState, subscribeSleepTimer } from './sleepTimer';
 import { bgLyricsCoverStyle, setBgLyricsCoverStyle, type BgLyricsCoverStyle } from './bgLyricsCover';
+import { pageImmersiveEnabled, pageWallpaperSwitch, setPageWallpaper } from '../wallpaper/client';
+import { syncPageWallpaperClass } from './wallpaperLayer';
 import {
   BG_BRIGHTNESS_MAX,
   BG_BRIGHTNESS_MIN,
@@ -252,6 +272,17 @@ import { MOOD_DEFS, matchMood, type MoodDef } from './moods';
 import { orderUpcomingByMix } from './automix';
 import { installStagePulse } from './stagePulse';
 import { LYRIC_STYLES, lyricStyle, setLyricStyle } from './lyricStyle';
+import {
+  LYRIC_VIS_LIMITS,
+  LYRIC_VIS_STYLES,
+  lyricVisualPrefs,
+  lyricVisualStyle,
+  setLyricVisualPrefs,
+  setLyricVisualStyle,
+  type LyricVisualPrefs,
+  type LyricVisualStyle,
+} from './lyricsVisualizer';
+import { LYRIC_FONT_LANGS, lyricFontFamily, lyricFontOverrides, lyricFontStackOf, onLyricFont, setLyricFontFamily, type LyricFontLang } from './lyricFont';
 import {
   analysisForTrack,
   clearHotCue,
@@ -288,16 +319,17 @@ import {
   setPauseAtTrackEnd,
   activeAudioElement,
 } from './player';
-import { host, hostAvailable, getSystemFonts, getWindowState, getShortcutsState, onMiniMode, onShortcutsState, onSystemFonts, onWindowState, updateDesktopLyrics, type UpdateSnapshot } from '../core/bridge';
+import { host, hostAvailable, getSystemFonts, getWindowState, getShortcutsState, onMiniMode, onShortcutsState, onSystemFonts, onWindowState, reportAppVolume, updateDesktopLyrics, type UpdateSnapshot } from '../core/bridge';
 import { HomeView } from './home';
 import { DiscoverView } from './discover';
 import { fetchRadio, fetchRecommendedPlaylists } from '../online/discover';
-import { clearDiskCache, fetchDiskCache, setDiskCacheLimit } from '../online/storage';
+import { clearDiskCache, fetchDiskCache, setDiskCacheLimit, setStemCacheLimit } from '../online/storage';
 import type { DiskCacheUsage } from '../online/storage';
 import { heartRadioActive, startHeartRadio, stopHeartRadio } from './heartRadio';
 import { openSongInfo, setSongInfoView, songInfoView } from './songInfo';
 import { createUpNextToast, type UpNextToastHandle } from './upNextToast';
-import { startStemMode, hasStemWindow, type StemModeHandle, type StemPlaybackMode } from '../core/stemsDeck';
+import { startStemMode, hasStemWindow, prefetchStemWindows, type StemModeHandle, type StemPlaybackMode } from '../core/stemsDeck';
+import { readMixTransitionMode } from '../core/mixTransitionMode';
 import { estimateStemWaitSeconds, STEM_WINDOW_SEC } from '../core/stemsClient';
 import {
   beginQueueDownload,
@@ -334,6 +366,8 @@ import {
   updateSnapshot,
 } from './updates';
 import { clearUpdateReminders, updateReminderState } from './updateReminders';
+import { WallpaperView } from './wallpaperView';
+import { WALLPAPER_SETTING_GROUPS, WallpaperSettingsPanel } from './wallpaperSettings';
 
 type WallKind = 'liked' | 'local' | 'search' | 'feed' | 'playlist' | 'recent' | 'playlists' | 'recommend' | 'moods' | 'mood' | 'smart' | 'stats';
 
@@ -367,6 +401,7 @@ interface WallPager {
 interface NavSnapshot {
   homeVisible: boolean;
   wallVisible: boolean;
+  wallpaperVisible: boolean;
   wall: WallData;
   wallPager: WallPager | null;
   railActive: string | null;
@@ -470,14 +505,27 @@ interface SettingsSubnav {
 
 /** 每个主分类的子选项分组。字段标签必须与构建代码里的字符串完全一致。 */
 const SETTINGS_SUBNAV: Record<string, SettingsSubGroupSpec[]> = {
+  // 壁纸设置嵌进全局设置时，用它自己这条现有机制分 9 组（滑块、键盘、溢出滚动都在这里）。
+  wallpaper: WALLPAPER_SETTING_GROUPS.map((group) => ({
+    key: group.id,
+    label: group.label,
+    contains: [`[data-group="${group.id}"]`],
+    fallback: group.id === 'basic',
+  })),
   general: [
     { key: 'startup', label: '启动', labels: ['启动动画', '启动标题', '启动副标题', '启动时最大化', '开机自启', '自启动时不显示窗口'] },
     {
       key: 'desktop',
       label: '桌面歌词',
-      labels: ['桌面歌词', '桌面歌词字号', '桌面歌词粗细', '桌面歌词底色', '桌面歌词锁定', '桌面歌词置顶', '桌面背景歌词'],
+      labels: [
+        '桌面歌词',
+        '桌面歌词样式', '悬浮行数', '悬浮卡片宽度',
+        '桌面歌词字号', '桌面歌词粗细', '桌面歌词底色', '桌面歌词锁定', '桌面歌词置顶',
+        '桌面背景歌词',
+      ],
     },
-    { key: 'system', label: '系统', labels: ['监控本地文件夹', '系统媒体控制'] },
+    // 兜底：以后在这个分类里加字段忘了登记，也不会「切到哪都显示」。
+    { key: 'system', label: '系统', labels: ['监控本地文件夹', '系统媒体控制'], fallback: true },
   ],
   appearance: [
     {
@@ -500,6 +548,8 @@ const SETTINGS_SUBNAV: Record<string, SettingsSubGroupSpec[]> = {
       labels: ['播放/暂停渐变', '暂停淡出时长', '开始播放淡入时长', '渐变曲线', '人声保留淡出', '人声尾音'],
     },
     { key: 'dynamics', label: '响度与动态', labels: ['音频反应', '响度均衡', '夜间模式'] },
+    // 输出选择本来没有归属组，导致「扬声器输出 / 输出切换快捷键」切到哪都常驻。
+    { key: 'output', label: '输出', labels: ['扬声器输出', '输出切换快捷键'], fallback: true },
   ],
   shortcuts: [
     { key: 'global', label: '全局快捷键', labels: ['启用全局快捷键', '媒体键始终控制 Zilux2'] },
@@ -565,8 +615,10 @@ function decorateSettingsSubnav(
       ) ??
       specs.find((candidate) => candidate.fallback) ??
       null;
-    if (!spec) continue;
-    subpanes.get(spec.key)?.append(child);
+    // 兜底：没登记归属的节点也塞进第一组，否则它会留在 root 里、切到任何子标签都显示
+    // （「桌面歌词样式 / 悬浮行数 / 扬声器输出」就是这么漏在外面的）。
+    const target = spec ?? specs[0];
+    subpanes.get(target.key)?.append(child);
     moved += 1;
   }
   if (moved === 0) return null;
@@ -681,6 +733,10 @@ export class App {
   private homeData: HomeData | null = null;
   private feedRailKey: string | null = null;
   private wallHost: HTMLDivElement;
+  /** 动态壁纸页宿主与视图（不占歌曲墙，直接覆盖在 stage 上）。 */
+  private wallpaperHost: HTMLDivElement | null = null;
+  private wallpaperView: WallpaperView | null = null;
+  private wallpaperOpening = false;
   /** 歌曲墙右下角悬浮操作：返回顶部 / 定位当前播放。 */
   private wallShortcuts!: HTMLDivElement;
   private wallToTopBtn!: HTMLButtonElement;
@@ -800,6 +856,7 @@ export class App {
   private settingsDispose: (() => void) | null = null;
   private windowStateDispose: (() => void) | null = null;
   private fontDispose: (() => void) | null = null;
+  private quickFontDispose: (() => void) | null = null;
   private readonly airplayUnsubscribers: Array<() => void> = [];
   /** 桌面背景歌词开启时被自动关掉的软件内歌词页；关闭开关后恢复。 */
   private backgroundLyricsSuppressedLyrics = false;
@@ -970,6 +1027,24 @@ export class App {
     // 本机调试开关（FPS / 布局描边）与缓存上限属于前端偏好：启动时按 localStorage 恢复。
     this.applyDevPrefs();
     enforceCacheLimit();
+    // 进阶过渡的四轨交接工厂（T4-3）：不装的话 crossfadeDeck 里的进阶分支永远是死代码。
+    // 安装是幂等的；模式为「标准」时 requestHandoff 直接返回 null，连工厂都不会调用。
+    installAdvancedHandoff();
+    window.addEventListener('zilux:stem-trim', () => {
+      // 四轨滑杆一动手，就说明用户要听分离支路：先把模式从「原声」切出来。
+      if (this.stemMode === 'off') {
+        this.stemMode = 'instrumental';
+        try { localStorage.setItem('zilux2.stemMode', 'instrumental'); } catch {}
+      }
+      void this.refreshStemPlayback(true);
+    });
+    this.intervalIds.push(window.setInterval(() => this.warmAdvancedStems(), 12_000));
+    window.setTimeout(() => this.warmAdvancedStems(), 6_000);
+    // 高级过渡调参窗：内部测试版跟随启动弹出（可在 localStorage 里置 advancedPanelAuto=0 关掉）。
+    // 延后一拍再弹，避免和首屏渲染抢布局。
+    window.setTimeout(() => {
+      if (shouldAutoOpen()) openAdvancedPanel();
+    }, 1200);
   }
 
   /* ------------------------------------------------------------------ */
@@ -1146,6 +1221,7 @@ export class App {
         const next = Math.max(0, Math.min(1, playerState().volume + delta));
         setVolume(next);
         patchSettings({ playback: { volume: next } });
+        reportAppVolume(next * 100, next === 0);
         toast(`音量 ${Math.round(next * 100)}%`);
       } else if (action === 'mute') this.toggleMute();
       else if (action === 'like') {
@@ -1459,6 +1535,7 @@ export class App {
       { key: 'discover', label: '发现', iconName: 'compass', onClick: () => void this.showDiscover() },
       { key: 'playlists', label: '我的歌单', iconName: 'list', onClick: () => this.openPlaylistsPage() },
       { key: 'local', label: '本地曲库', iconName: 'folder', onClick: () => this.showLocal() },
+      { key: 'wallpapers', label: '动态壁纸', iconName: 'picture', onClick: () => void this.openWallpaperPage() },
       { key: 'stats', label: '收听统计', iconName: 'chart', onClick: () => this.openStatsPage() },
       { key: 'airplay', label: '投送', iconName: 'airplay', onClick: () => this.toggleAirplayPop() },
     ];
@@ -1508,13 +1585,38 @@ export class App {
     });
     this.homeHost.append(this.classicHome.root);
     const main = h('div', { class: 'main' }, rail, this.stage);
-    this.stage.append(this.homeHost, this.wallHost);
+    this.wallpaperHost = h('div', { class: 'wallpaper-host is-hidden' });
+    this.stage.append(this.homeHost, this.wallHost, this.wallpaperHost);
     this.root.append(main);
+  }
+
+  /** rail「动态壁纸」：懒创建 WallpaperView，接管 stage。 */
+  private async openWallpaperPage(): Promise<void> {
+    if (this.wallpaperOpening) return;
+    this.wallpaperOpening = true;
+    try {
+      this.navBefore();
+      // 进动态壁纸也是一次整页导航：歌词页（整窗覆盖层）先退出，否则壁纸页会被它挡在下面。
+      this.closeLyrics();
+      this.homeHost.classList.add('is-hidden');
+      this.wallHost.classList.add('is-hidden');
+      this.wallShortcuts?.classList.remove('is-visible');
+      if (!this.wallpaperHost) this.wallpaperHost = h('div', { class: 'wallpaper-host' });
+      if (!this.wallpaperView) {
+        this.wallpaperView = new WallpaperView(() => this.openSettingsSheet('wallpaper'));
+        this.wallpaperHost.append(this.wallpaperView.root);
+      }
+      this.wallpaperHost.classList.remove('is-hidden');
+      this.setRailActive('wallpapers');
+      await this.wallpaperView.mount();
+    } finally {
+      this.wallpaperOpening = false;
+    }
   }
 
 
   private setRailActive(
-    kind: WallKind | 'settings' | 'home' | 'discover' | 'daily' | 'daily30' | null,
+    kind: WallKind | 'settings' | 'home' | 'discover' | 'daily' | 'daily30' | 'wallpapers' | null,
   ): void {
     const activeKey: string | null =
       kind === 'playlist'
@@ -1526,6 +1628,10 @@ export class App {
             : kind;
     this.railActiveKey = activeKey;
     this.paintRailActive();
+    // 壁纸页只在 rail「动态壁纸」下显示，其他任何导航都收回。
+    if (this.wallpaperHost) {
+      this.wallpaperHost.classList.toggle('is-hidden', kind !== 'wallpapers');
+    }
   }
 
   private paintRailActive(): void {
@@ -1542,6 +1648,7 @@ export class App {
     return {
       homeVisible: !this.homeHost.classList.contains('is-hidden'),
       wallVisible: !this.wallHost.classList.contains('is-hidden'),
+      wallpaperVisible: this.wallpaperHost !== null && !this.wallpaperHost.classList.contains('is-hidden'),
       wall: this.wall,
       wallPager: this.wallPager,
       railActive: this.railActiveKey,
@@ -1596,9 +1703,12 @@ export class App {
       if (target.lyrics && !this.lyrics) this.openLyrics();
       else if (!target.lyrics && this.lyrics) this.closeLyrics();
 
-      if (target.discover) {
+      if (target.wallpaperVisible) {
+        void this.openWallpaperPage();
+      } else if (target.discover) {
         void this.showDiscover();
       } else {
+        this.wallpaperHost?.classList.add('is-hidden');
         this.homeHost.classList.toggle('is-hidden', !target.homeVisible);
         this.wallHost.classList.toggle('is-hidden', !target.wallVisible);
         this.wall = target.wall;
@@ -1690,6 +1800,7 @@ export class App {
   }
 
   private async loadHomeData(): Promise<void> {
+    // TEMP-DIAG loadHomeData
     const loggedIn = getAccounts().some((item) => item.loggedIn);
     const preferred = this.preferredSource();
     const collections: HomeCollection[] = [];
@@ -1697,12 +1808,12 @@ export class App {
     const neteasePlaylists: LibraryPlaylist[] = [];
     if (loggedIn) {
       try {
-        const overview = await fetchLibraryOverview();
+      const overview = await fetchLibraryOverview();
         const states = new Map(overview.sources.map((state) => [state.source, state] as const));
         const likedSources = getAccounts()
           .filter((account) => account.loggedIn && sourceSupportsLikedWrite(account.source))
           .map((account) => account.source as OnlineSource);
-        const loaded = await Promise.all(
+      const loaded = await Promise.all(
           likedSources.map(async (source) => {
             const state = states.get(source);
             if (!state?.loggedIn || state.error) return null;
@@ -3957,7 +4068,11 @@ export class App {
   /** 下一次 openSheet 是否走「居中弹窗」形态（由设置页使用；一次生效后自动复位）。 */
   private centerNextSheet = false;
 
-  private openSheet(title: string, build: (body: HTMLDivElement) => void): void {
+  private openSheet(
+    title: string,
+    build: (body: HTMLDivElement) => void,
+    onClose?: () => void,
+  ): void {
     // 弹层打开时先收起搜索：搜索框只属于顶栏，不该盖在弹层/歌词层上
     this.closeSearchDock();
     // 换面板时上一个直接移除，避免两层遮罩叠着淡出
@@ -3986,6 +4101,7 @@ export class App {
         this.sheetScope = null;
       }
       if (root.classList.contains('is-leaving')) return;
+      onClose?.();
       root.classList.add('is-leaving');
       window.setTimeout(() => root.remove(), 220);
     };
@@ -5192,6 +5308,9 @@ export class App {
         limitNumber.min = String(host.minMb);
         limitNumber.max = String(host.maxMb);
         syncLimit(host.limitMb);
+        if (host.maxStemCacheMb !== undefined && stemLimitNumber.value !== String(host.maxStemCacheMb)) {
+          stemLimitNumber.value = String(host.maxStemCacheMb);
+        }
       } catch {
         host = null;
       } finally {
@@ -5230,6 +5349,36 @@ export class App {
     limitRange.addEventListener('input', () => applyLimit(Number(limitRange.value), false));
     limitRange.addEventListener('change', () => applyLimit(Number(limitRange.value), true));
     limitNumber.addEventListener('change', () => applyLimit(Number(limitNumber.value), true));
+
+    // 人声分离（四轨）缓存是独立预算：0 = 不自动清理。宿主的整体预算管不到它，
+    // 四轨单窗约 5.29 MB，一批歌跑完很容易把磁盘吃满，所以单独给一行。
+    const stemLimitNumber = h('input', {
+      class: 'set-number',
+      type: 'number',
+      min: '0',
+      max: '16384',
+      step: '1',
+      value: '2048',
+      'aria-label': '分离缓存上限（MB）',
+    });
+    let stemTimer = 0;
+    const applyStemLimit = (raw: number, commit: boolean): void => {
+      const finite = Number.isFinite(raw) ? Math.round(raw) : 2048;
+      const next = finite <= 0 ? 0 : Math.min(16384, Math.max(128, finite));
+      if (stemLimitNumber.value !== String(next)) stemLimitNumber.value = String(next);
+      window.clearTimeout(stemTimer);
+      stemTimer = window.setTimeout(() => {
+        void setStemCacheLimit(next)
+          .then((result) => {
+            if (result.removedStemDirs && result.removedStemDirs > 0) {
+              toast(`已按分离上限清理 ${result.removedStemDirs} 个分轨窗口`);
+            }
+            void refresh();
+          })
+          .catch(() => toast('分离缓存上限保存失败，请稍后再试'));
+      }, commit ? 0 : 260);
+    };
+    stemLimitNumber.addEventListener('change', () => applyStemLimit(Number(stemLimitNumber.value), true));
 
     const clearBtn = h('button', { class: 'btn btn-sm', type: 'button', text: '清理全部缓存' });
     clearBtn.addEventListener('click', () => {
@@ -5304,6 +5453,20 @@ export class App {
       ),
       h(
         'div',
+        { class: 'field set-row' },
+        h(
+          'div',
+          { class: 'set-row-main' },
+          h('div', { class: 'field-label set-row-label', text: '分离缓存上限' }),
+          h('div', {
+            class: 'field-hint set-row-hint',
+            text: '人声分离（四轨）结果单独占空间，一个窗口约 5 MB；0 = 不自动清理。',
+          }),
+        ),
+        h('div', { class: 'set-row-control' }, stemLimitNumber, h('span', { class: 'set-value is-muted', text: 'MB' })),
+      ),
+      h(
+        'div',
         { class: 'field is-stacked set-row' },
         h(
           'div',
@@ -5328,9 +5491,20 @@ export class App {
 
   private openSettingsSheet(paneKey = 'general'): void {
     this.navBefore();
+    // 记住进来之前停在哪 —— 关掉设置要回到那一页，而不是留在「设置」这个空 rail 上。
+    const railBefore = this.railActiveKey;
     this.setRailActive('settings');
     // 设置改用居中大弹窗（和效果设置一致的观感），其他 sheet 仍是右侧滑出。
     this.centerNextSheet = true;
+    const restoreRail = (): void => {
+      if (railBefore === 'wallpapers' && this.wallpaperHost) {
+        this.setRailActive('wallpapers');
+        this.wallpaperHost.classList.remove('is-hidden');
+        void this.wallpaperView?.refresh();
+        return;
+      }
+      this.setRailActive((railBefore ?? 'home') as Parameters<typeof this.setRailActive>[0]);
+    };
     this.openSheet('设置', (body) => {
       this.settingsPaneRefreshers = [];
       const settings = getSettings();
@@ -5536,10 +5710,55 @@ export class App {
               h('div', { class: 'field-label', text: '桌面歌词' }),
               h('div', {
                 class: 'field-hint',
-                text: '在桌面上放一个无边框歌词窗口，逐句显示正在唱的歌词和翻译；窗口上右键可以调字号、锁定（鼠标穿透）、置顶或关闭',
+                text: '在桌面上放一个无边框歌词窗口；样式可选经典三行或悬浮扇形，窗口上右键可以调字号、锁定（鼠标穿透）、置顶或关闭',
               }),
             ),
             sw.root,
+          );
+        })(),
+        segField(
+          '桌面歌词样式',
+          [
+            { value: 'classic', label: '经典三行' },
+            { value: 'fan', label: '悬浮扇形' },
+          ],
+          settings.general.desktopLyricsStyle,
+          (value) => patchSettings({ general: { desktopLyricsStyle: value as DesktopLyricsStyle } }),
+        ),
+        (() => {
+          const current = String(settings.general.desktopLyricsFanLines);
+          const options = [
+            { value: '5', label: '5 行' },
+            { value: '9', label: '9 行' },
+            { value: '13', label: '13 行' },
+          ];
+          // 归一化允许 5..15 任意值，非预设值时补一档当前值，避免三段全灭。
+          if (!options.some((option) => option.value === current)) {
+            options.push({ value: current, label: `${current} 行` });
+          }
+          return segField(
+            '悬浮行数',
+            options,
+            current,
+            (value) => patchSettings({ general: { desktopLyricsFanLines: Number(value) } }),
+          );
+        })(),
+        (() => {
+          const current = String(settings.general.desktopLyricsFanWidth);
+          const options = [
+            { value: '200', label: '窄' },
+            { value: '240', label: '标准' },
+            { value: '300', label: '宽' },
+          ];
+          // 归一化允许 180..360 任意值，非预设值时补一档当前值，避免三段全灭。
+          if (!options.some((option) => option.value === current)) {
+            options.push({ value: current, label: `${current} px` });
+          }
+          return segField(
+            '悬浮卡片宽度',
+            options,
+            current,
+            (value) => patchSettings({ general: { desktopLyricsFanWidth: Number(value) } }),
           );
         })(),
         (() => {
@@ -6499,12 +6718,15 @@ export class App {
       const updatesSection = this.buildUpdatesSection(section, toggleField, segField);
       const developer = this.buildDeveloperSection(section);
 
-      // 父开关 → 子项禁用：通用自启子项、桌面歌词 5 项、渐变 5 项、更新方式。
+      // 父开关 → 子项禁用：通用自启子项、桌面歌词 8 项、渐变 5 项、更新方式。
       const syncConditionalFields = (): void => {
         const state = getSettings();
         const hideOnLaunch = fieldByLabel(general, '自启动时不显示窗口');
         if (hideOnLaunch) setControlDisabled(hideOnLaunch, !state.general.autoLaunch);
-        for (const label of ['桌面歌词字号', '桌面歌词粗细', '桌面歌词底色', '桌面歌词锁定', '桌面歌词置顶']) {
+        for (const label of [
+          '桌面歌词样式', '悬浮行数', '悬浮卡片宽度',
+          '桌面歌词字号', '桌面歌词粗细', '桌面歌词底色', '桌面歌词锁定', '桌面歌词置顶',
+        ]) {
           const field = fieldByLabel(general, label);
           if (field) setControlDisabled(field, !state.general.desktopLyrics);
         }
@@ -6522,9 +6744,14 @@ export class App {
       this.sheetScope?.add(unsubscribeConditional);
 
       // 两级设置：左侧主选项，右上子选项（分类没有子项时不出子选项条）。
-      type SettingsEntry = { key: string; label: string; node: HTMLElement };
+      type SettingsEntry = { key: string; label: string; node: HTMLElement; sub?: boolean; heading?: boolean };
+      // 动态壁纸设置直接嵌进这里：全软件共用一个设置按钮、一套弹窗，
+      // 壁纸只是左侧的一个分类（在壁纸页点齿轮会直接落到这一类）。
+      const wallpaperPanel = new WallpaperSettingsPanel(() => {}, true);
+      void wallpaperPanel.mount();
       const entries: SettingsEntry[] = [
         { key: 'general', label: '通用', node: general },
+        { key: 'wallpaper', label: '动态壁纸', node: wallpaperPanel.root },
         { key: 'appearance', label: '外观', node: appearance },
         { key: 'playback', label: '播放', node: playback },
         { key: 'systemAudio', label: '系统音频', node: systemAudio },
@@ -6580,6 +6807,10 @@ export class App {
       };
       const initialKey = entries.some((entry) => entry.key === paneKey) ? paneKey : entries[0]?.key ?? 'general';
       entries.forEach((entry) => {
+        if (entry.heading) {
+          nav.append(h('div', { class: 'settings-nav-heading', text: entry.label }));
+          return;
+        }
         const subnav = decorateSettingsSubnav(
           entry.node,
           SETTINGS_SUBNAV[entry.key] ?? [],
@@ -6589,12 +6820,18 @@ export class App {
           },
         );
         if (subnav) subnavs.set(entry.key, subnav);
+        // 壁纸这页没有 section-title，decorate 会把子选项条插在第一个子面板之后；
+        // 它的位置应该是整页最上面，所以挪到第一个子节点。
+        if (subnav && entry.key === 'wallpaper') {
+          const bar = entry.node.querySelector('.settings-subtabs');
+          if (bar) entry.node.insertBefore(bar, entry.node.firstElementChild);
+        }
         const pane = h('div', { class: 'settings-pane', role: 'tabpanel' }, entry.node);
         pane.hidden = entry.key !== initialKey;
         panes.set(entry.key, pane);
         content.append(pane);
         const btn = h('button', {
-          class: `settings-nav-btn${entry.key === initialKey ? ' is-on' : ''}`,
+          class: `settings-nav-btn${entry.sub ? ' is-sub' : ''}${entry.key === initialKey ? ' is-on' : ''}`,
           type: 'button',
           role: 'tab',
           'aria-selected': entry.key === initialKey ? 'true' : 'false',
@@ -6645,7 +6882,7 @@ export class App {
         if (first) moveNavThumb(first, false);
         subnavs.get(initialKey)?.remeasure();
       });
-    });
+    }, restoreRail);
     this.settingsSheetRoot = this.sheet?.root ?? null;
   }
 
@@ -6706,6 +6943,7 @@ export class App {
   }
 
   /** 设置页「下载」：目录展示 + 更改 + 打开文件夹 + 音质选择。 */
+
   private buildDownloadsSection(
     section: (title: string, ...children: HTMLElement[]) => HTMLElement,
     segField: <T extends string>(
@@ -7960,7 +8198,7 @@ export class App {
       this.toggleLyricsPage();
     });
 
-    const prevBtn = h('button', { class: 'pb-btn', title: '上一首' }, icon('prev'));
+    const prevBtn = h('button', { class: 'pb-btn pb-prev', title: '上一首' }, icon('prev'));
     // 悬停展开的 0.98s 里按钮仍在位移，用 pointerdown 保证按下即生效
     prevBtn.addEventListener('pointerdown', (event) => {
       event.preventDefault();
@@ -7973,7 +8211,7 @@ export class App {
       event.stopPropagation();
       toggle();
     });
-    const nextBtn = h('button', { class: 'pb-btn', title: '下一首' }, icon('next'));
+    const nextBtn = h('button', { class: 'pb-btn pb-next', title: '下一首' }, icon('next'));
     nextBtn.addEventListener('pointerdown', (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -8132,6 +8370,45 @@ export class App {
     this.root.append(wrap);
     this.playerbar = bar;
     this.playerbarWrap = wrap;
+    // Use the actual toolbar width as the animation endpoint. A 500px cap
+    // leaves a long interval with no visible movement while collapsing.
+    const extra = bar.querySelector<HTMLElement>('.pb-extra')!;
+    const measureExtra = () => {
+      if (this.miniMode) return;
+      const children = Array.from(extra.children) as HTMLElement[];
+      const gap = parseFloat(getComputedStyle(extra).columnGap) || 0;
+      const width = children.reduce((sum, child) => sum + child.getBoundingClientRect().width, 0)
+        + gap * Math.max(0, children.length - 1);
+      if (width > 0) bar.style.setProperty('--pb-extra-width', `${width}px`);
+    };
+    const extraObserver = new ResizeObserver(measureExtra);
+    for (const child of extra.children) extraObserver.observe(child);
+    measureExtra();
+
+    // 展开/收起由状态位驱动，不再交给 CSS :hover。
+    // :hover 方式下，宽度动画本身会改变元素边界：指针落在边缘时会被动画「甩出去」，
+    // 一旦移出就收起、收起后指针又落回条内、于是再次展开——看上去就是疯狂抽搐。
+    // 这里只在指针真正进入时打开；离开后延迟 90ms 再确认一次，指针还在条内就不收起。
+    let barCloseTimer = 0;
+    bar.addEventListener('pointerenter', () => {
+      window.clearTimeout(barCloseTimer);
+      bar.classList.add('is-open');
+    });
+    bar.addEventListener('pointerleave', () => {
+      window.clearTimeout(barCloseTimer);
+      barCloseTimer = window.setTimeout(() => {
+        if (bar.matches(':hover') || bar.matches(':focus-within')) return;
+        bar.classList.remove('is-open');
+      }, 90);
+    });
+    bar.addEventListener('pointercancel', () => {
+      window.clearTimeout(barCloseTimer);
+      bar.classList.remove('is-open');
+    });
+    window.addEventListener('blur', () => {
+      window.clearTimeout(barCloseTimer);
+      bar.classList.remove('is-open');
+    });
     // 迷你态整条播放条即拖动区（控件/进度条除外）；双击空白处退出迷你。
     bar.addEventListener('pointerdown', (event) => {
       if (!this.miniMode || this.miniTransition !== 'idle' || event.button !== 0) return;
@@ -8323,6 +8600,80 @@ export class App {
       body.push(h('div', { class: 'lab-stage' }, svg), stats, h('div', { class: 'lab-actions' }, playBtn, progressText));
     }
 
+    // ---- 分轨换手预案（T5-2）：把 debug.advancedPreview 画成四条泳道 ----
+    const preview = debug.advancedPreview;
+    const modeText = preview
+      ? preview.mode === 'standard'
+        ? '标准（不换手）'
+        : preview.mode === 'advancedSafe'
+          ? '进阶 · 稳妥'
+          : '进阶'
+      : '';
+    const planParts: HTMLElement[] = [
+      h('div', {
+        class: 'lab-plan-title',
+        text: preview ? `分轨换手预案 · ${modeText}${preview.template ? ` · ${preview.template}` : ''}` : '分轨换手预案',
+      }),
+    ];
+    if (!preview) {
+      planParts.push(h('div', { class: 'lab-plan-empty', text: '还没准备过过渡，先点「准备」再看预案。' }));
+    } else {
+      for (const line of preview.summary) planParts.push(h('div', { class: 'lab-plan-line', text: line }));
+      if (preview.blocks.length) {
+        const barMs = Math.max(1, preview.barMs);
+        const bars = Math.max(1, Math.min(64, Math.round(preview.totalMs / barMs)));
+        const lanes: Array<[string, string]> = [
+          ['drums', '鼓'],
+          ['bass', '低音'],
+          ['other', '旋律'],
+          ['vocals', '人声'],
+        ];
+        for (const [stem, label] of lanes) {
+          const row = h('div', {
+            class: 'lab-plan-lane',
+            style: 'display:flex;align-items:center;gap:6px;margin:2px 0;',
+          });
+          row.append(h('span', { class: 'lab-plan-lane-name', style: 'width:38px;flex:0 0 38px;font-size:11px;color:#9aa4b2;', text: label }));
+          const track = h('div', {
+            class: 'lab-plan-track',
+            style: 'position:relative;flex:1 1 auto;height:16px;background:#151515;border:1px solid #2a2a2a;border-radius:3px;overflow:hidden;',
+          });
+          for (const block of preview.blocks) {
+            if (block.stem !== stem) continue;
+            const color = block.kind === 'echo' ? '#a855f7' : block.kind === 'duck' ? '#64748b' : block.deck === 'A' ? '#3b82f6' : '#f97316';
+            const height = block.kind === 'duck' ? '6px' : '14px';
+            const top = block.kind === 'duck' ? '0px' : '1px';
+            const piece = h('div', {
+              class: 'lab-plan-block',
+              title: block.label,
+              style:
+                `position:absolute;left:${(block.x * 100).toFixed(2)}%;` +
+                `width:${Math.max(block.width * 100, 0.8).toFixed(2)}%;top:${top};height:${height};` +
+                `background:${color};opacity:${block.kind === 'echo' ? '0.55' : '0.9'};border-radius:2px;`,
+            });
+            track.append(piece);
+          }
+          row.append(track);
+          planParts.push(row);
+        }
+        // 小节刻度：首尾各标一次，中间按密度抽样，避免 32 小节挤成一团。
+        const ticks: string[] = [];
+        const step = bars <= 8 ? 1 : bars <= 16 ? 2 : 4;
+        for (let bar = 1; bar <= bars; bar += step) ticks.push(`${bar}`);
+        ticks.push(`${bars}`);
+        planParts.push(
+          h('div', {
+            class: 'lab-plan-axis',
+            style: 'padding-left:44px;font-size:10px;color:#6b7280;',
+            text: `小节 ${ticks.join(' · ')}（共 ${bars} 小节 / ${(preview.totalMs / 1000).toFixed(1)} s）`,
+          }),
+        );
+      } else if (preview.emptyReason) {
+        planParts.push(h('div', { class: 'lab-plan-empty', text: preview.emptyReason }));
+      }
+    }
+    body.push(h('div', { class: 'lab-plan', style: 'margin-top:10px;' }, ...planParts));
+
     const hint = h('div', {
       class: 'lab-hint',
       text: '这里只画计划与曲线、按真实时长走一遍播放头，不出声；实际听感以播放时的过渡为准。',
@@ -8415,6 +8766,27 @@ export class App {
       this.beginMiniRestore();
     }
     this.paintMiniBtn();
+    if (enabled) {
+      // 迷你窗宽度跟着歌名/歌手内容走，进来后先量一次。
+      window.requestAnimationFrame(() => this.syncMiniWidth());
+    }
+  }
+
+  /**
+   * 迷你态：按播放条内容实际宽度请求宿主微调窗口宽度（保持右边缘不动），
+   * 让宽条不再留一大片空白。内容宽度用一次 max-content 测量拿到。
+   */
+  private syncMiniWidth(): void {
+    if (!this.miniMode || !this.playerbar || this.miniTransition !== 'idle') return;
+    const el = this.playerbar;
+    const prev = el.style.width;
+    el.style.width = 'max-content';
+    const measured = el.getBoundingClientRect().width;
+    el.style.width = prev;
+    if (!Number.isFinite(measured) || measured < 120) return;
+    const dims = MINI_SIZE_DIMS[getSettings().appearance.miniSize] ?? MINI_SIZE_DIMS.standard;
+    const width = Math.min(900, Math.max(360, Math.ceil(measured)));
+    host.setMiniMode(true, width, dims.height);
   }
 
   /**
@@ -8864,6 +9236,8 @@ export class App {
     if (!this.quickBody) return;
     // 快捷面板每次整块重建，旧节点上的回读闭包一并丢弃，避免数组随切页无限增长。
     this.quickSwitchRefreshers = [];
+    this.quickFontDispose?.();
+    this.quickFontDispose = null;
     const current = playerState().track;
     this.quickRenderKey = `${this.quickTab}:${current ? `${current.source}:${current.id}` : ''}`;
     // 「下载」页需要把快捷面板加宽（见 download-queue-embed.css）。
@@ -8892,39 +9266,60 @@ export class App {
       const bgBtns: HTMLButtonElement[] = [];
       const bgHint = h('div', { class: 'quick-cell-hint', text: '' });
       const paintBg = (): void => {
-        // 三段：关闭 / 随歌曲封面 / 自定义图片（与设置 → 外观的「页面背景」共用同一套偏好）。
-        const index = this.appBgMode === 'image' ? 2 : this.appBgMode === 'cover' ? 1 : 0;
+        // 四段：关闭 / 随歌曲封面 / 自定义图片 / 动态壁纸。
+        // 前三段是页面自己的底图（appBgMode），第四段是宿主壁纸层（pageNormal），
+        // 两者互斥——壁纸层一旦铺上，页面底图必须让位，否则会把壁纸盖住。
+        const motion = pageWallpaperSwitch('normal');
+        const index = motion ? 3 : this.appBgMode === 'image' ? 2 : this.appBgMode === 'cover' ? 1 : 0;
         const button = bgBtns[index];
         if (!button) return;
         bgThumb.style.width = `${button.offsetWidth}px`;
         bgThumb.style.transform = `translateX(${button.offsetLeft}px)`;
         bgBtns.forEach((item, i) => item.classList.toggle('is-on', i === index));
-        bgHint.textContent =
-          this.appBgMode === 'image'
+        bgHint.textContent = motion
+          ? '动态壁纸铺满常规页面；与「随歌曲封面 / 自定义图片」互斥。'
+          : this.appBgMode === 'image'
             ? '已选择自定义图片；再点一次「自定义」可以更换。'
             : this.appBgImage
               ? '已保存自定义图片，点「自定义」即可切到它。'
               : '自定义图片会压缩到 1600px 内保存到本机。';
       };
+      /** 选页面底图前先关掉壁纸层，避免两层背景打架（等落库再重画，段位才不会闪回动态壁纸）。 */
+      const dropMotion = async (): Promise<void> => {
+        if (pageWallpaperSwitch('normal')) await setPageWallpaper('normal', false);
+      };
       const bgBtn = (label: string, on: boolean): HTMLButtonElement => {
         const button = h('button', { class: 'quick-seg-btn', type: 'button', text: label });
         button.addEventListener('click', () => {
-          this.setAppBg(on);
-          paintBg();
+          void (async () => {
+            await dropMotion();
+            this.setAppBg(on);
+            paintBg();
+          })();
         });
         bgBtns.push(button);
         return button;
       };
       const bgCustomBtn = h('button', { class: 'quick-seg-btn', type: 'button', text: '自定义' });
       bgCustomBtn.addEventListener('click', () => {
-        // 没图或已经在用自定义图：打开文件选择器（选完自动切到自定义图片并重新上色）；
-        // 已有图但当前没在用：直接切过去，不再弹选择器。
-        if (!this.appBgImage || this.appBgMode === 'image') {
-          void this.pickBackgroundImage().then(() => paintBg());
-          return;
-        }
-        this.setBackgroundMode('image');
-        paintBg();
+        void (async () => {
+          await dropMotion();
+          // 没图或已经在用自定义图：打开文件选择器（选完自动切到自定义图片并重新上色）；
+          // 已有图但当前没在用：直接切过去，不再弹选择器。
+          if (!this.appBgImage || this.appBgMode === 'image') {
+            await this.pickBackgroundImage();
+            paintBg();
+            return;
+          }
+          this.setBackgroundMode('image');
+          paintBg();
+        })();
+      });
+      const bgMotionBtn = h('button', { class: 'quick-seg-btn', type: 'button', text: '动态壁纸' });
+      bgMotionBtn.addEventListener('click', () => {
+        // 壁纸接管页面背景：关掉封面/自定义底图，打开常规页面的壁纸开关。
+        this.setAppBg(false);
+        void setPageWallpaper('normal', true).then(() => paintBg());
       });
       const bgSeg = h(
         'div',
@@ -8933,8 +9328,10 @@ export class App {
         bgBtn('关闭', false),
         bgBtn('随歌曲封面', true),
         bgCustomBtn,
+        bgMotionBtn,
       );
       bgBtns.push(bgCustomBtn);
+      bgBtns.push(bgMotionBtn);
       body.append(
         h(
           'div',
@@ -8955,15 +9352,17 @@ export class App {
           h('div', { class: 'quick-cell-title', text: title }),
           ...children,
         );
-      // 「封面在左」：播放效果=关闭 时背景歌词的布局样式（纯壁纸 / 封面在左半边渐隐）。
-      const bgCoverOptions: { id: BgLyricsCoverStyle; label: string }[] = [
+      // 「背景歌词样式」：播放效果=关闭 时歌词页的底图来源
+      //（纯壁纸 / 封面在左半边渐隐 / 动态壁纸——第三段直接切设置里的「沉浸播放页显示壁纸」）。
+      const bgCoverOptions: { id: BgLyricsCoverStyle | 'motion'; label: string }[] = [
         { id: 'wallpaper', label: '纯壁纸' },
         { id: 'cover', label: '封面在左' },
+        { id: 'motion', label: '动态壁纸' },
       ];
       const bgCoverThumb = h('div', { class: 'quick-seg-thumb' });
       const bgCoverBtns: HTMLButtonElement[] = bgCoverOptions.map((option) => {
         const btn = h('button', {
-          class: `quick-seg-btn${option.id === bgLyricsCoverStyle() ? ' is-on' : ''}`,
+          class: 'quick-seg-btn',
           type: 'button',
           text: option.label,
         }) as HTMLButtonElement;
@@ -8972,14 +9371,26 @@ export class App {
           event.stopPropagation();
         });
         btn.addEventListener('click', () => {
-          setBgLyricsCoverStyle(option.id);
-          paintBgCover();
+          void (async () => {
+            if (option.id === 'motion') {
+              // 动态壁纸接管歌词页背景：打开沉浸页开关，壁纸层会立刻搬进歌词页。
+              await setPageWallpaper('immersive', true);
+            } else {
+              // 先等开关落库再画：否则 paint 读到的还是旧的 pageImmersive，段位会停在「动态壁纸」。
+              if (pageImmersiveEnabled()) await setPageWallpaper('immersive', false);
+              setBgLyricsCoverStyle(option.id);
+            }
+            paintBgCover();
+          })();
         });
         return btn;
       });
       const paintBgCover = (): void => {
-        const current = bgLyricsCoverStyle();
-        const index = Math.max(0, bgCoverOptions.findIndex((item) => item.id === current));
+        // 动态壁纸开着时第三段常亮；关掉后回到「纯壁纸 / 封面在左」的实际值。
+        const motion = pageImmersiveEnabled();
+        const index = motion
+          ? bgCoverOptions.length - 1
+          : Math.max(0, bgCoverOptions.findIndex((item) => item.id === bgLyricsCoverStyle()));
         bgCoverBtns.forEach((btn, i) => btn.classList.toggle('is-on', i === index));
         const active = bgCoverBtns[index];
         if (!active) return;
@@ -9044,14 +9455,12 @@ export class App {
         (next) => {
           patchSettings({ general: { backgroundLyrics: next, ...(next ? { desktopLyrics: false } : {}) } });
           toast(next ? '桌面背景歌词已开启：歌词效果显示在桌面壁纸层' : '桌面背景歌词已关闭：软件内歌词恢复显示');
-          syncBackgroundLyricsCells();
         },
       );
       const bgStyleCell = cell(
         '背景歌词样式',
         true,
         bgCoverControl,
-        h('div', { class: 'quick-hint', text: '播放效果为「关闭」时生效；封面在左：封面铺满并向右侧渐隐/模糊，歌词移到右半边' }),
       );
       const bgBlurCell = cell('封面模糊', true, bgBlurControl);
       const bgFillCell = cell(
@@ -9082,32 +9491,10 @@ export class App {
         '歌词背景亮度',
         true,
         h('div', { class: 'quick-slider-row' }, brightnessInput, brightnessValue),
-        h('div', { class: 'quick-hint', text: '播放效果为「关闭」时生效；只调节背景图案，不影响歌词文字' }),
+        h('div', { class: 'quick-hint', text: '播放效果为「默认」时生效；只调节背景图案，不影响歌词文字' }),
       );
-      // 三项目只对「播放效果=关闭」且「桌面背景歌词=开」生效：其它状态下禁用并给出原因，
-      // 避免用户点了没反应。
-      const syncBackgroundLyricsCells = (): void => {
-        const lyricsOn = getSettings().general.backgroundLyrics;
-        const lyricsMode = lyricsLumiereMode();
-        const available = lyricsOn && lyricsMode === 'off';
-        for (const node of [bgStyleCell, bgBlurCell, bgFillCell]) {
-          node.classList.toggle('is-disabled', !available);
-          node.setAttribute('aria-disabled', available ? 'false' : 'true');
-        }
-        const reason = !lyricsOn
-          ? '先开启「桌面背景歌词」'
-          : lyricsMode !== 'off'
-            ? '播放效果为「纯字/房间/唱片/拼合」时，歌词画在效果层，背景歌词样式不生效；切到「关闭」后可用'
-            : '';
-        for (const node of [bgStyleCell, bgBlurCell, bgFillCell]) {
-          const hint = node.querySelector<HTMLElement>('.quick-hint');
-          if (!hint) continue;
-          const base = hint.dataset.baseHint ?? hint.textContent ?? '';
-          hint.dataset.baseHint = base;
-          hint.textContent = available ? base : `${base}（${reason}）`;
-        }
-      };
-      syncBackgroundLyricsCells();
+      // 这三项不再按「播放效果」置灰：用户随时可以调，切到「默认」时立刻生效，
+      // 在纯字/房间/唱片/拼合下先存着，回到默认就按这份值走。
       body.append(
         h(
           'div',
@@ -9354,6 +9741,315 @@ export class App {
       // 动效（逐字生长）+ 歌词样式：只对「关闭」档的 DOM 歌词生效，画布效果（纯字/房间）下没有意义，因此仅关闭档显示。
       const growCell = cell('动效', true, growControl);
       const styleCell = cell('歌词样式', true, styleControl);
+      // 音频可视化：与「歌词样式」正交，六种字幕动效都能各配一份。
+      // 原来是壁纸页的选项（第 77 轮），挪到这里之后壁纸只负责画面。
+      const visThumb = h('div', { class: 'quick-seg-thumb' });
+      const visBtns: HTMLButtonElement[] = LYRIC_VIS_STYLES.map((item) => {
+        const btn = h('button', {
+          class: `quick-seg-btn${item.id === lyricVisualStyle() ? ' is-on' : ''}`,
+          type: 'button',
+          text: item.label,
+          title: item.hint,
+        }) as HTMLButtonElement;
+        btn.addEventListener('pointerdown', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        });
+        btn.addEventListener('click', () => {
+          setLyricVisualStyle(item.id as LyricVisualStyle);
+          paintVisStyle();
+        });
+        return btn;
+      });
+      const paintVisStyle = (): void => {
+        const index = Math.max(0, LYRIC_VIS_STYLES.findIndex((item) => item.id === lyricVisualStyle()));
+        visBtns.forEach((btn, i) => btn.classList.toggle('is-on', i === index));
+        const active = visBtns[index];
+        if (!active) return;
+        visThumb.style.width = `${active.offsetWidth}px`;
+        visThumb.style.transform = `translateX(${active.offsetLeft}px)`;
+      };
+      const visControl = h('div', { class: 'quick-seg-slider' }, visThumb, ...visBtns);
+      paintVisStyle();
+      window.requestAnimationFrame(() => paintVisStyle());
+      const visCell = cell('音频可视化', true, visControl);
+      // 可视化细节：条带高度 / 柱数 / 不透明度 / 与播放条的间距。
+      // 条带贴到播放条上方（宿主层用 .playerbar 的 top 算让位区），这里调的是「让位之后」的样子。
+      const visPrefs = lyricVisualPrefs();
+      const visSlider = (
+        label: string,
+        key: 'height' | 'opacity' | 'gap',
+        unit: string,
+        hint: string,
+      ): HTMLElement => {
+        const limit = LYRIC_VIS_LIMITS[key];
+        const value = h('span', { class: 'quick-value', text: `${visPrefs[key]}${unit}` });
+        const input = h('input', {
+          class: 'slider quick-slider',
+          type: 'range',
+          min: String(limit.min),
+          max: String(limit.max),
+          step: '1',
+          value: String(visPrefs[key]),
+        });
+        input.addEventListener('input', () => {
+          const next = Number(input.value);
+          value.textContent = `${next}${unit}`;
+          setLyricVisualPrefs({ [key]: next } as Partial<LyricVisualPrefs>);
+        });
+        return cell(
+          label,
+          true,
+          h('div', { class: 'quick-slider-row' }, input, value),
+          h('div', { class: 'quick-hint', text: hint }),
+        );
+      };
+      const visBarsOptions = [32, 48, 64, 96, 128];
+      const visBarsThumb = h('div', { class: 'quick-seg-thumb' });
+      const visBarsBtns = visBarsOptions.map((count) => {
+        const btn = h('button', {
+          class: `quick-seg-btn${count === visPrefs.bars ? ' is-on' : ''}`,
+          type: 'button',
+          text: String(count),
+          title: `频谱柱数 ${count}`,
+        }) as HTMLButtonElement;
+        btn.addEventListener('pointerdown', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        });
+        btn.addEventListener('click', () => {
+          setLyricVisualPrefs({ bars: count });
+          paintVisBars(count);
+        });
+        return btn;
+      });
+      const paintVisBars = (count: number): void => {
+        const index = Math.max(0, visBarsOptions.indexOf(count));
+        visBarsBtns.forEach((btn, i) => btn.classList.toggle('is-on', i === index));
+        const active = visBarsBtns[index];
+        if (!active) return;
+        visBarsThumb.style.width = `${active.offsetWidth}px`;
+        visBarsThumb.style.transform = `translateX(${active.offsetLeft}px)`;
+      };
+      paintVisBars(visPrefs.bars);
+      window.requestAnimationFrame(() => paintVisBars(lyricVisualPrefs().bars));
+      const visBarsCell = cell(
+        '频谱柱数',
+        true,
+        h('div', { class: 'quick-seg-slider' }, visBarsThumb, ...visBarsBtns),
+        h('div', { class: 'quick-hint', text: '只影响「频谱」样式；其余样式按整页比例绘制' }),
+      );
+      const visDetailCells = [
+        visSlider('可视化高度', 'height', '%', '条带占让位区的高度；太高会顶到歌词行'),
+        visSlider('可视化不透明度', 'opacity', '%', '整体透明度，低了更像背景光'),
+        visSlider('与播放条的间距', 'gap', 'px', '条带底边与播放条上沿的留白；0 就是紧贴'),
+        visBarsCell,
+      ];
+      // 歌词字体：自绘选择面板 —— 字体名按自身字面渲染，悬停实时预览到面板与歌词页，点击才落盘。
+      const FONT_FALLBACK = '"Zilux2 Sans SC", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif';
+      const fontFaceCss = (family: string): string => lyricFontStackOf(family, FONT_FALLBACK);
+      const fontSample = (lang: LyricFontLang | ''): string => {
+        if (lang === 'ja') return 'あの日のまま、風の歌';
+        if (lang === 'ko') return '가득한 밤, 너의 목소리';
+        if (lang === 'en') return 'Shower you with all my attention';
+        return '晚风轻轻吹过，夜色正好';
+      };
+      let restorePreviewVar: (() => void) | null = null;
+      let closeFontPicker: () => void = () => undefined;
+      /** 悬停时先把字体临时写到根节点变量上，让背后真正的歌词页跟着变；关闭/选择后还原。 */
+      const previewOnPage = (family: string, lang: LyricFontLang | ''): void => {
+        restorePreviewVar?.();
+        restorePreviewVar = null;
+        const prop = lang ? `--lyric-font-${lang}` : '--lyric-font';
+        const rootStyle = document.documentElement.style;
+        const previous = rootStyle.getPropertyValue(prop);
+        const had = previous !== '';
+        if (family) rootStyle.setProperty(prop, fontFaceCss(family));
+        else rootStyle.removeProperty(prop);
+        restorePreviewVar = () => {
+          if (had) rootStyle.setProperty(prop, previous);
+          else rootStyle.removeProperty(prop);
+        };
+      };
+
+      const fontMainName = h('span', { class: 'qf-main-name' });
+      const fontMainSample = h('span', { class: 'qf-main-sample', text: 'Aa 永 あ 가' });
+      const fontMainButton = h(
+        'button',
+        { class: 'qf-main', type: 'button', 'aria-label': '选择歌词主字体' },
+        h('span', { class: 'qf-main-copy' }, h('span', { class: 'qf-main-kicker', text: '主字体' }), fontMainName),
+        fontMainSample,
+        h('span', { class: 'qf-main-edit', text: '选择字体' }),
+      ) as HTMLButtonElement;
+      const fontLangButtons = LYRIC_FONT_LANGS.map(({ id, label }) => {
+        const value = h('span', { class: 'qf-lang-value' });
+        const button = h(
+          'button',
+          { class: 'qf-lang', type: 'button', 'aria-label': `选择${label}歌词字体` },
+          h('span', { class: 'qf-lang-label', text: label }),
+          value,
+        ) as HTMLButtonElement;
+        return { id, label, button, value };
+      });
+
+      const openFontPicker = (lang: LyricFontLang | '', anchor: HTMLElement): void => {
+        closeFontPicker();
+        // 面板收起时按钮仍在 DOM 里但没有尺寸，此时不该弹出一个无锚点的浮层。
+        const anchorRect = anchor.getBoundingClientRect();
+        if (anchorRect.width <= 0) return;
+        const families = getSystemFonts();
+        const saved = lang ? (lyricFontOverrides()[lang] ?? '') : lyricFontFamily();
+        const title = lang ? `${LYRIC_FONT_LANGS.find((item) => item.id === lang)?.label ?? ''}歌词字体` : '歌词主字体';
+        const search = h('input', {
+          class: 'qf-search',
+          type: 'search',
+          placeholder: `搜索 ${families.length} 款系统字体`,
+          spellcheck: 'false',
+        }) as HTMLInputElement;
+        const previewLine = h('div', { class: 'qf-preview-line' });
+        const previewMeta = h('div', { class: 'qf-preview-meta' });
+        const list = h('div', { class: 'qf-list' });
+        const pop = h(
+          'div',
+          { class: 'qf-pop', role: 'dialog', 'aria-label': title },
+          h(
+            'div',
+            { class: 'qf-head' },
+            h('div', { class: 'qf-titles' }, h('div', { class: 'qf-title', text: title }), h('div', { class: 'qf-subtitle', text: '悬停预览 · 点击应用' })),
+            (() => {
+              const close = h('button', { class: 'qf-close', type: 'button', 'aria-label': '关闭' }, '×') as HTMLButtonElement;
+              close.addEventListener('click', () => closeNow());
+              return close;
+            })(),
+          ),
+          h('div', { class: 'qf-preview' }, previewLine, previewMeta),
+          h('div', { class: 'qf-search-wrap' }, h('span', { class: 'qf-search-icon', text: '⌕' }), search),
+          list,
+        );
+
+        function closeNow(): void {
+          document.removeEventListener('pointerdown', onOutside, true);
+          document.removeEventListener('keydown', onKey, true);
+          pop.remove();
+          restorePreviewVar?.();
+          restorePreviewVar = null;
+          closeFontPicker = () => undefined;
+        }
+        const onOutside = (event: PointerEvent): void => {
+          const target = event.target as Node;
+          if (!pop.contains(target) && !anchor.contains(target)) closeNow();
+        };
+        const onKey = (event: KeyboardEvent): void => {
+          if (event.key === 'Escape') closeNow();
+        };
+
+        const setPreview = (family: string): void => {
+          previewLine.textContent = fontSample(lang);
+          previewLine.style.fontFamily = fontFaceCss(family);
+          previewMeta.textContent = family || (lang ? '跟随主字体' : '默认（跟随效果）');
+          previewOnPage(family, lang);
+        };
+
+        let hoverArmed = false;
+        const makeRow = (family: string, label: string, isCurrent: boolean): HTMLButtonElement => {
+          const name = h('span', { class: 'qf-row-name', text: label });
+          if (family) name.style.fontFamily = fontFaceCss(family);
+          const row = h(
+            'button',
+            { class: `qf-row${isCurrent ? ' is-current' : ''}`, type: 'button' },
+            name,
+            h('span', { class: 'qf-row-check', text: isCurrent ? '✓' : '' }),
+          ) as HTMLButtonElement;
+          row.addEventListener('pointerenter', () => { if (hoverArmed) setPreview(family); });
+          row.addEventListener('focus', () => setPreview(family));
+          row.addEventListener('click', () => {
+            restorePreviewVar?.();
+            restorePreviewVar = null;
+            setLyricFontFamily(family, lang || undefined);
+            toast(family ? `${title}已切换：${family}` : lang ? `${title}恢复为跟随主字体` : '歌词字体已恢复默认');
+            closeNow();
+          });
+          return row;
+        };
+
+        const renderRows = (): void => {
+          const query = search.value.trim().toLowerCase();
+          const matched = query ? families.filter((family) => family.toLowerCase().includes(query)) : families;
+          const shown = matched.slice(0, 160);
+          list.replaceChildren(makeRow('', lang ? '跟随主字体' : '默认（跟随效果）', saved === ''));
+          for (const family of shown) list.append(makeRow(family, family, family === saved));
+          if (!shown.length) list.append(h('div', { class: 'qf-empty', text: '没有匹配的字体' }));
+          else if (matched.length > shown.length) {
+            list.append(h('div', { class: 'qf-empty', text: `还有 ${matched.length - shown.length} 款，继续输入筛选` }));
+          }
+        };
+
+        search.addEventListener('input', renderRows);
+        renderRows();
+        setPreview(saved);
+        document.body.append(pop);
+        // 浮层可能正好落在静止的鼠标指针下；先等一次真实移动，避免刚打开就预览到随机一行。
+        pop.addEventListener('pointermove', () => { hoverArmed = true; }, { once: true });
+        const rect = anchorRect;
+        const width = Math.min(340, window.innerWidth - 24);
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        pop.style.width = `${width}px`;
+        const height = pop.offsetHeight;
+        const gap = 24;
+        let left: number;
+        let top: number;
+        if (rect.left - width - gap >= 12) {
+          // 优先贴在快捷面板左侧，竖向以触发按钮为中心，避免盖住面板本身。
+          left = rect.left - width - gap;
+          top = Math.min(Math.max(12, rect.top + rect.height / 2 - height / 2), Math.max(12, vh - height - 12));
+        } else {
+          left = Math.max(12, Math.min(rect.left + rect.width - width, vw - width - 12));
+          const below = rect.bottom + gap;
+          top = below + height <= vh - 12 ? below : Math.max(12, rect.top - height - gap);
+        }
+        pop.style.left = `${left}px`;
+        pop.style.top = `${top}px`;
+        closeFontPicker = closeNow;
+        document.addEventListener('pointerdown', onOutside, true);
+        document.addEventListener('keydown', onKey, true);
+        search.focus({ preventScroll: true });
+      };
+
+      const paintFontField = (): void => {
+        const family = lyricFontFamily();
+        fontMainName.textContent = family || '默认（跟随效果）';
+        fontMainName.style.fontFamily = family ? fontFaceCss(family) : '';
+        fontMainSample.style.fontFamily = fontFaceCss(family);
+        fontMainButton.classList.toggle('is-custom', !!family);
+        const saved = lyricFontOverrides();
+        for (const item of fontLangButtons) {
+          const value = saved[item.id] ?? '';
+          item.value.textContent = value || '跟随主字体';
+          item.value.style.fontFamily = value ? fontFaceCss(value) : '';
+          item.button.classList.toggle('is-custom', !!value);
+        }
+      };
+      paintFontField();
+      fontMainButton.addEventListener('click', () => openFontPicker('', fontMainButton));
+      for (const item of fontLangButtons) item.button.addEventListener('click', () => openFontPicker(item.id, item.button));
+      const fontDispose = onLyricFont(() => paintFontField());
+      this.quickFontDispose = () => {
+        fontDispose();
+        closeFontPicker();
+      };
+      const fontControl = h(
+        'div',
+        { class: 'qf-field' },
+        fontMainButton,
+        h('div', { class: 'qf-langs' }, ...fontLangButtons.map((item) => item.button)),
+      );
+      const fontCell = cell(
+        '歌词字体',
+        true,
+        fontControl,
+        h('div', { class: 'quick-hint', text: '主字体作用于全部歌词效果；可按语言单独覆盖，未指定时跟随主字体。点击后悬停即可实时预览。' }),
+      );
       const lyricDomCells = [styleCell, growCell];
       const syncGrowCell = (): void => {
         const hidden = lyricsLumiereMode() !== 'off';
@@ -9545,6 +10241,10 @@ export class App {
         h(
           'div',
           { class: 'quick-grid' },
+          // 播放效果是整页歌词的入口：放在最上面，切完再往下调内容与外观。
+          section('歌词播放效果'),
+          cell('播放效果', true, effectControl),
+          effectSettingsCell,
           section('歌词内容'),
           cell('歌词来源', true, sourceValue),
           cell('跨平台匹配', true, matchValue),
@@ -9554,10 +10254,11 @@ export class App {
           cell('歌词颜色', true, bgControl),
           solidCell,
           cell('未播放颜色', true, unsungSwatches),
+          fontCell,
           styleCell,
           growCell,
-          cell('播放效果', true, effectControl),
-          effectSettingsCell,
+          visCell,
+          ...visDetailCells,
         ),
       );
       return;
@@ -9682,10 +10383,20 @@ export class App {
       max: 200,
       step: 5,
       dragStep: 1,
-      format: (percent) => `${(percent / 100).toFixed(2).replace(/0+$/, '').replace(/.$/, '')}×`,
+      format: (percent) => `${(percent / 100).toFixed(2).replace(/0+$/, '').replace(/\.$/, '')}×`,
       onInput: (percent) => {
         setPlaybackSpeed(percent / 100);
       },
+    });
+    // 播放速度：一个小的复位入口，回到 1.00×（和拖动/加减共用同一个调节器）。
+    const speedReset = h('button', { class: 'quick-reset', text: '复位', title: '恢复 1.00×' });
+    speedReset.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    speedReset.addEventListener('click', () => {
+      setPlaybackSpeed(1);
+      speedStepper.setValue(100);
     });
 
     const quickLoudnessSwitch = this.pillSwitch(loudnessEnabled(), (next) => {
@@ -9841,6 +10552,33 @@ export class App {
     const crossHandoffSwitch = this.pillSwitch(cross.handoff, (next) => {
       writeCrossfadeSettings({ handoff: next });
     });
+    // 进阶过渡（分轨换手）：三档。默认 standard，老用户升级后行为不变。
+    const crossModeSeg = quickSeg(
+      MIX_TRANSITION_ORDER.map((value) => ({ value, label: MIX_TRANSITION_LABELS[value].replace(/（.*）$/, '') })),
+      cross.mixTransitionMode,
+      (value) => {
+        const next = writeCrossfadeSettings({ mixTransitionMode: value as typeof cross.mixTransitionMode });
+        toast(MIX_TRANSITION_HINTS[next.mixTransitionMode]);
+      },
+    );
+
+    const crossEngineSeg = quickSeg(
+      MIX_ENGINE_ORDER.map((value) => ({ value, label: MIX_ENGINE_LABELS[value] })),
+      readMixTransitionEngine(),
+      (value) => {
+        const next = writeMixTransitionEngine(value as Parameters<typeof writeMixTransitionEngine>[0]);
+        toast(MIX_ENGINE_HINTS[next]);
+      },
+    );
+
+    const crossTemplateSeg = quickSeg(
+      MIX_TEMPLATE_ORDER.map((value) => ({ value, label: MIX_TEMPLATE_LABELS[value] })),
+      readMixTransitionTemplate(),
+      (value) => {
+        const next = writeMixTransitionTemplate(value as Parameters<typeof writeMixTransitionTemplate>[0]);
+        toast(MIX_TEMPLATE_HINTS[next]);
+      },
+    );
 
     // 播放页新增：自动播放与媒体键
     const quickAutoPlaySwitch = this.pillSwitch(autoPlaySettings().enabled, (next) => {
@@ -9867,7 +10605,7 @@ export class App {
         ),
         cell('播放/暂停渐变', false, quickFadeSwitch.root),
         cell('人声保留淡出', false, quickVocalSwitch.root),
-        cell('播放速度', false, speedStepper.root),
+        cell('播放速度', false, speedStepper.root, speedReset),
         cell('自动播放', false, quickAutoPlaySwitch.root),
         cell('媒体键始终控制', false, quickMediaKeysSwitch.root),
         cell('响度均衡', false, quickLoudnessSwitch.root),
@@ -9884,6 +10622,9 @@ export class App {
         cell('过渡时长模式', true, crossLengthModeSeg),
         cell('过渡时长数值', true, crossLengthValueHost),
         cell('过渡风格', true, crossStyleSeg),
+        cell('过渡模式', true, crossModeSeg),
+        cell('换手手法', true, crossTemplateSeg),
+        cell('过渡引擎（内部测试）', true, crossEngineSeg),
         cell('B 入场时机', true, crossCueSeg),
         cell('无缝衔接', false, crossEnabledSwitch.root),
         cell('歌词衔接', false, crossHandoffSwitch.root),
@@ -9929,6 +10670,9 @@ export class App {
       ['过渡时长模式', 'transition'],
       ['过渡时长数值', 'transition'],
       ['过渡风格', 'transition'],
+      ['过渡模式', 'transition'],
+      ['换手手法', 'transition'],
+      ['过渡引擎（内部测试）', 'transition'],
       ['B 入场时机', 'transition'],
       ['歌词衔接', 'transition'],
     ]);
@@ -10393,6 +11137,27 @@ export class App {
     );
   }
 
+
+  /**
+   * 收起态宽度按歌曲名长度自适应：短名保持 452，长名加宽到能放下全文（最多 700）。
+   * 收起/展开的 width 过渡由 CSS 的 --pb-collapsed-width 驱动。
+   */
+  private syncPlayerbarCollapsedWidth(): void {
+    if (!this.playerbar || !this.pbTitle || !this.pbMeta) return;
+    // 展开态宽度由 .is-open / :focus-within 接管，收起后再量，避免把展开宽度当成基准。
+    if (this.playerbar.classList.contains('is-open') || this.playerbar.matches(':focus-within')) return;
+    const barWidth = this.playerbar.getBoundingClientRect().width;
+    const metaWidth = this.pbMeta.getBoundingClientRect().width;
+    const chrome = Math.max(0, barWidth - metaWidth);
+    const sourceWidth = this.pbSource?.offsetWidth ?? 0;
+    const needed = chrome + Math.max(0, this.pbTitle.scrollWidth) + sourceWidth + 12;
+    // 展开宽是 min(1020px, 88vw)。折叠宽一旦超过展开宽，hover 会让胶囊「变窄」，
+    // 指针被挤出边界 → 收起变宽 → 又进入 → 逐帧来回（抽搐）。所以折叠宽必须留 24px 余量。
+    const expandWidth = Math.floor(Math.min(1020, window.innerWidth * 0.88));
+    const ceiling = Math.max(320, Math.min(700, expandWidth - 24));
+    const width = Math.min(ceiling, Math.max(452, Math.ceil(needed)));
+    this.playerbar.style.setProperty('--pb-collapsed-width', `${width}px`);
+  }
   private syncQuickBody(): void {
     if (!this.quickPanelOpen) return;
     const track = playerState().track;
@@ -10664,6 +11429,7 @@ export class App {
     setVolume(value);
     patchSettings({ playback: { volume: value } });
     this.paintVolumeIcon(percent);
+    reportAppVolume(percent, percent === 0);
   }
 
   /**
@@ -10795,6 +11561,28 @@ export class App {
   }
 
   /** 按当前播放状态与 stemMode 维持分离播放：暂停/换曲/seek 后自动接续或停用。 */
+
+  /**
+   * 提前预热：进阶过渡一旦开始才去分离就晚了（一窗约 7 s）。
+   * 这里在播放过程中就一直把「当前窗 + 后 3 窗」排进宿主队列，
+   * 同时把队列里的下一首按 0 s 预排一窗——用户切歌前它就绪。
+   */
+  private warmAdvancedStems(): void {
+    try {
+      if (readMixTransitionMode() === 'standard') return;
+      const state = playerState();
+      const element = activeAudioElement();
+      const track = state.track;
+      if (track) {
+        prefetchStemWindows(track, element ? element.currentTime : state.positionMs / 1000, 3);
+      }
+      const next = state.queue[state.index + 1];
+      if (next && next.id !== track?.id) prefetchStemWindows(next, 0, 2);
+    } catch {
+      // 预热是尽力而为：失败不能影响播放。
+    }
+  }
+
   private async refreshStemPlayback(force = false): Promise<void> {
     if (this.stemMode === 'off') {
       this.stopStemPlayback();
@@ -10817,6 +11605,8 @@ export class App {
     this.stemBusy = true;
     let attached: StemModeHandle | null = null;
     try {
+      // 先把当前窗与下一窗排进宿主队列，跨窗时才不用干等一整窗。
+      prefetchStemWindows(track, element.currentTime, 2);
       const handle = await startStemMode({
         element,
         track,
@@ -10858,6 +11648,7 @@ export class App {
       this.playerbar.classList.add('is-idle');
       this.pbTrackKey = '';
       this.pbTitle.textContent = '未在播放';
+      this.syncPlayerbarCollapsedWidth();
       this.pbArtist.textContent = '点一首歌开始播放';
       this.pbSource.textContent = '';
       this.pbPlayBtn.textContent = '';
@@ -10918,10 +11709,12 @@ export class App {
       refreshLoudness(track);
     }
     this.pbTitle.textContent = track.title;
+    this.syncPlayerbarCollapsedWidth();
     this.pbArtist.textContent = track.artist || '未知歌手';
     const artistLinkable = track.source === 'local' && Boolean(track.artist);
     this.pbArtist.classList.toggle('is-linkable', artistLinkable);
     this.pbArtist.title = artistLinkable ? `查看 ${track.artist} 的本地歌曲` : '';
+    if (trackChanged) this.syncMiniWidth();
     if (trackChanged) this.playTrackEnter();
     if (trackChanged) this.refreshWallShortcuts();
     this.pbPlayBtn.textContent = '';
@@ -11173,6 +11966,8 @@ export class App {
   private desktopLyricActiveWord = -2;
   private desktopLyricWordsKey = '';
   private desktopLyricKey = '';
+  /** 上一轮的上下文窗口指纹（含切歌 key/index/窗口首尾文本），只有变化时才把 lines 推给宿主。 */
+  private desktopLyricContextKey = '';
 
   /** 桌面歌词：把当前句推给宿主窗口（换歌或句/翻译变化时才发送）。 */
   private pushDesktopLyrics(): void {
@@ -11185,6 +11980,7 @@ export class App {
       this.desktopLyricActiveWord = -2;
       this.desktopLyricWordsKey = '';
       this.desktopLyricKey = '';
+      this.desktopLyricContextKey = '';
       return;
     }
     const state = playerState();
@@ -11202,19 +11998,26 @@ export class App {
     }
     // 桌面歌词要在没打开歌词页时也能用：先把歌词拉下来（内部去重）。
     primeLyrics(track);
-    const { previous, now, next, translation, words, activeWord } = currentLyricDisplay();
+    const { previous, now, next, translation, words, activeWord, positionMs, playing, index, lines, linesStart } = currentLyricDisplay();
     const wordsKey = JSON.stringify(words.map(({ text, spaceBefore, startMs, endMs }) => [text, spaceBefore, startMs, endMs]));
+    const previousContextKey = this.desktopLyricContextKey;
+    const contextKey = `${key}#${index}#${lines.length}#${lines[0]?.text ?? ''}#${lines[lines.length - 1]?.text ?? ''}`;
     if (now === this.desktopLyricNow && translation === this.desktopLyricTranslation &&
         previous === this.desktopLyricPrevious && next === this.desktopLyricNext &&
-        activeWord === this.desktopLyricActiveWord && wordsKey === this.desktopLyricWordsKey) return;
+        activeWord === this.desktopLyricActiveWord && wordsKey === this.desktopLyricWordsKey &&
+        contextKey === this.desktopLyricContextKey) return;
     this.desktopLyricNow = now;
     this.desktopLyricTranslation = translation;
     this.desktopLyricPrevious = previous;
     this.desktopLyricNext = next;
     this.desktopLyricActiveWord = activeWord;
     this.desktopLyricWordsKey = wordsKey;
+    this.desktopLyricContextKey = contextKey;
     // 没有歌词的曲目也给一个占位，别让窗口一直停在初始文案。
-    updateDesktopLyrics(now || '♪', translation, previous, next, words, activeWord);
+    updateDesktopLyrics(now || '♪', translation, previous, next, words, activeWord, {
+      positionMs, playing, currentIndex: index, linesStart,
+      ...(contextKey !== previousContextKey ? { lines } : {}),
+    });
   }
 
   /** 收听统计整页：总览卡片、近 14 天时长柱、最爱歌曲与歌手。 */
@@ -11633,6 +12436,8 @@ export class App {
     // 挂到根节点：歌词页要整窗覆盖（含左侧栏区域），背景是整屏模糊封面
     this.root.append(view.root);
     this.root.classList.add('is-lyrics-open');
+    // 进歌词页要立刻把壁纸层挪进 .lyrics-view（screen 混合要靠同层），不等状态推送。
+    syncPageWallpaperClass();
     this.wallShortcuts?.classList.remove('is-visible');
     view.bindSeek();
   }
@@ -11644,6 +12449,7 @@ export class App {
     this.navBefore();
     this.lyrics = null;
     this.root.classList.remove('is-lyrics-open');
+    syncPageWallpaperClass();
     // 先播退场动画，再真正卸载
     view.root.classList.add('is-leaving');
     window.setTimeout(() => view.dispose(), 300);
@@ -11876,6 +12682,8 @@ export class App {
     this.windowStateDispose = null;
     this.fontDispose?.();
     this.fontDispose = null;
+    this.quickFontDispose?.();
+    this.quickFontDispose = null;
     this.localDispose?.();
     this.accountDispose?.();
     this.accountIssueDispose?.();
@@ -12050,6 +12858,7 @@ export class App {
       setVolume(0);
       this.volumeInput.value = '0';
       this.paintVolumeIcon(0);
+      reportAppVolume(0, true);
       toast('已静音 · 再按 M 恢复');
       return;
     }
@@ -12058,6 +12867,7 @@ export class App {
     const percent = Math.round(restore * 100);
     this.volumeInput.value = String(percent);
     this.paintVolumeIcon(percent);
+    reportAppVolume(percent, false);
     toast('已恢复音量');
   }
 

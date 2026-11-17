@@ -71,9 +71,13 @@ const ICONS: Record<string, string> = {
     '<path d="M12 19.5s-7.2-4.4-7.2-9.4A4.1 4.1 0 0112 7.7a4.1 4.1 0 017.2 2.4c0 5-7.2 9.4-7.2 9.4z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>',
   heartFill:
     '<path d="M12 19.5s-7.2-4.4-7.2-9.4A4.1 4.1 0 0112 7.7a4.1 4.1 0 017.2 2.4c0 5-7.2 9.4-7.2 9.4z" fill="currentColor" stroke="none"/>',
+  star: '<path d="M12 4.3l2.36 4.9 5.34.76-3.87 3.74.92 5.3L12 16.5l-4.75 2.5.92-5.3-3.87-3.74 5.34-.76z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>',
+  starFill: '<path d="M12 4.3l2.36 4.9 5.34.76-3.87 3.74.92 5.3L12 16.5l-4.75 2.5.92-5.3-3.87-3.74 5.34-.76z" fill="currentColor" stroke="none"/>',
   search: '<circle cx="11" cy="11" r="6.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M15.6 15.6L20 20" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
   sparkle:
     '<path d="M12 4l1.8 4.7L18.5 10.5l-4.7 1.8L12 17l-1.8-4.7L5.5 10.5l4.7-1.8z" fill="currentColor" stroke="none"/><path d="M17.8 15.4l.9 2.3 2.3.9-2.3.9-.9 2.3-.9-2.3-2.3-.9 2.3-.9z" fill="currentColor" stroke="none" opacity=".7"/>',
+  picture:
+    '<rect x="3" y="4.5" width="18" height="15" rx="2.4" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="8.6" cy="9.6" r="1.5" fill="currentColor"/><path d="M4.4 17.2l4.9-4.6 3.3 3 2.7-2.4 4.3 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>',
   sliders:
     '<path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="9.5" cy="7" r="2.4" fill="currentColor"/><circle cx="15" cy="12" r="2.4" fill="currentColor"/><circle cx="7.5" cy="17" r="2.4" fill="currentColor"/>',
   equalizer:

@@ -43,6 +43,36 @@ internal static class SmtcArtwork
         }
     }
 
+    /// <summary>把封面解码成 WPF 图像（OSD 的小封面块用），失败返回 null。</summary>
+    public static async Task<System.Windows.Media.Imaging.BitmapSource?> LoadImageAsync(
+        string source,
+        int decodeWidth,
+        CancellationToken cancellationToken)
+    {
+        var bytes = await ReadBytesAsync(source, cancellationToken).ConfigureAwait(false);
+        if (bytes is null || bytes.Length == 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            var image = new System.Windows.Media.Imaging.BitmapImage();
+            image.BeginInit();
+            image.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+            image.DecodePixelWidth = Math.Max(16, decodeWidth);
+            image.StreamSource = new MemoryStream(bytes, writable: false);
+            image.EndInit();
+            image.Freeze();
+            return image;
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[smtc] cover decode failed: {exception.GetType().Name}: {exception.Message}");
+            return null;
+        }
+    }
+
     private static async Task<byte[]?> ReadBytesAsync(string source, CancellationToken cancellationToken)
     {
         var trimmed = source.Trim();

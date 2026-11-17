@@ -1,4 +1,5 @@
 import type { PressureEntrance } from './pressureChoreography';
+import { lyricFontStack } from './lyricFont';
 import { pressureGlyphMotion, pressurePhraseMotion } from './pressureChoreography';
 import {
   pressureClamp,
@@ -21,6 +22,17 @@ export const PRESSURE_FONT =
 
 export const PRESSURE_MONO =
   '"Cascadia Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace';
+
+/** 当前歌词文本：用于按语言选择字体（压力档整场共用一套字形）。 */
+let pressureSongText = '';
+
+export function setPressureText(text: string): void {
+  pressureSongText = text;
+}
+
+/** 主字体面：跟随「歌词字体」设置，并按歌词主要语言优先；单等宽字面（时间码等）仍用系统等宽栈。 */
+export const pressureFace = (mono: boolean): string =>
+  mono ? PRESSURE_MONO : lyricFontStack(PRESSURE_FONT, pressureSongText);
 
 export interface PressureTextLayout {
   font: number;
@@ -120,7 +132,7 @@ export class PressureTypeEngine {
     const cached = this.cache.get(key);
     if (cached) return cached;
 
-    const fontFamily = mono ? PRESSURE_MONO : PRESSURE_FONT;
+    const fontFamily = pressureFace(mono);
     const units = words(text);
     let font = Math.min(safeHeight * 0.9, this.width * 0.3);
     const context = this.context;
@@ -184,7 +196,7 @@ export class PressureTypeEngine {
   ): number {
     if (!text) return 0;
     const context = this.context;
-    context.font = `${weight} ${font}px ${mono ? PRESSURE_MONO : PRESSURE_FONT}`;
+    context.font = `${weight} ${font}px ${pressureFace(mono)}`;
     return context.measureText(text).width + Math.max(0, text.length - 1) * tracking * font;
   }
 
@@ -206,7 +218,7 @@ export class PressureTypeEngine {
       options.tracking ?? 0,
       options.mono ?? false,
     );
-    const family = options.mono ? PRESSURE_MONO : PRESSURE_FONT;
+    const family = pressureFace(!!options.mono);
     context.save();
     context.globalAlpha *= options.alpha ?? 1;
     context.font = `${options.weight ?? 900} ${layout.font}px ${family}`;
@@ -262,7 +274,7 @@ export class PressureTypeEngine {
     const reveal = pressureClamp(progress);
     let total = 0;
     let revealed = 0;
-    context.font = `${weight} ${font}px ${mono ? PRESSURE_MONO : PRESSURE_FONT}`;
+    context.font = `${weight} ${font}px ${pressureFace(mono)}`;
     for (let index = 0; index < characters.length; index += 1) {
       const width = context.measureText(characters[index]).width;
       total += width;
@@ -293,7 +305,7 @@ export class PressureTypeEngine {
       options.tracking ?? 0,
       options.mono ?? false,
     );
-    const family = options.mono ? PRESSURE_MONO : PRESSURE_FONT;
+    const family = pressureFace(!!options.mono);
     const motion = pressurePhraseMotion(phrase, time, false);
     const reveal = options.reveal ?? motion.reveal;
     const entrance = options.entrance;
@@ -434,7 +446,7 @@ export class PressureTypeEngine {
     options: PressureTextOptions,
   ): void {
     context.save();
-    context.font = `${options.weight ?? 900} ${fontSize}px ${PRESSURE_FONT}`;
+    context.font = `${options.weight ?? 900} ${fontSize}px ${pressureFace(false)}`;
     context.textAlign = 'center';
     context.textBaseline = 'middle';
     context.fillStyle = options.fill;
@@ -466,7 +478,7 @@ export class PressureTypeEngine {
     const columns = options.columns ?? 3;
     const fontSize = Math.max(12, height / rows * 0.72);
     context.save();
-    context.font = `${options.weight ?? 900} ${fontSize}px ${PRESSURE_FONT}`;
+    context.font = `${options.weight ?? 900} ${fontSize}px ${pressureFace(false)}`;
     context.textAlign = 'left';
     context.textBaseline = 'middle';
     context.fillStyle = options.fill;
@@ -509,7 +521,7 @@ export class PressureTypeEngine {
         target.textAlign = 'center';
         target.textBaseline = 'middle';
         const layout = this.layout(text, width * 0.92, height * 0.9, options.weight ?? 900, options.tracking ?? 0);
-        target.font = `${options.weight ?? 900} ${layout.font}px ${PRESSURE_FONT}`;
+        target.font = `${options.weight ?? 900} ${layout.font}px ${pressureFace(false)}`;
         target.fillStyle = options.fill;
         layout.rows.forEach((row, rowIndex) => {
           target.fillText(
@@ -564,7 +576,7 @@ export class PressureTypeEngine {
     const layout = this.layout(text, maxWidth, maxHeight, 900, 0);
     context.save();
     context.globalAlpha *= alpha;
-    context.font = `900 ${layout.font}px ${PRESSURE_FONT}`;
+    context.font = `900 ${layout.font}px ${pressureFace(false)}`;
     context.textAlign = 'center';
     context.textBaseline = 'middle';
     context.strokeStyle = color;
@@ -616,7 +628,7 @@ export class PressureTypeEngine {
     target.fillStyle = '#fff';
     target.textAlign = 'center';
     target.textBaseline = 'middle';
-    target.font = `900 92px ${PRESSURE_FONT}`;
+    target.font = `900 92px ${pressureFace(false)}`;
     target.fillText(text, 120, 62);
     const data = target.getImageData(0, 0, source.width, source.height).data;
     context.save();
@@ -655,7 +667,7 @@ export class PressureTypeEngine {
     alpha = 1,
   ): void {
     context.save();
-    context.font = `900 ${size}px ${PRESSURE_FONT}`;
+    context.font = `900 ${size}px ${pressureFace(false)}`;
     context.fillStyle = color;
     context.globalAlpha *= alpha;
     context.textAlign = 'left';
@@ -683,7 +695,7 @@ export class PressureTypeEngine {
   async warm(): Promise<void> {
     if (!('fonts' in document)) return;
     try {
-      await document.fonts.load(`900 48px ${PRESSURE_FONT}`);
+      await document.fonts.load(`900 48px ${pressureFace(false)}`);
       await document.fonts.load(`500 20px ${PRESSURE_MONO}`);
     } catch {
       // A missing font is not fatal; the canvas falls back to the same stack.

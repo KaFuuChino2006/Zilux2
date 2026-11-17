@@ -142,6 +142,19 @@ pwsh -File tools\settings-selftest.ps1
 pwsh -File tools\airplay-selftest.ps1
 ```
 
+进阶过渡（分轨换手）的离线验收：
+
+```powershell
+# 全量：单测 + 类型 + 过渡指标(C1/C2/C3 + G2) + 分离质量(G4)
+pwsh .scratch/transition-accept/run-all.ps1
+# 只跑过渡链路（跳过 4 轨分离质量，约快 1 分钟）
+pwsh .scratch/transition-accept/run-all.ps1 -SkipStems
+# 末行是 VERDICT: PASS/FAIL，退出码 0/1，可直接接 CI
+```
+
+> 需要 **pwsh 7**（Windows PowerShell 5.1 不支持脚本里的部分语法，且无 BOM 的 UTF-8 会乱码）。
+> 报告见 `docs/zilux2-advanced-transition-final-report.md`，口径见 `docs/zilux2-advanced-transition-wbs-v2.md` §8。
+
 前端独立调试：
 
 ```bash

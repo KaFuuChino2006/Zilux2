@@ -20,12 +20,13 @@ using Zilux2.Online.Discover;
 using Zilux2.Online.Library;
 using Zilux2.Storage;
 using Zilux2.Stems;
+using Zilux2.Settings;
 
 namespace Zilux2.Online;
 
 // Loopback-only HTTP surface from docs/zilux2-online-music.md §5. Bound to 127.0.0.1 on a
 // dynamic port; the page receives port+token through the "online" host message.
-internal sealed class LocalMusicServer : IDisposable
+internal sealed partial class LocalMusicServer : IDisposable
 {
     private static readonly TimeSpan SearchTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan LyricTimeout = TimeSpan.FromSeconds(10);
@@ -39,6 +40,15 @@ internal sealed class LocalMusicServer : IDisposable
     private const int CoverCacheLimit = 200;
     private const int StreamBufferSize = 32 * 1024;
     private const int MaxAccountImportBodyBytes = 16 * 1024;
+
+    /// <summary>
+    /// 动态壁纸 v2 的门面（<c>/api/wallpaper/v2/*</c> 端点用）。由 MainWindow 在壁纸宿主建好后
+    /// 赋值；为空时所有壁纸端点返回 503，宿主退到托盘等场景也能安全响应。
+    /// </summary>
+    internal Zilux2.Wallpaper.WallpaperHost? Wallpaper { get; set; }
+
+    /// <summary>设置服务（壁纸 v2 的 /options 读写走这里；为空时 /options 返回 503）。</summary>
+    internal SettingsService? Settings { get; set; }
 
     private readonly IReadOnlyDictionary<string, IOnlineMusicProvider> _providers;
     private readonly IReadOnlyList<string> _sources;
@@ -94,6 +104,9 @@ internal sealed class LocalMusicServer : IDisposable
     /// </summary>
     internal Action? OpenDevTools { get; set; }
 
+    /// <summary>桌面层是否可用（本机 26H2 为 false）。</summary>
+    internal Func<bool>? DesktopSupported { get; set; }
+
     public int Start()
     {
         for (var attempt = 0; attempt < 5; attempt++)
@@ -116,6 +129,8 @@ internal sealed class LocalMusicServer : IDisposable
             _listener = listener;
             _acceptLoop = Task.Run(() => AcceptLoopAsync(listener));
             OnlineHttp.Info($"listening on 127.0.0.1:{port} sources={string.Join(",", _sources)}");
+            // 调试期把 token 写一行日志，省去每次从页面 performance 里猜（旧页面会带上一实例的 token）。
+            OnlineHttp.Info($"online token={_token}");
             return port;
         }
 
@@ -217,7 +232,11 @@ internal sealed class LocalMusicServer : IDisposable
 
             var isGet = string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase);
             var isPost = string.Equals(method, "POST", StringComparison.OrdinalIgnoreCase);
-            if (!isGet && !isPost)
+            var isPut = string.Equals(method, "PUT", StringComparison.OrdinalIgnoreCase);
+            var isDelete = string.Equals(method, "DELETE", StringComparison.OrdinalIgnoreCase);
+            // 壁纸 v2 是 REST 风格（编辑素材用 PUT、删素材用 DELETE）；其余端点维持 GET/POST。
+            var isWallpaperPath = path.StartsWith("/api/wallpaper/v2/", StringComparison.OrdinalIgnoreCase);
+            if (!isGet && !isPost && !(isWallpaperPath && (isPut || isDelete)))
             {
                 status = WriteError(context, 405, "bad-request", "只支持 GET/POST 请求");
                 return;
@@ -226,6 +245,13 @@ internal sealed class LocalMusicServer : IDisposable
             if (!Authorize(context, path))
             {
                 status = 401;
+                return;
+            }
+
+            // 动态壁纸 v2 走前缀匹配（路径里有 {id}），逐条列进 switch 会把表撑爆。
+            if (isWallpaperPath)
+            {
+                status = await HandleWallpaperV2Async(context, path, method).ConfigureAwait(false);
                 return;
             }
 
@@ -326,7 +352,17 @@ internal sealed class LocalMusicServer : IDisposable
         {
             // 页面关闭/切换时客户端会先断开；此时响应可能已提交，再写 500 只会产生
             // "response has been submitted" 噪音（WebView2 刷新时每个封面请求都会触发）。
-            OnlineHttp.Warn($"request aborted {method} {path}: {exception.GetType().Name}");
+            var message = $"request aborted {method} {path}: {exception.GetType().Name}";
+            if (path.StartsWith("/api/wallpaper/v2/media/", StringComparison.OrdinalIgnoreCase))
+            {
+                // 视频流被浏览器主动断开是常态（缓冲够了就断，loop 再重新 range 请求），
+                // 每个循环周期都会来一条，按 WARN 记会把日志刷满、掩盖真正的故障。
+                OnlineHttp.Info(message);
+            }
+            else
+            {
+                OnlineHttp.Warn(message);
+            }
         }
         catch (Exception exception)
         {
@@ -944,8 +980,9 @@ internal sealed class LocalMusicServer : IDisposable
         return status;
     }
 
-    // Contract docs/zilux2-stems-contract.md §3.1：离线 2 轨人声分离。首次请求同步算完
+    // Contract docs/zilux2-stems-contract.md §3.1：离线分轨。首次请求同步算完
     //（约 7 s），之后命中磁盘缓存；全局一次只算一个窗口，别的请求回 busy 让页面用 EQ 兜底。
+    // stems=4 时同一次计算多落 drums/bass/other 三轨；不带 stems 或 stems=2 仍是旧的 2 轨行为。
     private async Task<int> HandleStemsAsync(HttpListenerContext context)
     {
         if (!TryReadStemsRequest(context, out var request) || request is null)
@@ -988,10 +1025,28 @@ internal sealed class LocalMusicServer : IDisposable
             return 400;
         }
 
+        // 2 轨老值 vocals/instrumental 语义不变；4 轨新增 drums/bass/other。
         var stem = (context.Request.QueryString["stem"] ?? "vocals").Trim().ToLowerInvariant();
-        if (stem is not ("vocals" or "instrumental"))
+        if (stem is not ("vocals" or "instrumental" or "drums" or "bass" or "other"))
         {
-            return WriteStemsError(context, 400, request.Window, "bad-request", "stem 只支持 vocals 或 instrumental");
+            return WriteStemsError(
+                context,
+                400,
+                request.Window,
+                "bad-request",
+                "stem 只支持 vocals、instrumental、drums、bass、other");
+        }
+
+        // 请求里写的是 stems=2，却来取 4 轨专属分轨：这是契约冲突，不该取决于「磁盘上是否
+        // 恰好有别人算过的 4 轨文件」。显式 409，让状态码与请求参数一致（可复现）。
+        if (request.Stems < 4 && stem is "drums" or "bass" or "other")
+        {
+            return WriteStemsError(
+                context,
+                409,
+                request.Window,
+                "busy",
+                $"stems={request.Stems} 只提供 vocals/instrumental；要 {stem} 请带 stems=4");
         }
 
         var stems = _stems;
@@ -1012,7 +1067,7 @@ internal sealed class LocalMusicServer : IDisposable
                 case StemsState.Busy:
                     return WriteStemsJson(context, 409, StemsOutcome.Busy(request));
                 case StemsState.ModelMissing:
-                    return WriteStemsJson(context, 501, StemsOutcome.ModelMissing());
+                    return WriteStemsJson(context, 501, StemsOutcome.ModelMissing(request));
                 case StemsState.Error when string.Equals(outcome.Code, "not-found", StringComparison.Ordinal):
                     WriteJson(context, 404, StemsJson.SerializeNotReady(request.Window, outcome.Message));
                     return 404;
@@ -1109,6 +1164,18 @@ internal sealed class LocalMusicServer : IDisposable
             return false;
         }
 
+        // stems 只允许 2|4：2 是历史行为（vocals + inst），4 额外落 drums/bass/other。
+        // 单轨取值走 /api/stems/audio 的 stem 参数，不在这里。
+        var stemsText = query["stems"];
+        var stemsCount = 2;
+        if (!string.IsNullOrWhiteSpace(stemsText) &&
+            (!int.TryParse(stemsText, NumberStyles.Integer, CultureInfo.InvariantCulture, out stemsCount) ||
+             stemsCount is not (2 or 4)))
+        {
+            WriteStemsError(context, 400, 0, "bad-request", "stems 只允许 2 或 4");
+            return false;
+        }
+
         request = new StemsRequest
         {
             Source = source,
@@ -1116,6 +1183,7 @@ internal sealed class LocalMusicServer : IDisposable
             Rel = rel,
             Window = window,
             WindowSec = windowSec,
+            Stems = stemsCount,
         };
         return true;
     }
@@ -2905,6 +2973,11 @@ internal sealed class LocalMusicServer : IDisposable
             writer.WriteNumber("minMb", CachePolicy.MinMb);
             writer.WriteNumber("maxMb", CachePolicy.MaxMb);
             writer.WriteNumber("defaultMb", CachePolicy.DefaultMb);
+            // 四轨分离缓存的独立上限：0 = 不自动清理，范围 128–16384（T2-6）。
+            writer.WriteNumber("maxStemCacheMb", CachePolicy.MaxStemCacheMb);
+            writer.WriteNumber("minStemMb", CachePolicy.MinStemMb);
+            writer.WriteNumber("maxStemMb", CachePolicy.MaxStemMb);
+            writer.WriteNumber("defaultStemMb", CachePolicy.DefaultStemMb);
             writer.WriteNumber("totalBytes", entries.Sum(item => item.Bytes));
             writer.WriteStartArray("items");
             foreach (var entry in entries)
@@ -2972,7 +3045,10 @@ internal sealed class LocalMusicServer : IDisposable
         return 200;
     }
 
-    /// <summary>POST /api/storage/cache/limit：body {limitMb}，保存后立即按预算收缩。</summary>
+    /// <summary>
+    /// POST /api/storage/cache/limit：body {limitMb?, maxStemCacheMb?}，保存后立即按预算收缩。
+    /// 两个键都可单独提交；只带 limitMb 的老客户端行为不变。
+    /// </summary>
     private static async Task<int> HandleCacheLimitAsync(HttpListenerContext context)
     {
         var body = await ReadBodyAsync(context.Request, 4 * 1024).ConfigureAwait(false);
@@ -2981,30 +3057,71 @@ internal sealed class LocalMusicServer : IDisposable
             return WriteError(context, 400, "bad-request", "缺少请求内容");
         }
 
-        int requested;
+        int? requestedLimit = null;
+        int? requestedStem = null;
+        string? problem = null;
         try
         {
             using var document = JsonDocument.Parse(body);
-            requested = document.RootElement.TryGetProperty("limitMb", out var limitElement) &&
-                        limitElement.TryGetInt32(out var parsed)
-                ? parsed
-                : throw new JsonException("limitMb 必须是整数");
+            var root = document.RootElement;
+            if (root.TryGetProperty("limitMb", out var limitElement))
+            {
+                if (limitElement.TryGetInt32(out var parsed))
+                {
+                    requestedLimit = parsed;
+                }
+                else
+                {
+                    problem = "limitMb 必须是整数";
+                }
+            }
+
+            if (problem is null && root.TryGetProperty("maxStemCacheMb", out var stemElement))
+            {
+                if (stemElement.TryGetInt32(out var parsedStem))
+                {
+                    requestedStem = parsedStem;
+                }
+                else
+                {
+                    problem = "maxStemCacheMb 必须是整数";
+                }
+            }
+
+            if (problem is null && requestedLimit is null && requestedStem is null)
+            {
+                problem = "需要 limitMb 或 maxStemCacheMb";
+            }
         }
         catch (JsonException)
         {
-            return WriteError(context, 400, "bad-request", "请求内容不是合法 JSON");
+            problem = "请求内容不是合法 JSON";
         }
 
-        var limit = CachePolicy.SetLimitMb(requested);
+        if (problem is not null)
+        {
+            return WriteError(context, 400, "bad-request", problem);
+        }
+
+        var limit = requestedLimit is { } limitMb ? CachePolicy.SetLimitMb(limitMb) : CachePolicy.LimitMb;
+        var stemLimit = requestedStem is { } stemMb
+            ? CachePolicy.SetMaxStemCacheMb(stemMb)
+            : CachePolicy.MaxStemCacheMb;
         var pruned = CacheService.PruneToLimit();
+        // stems 缓存也跟着新预算立即收缩；0 = 不清理（T2-6）。
+        var stemLimitBytes = stemLimit <= 0 ? long.MaxValue : stemLimit * 1024L * 1024L;
+        var stemPruned = StemCacheLru.Prune(StemSeparationService.CacheRoot, stemLimitBytes, StemCacheLru.IsPinned);
         using var buffer = new MemoryStream();
         using (var writer = new Utf8JsonWriter(buffer))
         {
             writer.WriteStartObject();
             writer.WriteNumber("limitMb", limit);
+            writer.WriteNumber("maxStemCacheMb", stemLimit);
             writer.WriteNumber("removed", pruned.Removed);
             writer.WriteNumber("freedBytes", pruned.FreedBytes);
             writer.WriteNumber("totalBytes", pruned.TotalBytes);
+            writer.WriteNumber("removedStemDirs", stemPruned.Removed);
+            writer.WriteNumber("stemBytesRemaining", stemPruned.Remaining);
             writer.WriteEndObject();
         }
 
@@ -3719,7 +3836,9 @@ internal sealed class LocalMusicServer : IDisposable
 
         response.Headers["Access-Control-Allow-Origin"] = origin;
         response.Headers["Vary"] = "Origin";
-        response.Headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS";
+        // 壁纸 v2 用 PUT/DELETE（编辑素材、删素材、改序列），预检必须放行，否则页面里
+        // 的 fetch 会在 OPTIONS 阶段被拒、前端只能看到一个 "无法连接在线源" 的假网络错误。
+        response.Headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,OPTIONS";
         response.Headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type";
         response.Headers["Access-Control-Max-Age"] = "600";
     }
@@ -3733,6 +3852,33 @@ internal sealed class LocalMusicServer : IDisposable
         element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
             ? value.GetString() ?? string.Empty
             : string.Empty;
+
+    private static string JsonEscapeText(string value) => value.Replace("\\", "\\\\").Replace("\"", "\\\"");
+
+    private static long MeasureDirectory(string dir)
+    {
+        long total = 0;
+        try
+        {
+            foreach (var file in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
+            {
+                try
+                {
+                    total += new FileInfo(file).Length;
+                }
+                catch
+                {
+                    // 同上：并发写入/已删除都忽略。
+                }
+            }
+        }
+        catch
+        {
+            // 权限或并发删除：按已统计部分返回。
+        }
+
+        return total;
+    }
 
     private static void WriteJson(HttpListenerContext context, int status, string json)
     {

@@ -1,10 +1,11 @@
 import type { LumiereSongInput } from './lumiere';
+import { lyricFontStack } from './lyricFont';
 import { poemActiveIndex, poemCamera, poemClamp, poemEase } from './poemMotion';
 
 type RGB = [number, number, number];
 type Span = { start: number; end: number; x: number; width: number };
 type Row = { text: string; y: number; width: number; spans: Span[] };
-type Layout = { rows: Row[]; translations: string[]; font: number; height: number };
+type Layout = { rows: Row[]; translations: string[]; font: number; height: number; family: string };
 const fallback: RGB[] = [[100, 155, 172], [172, 121, 175], [215, 170, 116]];
 const color = (c: RGB, alpha = 1) => `rgba(${c.map(Math.round).join(',')},${alpha})`;
 const mix = (a: RGB, b: RGB, t: number): RGB => a.map((v, i) => v + (b[i] - v) * t) as RGB;
@@ -48,6 +49,7 @@ export function createPoemScene() {
     const existing = layouts.get(index);
     if (existing) return existing;
     const line = song!.lines[index], maxWidth = width * 0.76;
+    const lineFamily = lyricFontStack(family, line.text);
     let font = Math.max(18, Math.min(56, width * 0.047, height * 0.078));
     // Timed words retain their real timestamps. Plain LRC gets a gentle within-line sweep.
     const timed = line.words.length > 0 && line.words.map(w => `${w.spaceBefore ? ' ' : ''}${w.text}`).join('').replace(/\s/g, '') === line.text.replace(/\s/g, '');
@@ -59,7 +61,7 @@ export function createPoemScene() {
     });
     let rows: Row[] = [];
     for (let attempt = 0; attempt < 6; attempt++) {
-      context.font = `500 ${font}px ${family}`;
+      context.font = `500 ${font}px ${lineFamily}`;
       rows = [{ text: '', y: 0, width: 0, spans: [] }];
       for (let glyphIndex = 0; glyphIndex < glyphs.length; glyphIndex++) {
         const glyph = glyphs[glyphIndex];
@@ -82,14 +84,14 @@ export function createPoemScene() {
       font = Math.max(14, font * 0.82);
     }
     const translations: string[] = [];
-    context.font = `400 ${Math.max(12, font * 0.34)}px ${family}`;
+    context.font = `400 ${Math.max(12, font * 0.34)}px ${lyricFontStack(family, line.translation || line.text)}`;
     for (const char of Array.from(line.translation || '')) {
       if (!translations.length) translations.push('');
       const n = translations.length - 1;
       if (context.measureText(translations[n] + char).width > maxWidth) translations.push(char);
       else translations[n] += char;
     }
-    const result = { rows, translations, font, height: rows.length * font * 1.36 };
+    const result = { rows, translations, font, height: rows.length * font * 1.36, family: lineFamily };
     layouts.set(index, result);
     return result;
   }
@@ -145,9 +147,9 @@ export function createPoemScene() {
     if (!song || !starts.length || entrance < 1) {
       context.globalAlpha = 1 - entrance;
       context.textAlign = 'center'; context.textBaseline = 'middle'; context.fillStyle = '#f0ede7';
-      context.font = `500 ${Math.max(22, Math.min(44, width * 0.055))}px ${family}`;
+      context.font = `500 ${Math.max(22, Math.min(44, width * 0.055))}px ${lyricFontStack(family, song?.title || '')}`;
       context.fillText(song?.title || '长镜流诗', width / 2, height * 0.46, width * 0.8);
-      context.font = `400 ${Math.max(12, Math.min(17, width * 0.022))}px ${family}`;
+      context.font = `400 ${Math.max(12, Math.min(17, width * 0.022))}px ${lyricFontStack(family, song?.artist || '')}`;
       context.fillStyle = '#a9b4c3';
       context.fillText(song?.artist || '等待音乐', width / 2, height * 0.46 + 46, width * 0.8);
       context.globalAlpha = 1;
@@ -166,7 +168,7 @@ export function createPoemScene() {
       if (alpha < 0.001) continue;
       context.save(); context.translate(x, y); context.scale(scale, scale);
       context.globalAlpha = alpha;
-      context.font = `500 ${font}px ${family}`; context.textAlign = 'left'; context.textBaseline = 'middle';
+      context.font = `500 ${font}px ${item.family}`; context.textAlign = 'left'; context.textBaseline = 'middle';
       for (const row of item.rows) {
         const left = -row.width / 2, top = row.y - (item.height - font * 1.36) / 2;
         context.fillStyle = '#8896aa'; context.fillText(row.text, left, top);
@@ -179,9 +181,11 @@ export function createPoemScene() {
         context.clip(); context.fillStyle = '#fff7e9'; context.fillText(row.text, left, top); context.restore();
       }
       context.globalAlpha = alpha * (0.35 + focus * 0.65);
-      context.font = `400 ${Math.max(12, font * 0.34)}px ${family}`;
       context.textAlign = 'center'; context.fillStyle = '#bac4d2';
-      item.translations.forEach((text, i) => context.fillText(text, 0, item.height / 2 + font * 0.5 + i * Math.max(17, font * 0.48)));
+      item.translations.forEach((text, i) => {
+        context.font = `400 ${Math.max(12, font * 0.34)}px ${lyricFontStack(family, text)}`;
+        context.fillText(text, 0, item.height / 2 + font * 0.5 + i * Math.max(17, font * 0.48));
+      });
       context.restore();
     }
   }

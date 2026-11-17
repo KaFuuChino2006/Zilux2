@@ -45,6 +45,12 @@ internal sealed class AudioFeatureService : IDisposable
     /// <summary>Frames produced on the capture thread. Assign from the UI thread only.</summary>
     internal void SetSink(Action<AudioFrameSnapshot>? sink) => _sink = sink;
 
+    /// <summary>
+    /// 每一帧额外广播一次，供壁纸「卡拍切」这类旁路消费者使用（sink 仍只有一个主消费者）。
+    /// 回调在采集线程上执行，订阅方要自己保证线程安全。
+    /// </summary>
+    internal event Action<AudioFrameSnapshot>? Frame;
+
     /// <summary>Window visibility gate: while minimized the host stops producing frames.</summary>
     internal void SetPaused(bool paused)
     {
@@ -235,6 +241,15 @@ internal sealed class AudioFeatureService : IDisposable
 
     private void Publish(AudioFrameSnapshot frame)
     {
+        try
+        {
+            Frame?.Invoke(frame);
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[audio] frame listener failed: {exception.GetType().Name}: {exception.Message}");
+        }
+
         var sink = _sink;
         if (sink is null)
         {

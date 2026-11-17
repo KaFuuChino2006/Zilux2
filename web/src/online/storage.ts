@@ -17,6 +17,11 @@ export interface DiskCacheUsage {
   minMb: number;
   maxMb: number;
   defaultMb: number;
+  /** 人声分离（四轨）缓存单独预算；0 = 不自动清理。宿主未提供时缺省。 */
+  maxStemCacheMb?: number;
+  minStemMb?: number;
+  maxStemMb?: number;
+  defaultStemMb?: number;
   totalBytes: number;
   items: DiskCacheItem[];
 }
@@ -34,6 +39,10 @@ export interface DiskCacheLimitResult {
   removed: number;
   freedBytes: number;
   totalBytes: number;
+  /** 提交了分离缓存预算时，宿主回带生效值与本轮清掉的分轨目录数。 */
+  maxStemCacheMb?: number;
+  removedStemDirs?: number;
+  stemBytesRemaining?: number;
 }
 
 export function fetchDiskCache(): Promise<DiskCacheUsage> {
@@ -46,4 +55,9 @@ export function clearDiskCache(id?: string): Promise<DiskCacheClearResult> {
 
 export function setDiskCacheLimit(limitMb: number): Promise<DiskCacheLimitResult> {
   return api<DiskCacheLimitResult>('/api/storage/cache/limit', {}, 60_000, 'POST', { limitMb });
+}
+
+/** 只提交人声分离缓存预算（0 = 不自动清理），不动整体磁盘预算。 */
+export function setStemCacheLimit(maxStemCacheMb: number): Promise<DiskCacheLimitResult> {
+  return api<DiskCacheLimitResult>('/api/storage/cache/limit', {}, 60_000, 'POST', { maxStemCacheMb });
 }

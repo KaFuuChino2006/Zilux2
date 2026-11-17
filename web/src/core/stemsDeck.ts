@@ -11,12 +11,45 @@
  */
 
 import { deckAudioContext, deckStemInput, setDeckMixGain, setDeckStemGain } from './audioTap';
-import { loadStemWindowBoth, prepareStemsWindow, STEM_WINDOW_SEC } from './stemsClient';
+import { loadStemWindowBoth, loadStemWindowFour, prepareStemsWindow, STEM_WINDOW_SEC } from './stemsClient';
 import type { OnlineTrack } from '../online/types';
 
 interface WindowBuffers {
   vocals: AudioBuffer;
   instrumental: AudioBuffer;
+  /** 四轨模式才有：实时推拉用（缺省时退回两轨）。 */
+  drums?: AudioBuffer;
+  bass?: AudioBuffer;
+  other?: AudioBuffer;
+}
+
+/** 四轨实时电平（面板滑杆）：0 = 切掉，1 = 原样，>1 推响。 */
+export type LiveStem = 'vocals' | 'drums' | 'bass' | 'other';
+
+const liveTrim: Record<LiveStem, number> = { vocals: 1, drums: 1, bass: 1, other: 1 };
+let liveTrimNodes: Partial<Record<LiveStem, GainNode>> = {};
+
+/** 面板拖滑杆时调用：立刻作用于正在播放的分轨（没有活动分轨时只记下来）。 */
+export function setLiveStemTrim(stem: LiveStem, value: number): void {
+  // 面板拖动 = 用户要让四轨真的参与播放：通知宿主切到分离播放支路。
+  try {
+    if (value !== 1) window.dispatchEvent(new CustomEvent('zilux:stem-trim', { detail: { stem, value } }));
+  } catch {
+    // 非浏览器环境（测试）忽略。
+  }
+  const v = Number.isFinite(value) ? Math.min(1.5, Math.max(0, value)) : 1;
+  liveTrim[stem] = v;
+  const node = liveTrimNodes[stem];
+  if (!node) return;
+  try {
+    node.gain.setTargetAtTime(v, node.context.currentTime, 0.02);
+  } catch {
+    node.gain.value = v;
+  }
+}
+
+export function liveStemTrims(): Record<LiveStem, number> {
+  return { ...liveTrim };
 }
 
 export interface StemEntryOptions {
@@ -60,6 +93,24 @@ export function primeStemWindow(track: OnlineTrack, window: number): void {
 }
 
 /**
+ * 前瞻预热：把当前窗口及其后最多 ahead 个窗口先算出来。宿主侧串行排队，不会并发抢 CPU。
+ * 目的是「不等」——歌曲加载/开始播放时就把 w、w+1 预热，跨窗时不必干等一窗。
+ * 返回本次真正排队的窗口号（已在内存缓存里的跳过），便于日志与断言。
+ */
+export function prefetchStemWindows(track: OnlineTrack, positionSec: number, ahead = 2): number[] {
+  if (!track) return [];
+  const base = Math.max(0, Math.floor((Number.isFinite(positionSec) ? positionSec : 0) / STEM_WINDOW_SEC));
+  const windows: number[] = [];
+  for (let i = 0; i <= Math.max(0, ahead); i += 1) {
+    const w = base + i;
+    if (cache.has(cacheKey(track, w))) continue;
+    primeStemWindow(track, w);
+    windows.push(w);
+  }
+  return windows;
+}
+
+/**
  * 预取一个窗口（宿主会同步算完，约 7 s）。失败返回 null，调用方继续走 EQ 兜底。
  * 成功时把解码后的两轨缓存在内存里（最多 4 窗，约 40 MB）。
  */
@@ -86,7 +137,20 @@ export async function prefetchStemWindow(
     if (status.state !== 'ready') {
       throw new Error(status.state === 'model-missing' ? '分离模型未安装' : `分离未就绪（${status.state}）`);
     }
-    const buffers = await loadStemWindowBoth(context, track, window);
+    // 四轨优先（实时推拉需要），宿主不支持时回落两轨。
+    let buffers: WindowBuffers;
+    try {
+      const four = await loadStemWindowFour(context, track, window);
+      buffers = {
+        vocals: four.vocals,
+        instrumental: four.vocals, // 占位：四轨模式下 instGain 由 drums/bass/other 共享
+        drums: four.drums,
+        bass: four.bass,
+        other: four.other,
+      };
+    } catch {
+      buffers = await loadStemWindowBoth(context, track, window);
+    }
     if (cache.size >= CACHE_LIMIT) {
       const oldest = cache.keys().next().value;
       if (oldest !== undefined) cache.delete(oldest);
@@ -138,17 +202,43 @@ export async function beginStemEntry(options: StemEntryOptions): Promise<StemEnt
   const instGain = context.createGain();
   vocalsGain.gain.value = 1;
   instGain.gain.value = 0;
-  vocalsGain.connect(stemInput);
-  instGain.connect(stemInput);
+
+  // 实时推拉：每条分轨再串一级「用户电平」，包络自动化只写 inner，滑杆只改 trim。
+  const trimNodes: Partial<Record<LiveStem, GainNode>> = {};
+  const makeTrim = (stem: LiveStem): GainNode => {
+    const node = context.createGain();
+    node.gain.value = liveTrim[stem];
+    node.connect(stemInput);
+    trimNodes[stem] = node;
+    return node;
+  };
+  vocalsGain.connect(makeTrim('vocals'));
+  const four = buffers.drums && buffers.bass && buffers.other;
+  if (four) {
+    // 四轨模式：人声走 vocalsGain，其余三轨共用 instGain 的包络，各自再串 trim。
+    for (const stem of ['drums', 'bass', 'other'] as const) makeTrim(stem);
+    instGain.connect(trimNodes.drums as GainNode);
+  } else {
+    instGain.connect(makeTrim('other'));
+  }
+  liveTrimNodes = trimNodes;
 
   const sources: AudioBufferSourceNode[] = [];
   const scheduleWindow = (buffersForWindow: WindowBuffers, offsetSec: number, at: number, spanSec: number): void => {
     const span = Math.min(spanSec, buffersForWindow.vocals.duration - offsetSec);
     if (span <= 0.02) return;
-    for (const [buffer, gain] of [
+    const fourHere = !!(buffersForWindow.drums && buffersForWindow.bass && buffersForWindow.other);
+    const lanes: Array<readonly [AudioBuffer | undefined, GainNode]> = [
       [buffersForWindow.vocals, vocalsGain] as const,
-      [buffersForWindow.instrumental, instGain] as const,
-    ]) {
+      fourHere
+        ? ([buffersForWindow.drums, instGain] as const)
+        : ([buffersForWindow.instrumental, instGain] as const),
+    ];
+    if (fourHere) {
+      lanes.push([buffersForWindow.bass, instGain] as const, [buffersForWindow.other, instGain] as const);
+    }
+    for (const [buffer, gain] of lanes) {
+      if (!buffer) continue;
       const source = context.createBufferSource();
       source.buffer = buffer;
       source.connect(gain);
@@ -303,6 +393,8 @@ export async function startStemMode(options: StemModeOptions): Promise<StemModeH
   const startWindow = Math.max(0, Math.floor(options.positionSec / STEM_WINDOW_SEC));
   const first = cache.get(cacheKey(track, startWindow)) ?? (await prefetchStemWindow(context, track, startWindow));
   if (!first) return null;
+  // 首窗就绪后立刻把后续窗口排进宿主队列（串行），跨窗时不再临场等。
+  prefetchStemWindows(track, options.positionSec, 2);
 
   const mode0: StemPlaybackMode = options.mode;
   const vocalsGain = context.createGain();
@@ -316,10 +408,18 @@ export async function startStemMode(options: StemModeOptions): Promise<StemModeH
   const scheduleWindow = (buffersForWindow: WindowBuffers, offsetSec: number, at: number, spanSec: number): void => {
     const span = Math.min(spanSec, buffersForWindow.vocals.duration - offsetSec);
     if (span <= 0.02) return;
-    for (const [buffer, gain] of [
+    const fourHere = !!(buffersForWindow.drums && buffersForWindow.bass && buffersForWindow.other);
+    const lanes: Array<readonly [AudioBuffer | undefined, GainNode]> = [
       [buffersForWindow.vocals, vocalsGain] as const,
-      [buffersForWindow.instrumental, instGain] as const,
-    ]) {
+      fourHere
+        ? ([buffersForWindow.drums, instGain] as const)
+        : ([buffersForWindow.instrumental, instGain] as const),
+    ];
+    if (fourHere) {
+      lanes.push([buffersForWindow.bass, instGain] as const, [buffersForWindow.other, instGain] as const);
+    }
+    for (const [buffer, gain] of lanes) {
+      if (!buffer) continue;
       const source = context.createBufferSource();
       source.buffer = buffer;
       source.connect(gain);

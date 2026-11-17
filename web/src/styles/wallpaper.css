@@ -1,0 +1,1846 @@
+/* wallpaper.css —— 动态壁纸库页面（docs/wallpaper-v2-spec.md §5.10） */
+
+.wallpaper-host {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+}
+
+.wallpaper-host.is-hidden {
+  display: none;
+}
+
+.wallpaper-page {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 6px 26px calc(var(--player-h) + 34px) 6px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.wallpaper-page.is-hidden {
+  display: none;
+}
+
+/* ------------------------------------------------------------------ 顶栏 */
+
+.wp-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 12;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 6px 0 10px;
+  /* 顶栏不铺任何底色 —— 壁纸要能从工具栏区域直接透出来。 */
+  background: none;
+}
+
+.wp-toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.wp-search {
+  flex: 0 0 300px;
+  height: 38px;
+  padding: 0 14px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  outline: none;
+  transition: border-color .18s var(--ease), background .18s var(--ease);
+}
+
+.wp-search::placeholder {
+  color: var(--muted);
+}
+
+.wp-search:focus {
+  border-color: var(--line-strong);
+  background: var(--panel-raised);
+}
+
+.wp-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.wp-select {
+  height: 38px;
+  padding: 0 30px 0 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--panel) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23858a95' stroke-width='2'><path d='M6 9l6 6 6-6'/></svg>") no-repeat right 8px center/14px;
+  color: var(--text-soft);
+  appearance: none;
+  outline: none;
+  cursor: pointer;
+  transition: border-color .18s var(--ease), color .18s var(--ease);
+}
+
+.wp-select:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.wp-select-sm {
+  height: 32px;
+  font-size: 12.5px;
+}
+
+.wp-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 38px;
+  padding: 0 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text-soft);
+  font-size: 13px;
+  transition: border-color .18s var(--ease), background .18s var(--ease), color .18s var(--ease);
+}
+
+.wp-btn:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  background: var(--panel-raised);
+  color: var(--text);
+}
+
+.wp-btn:disabled {
+  opacity: .45;
+  cursor: default;
+}
+
+.wp-btn-sm {
+  height: 30px;
+  padding: 0 10px;
+  font-size: 12.5px;
+}
+
+.wp-btn-primary {
+  border-color: transparent;
+  /* §9.4 文字对比度：淡紫底配紫字只有 2.45:1；纯 accent 底配白字 3.35:1；
+     压深到 68% 才算过线（实测 ~6.3:1）。 */
+  background: #5b5183;
+  color: #fff;
+}
+
+.wp-btn-primary:hover:not(:disabled) {
+  background: #4d4470;
+  color: #fff;
+}
+
+.wp-btn-primary:hover:not(:disabled) {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.wp-btn-danger {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+}
+
+.wp-btn-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.wp-icon-btn {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  transition: color .18s var(--ease), border-color .18s var(--ease), background .18s var(--ease);
+}
+
+.wp-icon-btn:hover {
+  color: var(--text);
+  border-color: var(--line-strong);
+  background: var(--panel-raised);
+}
+
+.wp-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.wp-chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.wp-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 11px;
+  border-radius: var(--radius-pill);
+  border: 1px solid transparent;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12.5px;
+  white-space: nowrap;
+  transition: color .16s var(--ease), background .16s var(--ease), border-color .16s var(--ease);
+}
+
+.wp-chip:hover {
+  color: var(--text);
+  background: var(--panel-raised);
+}
+
+.wp-chip.is-on {
+  /* 同上，选中态用压深的紫底 + 白字保证对比度 */
+  color: #fff;
+  border-color: transparent;
+  background: #5b5183;
+}
+
+.wp-chip-count {
+  font-size: 11px;
+  opacity: .7;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------------ 当前壁纸 */
+
+.wp-current {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px;
+}
+
+.wp-current-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--panel);
+  backdrop-filter: blur(18px);
+}
+
+.wp-current-card.is-disabled {
+  opacity: .55;
+}
+
+.wp-current-card.is-empty {
+  padding: 22px 14px;
+  justify-content: center;
+  align-items: center;
+}
+
+.wp-current-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.wp-current-label {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .14em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.wp-current-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.wp-current-body {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.wp-current-cover {
+  width: 96px;
+  height: 54px;
+  flex: none;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  background: var(--panel-solid);
+}
+
+.wp-current-meta {
+  min-width: 0;
+}
+
+.wp-current-title {
+  font-size: 14.5px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wp-current-empty {
+  padding: 6px 0 2px;
+}
+
+/* ------------------------------------------------------------------ 网格 */
+
+.wp-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  align-content: start;
+}
+
+.wallpaper-page.is-compact .wp-grid {
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.wallpaper-page.is-large .wp-grid {
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px;
+}
+
+.wp-card {
+  position: relative;
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--panel-solid);
+  border: 1px solid var(--line);
+  cursor: pointer;
+  isolation: isolate;
+  transition: transform .24s var(--ease), border-color .24s var(--ease), box-shadow .24s var(--ease);
+}
+
+.wp-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow);
+}
+
+.wp-card.is-missing {
+  opacity: .62;
+}
+
+.wp-card-cover {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  background: var(--panel-raised);
+}
+
+.wp-card-img,
+.wp-card-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.wp-card-video {
+  position: absolute;
+  inset: 0;
+}
+
+.wp-card-fallback {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  background: linear-gradient(140deg, var(--panel-raised), var(--panel-solid));
+}
+
+.wp-card-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 9px 11px 11px;
+  background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--panel-solid) 92%, transparent));
+}
+
+.wp-card-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wp-card-sub {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.wp-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--bg) 62%, transparent);
+  backdrop-filter: blur(8px);
+  color: var(--text-soft);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .06em;
+}
+
+.wp-badge.is-warn {
+  background: color-mix(in srgb, var(--danger) 26%, transparent);
+  color: #ffd9d9;
+}
+
+.wp-badge.is-fav {
+  left: auto;
+  right: 8px;
+  color: var(--accent);
+}
+
+.wp-dot {
+  opacity: .5;
+}
+
+/* ------------------------------------------------------------------ 空态 */
+
+.wp-empty {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 42px 8px 30px;
+  align-items: center;
+  text-align: center;
+}
+
+.wp-empty-title {
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.wp-empty-steps {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  width: min(760px, 100%);
+}
+
+.wp-empty-step {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 13px 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--panel);
+  text-align: left;
+}
+
+.wp-step-n {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.wp-step-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  margin-bottom: 3px;
+}
+
+/* ------------------------------------------------------------------ 抽屉 */
+
+/* 抽屉里的每一段都不能被 flex 压扁：
+   display:flex + 默认 flex-shrink:1 会把「画面变换」这类长段落挤扁，
+   内容被裁掉、scrollHeight 又等于 clientHeight，于是完全滚不动。 */
+.wp-drawer > * {
+  flex: none;
+}
+
+.wp-drawer {
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.wp-drawer {
+  position: fixed;
+  top: calc(var(--topbar-h) + 8px);
+  right: 12px;
+  bottom: calc(var(--player-h) + 12px);
+  width: 384px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 16px 18px;
+  overflow-y: auto;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--line-strong);
+  background: var(--panel-raised);
+  backdrop-filter: blur(28px);
+  box-shadow: var(--shadow);
+  animation: wp-drawer-in .24s var(--ease);
+}
+
+@keyframes wp-drawer-in {
+  from {
+    opacity: 0;
+    transform: translateX(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.wp-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.wp-drawer-title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: .12em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.wp-drawer-cover {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border-radius: var(--radius);
+  background: var(--panel-solid);
+}
+
+.wp-drawer-img,
+.wp-drawer-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.wp-drawer-section {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.wp-drawer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+/* ---- 屏幕卡片（第 88 轮多屏画面管理） ---- */
+
+.wp-monitor-hint {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.wp-monitor-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 按 Screen.AllScreens 真实坐标等比缩放的示意图：外框 aspect-ratio 由宿主给的包围盒决定。 */
+.wp-monitor-map {
+  position: relative;
+  width: 100%;
+  border-radius: 10px;
+  background:
+    radial-gradient(circle at 30% 20%, rgba(120, 160, 255, .10), transparent 60%),
+    var(--surface-2, rgba(255, 255, 255, .03));
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.wp-monitor-node {
+  position: absolute;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  background: #0b0b0e;
+  cursor: pointer;
+  transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease;
+}
+
+.wp-monitor-node img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  opacity: .92;
+}
+
+.wp-monitor-node:hover {
+  border-color: var(--accent, #8b5cf6);
+  transform: translateY(-1px);
+}
+
+.wp-monitor-node.is-on {
+  border-color: var(--accent, #8b5cf6);
+  box-shadow: 0 0 0 2px rgba(139, 92, 246, .45), 0 6px 16px rgba(0, 0, 0, .35);
+  z-index: 2;
+}
+
+.wp-monitor-node.is-on img {
+  opacity: 1;
+}
+
+.wp-monitor-num {
+  position: absolute;
+  left: 4px;
+  top: 3px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, .62);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+}
+
+.wp-monitor-star {
+  position: absolute;
+  right: 4px;
+  top: 3px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: rgba(139, 92, 246, .85);
+  color: #fff;
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 15px;
+}
+
+.wp-monitor-flag {
+  position: absolute;
+  left: 4px;
+  bottom: 3px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, .55);
+  color: rgba(255, 255, 255, .78);
+  font-size: 9.5px;
+  line-height: 15px;
+}
+
+.wp-monitor-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.wp-monitor-scale {
+  font-size: 11px;
+}
+
+.wp-monitor-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2, rgba(255, 255, 255, .03));
+}
+
+.wp-monitor-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.wp-monitor-state {
+  font-size: 12px;
+  color: var(--text-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wp-monitor-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.wp-monitor-badge {
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
+
+.wp-monitor-sub {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.wp-monitor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.wp-monitor-fps {
+  height: 26px;
+  padding: 0 6px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface, #1b1b1f);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+
+
+.wp-label {
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.wp-info {
+  display: grid;
+  grid-template-columns: 62px 1fr;
+  gap: 6px 10px;
+  margin: 0;
+  font-size: 12.5px;
+}
+
+.wp-info dt {
+  color: var(--muted);
+}
+
+.wp-info dd {
+  margin: 0;
+  color: var(--text-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wp-title-input,
+.wp-tag-input {
+  height: 34px;
+  padding: 0 11px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  outline: none;
+  transition: border-color .16s var(--ease);
+}
+
+.wp-title-input:focus,
+.wp-tag-input:focus {
+  border-color: var(--line-strong);
+}
+
+.wp-tag-box {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.wp-tag-input {
+  flex: 1 1 110px;
+  min-width: 110px;
+  height: 28px;
+  font-size: 12.5px;
+}
+
+.wp-muted {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+/* ------------------------------------------------------------------ 底部 */
+
+.wp-footer {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 4px 2px 0;
+  border-top: 1px solid var(--line);
+  margin-top: 2px;
+}
+
+/* ------------------------------------------------------------------ 页面让出背景（壁纸透出） */
+
+/* 宿主壁纸层可见时，页面整体转透明，只保留面板的毛玻璃与文字。 */
+html.is-wallpaper-layer,
+html.is-wallpaper-layer body {
+  background: transparent;
+}
+
+html.is-wallpaper-layer .app {
+  background: transparent;
+}
+
+/* 壁纸在根视图下方时，给内容加一层很轻的压暗，保证文字可读（对应 §5.8 dimBase）。 */
+html.is-wallpaper-layer .app::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: rgba(6, 7, 10, .22);
+  z-index: 0;
+}
+
+html.is-wallpaper-layer .topbar,
+html.is-wallpaper-layer .main {
+  position: relative;
+  z-index: 1;
+}
+
+/* ------------------------------------------------------------------ 设置页 */
+
+.wp-settings {
+  /* fixed 而不是 absolute —— absolute 会跟着 .wallpaper-page 的滚动容器一起滚走，
+     表现就是「往下滚，设置面板被推到壁纸外面」。 */
+  position: fixed;
+  /* 与全局设置同一套视觉：居中浮层，而不是整窗铺满。inset+margin:auto 负责居中，
+     上下留白避开标题栏与播放条。 */
+  inset: 0;
+  margin: auto;
+  width: min(1180px, calc(100vw - 96px));
+  height: min(880px, calc(100vh - 168px));
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel-solid, var(--bg, #0b0c10));
+  border: 1px solid var(--line, rgba(255, 255, 255, .08));
+  border-radius: var(--radius-lg, 18px);
+  box-shadow: var(--shadow-lg, 0 24px 60px rgba(0, 0, 0, .28));
+  overflow: hidden;
+}
+
+.wp-settings.is-hidden {
+  display: none;
+}
+
+.wp-set-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 18px 12px;
+  border-bottom: 1px solid var(--line, rgba(255, 255, 255, .08));
+}
+
+.wp-set-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text, #f2f2f2);
+}
+
+.wp-set-main {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 190px 1fr;
+}
+
+.wp-set-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 10px;
+  overflow-y: auto;
+  border-right: 1px solid var(--line, rgba(255, 255, 255, .08));
+}
+
+.wp-set-tab {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-soft, rgba(255, 255, 255, .72));
+  text-align: left;
+  font-size: 13px;
+  padding: 9px 12px;
+  border-radius: var(--radius-sm, 8px);
+  cursor: pointer;
+  transition: background .16s var(--ease, ease), color .16s var(--ease, ease);
+}
+
+.wp-set-tab:hover {
+  background: rgba(255, 255, 255, .06);
+  color: var(--text, #fff);
+}
+
+.wp-set-tab.is-on {
+  background: var(--accent-soft, rgba(120, 160, 255, .16));
+  color: var(--accent, #7aa2ff);
+  font-weight: 600;
+}
+
+.wp-set-body {
+  overflow-y: auto;
+  padding: 16px 22px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.wp-set-note {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-soft, rgba(255, 255, 255, .7));
+  background: rgba(255, 255, 255, .04);
+  border-left: 2px solid var(--accent, #7aa2ff);
+  border-radius: var(--radius-sm, 8px);
+}
+
+.wp-set-field {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 11px 4px;
+  border-bottom: 1px solid var(--line, rgba(255, 255, 255, .06));
+}
+
+.wp-set-field-block {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.wp-set-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.wp-set-label {
+  font-size: 13px;
+  color: var(--text, #f2f2f2);
+}
+
+.wp-set-hint {
+  margin-top: 3px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--muted, rgba(255, 255, 255, .5));
+}
+
+.wp-switch {
+  appearance: none;
+  flex: none;
+  width: 40px;
+  height: 22px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .16);
+  position: relative;
+  cursor: pointer;
+  transition: background .18s var(--ease, ease);
+}
+
+.wp-switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform .18s var(--ease, ease);
+}
+
+.wp-switch:checked {
+  background: var(--accent, #7aa2ff);
+}
+
+.wp-switch:checked::after {
+  transform: translateX(18px);
+}
+
+.wp-switch:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
+.wp-range-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 240px;
+  flex: none;
+}
+
+.wp-range {
+  flex: 1;
+  accent-color: var(--accent, #7aa2ff);
+}
+
+.wp-range-value {
+  width: 62px;
+  text-align: right;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-soft, rgba(255, 255, 255, .75));
+}
+
+.wp-text {
+  width: 240px;
+  flex: none;
+  padding: 7px 10px;
+  font-size: 12.5px;
+  color: var(--text, #f2f2f2);
+  background: rgba(255, 255, 255, .06);
+  border: 1px solid var(--line, rgba(255, 255, 255, .1));
+  border-radius: var(--radius-sm, 8px);
+  outline: none;
+}
+
+.wp-text:focus {
+  border-color: var(--accent, #7aa2ff);
+}
+
+.wp-folder-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.wp-folder-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  background: rgba(255, 255, 255, .04);
+  border-radius: var(--radius-sm, 8px);
+}
+
+.wp-folder-path {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-soft, rgba(255, 255, 255, .72));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wp-diag {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.wp-diag-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* ------------------------------------------------------------------
+   壁纸层透出时的入场动画兜底
+
+   `.home-host` / `.wall` 的入场动画是 `ui-fade-in ... backwards`，起始帧
+   `opacity: 0`。WebView2 一旦切成透明底（`DefaultBackgroundColor=Transparent`），
+   class 切换引起的那次样式重算会让动画停在起始帧不再推进，结果首页整块消失、
+   只剩左侧导航和底部播放条。壁纸模式下页面本来就常驻，入场动画没有意义，
+   这里直接关掉并显式给终态。
+   `:not(.is-lyrics-open)` 保留歌词页对首页的隐藏语义。
+   ------------------------------------------------------------------ */
+html.is-wallpaper-layer .app:not(.is-lyrics-open) .home-host:not(.is-hidden),
+html.is-wallpaper-layer .app:not(.is-lyrics-open) .wall:not(.is-hidden) {
+  animation: none;
+  opacity: 1;
+  transform: none;
+}
+
+/* 沉浸播放页（歌词/大封面）按第 16 轮决策「关壁纸」：恢复自身底色，
+   壁纸层在宿主侧照常在播，只是这一页不让它透出来。 */
+html.is-wallpaper-layer .app.is-lyrics-open {
+  background: var(--bg);
+}
+
+/* 设置里打开「沉浸播放页显示壁纸」后（.is-wallpaper-immersive 由 wallpaperLayer 挂）：
+   歌词页把底色让给壁纸——去掉自身底色与模糊封面，默认歌词只留一层很淡的压暗；
+   纯字 / 拼合的画布自带暗场，用 screen 混合叠上去：黑色不贡献颜色，
+   大字与光效直接落在动态壁纸上。
+
+   底色给深色但不带颜色过渡：
+   · 切换播放效果（拼合/纯字/房间/唱片）时旧舞台先卸载、新舞台后挂载，
+     中间那一两帧若露出页面浅色底，就是「闪一下白」——深色底把这帧吃掉；
+   · 切回「纯壁纸」时 .is-wallpaper-immersive 立刻撤销、这层瞬间变回 transparent，
+     此时壁纸 opacity 还是 1，把它整块盖住，所以看不见这次切换；
+     随后壁纸自己 420ms 淡出，露出来的就是页面原本的底色，全程没有变色。 */
+html.is-wallpaper-layer .app.is-lyrics-open.is-wallpaper-immersive {
+  background: #0a0a0c;
+}
+
+.app.is-wallpaper-immersive .lyrics-view {
+  /* !important：切播放效果或切背景样式时歌词页会被重建/加类，
+     中间那一两帧如果被页面浅色底抢回去，就是「闪一下白」。 */
+  background: #0a0a0c !important;
+}
+
+/* 关键：底色不要参与颜色过渡。
+   切回「纯壁纸」时 .is-wallpaper-immersive 一撤，底色瞬间变回页面浅色——
+   但这一刻壁纸 opacity 还是 1，整块盖住它，所以看不见；
+   接下来 420ms 壁纸淡出，露出来的就是已经就位的页面底色，
+   整个过程只有壁纸在变，没有「底色从深到浅」的那道白洗。 */
+.app.is-lyrics-open .lyrics-view {
+  /* 只留 opacity 过渡；background-color 绝不能参与过渡，
+     否则撤掉沉浸态时底色会从深灰渐变到浅米色，那就是用户看到的「白闪」。 */
+  transition: opacity 420ms var(--ease, cubic-bezier(0.22, 0.8, 0.28, 1)) !important;
+}
+
+/* 让歌词页的底色/模糊封面本身带过渡：进出「动态壁纸」是从壁纸上淡入淡出，
+   不是一下子消失。 */
+.lyrics-view .lyrics-bg,
+.lyrics-view .lyrics-cover-blur,
+.lyrics-view img.lyrics-cover {
+  transition: opacity 420ms var(--ease);
+}
+
+.app.is-wallpaper-immersive .lyrics-view .lyrics-bg,
+.app.is-wallpaper-immersive .lyrics-view .lyrics-cover-blur {
+  /* 只让页面底色与「模糊封面」让位给壁纸；
+     img.lyrics-cover 是封面卡片（封面在左等版式里那张真封面），必须留着。 */
+  opacity: 0 !important;
+}
+
+/* 默认歌词页的压暗：平时由 .lyrics-scrim 提供，沉浸态由壁纸层内的
+   .wp-immersive-scrim 提供，两者用 opacity 交叉淡入淡出，切换瞬间不会跳色。 */
+.lyrics-view .lyrics-scrim {
+  transition: opacity 420ms var(--ease, cubic-bezier(0.22, 0.8, 0.28, 1));
+}
+
+.app.is-wallpaper-immersive .lyrics-view .lyrics-scrim {
+  opacity: 0;
+}
+
+.wp-immersive-scrim {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 420ms var(--ease, cubic-bezier(0.22, 0.8, 0.28, 1));
+  background: linear-gradient(180deg, rgb(0 0 0 / 0.36), rgb(0 0 0 / 0.18) 38%, rgb(0 0 0 / 0.5));
+}
+
+.app.is-wallpaper-immersive .wp-immersive-scrim {
+  opacity: 1;
+}
+
+/* 纯字 / 拼合：画布暗场在 screen 下等于透明，只留下文字与光效。 */
+.app.is-wallpaper-immersive .lyrics-view.is-lumiere .lyrics-stage,
+.app.is-wallpaper-immersive .lyrics-view.is-flow .lyrics-stage {
+  mix-blend-mode: screen;
+}
+
+/* 切换播放效果时舞台是新建的，给一次淡入，避免「旧的没了、新的一下子顶上来」。
+   只作用于壁纸在背后的沉浸态；其它场景沿用舞台自己的过渡。 */
+.app.is-wallpaper-immersive .lyrics-stage {
+  animation: wp-stage-in 260ms var(--ease, cubic-bezier(0.22, 0.8, 0.28, 1)) both;
+}
+
+@keyframes wp-stage-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* ---- 软件内壁纸层（画面在页面里播，见 ui/wallpaperLayer.ts） ---- */
+
+#wallpaper-root {
+  /* 节拍脉冲：由 wallpaperLayer 写入 --wp-beat，仅缩放整层，不碰媒体元素的转场 transform。 */
+  transform: scale(var(--wp-beat, 1)) translateZ(0);
+  transform-origin: center center;
+  /* opacity 这条是「切到/切离动态壁纸」的过渡（420ms，与 wallpaperLayer.setHidden 对齐）。 */
+  transition: transform 80ms ease-out, opacity 420ms var(--ease, cubic-bezier(0.22, 0.8, 0.28, 1));
+  will-change: transform;
+  contain: paint;
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+  /* 底色透明：第一帧还没解出来时，露出来的是页面本身，而不是一块黑。
+     （真正的黑底是前几次切换「闪一下黑」的来源。） */
+  background: transparent;
+}
+
+/* 淡出中间态：先透明，过渡结束再由 wallpaperLayer 补 .is-hidden 收掉 display。 */
+#wallpaper-root.is-fading {
+  opacity: 0;
+}
+
+#wallpaper-root.is-hidden {
+  display: none;
+}
+/* 壁纸铺底时让上层内容仍然读得清（§5.8 可读性压暗）。 */
+html.is-wallpaper-layer .app,
+html.is-wallpaper-layer body {
+  background: transparent;
+}
+
+#wallpaper-root.is-hidden .wp-visualizer {
+  display: none;
+}
+
+/* 画面变换（§5.2 第 86 轮）：抽屉里的四边裁剪滑杆。
+   这里原本被一次编辑弄坏了选择器列表，导致 .wp-crop-grid 连同下面 .wp-overlay 的
+   position/right/bottom/z-index 一起被套用，于是在抽屉里浮成一块半透明灰块，
+   压住了上面的 0°/90°/180°/270° 按钮。 */
+.wp-crop-grid {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 6px 10px;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.wp-crop-grid .wp-label {
+  font-size: 12px;
+  opacity: 0.72;
+}
+
+.wp-crop-grid .wp-range {
+  width: 100%;
+  accent-color: var(--accent, #8f7ae8);
+}
+
+/* 叠层（时钟/文字）：默认右下角，跟随壁纸一起被压暗层影响但保持可读 */
+.wp-overlay {
+  position: absolute;
+  right: 48px;
+  bottom: 132px;
+  z-index: 3;
+  max-width: 46%;
+  padding: 8px 18px;
+  border-radius: 14px;
+  background: rgba(10, 11, 14, 0.34);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 40px;
+  line-height: 1.15;
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.96);
+  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.7);
+  white-space: pre-wrap;
+  pointer-events: none;
+  user-select: none;
+}
+
+.wp-overlay.is-empty {
+  display: none;
+}
+
+/* 桌面壁纸场景（?scene=wallpaper）：整页只留壁纸层，不要 rail/播放条/滚动条 */
+html.is-wallpaper-scene,
+html.is-wallpaper-scene body {
+  background: #000;
+  margin: 0;
+  overflow: hidden;
+}
+
+html.is-wallpaper-scene #wallpaper-root {
+  z-index: 0;
+}
+
+html.is-wallpaper-scene .wp-overlay {
+  bottom: 88px;
+  right: 64px;
+  font-size: 56px;
+}
+.wp-card:hover .wp-card-check,
+.wp-card.is-selected .wp-card-check { opacity: 1; }
+.wp-card.is-selected { outline: 2px solid var(--accent); outline-offset: -2px; }
+.wp-card.is-selected .wp-card-check { background: var(--accent); border-color: var(--accent); color: #fff; }
+.wp-selbar {
+  position: sticky;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 8px 14px;
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(26px);
+  -webkit-backdrop-filter: blur(26px);
+  box-shadow: var(--shadow);
+  z-index: 5;
+}
+.wp-selbar-count { margin-right: auto; font-size: 13px; color: var(--text-soft); }
+
+/* 节拍驱动的界面微动效（二期第 3 项）：幅度由 --wp-beat-ui 控制（1.0000–1.0220），
+   壁纸关掉或没有音乐时变量不存在，回落到 1 即完全静止。 */
+.wp-current-cover img,
+.wp-current-cover video {
+  transform: scale(var(--wp-beat-ui, 1));
+  transition: transform 90ms ease-out;
+  transform-origin: center;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wp-current-cover img,
+  .wp-current-cover video { transform: none; transition: none; }
+}
+
+
+/* Ken Burns：静态图缓慢推拉（24 秒一往复，幅度 6%）。
+   用独立的 scale 属性，不碰 transform（transform 归转场与镜像/旋转/裁剪用）。 */
+@keyframes wp-kenburns {
+  from { scale: 1; }
+  to { scale: 1.06; }
+}
+
+.wp-layer-media.is-kenburns {
+  animation: wp-kenburns 24s ease-in-out infinite alternate;
+  transform-origin: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wp-layer-media.is-kenburns { animation: none; scale: none; }
+}
+
+/* ------------------------------------------------------------------ 统一皮肤
+   把壁纸页的控件对齐 app.css 那套语言（第 46 轮「沿用现有毛玻璃体系」）：
+   胶囊按钮 / 圆形图标按钮 / 同一套 --surface-strong 与 --line。
+   .pill 在 app.css 里是 44px，这里取 36px —— 库页的信息密度比首页高一档。 */
+
+.wp-btn {
+  height: 36px;
+  padding: 0 16px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-strong);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.wp-btn:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+  transform: translateY(-1px);
+}
+
+.wp-btn:active {
+  transform: none;
+}
+
+.wp-btn-primary {
+  border-color: transparent;
+  background: #5b5183;
+}
+
+.wp-btn-primary:hover {
+  background: #665b93;
+  color: #fff;
+}
+
+.wp-btn-danger:hover {
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
+  color: var(--danger);
+}
+
+.wp-icon-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--surface-strong);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.wp-icon-btn:hover {
+  background: var(--surface-strong);
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.wp-search,
+.wp-select,
+.wp-chip {
+  border-radius: var(--radius-pill);
+}
+
+.wp-search,
+.wp-select {
+  height: 36px;
+  background: var(--surface-strong);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.wp-card {
+  border-radius: var(--radius);
+}
+
+.wp-current-card,
+.wp-drawer,
+.wp-settings {
+  backdrop-filter: blur(26px);
+  -webkit-backdrop-filter: blur(26px);
+}
+/* 歌词页的音频可视化：只在该页显示，且不挡任何交互。 */
+.lyric-vis {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.lyric-vis.is-active {
+  display: block;
+}
+
+.lyric-vis .wp-visualizer {
+  position: absolute;
+  left: 0;
+}
+
+/* ---------------- 设置页：套用全局设置的布局语言 ---------------- */
+/* 自定义块（预设、序列、监视目录、诊断）：标题在上，控件整块铺在下面。 */
+.set-row.is-block {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.set-row.is-block .set-row-main {
+  gap: 2px;
+}
+
+
+/* 分组小标题：和下面那行留出呼吸，跟上面一组拉开距离（全局设置的 .field 行
+   本来就是 14px 上下内距 + 发丝分隔线，标题必须有独立节奏，否则会贴着行标签）。 */
+.set-section {
+  margin: 24px 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+/* 除第一组外，再多留一点上方空白，让「在哪显示 / 启动与退出」这类分组有清晰边界
+   （行本身已经带发丝分隔线，这里不再叠加线条）。 */
+.set-section:not(:first-child) {
+  margin-top: 28px;
+}
+
+.set-section:first-child {
+  margin-top: 2px;
+}
+
+/* 子分类的 pane 内容不需要再套一层内边距 */
+.settings-pane .settings-pane-body {
+  display: block;
+}
+/* embedded 时 content 直接当 pane 根，不要再叠内边距 */
+.settings-pane > .wp-set-body,
+.settings-pane > .settings-content {
+  padding: 0;
+}
+
+/* 壁纸设置嵌进全局设置时的横向子标签 */
+
+
+
+
+
+
+
+/* 壁纸自己的二级面板（不复用 .settings-subpane，避免和全局设置的子面板类名撞车） */
+/* ---------- 壁纸设置嵌进全局设置时的子标签条 ---------- */
+/* 9 组比「外观」的 3 组多，单行会被右边界裁掉（诊断与日志只露一半），这里强制换行。 */
+.settings-pane .settings-subtabs {
+  align-items: flex-start;
+}
+.settings-pane .settings-subtabs-track {
+  /* 标签缩短到能一行放下，所以不再折行；万一以后又加组，靠自带的横向滚动。 */
+  flex-wrap: nowrap;
+  max-width: 100%;
+}
+
+/* 转场层：外层 frame 只做转场（opacity/transform/filter），
+   内层 media 只做画面变换（镜像/旋转/裁剪），两者分开才不会互相覆盖。 */
+.wp-layer-frame {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  will-change: opacity, transform, filter;
+}
+
+/* 多屏（第 25 轮 C）：每块屏一个 cell，各自铺满自己的百分比矩形。 */
+.wp-screen {
+  position: absolute;
+  overflow: hidden;
+  contain: paint;
+}
+
+/* 媒体本体：video 与 img 都必须铺满自己的容器，object-fit 才有意义。
+   之前只给 video 在 JS 里设了尺寸，<img> 会按原始分辨率显示（实测 640x360 的图
+   只占左上角一块，壁纸没铺满）——这条规则同时兜住两条路径。 */
+.wp-layer-media {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* 帧率上限：video 只当解码源（visibility:hidden 不参与合成），canvas 按目标帧率取帧。
+   两者都带 .wp-layer-media，画面变换（镜像/旋转/裁剪）与滤镜会同时落到画出来的那张上。 */
+.wp-layer-canvas {
+  object-fit: fill;
+}
+
+.wp-layer-src {
+  pointer-events: none;
+}
+
+/* 诊断区四颗按钮：图标与文字必须同一基线，否则「清理缓存」那颗会看起来错位。 */
+.wp-diag-actions .wp-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.wp-diag-actions .wp-btn svg {
+  flex: none;
+}
+
+.wp-diag-actions .wp-btn span {
+  line-height: 1;
+}
+
+/* 抽屉遮罩：只在抽屉打开时存在，点一下即收起。 */
+.wp-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 59;
+  background: transparent;
+}
+
+/* 卡片左下角的星标（收藏/选中）：30px 圆形按钮，压在封面左下角。 */
+.wp-card-check {
+  position: absolute;
+  left: 9px;
+  bottom: 9px;
+  z-index: 2;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  background: rgba(12, 14, 18, 0.42);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  color: rgba(255, 255, 255, 0.92);
+  cursor: pointer;
+  /* 常驻显示：选中与否都要一眼看到（原来只有 hover 才出现的写法会让它更难点） */
+  opacity: .95;
+  transform: translateZ(0);
+  transition: opacity .18s var(--ease), background .18s var(--ease), transform .18s var(--ease);
+}
+
+.wp-card-check:hover {
+  transform: scale(1.08);
+  background: rgba(12, 14, 18, 0.62);
+}
+
+.wp-star {
+  display: grid;
+  place-items: center;
+  line-height: 0;
+}
+
+.wp-card-check .wp-star-fill {
+  display: none;
+}
+
+.wp-card.is-selected .wp-card-check {
+  opacity: 1;
+  color: #fff;
+}
+
+.wp-card.is-selected .wp-card-check .wp-star-out {
+  display: none;
+}
+
+.wp-card.is-selected .wp-card-check .wp-star-fill {
+  display: grid;
+}
+
+/* 画面变换滑杆（第 106 轮）：细轨 + 圆形拇指 + 数值胶囊，和设置页其它控件同一套观感。 */
+.wp-seg-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.wp-adj-group {
+  margin-top: 14px;
+}
+
+.wp-adj-group + .wp-adj-group {
+  padding-top: 12px;
+  border-top: 1px solid rgba(0, 0, 0, .07);
+}
+
+.wp-adj-title {
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  opacity: .5;
+  margin-bottom: 4px;
+}
+
+.wp-adj {
+  display: grid;
+  grid-template-columns: 34px 1fr 58px;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 0;
+}
+
+.wp-adj-label {
+  font-size: 12px;
+  opacity: .72;
+}
+
+.wp-adj-value {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  padding: 2px 0;
+  border-radius: 7px;
+  background: rgba(0, 0, 0, .05);
+  color: var(--wp-ink, #2b2f3a);
+}
+
+.wp-adj-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 16px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.wp-adj-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(90deg,
+    var(--accent, #8f7ae8) 0 var(--fill, 0%),
+    rgba(0, 0, 0, .12) var(--fill, 0%) 100%);
+}
+
+.wp-adj-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  border-radius: 50%;
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, .12);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .22);
+  transition: transform .12s ease;
+}
+
+.wp-adj-range:active::-webkit-slider-thumb {
+  transform: scale(1.12);
+}
+
+.wp-adj-range:focus-visible {
+  outline: none;
+}
+
+.wp-adj-range:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px rgba(143, 122, 232, .3), 0 1px 3px rgba(0, 0, 0, .22);
+}
+
+/* 画布设置弹层（第 110 轮）：从顶部两张「当前壁纸」卡进入，
+   只改这张画布（桌面层按屏各存一份），右栏素材抽屉只负责选图。 */
+.wp-canvas-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(18, 16, 28, .38);
+  backdrop-filter: blur(10px);
+}
+
+.wp-canvas-panel {
+  width: min(520px, 100%);
+  max-height: min(86vh, 780px);
+  display: flex;
+  flex-direction: column;
+  border-radius: 18px;
+  background: var(--panel-solid, #fdfdfe);
+  color: var(--text, #2b2f3a);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, .32);
+  overflow: hidden;
+  animation: wp-canvas-in .18s var(--ease, ease);
+}
+
+@keyframes wp-canvas-in {
+  from { opacity: 0; transform: translateY(6px) scale(.99); }
+  to { opacity: 1; transform: none; }
+}
+
+.wp-canvas-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 15px 18px;
+  border-bottom: 1px solid rgba(0, 0, 0, .06);
+}
+
+.wp-canvas-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.wp-canvas-body {
+  padding: 16px 18px 18px;
+  overflow-y: auto;
+}
+
+.wp-canvas-screens {
+  margin-top: 0;
+  margin-bottom: 12px;
+}
+
+.wp-canvas-preview {
+  position: relative;
+  border-radius: 12px;
+  overflow: hidden;
+  aspect-ratio: 16 / 9;
+  background: rgba(0, 0, 0, .06);
+}
+
+.wp-canvas-preview-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.wp-canvas-controls {
+  margin-top: 4px;
+}
+
+.wp-canvas-note {
+  margin-top: 14px;
+  line-height: 1.5;
+}
+
+
+/* 桌面背景歌词：「背景歌词样式」选了动态壁纸时整页透明，让真正的桌面壁纸透出来。 */
+html.is-bg-lyrics-scene.is-bg-motion,
+html.is-bg-lyrics-scene.is-bg-motion body,
+html.is-bg-lyrics-scene.is-bg-motion .lyrics-view {
+  background: transparent !important;
+}
+/* .bg-cover-left 是那张封面卡片，保留；让位的只有整屏底色。 */
+
+/* 画布类效果（纯字 / 拼合）在桌面背景里同样要能透出桌面壁纸：
+   舞台的暗场用 screen 混合（黑不贡献颜色），只留文字与光效。 */
+html.is-bg-lyrics-scene.is-bg-motion .lyrics-view .lyrics-stage,
+html.is-bg-lyrics-scene.is-bg-motion .lyrics-view.is-lumiere .lyrics-stage,
+html.is-bg-lyrics-scene.is-bg-motion .lyrics-view.is-flow .lyrics-stage {
+  mix-blend-mode: screen;
+}
+
+html.is-bg-lyrics-scene.is-bg-motion .lyrics-view .lyrics-stage canvas {
+  background: transparent !important;
+}
+
+/* 房间 / 唱片是整套场景（自带底色与家具），它们的「壁纸」就是场景本身，
+   这里只把最外层整屏底色让开，不强行抠穿场景。 */
+html.is-bg-lyrics-scene.is-bg-motion .lyrics-view.is-room,
+html.is-bg-lyrics-scene.is-bg-motion .lyrics-view.is-vinyl {
+  background: transparent !important;
+}
+
+/* 桌面歌词把壁纸铺在自己下面时，画布类的「暗场假设」不成立：
+   先压一层暗底，screen 混合的文字才有对比度（否则浅色壁纸会把字吃掉）。 */
+html.is-bg-lyrics-scene.is-bg-motion .wp-immersive-scrim {
+  opacity: 1;
+}

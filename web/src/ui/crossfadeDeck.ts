@@ -24,6 +24,14 @@ import {
   type DeckBandPoint,
 } from '../core/audioTap';
 import { naturalGains, nearestTempoRatio, MATCHED_OVERLAP_END } from './transitionMath';
+import { requestHandoff } from '../core/advancedHandoff';
+import type { Handoff } from '../core/advancedHandoff';
+import { stemKeyOf, prefetchStemsForTransition, prefetchStemSpan } from '../audio/advancedReadiness';
+import { resolveTransition } from '../core/advancedTransition';
+import { trackRate, wrapBeatError } from '../core/beatPll';
+import { buildTimeline } from './transitionTimeline';
+import { readMixTransitionEngine, readMixTransitionMode, readMixTransitionTemplate, writeMixTransitionMode } from '../core/mixTransitionMode';
+import type { MixTransitionMode } from '../core/mixTransitionMode';
 import type { AnalysisResult, BeatAnalysis } from '../online/analysis';
 import type { OnlineTrack } from '../online/types';
 import { compensationDbFor } from './loudness';
@@ -104,6 +112,8 @@ export interface CrossfadeSettings {
   loudnessMatch: boolean;
   /** BPM 对齐允许的最大变速比例；0 关闭变速。 */
   tempoRange: CrossfadeTempoRange;
+  /** 过渡模式：标准（整轨等功率）/ 进阶（分轨换手）/ 进阶·稳妥（只在可信时换手）。 */
+  mixTransitionMode: MixTransitionMode;
 }
 
 export const CROSSFADE_STORAGE_KEY = 'zilux2.crossfade';
@@ -131,6 +141,7 @@ const DEFAULT_SETTINGS: CrossfadeSettings = {
   bassSwap: 'bar2',
   loudnessMatch: true,
   tempoRange: 0.08,
+  mixTransitionMode: 'standard',
 };
 const LENGTH_MODE_VALUES: CrossfadeLengthMode[] = ['auto', 'seconds', 'beats', 'bars', 'phrase'];
 const ALIGNMENT_VALUES: CrossfadeAlignment[] = ['bars', 'beats'];
@@ -279,6 +290,9 @@ export function readCrossfadeSettings(): CrossfadeSettings {
       tempoRange: TEMPO_RANGE_VALUES.includes(record.tempoRange as CrossfadeTempoRange)
         ? (record.tempoRange as CrossfadeTempoRange)
         : DEFAULT_SETTINGS.tempoRange,
+      // 模式存独立的键（壁纸已占用 transitionMode），这里只做只读投影，保证
+      // readCrossfadeSettings().mixTransitionMode 与混音器读到的永远是同一个值。
+      mixTransitionMode: readMixTransitionMode(),
     };
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -321,6 +335,9 @@ export function writeCrossfadeSettings(patch: Partial<CrossfadeSettings>): Cross
     tempoRange: TEMPO_RANGE_VALUES.includes(patch.tempoRange as CrossfadeTempoRange)
       ? (patch.tempoRange as CrossfadeTempoRange)
       : current.tempoRange,
+    mixTransitionMode: patch.mixTransitionMode === undefined
+      ? current.mixTransitionMode
+      : writeMixTransitionMode(patch.mixTransitionMode),
   };
   try {
     localStorage.setItem(CROSSFADE_STORAGE_KEY, JSON.stringify(next));
@@ -541,9 +558,34 @@ export type CrossfadePhase = 'idle' | 'prepared' | 'fading' | 'done' | 'canceled
 
 export interface CrossfadeDebugEvent {
   at: number;
-  /** prepared / fade-start / fade-done / cancel / graph-hard-cut / b-play-failed / miss … */
+/** prepared / fade-start / fade-done / cancel / graph-hard-cut / b-play-failed / miss … */
   event: string;
   detail: string;
+}
+
+/** 过渡试放台用的「进阶换手预案」（纯数据，prepare 时算好，不参与音频）。 */
+export interface CrossfadePreviewBlock {
+  kind: 'swap' | 'echo' | 'duck';
+  deck: 'A' | 'B';
+  stem: string;
+  /** 归一化左边界与宽度（0–1）。 */
+  x: number;
+  width: number;
+  label: string;
+}
+
+export interface CrossfadeAdvancedPreview {
+  /** 当前设置里的模式（standard / advanced / advancedSafe）。 */
+  mode: string;
+  /** 预案模板（缺失时为空串）。 */
+  template: string;
+  barMs: number;
+  totalMs: number;
+  /** 中文说明（含门控结论）。 */
+  summary: string[];
+  blocks: CrossfadePreviewBlock[];
+  /** 没有画块时的原因（中文）；有块时为空串。 */
+  emptyReason: string;
 }
 
 export interface CrossfadeDebugState {
@@ -573,6 +615,12 @@ export interface CrossfadeDebugState {
   tempoMatched: boolean;
   /** 过渡进行中 B 的实际播放速率（前段=tempoRate，后段回正到 1） */
   tempoRateLive: number;
+  /** 本次过渡是否在做拍点锁相（PLL 微调 B 的速率贴着 A 的拍走） */
+  pllActive: boolean;
+  /** PLL 当前写进 B 的速率（含中心速率与微调）；= tempoRateLive 的细分来源 */
+  pllRate: number;
+  /** PLL 最近一次测到的拍相位差（单位：拍，正数 = B 超前，要减速） */
+  pllErrBeats: number;
   /** 下一次调度的「开始唱词」位置（曲内毫秒）；0 = 无歌词/未取到 */
   nextVocalStartMs: number;
   /** 本次调度是否按「开始唱词」对齐（true = B 起播点按唱词反推） */
@@ -620,6 +668,8 @@ export interface CrossfadeDebugState {
   prefetchTitle: string;
   /** 最近一次准备是否命中预分析缓存（true = 无需等待宿主分析） */
   prefetchHit: boolean;
+  /** 进阶换手预案（试放台用；null = 还没算过/算不出来） */
+  advancedPreview: CrossfadeAdvancedPreview | null;
   /** 是否已有准备好的衔接计划（prepared 相位；手动过渡一经开始即为 false） */
   nextPrepared: boolean;
   progress: number;
@@ -647,6 +697,9 @@ const debug: CrossfadeDebugState = {
   tempoRate: 1,
   tempoMatched: false,
   tempoRateLive: 1,
+  pllActive: false,
+  pllRate: 1,
+  pllErrBeats: 0,
   nextVocalStartMs: 0,
   vocalAligned: false,
   handoffActive: false,
@@ -672,6 +725,7 @@ const debug: CrossfadeDebugState = {
   prefetchTitle: '',
   prefetchHit: false,
   nextPrepared: false,
+  advancedPreview: null,
   progress: 0,
   baseVolume: 0,
   events: [],
@@ -901,6 +955,13 @@ interface ActivePlan {
   progress: number;
   baseVolume: number;
   raf: number;
+  /**
+   * 进阶过渡（分轨换手）的交接句柄。null/缺省 = 走原来的等功率曲线。
+   * 一旦建立，增益由四轨混音器在音频时钟上排好，这里不再写 deck 增益。
+   */
+  advanced?: Handoff | null;
+  /** 拍点锁相（PLL）的当前状态；null = 本次不做 PLL（非 auto / 缺分析 / 已到回正段） */
+  pll?: { rate: number; errBeats: number } | null;
 }
 
 let activePlan: ActivePlan | null = null;
@@ -923,6 +984,66 @@ function setDeckVolume(element: HTMLAudioElement, volume: number): void {
   } catch {
     /* 忽略：元素可能已被移除 */
   }
+}
+
+/**
+ * 20 ms 斜坡升/降音量（G2：回退不许有咔哒）。
+ *
+ * 进阶会话期间元素音量是 0，若回退时直接写一次目标值，就是从 0 跳到 0.7——
+ * 听感上是「啪」一声。这里用 8 步绝对定时（约 2.5 ms 一步），单步不超过总量的 1/8。
+ *
+ * 为什么用绝对定时而不是链式回调：窗口繁忙时链式回调会被推迟，最后几步根本跑不到
+ * （`advancedSession.releaseElements` 踩过同样的坑）。
+ */
+function rampDeckVolume(element: HTMLAudioElement, target: number, durationMs = 20): void {
+  let from = 0;
+  try {
+    from = element.volume;
+  } catch {
+    return;
+  }
+  const to = clamp01(target);
+  if (!Number.isFinite(to)) return;
+  const steps = 8;
+  const stepMs = Math.max(1, Math.round(durationMs / steps));
+  for (let i = 1; i <= steps; i++) {
+    window.setTimeout(() => {
+      setDeckVolume(element, from + (to - from) * (i / steps));
+    }, stepMs * i);
+  }
+}
+
+/** 进阶会话接管/交还时的增益斜坡长度（T4-3 契约：20 ms）。 */
+const ADVANCED_RAMP_MS = 20;
+
+/**
+ * T4-3 互斥：进阶会话靠四轨播放器出声，deck 自己的通路必须同时静音，否则同一首歌
+ * 会以两条时间轴叠加（重影/双声）。
+ *
+ * 注意 **不能只把 `element.volume` 设成 0**：`createMediaElementSource` 抓的是元素
+ * 解码输出，volume 在部分浏览器里并不作用于该 tap。图模式下必须把 deck gain 也压到 0。
+ */
+function muteDeckElementsForAdvanced(plan: ActivePlan): void {
+  if (plan.graphMode) {
+    setDeckGraphGain(plan.options.active, 0, ADVANCED_RAMP_MS);
+    setDeckGraphGain(plan.options.standby, 0, ADVANCED_RAMP_MS);
+    return;
+  }
+  rampDeckVolume(plan.options.active, 0, ADVANCED_RAMP_MS);
+  rampDeckVolume(plan.options.standby, 0, ADVANCED_RAMP_MS);
+}
+
+/** 交还 deck 通路：按当前进度对应的等功率值恢复，带 20 ms 斜坡（T4-3 / G2）。 */
+function restoreDeckGains(plan: ActivePlan, progress: number): void {
+  const p = clamp01(progress);
+  const [outGain, inGain] = naturalGains(p, overlapEnd(plan));
+  if (plan.graphMode) {
+    setDeckGraphGain(plan.options.active, outGain, ADVANCED_RAMP_MS);
+    setDeckGraphGain(plan.options.standby, inGain, ADVANCED_RAMP_MS);
+    return;
+  }
+  rampDeckVolume(plan.options.active, plan.baseVolume * outGain, ADVANCED_RAMP_MS);
+  rampDeckVolume(plan.options.standby, plan.baseVolume * inGain, ADVANCED_RAMP_MS);
 }
 
 function smoothStep(value: number): number {
@@ -966,11 +1087,47 @@ function applyEqualPowerGains(plan: ActivePlan, progress: number): void {
 }
 
 /** Schedule all graph gains on the audio clock; UI updates never rewrite automation. */
-function scheduleNaturalFade(plan: ActivePlan, clock: number): void {
+
+/**
+ * 频率式过渡（DJUCED 的真实做法）：不碰分轨，用低通/高通/低频架把小节线错开换手。
+ * A：低频 0.5 小节内切走，随后低通/高通一起收窄；B：低频第 N 小节接回，滤波从闷到亮。
+ */
+function scheduleBandSwap(plan: ActivePlan, clock: number, options: CrossfadePrepareOptions | null): void {
+  try {
+    const beat = Math.max(120, options?.currentAnalysis?.analysis?.beatIntervalMs ?? 500);
+    const bar = beat * 4;
+    const bars = Math.max(4, Math.round(plan.fadeMs / bar));
+    const bassIn = Math.max(1, Math.round(bars * 0.5));
+    const end = bar * bars;
+    const aEl = plan.options.active;
+    const bEl = plan.options.standby;
+    attachDeckToGraph(aEl);
+    attachDeckToGraph(bEl);
+    scheduleDeckBands(aEl, clock, [
+      { atMs: 0, bassDb: 0, highpassHz: 20, lowpassHz: 20000 },
+      { atMs: bar * 0.5, bassDb: -40, highpassHz: 120 },
+      { atMs: end * 0.7, lowpassHz: 1400, highpassHz: 380 },
+      { atMs: end, lowpassHz: 700, highpassHz: 800 },
+    ]);
+    scheduleDeckBands(bEl, clock, [
+      { atMs: 0, bassDb: -40, lowpassHz: 600, highpassHz: 520 },
+      { atMs: bar * bassIn, bassDb: -12 },
+      { atMs: end * 0.7, lowpassHz: 6000, highpassHz: 60 },
+      { atMs: end, bassDb: 0, lowpassHz: 20000, highpassHz: 20 },
+    ]);
+    logEvent('band-transition', `频率换手 ${bars} 小节，低频第 ${bassIn} 小节交接`);
+  } catch (err) {
+    console.warn('[crossfadeDeck] band swap failed', err);
+  }
+}
+
+function scheduleNaturalFade(plan: ActivePlan, clock: number, fromP = 0, spanMs = plan.fadeMs): void {
   const a = [], b = [];
+  const start = clamp01(fromP);
   for (let i = 0; i <= 200; i++) {
-    const [outGain, inGain] = naturalGains(i / 200, overlapEnd(plan));
-    const atMs = plan.fadeMs * i / 200;
+    const p = start + (1 - start) * (i / 200);
+    const [outGain, inGain] = naturalGains(p, overlapEnd(plan));
+    const atMs = spanMs * i / 200;
     a.push({ atMs, gain: outGain });
     b.push({ atMs, gain: inGain });
   }
@@ -1990,6 +2147,9 @@ function applySchedule(plan: ActivePlan, schedule: FadeSchedule): void {
   debug.tempoRate = schedule.tempoRate;
   debug.tempoMatched = Math.abs(schedule.tempoRate - 1) > 0.001;
   debug.tempoRateLive = schedule.tempoRate;
+  debug.pllActive = false;
+  debug.pllRate = schedule.tempoRate;
+  debug.pllErrBeats = 0;
   debug.currentAudibleEndMs = schedule.audibleEndPosMs;
   debug.tailSilenceMs = schedule.tailSilenceMs;
   debug.nextVocalStartMs = schedule.nextVocalStartMs;
@@ -2192,7 +2352,133 @@ export function prepareCrossfade(options: CrossfadePrepareOptions): boolean {
           }接 B 首句，${plan.fadeMs} ms 人声缓慢浮现、伴奏渐入`
         : `「${options.current.track.title}」→「${options.next.track.title}」，${plan.fadeMs} ms 后在曲内 ${Math.round(plan.fadeStartPosMs)} ms 处淡化（可听结尾 ${plan.audibleEndPosMs} ms，尾部静音/渐弱 ${debug.tailSilenceMs} ms）`,
   );
+  debug.advancedPreview = buildAdvancedPreview(options, plan);
+  prefetchAdvancedWindows(options, plan);
   return true;
+}
+
+/**
+ * 过渡前预热四轨窗口（T4-3）：进阶模式才有意义，失败也只是「这次不进阶」。
+ * 用与 `beginTimeline` 完全相同的两个位置（`fadeStartPosMs` / `bStartFileMs`）算窗口，
+ * 保证预热键和交接时查的键一致。
+ */
+/**
+ * 预热键（容错版）：单测里 `advancedReadiness` 可能被桩成空对象，
+ * 交接点不能因为这个抛错——键算不出来就当「没预热」，退回标准曲线。
+ */
+/** 用户手动选的手法：`auto` 返回 undefined，让规则自己决定。 */
+function templateHint(): 'vocalFirst' | 'doubleDrop' | undefined {
+  try {
+    const picked = readMixTransitionTemplate();
+    return picked === 'vocalFirst' || picked === 'doubleDrop' ? picked : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function stemKeyFor(track: OnlineTrack | null | undefined, positionSec: number): string {
+  try {
+    return typeof stemKeyOf === 'function' ? stemKeyOf(track, positionSec) : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 进阶换手预案（T5-2）：试放台要看到「哪一小节换哪条轨」，所以在 prepare 时就把
+ * 门控 + 模板 + 事件算成纯数据存进 debug。它**不参与音频**，算错只影响预览。
+ */
+function buildAdvancedPreview(options: CrossfadePrepareOptions, plan: ActivePlan): CrossfadeAdvancedPreview | null {
+  try {
+    if (typeof resolveTransition !== 'function' || typeof buildTimeline !== 'function') return null;
+    const mode = readMixTransitionMode();
+    const resolved = resolveTransition({
+      mode: mode === 'standard' ? 'standard' : 'advanced',
+      analysisA: options.currentAnalysis.analysis,
+      analysisB: options.nextAnalysis.analysis,
+      positionMsA: plan.fadeStartPosMs,
+    });
+    const barMs = resolved.plan ? Math.max(1, resolved.plan.beatMs * 4) : 0;
+    const totalMs = resolved.totalMs;
+    const preview: CrossfadeAdvancedPreview = {
+      mode,
+      template: resolved.plan?.template ?? '',
+      barMs,
+      totalMs,
+      summary: resolved.summary.slice(0, 6),
+      blocks: [],
+      emptyReason: '',
+    };
+    if (!resolved.plan || !resolved.events.length) {
+      preview.emptyReason = resolved.summary[0] ?? '当前条件下没有分轨换手';
+      return preview;
+    }
+    const model = buildTimeline(resolved.events, barMs, totalMs);
+    preview.emptyReason = model.emptyReason ?? '';
+    for (const lane of model.lanes) {
+      for (const block of lane.blocks) {
+        preview.blocks.push({
+          kind: block.kind,
+          deck: block.deck,
+          stem: block.stem,
+          x: block.x,
+          width: block.width,
+          label: block.label,
+        });
+      }
+    }
+    return preview;
+  } catch (err) {
+    console.warn('[preview] failed', err);
+    return null;
+  }
+}
+
+function prefetchAdvancedWindows(options: CrossfadePrepareOptions, plan: ActivePlan): void {
+  try {
+    const preview = debug.advancedPreview;
+    // T6-5：门控判成 standard 时这一趟根本不会有分轨动作，预热纯属白烧 CPU/磁盘，
+    // 也会把 stems=4 打到宿主上去。barMs 只有真算出 plan 时才会 > 0，用它当门。
+    if (!preview || !(preview.barMs > 0)) return;
+    if (readMixTransitionMode() === 'standard') return;
+
+    const spanSec = Math.max(0, preview.totalMs / 1000);
+    const a = { track: options.current?.track, positionSec: plan.fadeStartPosMs / 1000 };
+    const b = { track: options.next?.track, positionSec: plan.bStartFileMs / 1000 };
+
+    // 第 13 轮：32 小节模板（128 BPM = 60 s）跨 2~3 个 30 s 窗口，必须整段预热，
+    // 否则 begin() 会在过渡中途才去解码下一窗（那就等于静音）。
+    if (typeof prefetchStemSpan === 'function') {
+      void prefetchStemSpan(a, b, spanSec)
+        .then((result) => {
+          logEvent(
+            'advanced-prefetch',
+            result.aReady && result.bReady
+              ? `四轨已预热 ${result.keysA.length + result.keysB.length} 窗（实算 ${result.computed}）`
+              : `四轨预热未完成：${result.error}`,
+          );
+        })
+        .catch(() => {
+          /* 预热失败不影响播放 */
+        });
+      return;
+    }
+    if (typeof prefetchStemsForTransition !== 'function') return;
+    void prefetchStemsForTransition(a, b)
+      .then((result) => {
+        logEvent(
+          'advanced-prefetch',
+          result.aReady && result.bReady
+            ? `四轨已预热（本次实算 ${result.computed} 窗）`
+            : `四轨预热未完成：${result.error}`,
+        );
+      })
+      .catch(() => {
+        /* 预热失败不影响播放 */
+      });
+  } catch {
+    /* 预热永远不能影响播放 */
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -2273,6 +2559,9 @@ function createManualPlan(options: ManualCrossfadeOptions, kind: 'manual' | 'loo
   debug.tempoRate = 1;
   debug.tempoMatched = false;
   debug.tempoRateLive = 1;
+  debug.pllActive = false;
+  debug.pllRate = 1;
+  debug.pllErrBeats = 0;
   debug.nextVocalStartMs = 0;
   debug.vocalAligned = false;
   debug.handoffActive = false;
@@ -2486,6 +2775,18 @@ function notifyStart(plan: ActivePlan): void {
   }
 }
 
+/** 收尾进阶交接：幂等，任何异常都吞掉（收尾阶段不能因为拆图失败卡住）。 */
+function disposeAdvanced(plan: ActivePlan): void {
+  const handoff = plan.advanced;
+  if (!handoff) return;
+  plan.advanced = null;
+  try {
+    handoff.dispose();
+  } catch (err) {
+    console.warn('[crossfade] 进阶交接收尾失败', err);
+  }
+}
+
 function startFade(plan: ActivePlan): void {
   if (plan.phase !== 'prepared') return;
   if (plan.raf) window.clearTimeout(plan.raf);
@@ -2571,8 +2872,65 @@ function beginTimeline(plan: ActivePlan): void {
   if (plan.graphMode && clock !== null) {
     plan.audioStartedAt = clock;
     scheduleDeckMatch(plan.options.standby, clock, plan.gainTrimDb, plan.fadeMs);
-    if (plan.am) scheduleAmFade(plan);
-    else scheduleNaturalFade(plan, clock);
+    // 进阶模式：把时间轴交给四轨混音器（同一 clock 启动，轨间零偏移）。
+    // 标准模式或进阶不可用时 requestHandoff 返回 null，仍然走原来的等功率/交融曲线。
+    const autoOptions = plan.kind === 'auto' ? (plan.options as CrossfadePrepareOptions) : null;
+    plan.advanced = requestHandoff({
+      mode: readMixTransitionMode(),
+      kind: plan.kind,
+      fadeMs: plan.fadeMs,
+      tempoRate: plan.tempoRate,
+      analysisA: autoOptions?.currentAnalysis?.analysis,
+      analysisB: autoOptions?.nextAnalysis?.analysis,
+      trackA: autoOptions?.current?.track,
+      trackB: autoOptions?.next?.track,
+      positionMsA: plan.fadeStartPosMs,
+      positionMsB: plan.bStartFileMs,
+      currentDurationMs: autoOptions?.currentDurationMs,
+      nextDurationMs: autoOptions?.next?.track?.durationMs,
+      elementA: plan.options.active,
+      elementB: plan.options.standby,
+      stemKeyA: autoOptions ? stemKeyFor(autoOptions.current?.track, plan.fadeStartPosMs / 1000) : '',
+      stemKeyB: autoOptions ? stemKeyFor(autoOptions.next?.track, plan.bStartFileMs / 1000) : '',
+      ...(templateHint() ? { hint: templateHint() } : {}),
+    });
+    if (plan.advanced) {
+      try {
+        plan.advanced.start(clock);
+        // T4-3：加法引擎下四轨已开始出声，deck 自己的通路立刻互斥静音（元素音量在 begin()
+        // 里已置 0，图模式下 volume 不作用于 element source，所以这里还要压 graph gain）。
+        // 减法引擎相反：元素必须继续出声，四轨只是「被减项」，绝不能再压它的通路。
+        if (readMixTransitionEngine() !== 'subtractive') muteDeckElementsForAdvanced(plan);
+        logEvent('advanced-handoff', `进阶过渡：分轨换手 ${plan.fadeMs} ms`);
+      } catch (err) {
+        console.warn('[crossfade] 进阶交接启动失败，回落标准曲线', err);
+        try {
+          plan.advanced.cancel();
+        } catch {
+          /* 忽略 */
+        }
+        plan.advanced = null;
+      }
+    }
+    if (plan.advanced && typeof plan.advanced.whenReady === 'function') {
+      // 四轨是异步加载的：没接管成功就从「当前进度」接着走等功率，不从头再来。
+      void plan.advanced.whenReady()
+        .then((ok) => {
+          if (ok || activePlan !== plan) return;
+          fallbackFromAdvanced(plan);
+        })
+        .catch(() => {
+          if (activePlan === plan) fallbackFromAdvanced(plan);
+        });
+    }
+    if (!plan.advanced) {
+      if (plan.am) scheduleAmFade(plan);
+      else {
+        // 非「标准」档且分轨没接管：走频率换手（低频先换、滤波错开），不再整轨等功率。
+        if (readMixTransitionMode() !== 'standard') scheduleBandSwap(plan, clock, autoOptions ?? null);
+        scheduleNaturalFade(plan, clock);
+      }
+    }
   }
   // If B underruns, keep A audible instead of fading it into stalled audio.
   const onWaiting = (): void => {
@@ -2580,6 +2938,52 @@ function beginTimeline(plan: ActivePlan): void {
   };
   plan.options.standby.addEventListener('waiting', onWaiting);
   plan.cleanup = () => plan.options.standby.removeEventListener('waiting', onWaiting);
+}
+
+/**
+ * B 相对 A 的拍相位差（单位：拍，正数 = B 超前）。
+ *
+ * 只对 auto 档有意义：手动切歌/单曲循环没有「对齐下一段」的语义，强行拉拍只会拖拍。
+ * 位置优先用元素真实 currentTime（那是唯一能反映 WSOLA 实际推进的时钟），
+ * 拿不到（0 / NaN / 元素已被移除）才退回 `起点 + 已过时间 × 速率` 的模型推算。
+ */
+function beatPhaseError(plan: ActivePlan, elapsedMs: number, liveRate: number): number | null {
+  if (plan.kind !== 'auto') return null;
+  const options = plan.options as CrossfadePrepareOptions;
+  const a = options.currentAnalysis?.analysis;
+  const b = options.nextAnalysis?.analysis;
+  if (!a || !b) return null;
+  const beatA = a.beatIntervalMs;
+  const beatB = b.beatIntervalMs;
+  if (!(beatA > 0) || !(beatB > 0) || !Number.isFinite(beatA) || !Number.isFinite(beatB)) return null;
+
+  const elA = plan.options.active.currentTime * 1000;
+  const elB = plan.options.standby.currentTime * 1000;
+  const posA = Number.isFinite(elA) && elA > 0 ? elA : plan.fadeStartFileMs + elapsedMs;
+  const posB = Number.isFinite(elB) && elB > 0 ? elB : plan.bStartFileMs + elapsedMs * liveRate;
+
+  const firstA = a.firstBeatMs ?? 0;
+  const firstB = b.firstBeatMs ?? 0;
+  const phaseA = mod(posA - firstA, beatA) / beatA;
+  const phaseB = mod(posB - firstB, beatB) / beatB;
+  return wrapBeatError(phaseB - phaseA);
+}
+
+/** 本步真正写进 B 的速率：中心速率 + PLL 微调（回正段之后不再修正，交给回正斜坡）。 */
+function pllLiveRate(plan: ActivePlan, center: number, elapsedMs: number): number {
+  const err = beatPhaseError(plan, elapsedMs, center);
+  if (err === null) {
+    plan.pll = null;
+    debug.pllActive = false;
+    return center;
+  }
+  const state = plan.pll ?? { rate: center, errBeats: 0 };
+  const next = trackRate({ rate: state.rate }, err, { center });
+  plan.pll = { rate: next.rate, errBeats: err };
+  debug.pllActive = true;
+  debug.pllRate = next.rate;
+  debug.pllErrBeats = Math.round(err * 1000) / 1000;
+  return next.rate;
 }
 
 function fadeStep(): void {
@@ -2609,12 +3013,43 @@ function fadeStep(): void {
     const restore = progress <= MATCHED_OVERLAP_END
       ? 0
       : smoothStep((progress - MATCHED_OVERLAP_END) / (1 - MATCHED_OVERLAP_END));
-    const liveRate = matchedRate + (baseRate - matchedRate) * restore;
+    // 回正段（restore > 0）只走斜坡；对齐段才让 PLL 贴着 A 的拍走。
+    const liveRate = restore > 0
+      ? matchedRate + (baseRate - matchedRate) * restore
+      : pllLiveRate(plan, matchedRate, elapsed);
     setDeckPlaybackRate(plan.options.standby, liveRate);
     debug.tempoRateLive = Math.round(liveRate * 1000) / 1000;
+    // 进阶路径：声音实际来自四轨播放器，元素速率只是「控制信号」。
+    // 直接传 liveRate（绝对速率，= 用户倍速 × tempoRate × PLL 修正），
+    // 因为分轨播放器的 setRate 也是绝对的；两者必须是同一个数，否则元素时间与分轨时间分叉。
+    // A 侧同理：用户可能正在推 tempo 推子，A 的元素速率变了而分轨没跟 ⇒ 几十秒后鼓点与波形错开。
+    if ((plan.advanced?.setRates || plan.advanced?.setRate) && matchedRate > 0) {
+      try {
+        if (plan.advanced.setRates) plan.advanced.setRates({ a: plan.options.active.playbackRate, b: liveRate });
+        else plan.advanced.setRate?.(liveRate);
+      } catch {
+        /* 忽略：会话可能正在拆 */
+      }
+    }
+  }
+  // 分轨「先放完」兜底：span 是按小节算出来的，若文件/模型比预期短，
+  // 音频会在过渡末尾静音。剩不到 0.4 s 就提前接回元素等功率，宁可少几拍换手也不要静场。
+  if (plan.advanced && progress < 1) {
+    let left: number | null = null;
+    try {
+      left = plan.advanced.remainingSec ? plan.advanced.remainingSec() : null;
+    } catch {
+      left = null;
+    }
+    if (left !== null && Number.isFinite(left) && left < 0.4) {
+      logEvent('advanced-handoff', `分轨只剩 ${left.toFixed(2)} s，提前接回等功率`);
+      fallbackFromAdvanced(plan);
+      return;
+    }
   }
   // 图内增益/滤波已排在音频时间线上；元素回退才需要按时更新音量。
-  if (!plan.graphMode) applyEqualPowerGains(plan, progress);
+  // 进阶模式的分轨增益同样在音频时钟上，这里一次都不写，避免和自动化打架。
+  if (!plan.graphMode && !plan.advanced) applyEqualPowerGains(plan, progress);
   if (progress >= 1) {
     finishFade(plan);
     return;
@@ -2622,8 +3057,36 @@ function fadeStep(): void {
   plan.raf = window.setTimeout(fadeStep, 25);
 }
 
+/**
+ * 进阶交接没能接管（四轨解码失败 / 起会话抛错 / 被取消）：
+ * 从**当前进度**接回等功率曲线，元素与图两条路径都要还原，否则会停在静音。
+ */
+function fallbackFromAdvanced(plan: ActivePlan): void {
+  const handoff = plan.advanced;
+  plan.advanced = null;
+  if (handoff) {
+    try {
+      handoff.cancel();
+    } catch {
+      /* 忽略：交接自己已经失败 */
+    }
+  }
+  if (activePlan !== plan) return;
+  const progress = clamp01(plan.progress);
+  const clock = audioTapClock();
+  logEvent('advanced-handoff', `进阶未接管，从 ${(progress * 100).toFixed(0)}% 接回等功率`);
+  // T4-3：deck 通路在接管成功时被压到 0，这里先按当前进度还原（20 ms 斜坡），
+  // 再把剩余窗口排成等功率曲线；顺序反了就会从 0 一步跳上去（咔哒）。
+  restoreDeckGains(plan, progress);
+  if (plan.graphMode && clock !== null) {
+    const remaining = Math.max(1, plan.fadeMs * (1 - progress));
+    scheduleNaturalFade(plan, clock, progress, remaining);
+  }
+}
+
 function finishFade(plan: ActivePlan): void {
   if (activePlan !== plan) return;
+  disposeAdvanced(plan);
   plan.cleanup?.();
   if (plan.raf) {
     window.clearTimeout(plan.raf);
@@ -2669,6 +3132,7 @@ function finishFade(plan: ActivePlan): void {
 
 function hardCutToStandby(plan: ActivePlan): void {
   if (activePlan !== plan) return;
+  disposeAdvanced(plan);
   plan.cleanup?.();
   if (plan.raf) {
     window.clearTimeout(plan.raf);
@@ -2713,6 +3177,7 @@ export function cancelCrossfade(reason = 'manual'): void {
   const plan = activePlan;
   activePlan = null;
   if (!plan) return;
+  disposeAdvanced(plan);
   plan.cleanup?.();
   // 计划作废时 B 的起始 seek 监听也要撤掉，否则下次复用该元素会被旧目标改位置。
   cancelPendingSeek(plan.options.standby);
@@ -2757,6 +3222,14 @@ export function cancelCrossfade(reason = 'manual'): void {
 }
 
 /** 当前是否正在交叉淡化（tick / 音量更新走不同路径）。 */
+export function crossfadeRemainingMs(): number {
+  return activePlan?.phase === 'fading' ? Math.max(0, (1 - activePlan.progress) * activePlan.fadeMs) : 0;
+}
+
+export function crossfadeProgress(): number {
+  return activePlan?.phase === 'fading' ? activePlan.progress : 0;
+}
+
 export function crossfadeIsFading(): boolean {
   return activePlan !== null && activePlan.phase === 'fading';
 }

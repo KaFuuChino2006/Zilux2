@@ -58,6 +58,7 @@ public sealed partial class DesktopBackgroundWindow : Window
     private bool _browserDisposed;
     // 最近一次 online 端点 JSON：场景页 ready 之前到达的消息会丢，ready 时补发一次（B04）。
     private string? _onlineJson;
+    private string? _wallpaperJson;
 
     /// <summary>WebView2 初始化失败（窗口随之关闭）；宿主据此回滚 backgroundLyrics 开关（B09）。</summary>
     internal event Action? InitFailed;
@@ -125,6 +126,18 @@ public sealed partial class DesktopBackgroundWindow : Window
     {
         if (_disposed)
         {
+            return;
+        }
+
+        AttachToDesktop();
+    }
+
+    /// <summary>壁纸表面重新挂载后调用：把自己再插一次，保持在壁纸之上。</summary>
+    public void RaiseAboveWallpaper()
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(RaiseAboveWallpaper));
             return;
         }
 
@@ -305,6 +318,11 @@ public sealed partial class DesktopBackgroundWindow : Window
                     PostJson(_onlineJson);
                 }
 
+                if (_wallpaperJson is not null)
+                {
+                    PostJson(_wallpaperJson);
+                }
+
                 return;
             }
 
@@ -395,6 +413,22 @@ public sealed partial class DesktopBackgroundWindow : Window
         }
 
         _onlineJson = json;
+        PostJson(json);
+    }
+
+    /// <summary>
+    /// 把「动态壁纸」这一层的状态转给场景页：场景自己把壁纸铺在歌词下面，
+    /// 窗口保持不透明（layered 窗口里 WebView2 子窗口不参与合成）。
+    /// ready 之前到达的先缓存，ready 时补发。
+    /// </summary>
+    internal void PostWallpaperState(string? json)
+    {
+        if (string.IsNullOrEmpty(json))
+        {
+            return;
+        }
+
+        _wallpaperJson = json;
         PostJson(json);
     }
 

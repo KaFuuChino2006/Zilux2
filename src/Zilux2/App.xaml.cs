@@ -111,43 +111,60 @@ public partial class App : Application
             return;
         }
 
-        // docs/zilux2-online-music.md §6: the loopback service comes up with the host. A failure
-        // here only removes online sources from the page; it must never block the window.
-        Online = new OnlineMusicService();
-        // 下载目录跟随设置（空字符串 = Windows 音乐目录），宿主的下载服务按需解析。
-        Online.DownloadDirectoryProvider = () => Settings?.DownloadDirectory ?? string.Empty;
-        // 下载音质同样跟随设置（standard/high/lossless），下载服务按平台能力自动降级。
-        Online.DownloadQualityProvider = () => Settings?.DownloadQuality ?? Zilux2.Settings.DownloadSettings.QualityHigh;
-        Online.DownloadConcurrencyProvider = () => Settings?.DownloadMaxConcurrent ?? 2;
-        Online.DownloadTemplateProvider = () => Settings?.DownloadFileNameTemplate ?? "{artist} - {title}";
-        Online.DownloadOpenFolderProvider = () => Settings?.DownloadOpenFolderWhenDone ?? false;
-        Zilux2.Online.Mvmp3Cache.DirectoryProvider = () =>
+        // 第 68–69 轮：--wallpaper-host 是轻量自启，只跑壁纸 + 托盘，不加载音乐/音频/AirPlay。
+        var wallpaperOnly = Array.Exists(
+            e.Args,
+            static arg => string.Equals(arg, "--wallpaper-host", StringComparison.OrdinalIgnoreCase));
+        if (wallpaperOnly)
         {
-            var configured = Settings?.DownloadDirectory;
-            return string.IsNullOrWhiteSpace(configured)
-                ? Environment.GetFolderPath(Environment.SpecialFolder.MyMusic)
-                : configured;
-        };
-        Zilux2.Online.Mvmp3Cache.MigrateLegacy();
-        Online.Start();
+            HostLog.Info("[startup] wallpaper-host mode: skipping music/audio/airplay");
+        }
+        else
+        {
+            // docs/zilux2-online-music.md §6: the loopback service comes up with the host. A failure
+            // here only removes online sources from the page; it must never block the window.
+            Online = new OnlineMusicService();
+            // 下载目录跟随设置（空字符串 = Windows 音乐目录），宿主的下载服务按需解析。
+            Online!.DownloadDirectoryProvider = () => Settings?.DownloadDirectory ?? string.Empty;
+            // 下载音质同样跟随设置（standard/high/lossless），下载服务按平台能力自动降级。
+            Online.DownloadQualityProvider = () => Settings?.DownloadQuality ?? Zilux2.Settings.DownloadSettings.QualityHigh;
+            Online.DownloadConcurrencyProvider = () => Settings?.DownloadMaxConcurrent ?? 2;
+            Online.DownloadTemplateProvider = () => Settings?.DownloadFileNameTemplate ?? "{artist} - {title}";
+            Online.DownloadOpenFolderProvider = () => Settings?.DownloadOpenFolderWhenDone ?? false;
+            Zilux2.Online.Mvmp3Cache.DirectoryProvider = () =>
+            {
+                var configured = Settings?.DownloadDirectory;
+                return string.IsNullOrWhiteSpace(configured)
+                    ? Environment.GetFolderPath(Environment.SpecialFolder.MyMusic)
+                    : configured;
+            };
+            Zilux2.Online.Mvmp3Cache.MigrateLegacy();
+            Online.Start();
+        }
 
         // Audio features are visualizer input: capture must never block the window either, so a
         // missing device only logs and the service retries in the background.
-        Audio = CreateAudioService();
-        Audio?.Start();
+        if (!wallpaperOnly)
+        {
+            Audio = CreateAudioService();
+            Audio?.Start();
+        }
 
         // SMTC is window scoped, so the service only exists from here; it stays disabled until the
         // page sends the first media state (contract §11).
-        Media = CreateMediaService();
+        Media = wallpaperOnly ? null : CreateMediaService();
 
         // AirPlay is opt-in from the page: discovery and streams only start after an explicit
         // scan/connect message, and any failure here only removes the feature (contract §12).
-        AirPlay = CreateAirPlayService();
+        AirPlay = wallpaperOnly ? null : CreateAirPlayService();
 
         var window = new MainWindow(plan, Settings, Audio, Media, AirPlay);
         MainWindow = window;
         // 下载完成后让本地曲库立刻能看见：宿主把它当成一次本地文件新增处理。
-        Online.FileDownloaded = path => window.NotifyDownloadedFile(path);
+        if (Online is not null)
+        {
+            Online.FileDownloaded = path => window.NotifyDownloadedFile(path);
+        }
         // 开机自启动时 Run 项会带 --hidden：照常 Show（让 Loaded/WebView2 初始化、恢复上次播放），
         // 但先透明且不占任务栏，随后立刻收进托盘，避免启动时窗口闪一下。
         var startHidden = Array.Exists(
@@ -176,6 +193,16 @@ public partial class App : Application
         // 托盘图标：失败只失去托盘入口（窗口仍在，但关闭会被隐藏到托盘后找不回来，所以
         // TrayIconService 构造失败时它自己会记日志并退出；这里只兜底不抛到启动流程）。
         TryCreateTray(window);
+
+        // 手机局域网遥控：默认关闭，只有设置里打开后才会监听端口（见 Remote/RemoteService.cs）。
+        Zilux2.Remote.RemoteService.Start(Settings);
+
+        if (wallpaperOnly)
+        {
+            window.ShowInTaskbar = false;
+            window.StartWallpaperDesktopHost();
+            if (Tray is not null) window.HideToTray();
+        }
 
         if (startHidden)
         {
@@ -354,6 +381,9 @@ public partial class App : Application
         {
             HostLog.Error("smtc.dispose failed", exception);
         }
+
+        // 手机局域网遥控先停监听，再让设置服务落盘/释放。
+        Zilux2.Remote.RemoteService.Stop();
 
         try
         {

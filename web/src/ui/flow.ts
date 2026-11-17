@@ -5,17 +5,18 @@ import { coverColorsOf, fallbackColors } from './coverColors';
 import { flowHandoffFrame, flowSongSignature } from './flowHandoff';
 import { preloadLyricSong } from './lyrics';
 import { readCrossfadeDebug } from './crossfadeDeck';
+import type { Theme } from './lumiere-folia/types';
 
 let previewPalette:string[]=[];
 export function flowCoverPalette():string[]{return [...previewPalette];}
-export type FlowStage = Pick<LumiereStage,'root'|'setMode'|'setSong'|'activate'|'deactivate'|'dispose'> & {setPalette(colors:string[]):void};
+export type FlowStage = Pick<LumiereStage,'root'|'setMode'|'setSong'|'activate'|'deactivate'|'dispose'> & {setPalette(colors:string[]):void;setTheme(theme:Theme):void};
 type Slot={scene:ReturnType<typeof createFlowScene>;song:LumiereSongInput;signature:string;colors:string[];ready:boolean;position:number;expectedPosition:number;stamp:number};
 
 /** At most two surfaces: the playing scene and one prepared/retiring neighbour. */
 export function createFlowStage():FlowStage {
  const root=document.createElement('div');root.className='lyrics-stage is-flow';
  let current:Slot|null=null,standby:Slot|null=null,outgoing:Slot|null=null;
- let song:LumiereSongInput|null=null,palette:string[]=[];
+ let song:LumiereSongInput|null=null,palette:string[]=[],theme:Theme|null=null;
  let active=false,disposed=false,raf=0,token=0,pendingKey='',retryAt=0;
  let anchor=0,stamp=0,playing=false,transitionAt=0;
  let cueCheckedAt=-Infinity,cue= {phase:'idle',nextTitle:'',bStartFileMs:0};
@@ -44,7 +45,7 @@ export function createFlowStage():FlowStage {
    else if(slot===current){root.classList.add('is-failed');root.classList.remove('is-ready','is-painted');}
   },false);
   slot={scene,song:input,signature:flowSongSignature(input),colors:[...colors],ready:false,position:0,expectedPosition:0,stamp:performance.now()};
-  scene.root.style.opacity='0';root.append(scene.root);scene.setPalette(colors);scene.setSong(input);scene.resize();
+  scene.root.style.opacity='0';root.append(scene.root);scene.setPalette(colors);if(theme)scene.setTheme(theme);scene.setSong(input);scene.resize();
   return slot;
  }
  function accept(input:LumiereSongInput){
@@ -127,6 +128,7 @@ export function createFlowStage():FlowStage {
   root,
   setPalette(colors){previewPalette=[...colors];palette=[...colors];const key=currentKey();for(const slot of [current,standby])if(slot?.song.trackKey===key&&JSON.stringify(slot.colors)!==JSON.stringify(colors)){slot.colors=[...colors];slot.scene.setPalette(colors);}},
   setMode(_mode:LumiereMode){},
+  setTheme(next:Theme){theme=next;for(const slot of [current,standby,outgoing])slot?.scene.setTheme(next);},
   setSong(input){song=input;if(input)accept(input);root.classList.toggle('is-content',!!input);},
   activate(){
    if(active||disposed)return;active=true;root.classList.remove('is-failed');root.classList.add('is-on');

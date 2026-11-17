@@ -163,6 +163,64 @@ internal static class SystemAudioOutputService
     }
 
     /// <summary>
+    /// 读系统默认播放端点的音量（0–1）与静音状态。音量胶囊（OSD）用，轮询调用。
+    /// </summary>
+    public static bool TryGetDefaultVolume(out float volume, out bool muted)
+    {
+        volume = 0f;
+        muted = false;
+        LoopbackCapture.IMMDeviceEnumerator? enumerator = null;
+        LoopbackCapture.IMMDevice? device = null;
+        IAudioEndpointVolume? endpoint = null;
+        try
+        {
+            enumerator = (LoopbackCapture.IMMDeviceEnumerator)new LoopbackCapture.MMDeviceEnumeratorComObject();
+            if (enumerator.GetDefaultAudioEndpoint(DataFlowRender, RoleConsole, out device) < 0 || device is null)
+            {
+                return false;
+            }
+
+            var iid = typeof(IAudioEndpointVolume).GUID;
+            if (device.Activate(ref iid, 23, IntPtr.Zero, out var activated) < 0 ||
+                activated is not IAudioEndpointVolume endpointVolume)
+            {
+                return false;
+            }
+
+            endpoint = endpointVolume;
+            if (endpoint.GetMasterVolumeLevelScalar(out volume) < 0)
+            {
+                return false;
+            }
+
+            endpoint.GetMute(out var mute);
+            muted = mute;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+        finally
+        {
+            if (endpoint is not null)
+            {
+                Marshal.ReleaseComObject(endpoint);
+            }
+
+            if (device is not null)
+            {
+                Marshal.ReleaseComObject(device);
+            }
+
+            if (enumerator is not null)
+            {
+                Marshal.ReleaseComObject(enumerator);
+            }
+        }
+    }
+
+    /// <summary>
     /// 按友好名设置播放端点音量。页面拿到的是 Chromium 的 deviceId（哈希），不是 WASAPI 端点 ID，
     /// 所以麦克风混音用标签匹配 CABLE Input / VoiceMeeter Input。
     /// </summary>

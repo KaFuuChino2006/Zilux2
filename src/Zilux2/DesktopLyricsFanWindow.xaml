@@ -1,0 +1,17 @@
+<Window x:Class="Zilux2.DesktopLyricsFanWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Zilux2 悬浮歌词"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ShowInTaskbar="False"
+        ShowActivated="False"
+        Focusable="False"
+        ResizeMode="NoResize"
+        Topmost="True"
+        Width="386"
+        Height="519"
+        WindowStartupLocation="Manual">
+    <Canvas x:Name="Stage" ClipToBounds="False" Background="{x:Null}" />
+</Window>
