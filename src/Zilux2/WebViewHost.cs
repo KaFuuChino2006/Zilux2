@@ -185,13 +185,15 @@ internal sealed class WebViewHost : IDisposable
     private const int MaxAirPlayMessageChars = 8 * 1024;
 
     // Contract 3.2: keep Chromium from throttling a mostly-static, occasionally occluded window.
-    private const string BrowserArguments =
+    private static readonly string BrowserArguments =
         // HardwareMediaKeyHandling：不让 WebView2 自己再建一个媒体会话，Windows「正在播放」只留宿主这一条
         "--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,HardwareMediaKeyHandling " +
         "--disable-backgrounding-occluded-windows " +
         "--disable-background-timer-throttling " +
         "--disable-renderer-backgrounding " +
-        "--autoplay-policy=no-user-gesture-required";
+        "--autoplay-policy=no-user-gesture-required" +
+        // 仅调试用：CDP 截图/自动化时追加浏览器参数，例如 --remote-debugging-port=9333。
+        (Environment.GetEnvironmentVariable("ZILUX2_WEBVIEW_ARGS") is { Length: > 0 } extra ? " " + extra : "");
 
     private readonly MainWindow _window;
     private readonly WebView2 _webView;
@@ -219,11 +221,20 @@ internal sealed class WebViewHost : IDisposable
     /// </summary>
     public CoreWebView2Environment? SharedEnvironment { get; private set; }
 
+    /// <summary>桌面壁纸层要开第二个 WebView2，导航地址与主页面同一份内容。</summary>
+    internal string SharedNavigationUrl => _plan.NavigationUrl;
+
+    /// <summary>桌面层的 WebView2 也要做同一份虚拟主机映射，否则 https://zilux2.local 打不开。</summary>
+    internal string? SharedFolderPath => _plan.Kind == WebContentKind.LocalFolder ? _plan.FolderPath : null;
+
+    internal string SharedVirtualHost => WebContentPlan.VirtualHost;
+
     /// <summary>共享环境就绪通知（背景窗口可能比 WebView2 初始化更早被请求）。</summary>
     public event Action? SharedEnvironmentReady;
 
     /// <summary>页面首帧可用（页面发出 ready 或首次导航成功）：窗口用它从透明淡入。</summary>
     public event Action? FirstContentReady;
+    public event Action? StartupPreviewReady;
 
     /// <summary>系统默认播放设备变化（设置页直接点选设备时触发 OSD）。</summary>
     internal event Action<SystemAudioOutputDevice?, SystemAudioOutputDevice>? SystemAudioOutputChanged;
@@ -351,6 +362,25 @@ internal sealed class WebViewHost : IDisposable
         }
     }
 
+    /// <summary>
+    /// 软件内壁纸层要给页面「挖洞」：WebView2 是子 HWND，只有把它的默认背景刷成透明，
+    /// 下层的 WPF 视频表面才能透出来（页面侧同时加 html 透明类）。
+    /// 传 false 恢复成窗口主题底色，行为与没有壁纸时一致。
+    /// </summary>
+    internal void SetTransparentBackdrop(bool transparent)
+    {
+        try
+        {
+            _webView.DefaultBackgroundColor = transparent
+                ? System.Drawing.Color.Transparent
+                : System.Drawing.Color.FromArgb(255, 243, 241, 234);
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or ObjectDisposedException)
+        {
+            HostLog.Warn($"[webview] transparent backdrop skipped: {exception.GetType().Name}");
+        }
+    }
+
     public async Task InitializeAsync()
     {
         try
@@ -385,6 +415,17 @@ internal sealed class WebViewHost : IDisposable
                        throw new InvalidOperationException("CoreWebView2 was null after successful initialization.");
 
             var devMode = _plan.IsDevMode;
+            // 壁纸页面常自带 alert() 之类，弹框会挡住整站 UI；只对壁纸 origin 静默吞掉。
+            // 壁纸页面自带 alert() 时会弹一个原生框挡住整站（脚本对话框在 iframe 里拦不住），
+            // 只对壁纸 origin 把 alert/confirm/prompt 换成空实现；自家 UI 的 prompt 不受影响。
+            _ = core.AddScriptToExecuteOnDocumentCreatedAsync(
+                "(function(){try{if(location.host!=='zilux-wp.local')return;window.alert=function(){};" +
+                "window.confirm=function(){return false;};window.prompt=function(){return null;};}catch(e){}})();");
+            core.ScriptDialogOpening += (_, dialogEvent) =>
+            {
+                HostLog.Info($"dialog suppressed kind={dialogEvent.Kind} uri={dialogEvent.Uri}");
+                dialogEvent.Accept();
+            };
             core.Settings.AreDefaultContextMenusEnabled = false;
             core.Settings.IsStatusBarEnabled = false;
             core.Settings.AreDevToolsEnabled = devMode;
@@ -772,6 +813,8 @@ internal sealed class WebViewHost : IDisposable
                     AttachMedia();
                     PostAirPlayStatus();
                     _updates?.Start();
+                    // 壁纸层透明：宿主可能在页面就绪前就启动了壁纸，这里补推一次真实状态。
+                    _window.PublishWallpaperState();
                     // 迷你播放器：宿主启动时若已经处于迷你态（例如后续把该状态持久化），
                     // 页面 ready 后补推一次，让前端渲染迷你布局。
                     if (_window.IsMiniMode)
@@ -779,6 +822,14 @@ internal sealed class WebViewHost : IDisposable
                         NotifyMiniMode(true);
                     }
 
+                    break;
+
+                case "startupPreview":
+                    StartupPreviewReady?.Invoke();
+                    break;
+
+                case "contentReady":
+                    HostLog.Info("page.contentReady");
                     RaiseFirstContentReady();
                     break;
 
@@ -809,6 +860,10 @@ internal sealed class WebViewHost : IDisposable
                     HandleAudioOutputMessage(root);
                     break;
 
+                case "appVolume":
+                    HandleAppVolumeMessage(root);
+                    break;
+
                 case "media":
                     HandleMediaMessage(root);
                     // 桌面背景歌词窗口没有自己的播放引擎：把主页面这一份媒体快照原样转发过去。
@@ -835,29 +890,33 @@ internal sealed class WebViewHost : IDisposable
                     break;
 
                 case "lyrics":
-                    // 桌面歌词显示相邻句、当前句和译文；样式及窗口行为由设置驱动。
-                    var lyricWords = new List<DesktopLyricWord>();
-                    if (root.TryGetProperty("words", out var wordArray) && wordArray.ValueKind == JsonValueKind.Array)
-                    {
-                        foreach (var word in wordArray.EnumerateArray())
-                        {
-                            if (word.ValueKind != JsonValueKind.Object || lyricWords.Count >= 512) break;
-                            var text = ReadString(word, "text") ?? string.Empty;
-                            var space = word.TryGetProperty("spaceBefore", out var spaceValue) && spaceValue.ValueKind == JsonValueKind.True;
-                            lyricWords.Add(new DesktopLyricWord(text, space));
-                        }
-                    }
-                    _window.UpdateDesktopLyrics(
+                    // 桌面歌词显示相邻句、当前句和译文；悬浮样式另外要播放位置与上下文窗口。
+                    var lyricWords = ReadLyricWords(root, "words", 512);
+                    var lyricLines = ReadLyricLines(root);
+                    var positionMs = ReadFiniteDouble(root, "positionMs");
+                    var playing = root.TryGetProperty("playing", out var playingValue) && playingValue.ValueKind == JsonValueKind.True;
+                    var currentIndex = ReadInt(root, "currentIndex", -1);
+                    var linesStart = ReadInt(root, "linesStart", -1);
+                    _window.UpdateDesktopLyrics(new DesktopLyricsFrame(
                         ReadString(root, "now") ?? string.Empty,
                         ReadString(root, "translation") ?? string.Empty,
                         ReadString(root, "previous") ?? string.Empty,
                         ReadString(root, "next") ?? string.Empty,
                         lyricWords,
-                        ReadInt(root, "activeWord", -1));
+                        ReadInt(root, "activeWord", -1),
+                        positionMs,
+                        playing,
+                        currentIndex,
+                        lyricLines,
+                        linesStart));
                     break;
 
                 case "update":
                     _updates?.Handle(root);
+                    break;
+
+                case "wallpaper":
+                    HandleWallpaperMessage(root);
                     break;
 
                 default:
@@ -1158,8 +1217,8 @@ internal sealed class WebViewHost : IDisposable
             return;
         }
 
-        // 页面没发 ready（例如前端脚本报错）也不能让窗口永远透明：导航成功本身就是可显示内容。
-        RaiseFirstContentReady();
+        // Navigation does not imply that fonts, settings and the initial view are ready.
+        // MainWindow keeps a bounded watchdog for broken pages.
     }
 
     private void OnProcessFailed(object? sender, CoreWebView2ProcessFailedEventArgs e)
@@ -1314,6 +1373,25 @@ internal sealed class WebViewHost : IDisposable
         _window.ApplyMiniSettingsIfActive();
     }
 
+    /// <summary>
+    /// 页面 → 宿主：应用内音量变化。只用来弹音量胶囊，不回写任何设置。
+    /// </summary>
+    private void HandleAppVolumeMessage(JsonElement root)
+    {
+        var source = root.TryGetProperty("payload", out var payload) && payload.ValueKind == JsonValueKind.Object
+            ? payload
+            : root;
+        var percent = ReadInt(source, "percent", -1);
+        if (percent < 0)
+        {
+            return;
+        }
+
+        var muted = source.TryGetProperty("muted", out var mutedElement) && mutedElement.ValueKind == JsonValueKind.True;
+        HostLog.Info($"[osd] appVolume percent={percent} muted={muted}");
+        _window.ShowAppVolume(percent, muted);
+    }
+
     private void HandleMediaMessage(JsonElement root)
     {
         if (_media is null)
@@ -1335,11 +1413,16 @@ internal sealed class WebViewHost : IDisposable
             ReadString(payload, "coverUrl"),
             ReadFiniteDouble(payload, "durationMs"),
             ReadFiniteDouble(payload, "positionMs"),
-            payload.TryGetProperty("playing", out var playing) && playing.ValueKind == JsonValueKind.True);
+            payload.TryGetProperty("playing", out var playing) && playing.ValueKind == JsonValueKind.True,
+            payload.TryGetProperty("transitioning", out var transitioning) && transitioning.ValueKind == JsonValueKind.True,
+            Math.Clamp(ReadFiniteDouble(payload, "transitionProgress"), 0, 1),
+            Math.Max(0, ReadFiniteDouble(payload, "transitionRemainingMs")));
 
         _media.Update(state);
         // 页面播放状态变化 → 托盘菜单文案同步（B23）；消息入口已在 UI 线程。
         _window.NotifyPlaybackState(state.Playing);
+        // 后台切歌时用系统音频那条胶囊报一下曲目（前台有完整播放条，内部会自己让路）。
+        _window.NotifyMediaTrack(state);
     }
 
     private void PostSettingsSnapshot()
@@ -1591,6 +1674,69 @@ internal sealed class WebViewHost : IDisposable
         catch (Exception exception)
         {
             HostLog.Warn($"[audioOutput] state push failed: {exception.Message}");
+        }
+    }
+
+    /// <summary>页面发起壁纸素材导入：交给主窗口弹系统文件选择框。</summary>
+    private void HandleWallpaperMessage(JsonElement root)
+    {
+        var action = ReadString(root, "action");
+        switch (action)
+        {
+            case "pick":
+                _window.PickWallpaperFiles();
+                break;
+
+            default:
+                HostLog.Info($"[wallpaper] ignored action={action}");
+                break;
+        }
+    }
+
+    /// <summary>
+    /// 壁纸层推送：可见性 + 当前素材 + 滤镜/转场参数。页面拿到后自己在最底层铺
+    /// &lt;video&gt; / &lt;img&gt;（见 web/src/ui/wallpaperLayer.ts），不再依赖 WPF 位图。
+    /// </summary>
+    internal void PostWallpaperState(Zilux2.Wallpaper.WallpaperLayerPayload? payload)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            var json = Zilux2.Wallpaper.WallpaperStateJson.Build(payload);
+            PostJson(json);
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[wallpaper] state push failed: {exception.Message}");
+        }
+    }
+
+    /// <summary>导入完成通知（页面据此刷新库列表）。</summary>
+    internal void PostWallpaperImported(int added)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            var json = JsonSerializer.Serialize(new
+            {
+                v = 1,
+                type = "host",
+                @event = "wallpaperImported",
+                added,
+            });
+            PostJson(json);
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[wallpaper] import push failed: {exception.Message}");
         }
     }
 
@@ -1907,6 +2053,15 @@ internal sealed class WebViewHost : IDisposable
 
     private void PostJson(string json)
     {
+        // 调用方可能来自 HTTP 线程（在线服务与更新推送）：CoreWebView2 是 UI 线程亲和对象，
+        // 直接在别的线程碰会抛 InvalidOperationException，而且会打断调用方后面的逻辑。
+        // 统一在这里转一道。
+        if (!_webView.Dispatcher.CheckAccess())
+        {
+            PostJsonFromAnyThread(json);
+            return;
+        }
+
         try
         {
             var core = _webView.CoreWebView2;
@@ -2062,5 +2217,63 @@ internal sealed class WebViewHost : IDisposable
         return element.ValueKind == JsonValueKind.String && int.TryParse(element.GetString(), out var parsed)
             ? parsed
             : fallback;
+    }
+
+    private static List<DesktopLyricWord> ReadLyricWords(JsonElement root, string name, int limit)
+    {
+        var words = new List<DesktopLyricWord>();
+        if (!root.TryGetProperty(name, out var array) || array.ValueKind != JsonValueKind.Array)
+        {
+            return words;
+        }
+
+        foreach (var word in array.EnumerateArray())
+        {
+            if (word.ValueKind != JsonValueKind.Object || words.Count >= limit)
+            {
+                break;
+            }
+
+            // spaceBefore 缺失（页面 JSON.stringify 会丢 undefined）= 不加空格。
+            words.Add(new DesktopLyricWord(
+                ReadString(word, "text") ?? string.Empty,
+                ReadBool(word, "spaceBefore", false),
+                ReadFiniteDouble(word, "startMs"),
+                ReadFiniteDouble(word, "endMs")));
+        }
+
+        return words;
+    }
+
+    /// <summary>
+    /// 悬浮歌词的上下文窗口：窗口起点由页面显式下发（linesStart），空数组表示「当前没有词」，
+    /// 宿主据此清空上下文；字段缺失返回 null 表示沿用上一份。
+    /// </summary>
+    private static List<DesktopLyricLine>? ReadLyricLines(JsonElement root)
+    {
+        if (!root.TryGetProperty("lines", out var array) || array.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        var lines = new List<DesktopLyricLine>();
+        foreach (var line in array.EnumerateArray())
+        {
+            if (line.ValueKind != JsonValueKind.Object || lines.Count >= 32)
+            {
+                break;
+            }
+
+            var start = ReadFiniteDouble(line, "startMs");
+            var end = ReadFiniteDouble(line, "endMs");
+            lines.Add(new DesktopLyricLine(
+                ReadString(line, "text") ?? string.Empty,
+                ReadString(line, "translation") ?? string.Empty,
+                start,
+                end <= start ? start : end,
+                ReadLyricWords(line, "words", 256)));
+        }
+
+        return lines;
     }
 }

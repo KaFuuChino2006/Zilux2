@@ -37,19 +37,26 @@ export function createPoemStage() {
     scene?.dispose(); scene = null;
     root.classList.remove('is-on', 'is-ready', 'is-painted');
   }
+  function activate() {
+    if (active || disposed) return;
+    active = true; root.classList.remove('is-failed'); root.classList.add('is-on');
+    try {
+      scene = createPoemScene(); root.append(scene.root); scene.setSong(song); scene.setPalette(palette);
+      sync(); previous = performance.now(); unsubscribe = onPlayer(sync); frame(previous);
+    } catch (error) { console.error('[poem] initialization failed', error); root.classList.add('is-failed'); }
+  }
   return {
     root,
     setSong(input: LumiereSongInput | null) { song = input; scene?.setSong(input); root.classList.toggle('is-content', !!input); },
     setPalette(colors: string[]) { palette = [...colors]; scene?.setPalette(palette); },
-    activate() {
-      if (active || disposed) return;
-      active = true; root.classList.remove('is-failed'); root.classList.add('is-on');
-      try {
-        scene = createPoemScene(); root.append(scene.root); scene.setSong(song); scene.setPalette(palette);
-        sync(); previous = performance.now(); unsubscribe = onPlayer(sync); frame(previous);
-      } catch (error) { console.error('[poem] initialization failed', error); root.classList.add('is-failed'); }
-    },
+    activate,
     deactivate,
+    /** 字体设置变了：按新字体重建画布（歌曲与调色板保留）。 */
+    refreshFont() {
+      if (!active) return;
+      deactivate();
+      activate();
+    },
     dispose() { disposed = true; deactivate(); root.remove(); },
   };
 }

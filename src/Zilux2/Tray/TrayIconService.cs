@@ -21,6 +21,10 @@ internal sealed class TrayIconService : IDisposable
     private bool _shownHint;
     private bool _disposed;
     private readonly Forms.ToolStripMenuItem _togglePlayItem;
+    private readonly Forms.ToolStripMenuItem _wallpaperInfoItem;
+    private readonly Forms.ToolStripMenuItem _wallpaperPauseItem;
+    private readonly Forms.ToolStripMenuItem _wallpaperNextItem;
+    private readonly Forms.ToolStripMenuItem _wallpaperDesktopItem;
     private readonly Forms.Timer _clickTimer;
 
     public TrayIconService(MainWindow window)
@@ -44,6 +48,14 @@ internal sealed class TrayIconService : IDisposable
         previousItem.Click += (_, _) => _window.SendCommand("prev");
         var nextItem = new Forms.ToolStripMenuItem("下一首");
         nextItem.Click += (_, _) => _window.SendCommand("next");
+        // 壁纸（第 93 轮 B：当前壁纸名 + 暂停 + 下一张 + 桌面层开关）。
+        _wallpaperInfoItem = new Forms.ToolStripMenuItem("壁纸：未启用") { Enabled = false };
+        _wallpaperPauseItem = new Forms.ToolStripMenuItem("暂停壁纸");
+        _wallpaperPauseItem.Click += (_, _) => _window.ToggleWallpaperPauseFromHotkey();
+        _wallpaperNextItem = new Forms.ToolStripMenuItem("下一张壁纸");
+        _wallpaperNextItem.Click += (_, _) => _window.NextWallpaperFromHotkey();
+        _wallpaperDesktopItem = new Forms.ToolStripMenuItem("桌面层（二期）") { Enabled = false };
+
         var unlockLyricsItem = new Forms.ToolStripMenuItem("解锁桌面歌词");
         unlockLyricsItem.Click += (_, _) => _window.UnlockDesktopLyrics();
         var settingsItem = new Forms.ToolStripMenuItem("设置…");
@@ -55,6 +67,11 @@ internal sealed class TrayIconService : IDisposable
         _menu.Items.Add(_togglePlayItem);
         _menu.Items.Add(previousItem);
         _menu.Items.Add(nextItem);
+        _menu.Items.Add(new Forms.ToolStripSeparator());
+        _menu.Items.Add(_wallpaperInfoItem);
+        _menu.Items.Add(_wallpaperPauseItem);
+        _menu.Items.Add(_wallpaperNextItem);
+        _menu.Items.Add(_wallpaperDesktopItem);
         _menu.Items.Add(new Forms.ToolStripSeparator());
         _menu.Items.Add(unlockLyricsItem);
         _menu.Items.Add(settingsItem);
@@ -131,6 +148,19 @@ internal sealed class TrayIconService : IDisposable
         {
             _window.ToggleFromTray();
         }
+    }
+
+    /// <summary>壁纸状态推送：菜单里的名字与「暂停/继续」文案跟着画布走。</summary>
+    internal void UpdateWallpaperState(string title, bool paused, bool running)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _wallpaperInfoItem.Text = running ? $"壁纸：{title}" : $"壁纸：{title}（未运行）";
+        _wallpaperPauseItem.Text = paused ? "继续壁纸" : "暂停壁纸";
+        _wallpaperPauseItem.Enabled = running;
     }
 
     /// <summary>页面播放状态推送：菜单文案与播放态同步（B23）。</summary>

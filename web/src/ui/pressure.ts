@@ -49,18 +49,25 @@ export function createPressureStage() {
       unsubscribe?.(); unsubscribe = null;
     }
   };
+  function activate() {
+    if (active || disposed) return;
+    active = true; root.classList.remove('is-failed'); root.classList.add('is-on');
+    try {
+      scene = createPressureScene(); root.append(scene.root); scene.setSong(song);
+      sync(); lastFrame = performance.now(); unsubscribe = onPlayer(sync); frame(lastFrame);
+    } catch (error) { console.error('[pressure] initialization failed', error); root.classList.add('is-failed'); }
+  }
   return {
     root,
     setSong(input: LumiereSongInput | null) { song = input; scene?.setSong(input); root.classList.toggle('is-content', !!input); },
-    activate() {
-      if (active || disposed) return;
-      active = true; root.classList.remove('is-failed'); root.classList.add('is-on');
-      try {
-        scene = createPressureScene(); root.append(scene.root); scene.setSong(song);
-        sync(); lastFrame = performance.now(); unsubscribe = onPlayer(sync); frame(lastFrame);
-      } catch (error) { console.error('[pressure] initialization failed', error); root.classList.add('is-failed'); }
-    },
+    activate,
     deactivate,
+    /** 字体设置变了：按新字体重建画布（歌曲保留，音频分析重新挂接）。 */
+    refreshFont() {
+      if (!active) return;
+      deactivate();
+      activate();
+    },
     dispose() { disposed = true; deactivate(); root.remove(); },
   };
 }

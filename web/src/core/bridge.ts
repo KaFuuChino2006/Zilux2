@@ -58,6 +58,14 @@ export function postMessage(payload: Record<string, unknown>): boolean {
   return true;
 }
 
+/**
+ * 应用内音量变化：宿主据此在屏幕上方弹一颗音量胶囊（只反映本软件音量，
+ * 不碰系统端点音量，也不显示系统音量的变化）。
+ */
+export function reportAppVolume(percent: number, muted = false): void {
+  postMessage({ v: 1, type: 'appVolume', payload: { percent: Math.round(percent), muted } });
+}
+
 /* ---- 应用更新（Update v1，见 docs/zilux2-update-channel.md） ---- */
 
 export type UpdateState =
@@ -269,6 +277,10 @@ export const host = {
   openReleasePage(): void {
     post({ v: 1, type: 'update', action: 'openReleasePage' });
   },
+  /** 动态壁纸：让宿主弹系统文件选择框，选完直接导入本地库（结果走 onWallpaperImported）。 */
+  pickWallpaperFiles(): void {
+    post({ v: 1, type: 'wallpaper', action: 'pick' });
+  },
   onMessage(handler: (msg: HostMessage) => void): void {
     const wv = webview();
     if (!wv) return;
@@ -284,6 +296,7 @@ export const host = {
     });
   },
 };
+
 
 /* ---- 窗口状态（windowState v1）与系统字体（fonts v1）：宿主已推送的通道 ---- */
 
@@ -324,6 +337,147 @@ function bindWindowState(): void {
 }
 
 /** 订阅宿主窗口最大化状态（ready 时推一次，之后每次变化推一次）。 */
+/* ---- 动态壁纸层可见性：宿主在壁纸起停时推送，页面据此让出背景 ---- */
+
+/** 宿主推来的壁纸渲染指令（壁纸在页面里播，见 ui/wallpaperLayer.ts）。 */
+export interface WallpaperLayerState {
+  /** 宿主算好的总开关结果（enabled && 未暂停），false 时整层隐藏。 */
+  visible?: boolean;
+  assetId: number;
+  kind: 'video' | 'gif' | 'image';
+  /** 相对路径 /api/wallpaper/v2/media/{id}，取绝对地址用 onlineEndpoint。 */
+  mediaUrl: string;
+  coverUrl: string | null;
+  paused: boolean;
+  transition: string;
+  transitionMs: number;
+  dim: number;
+  blur: number;
+  brightness: number;
+  contrast: number;
+  saturation: number;
+  /** 壁纸音轨（第 4 轮）：默认静音，打开才出声；音乐在播时宿主会传 false。 */
+  audioEnabled?: boolean;
+  /** 0–100。 */
+  audioVolume?: number;
+  /** smart / cover / contain / fill / stretch（第 52 轮）。 */
+  fitMode?: string;
+  /** 节拍驱动强度 0–100（对应设置里的「节拍驱动强度」）。 */
+  beatStrength?: number;
+  overlayEnabled?: boolean;
+  overlayTemplate?: string;
+  /** 音频可视化开关（§5.9）。 */
+  visualizer?: boolean;
+  /** 可视化样式：spectrum / wave / ring / particles。 */
+  visualizerStyle?: string;
+  /** 片段入点/出点（毫秒，0 = 不裁）；播放速度 0.5–2（§5.2 第 80 轮）。 */
+  trimInMs?: number;
+  trimOutMs?: number;
+  speed?: number;
+  /**
+   * 多屏布局（第 25 轮 C）：每块屏相对虚拟屏的百分比矩形。
+   * 只有桌面层会带；缺省表示单屏，铺满整个画布。
+   */
+  screens?: Array<{ l: number; t: number; w: number; h: number }> | null;
+  /** 画面变换（第 86 轮）：镜像 / 旋转 0·90·180·270 / 四边裁剪百分比 0–45。 */
+  mirrorH?: boolean;
+  mirrorV?: boolean;
+  rotation?: number;
+  cropLeft?: number;
+  cropTop?: number;
+  cropRight?: number;
+  cropBottom?: number;
+  /** 画面自身缩放（1–3）。和背板模糊的 `blur` 不是一回事。 */
+  pictureZoom?: number;
+  /** 画面自身模糊半径（px，0–24）。 */
+  pictureBlur?: number;
+  /**
+   * 上屏帧率上限（每屏独立，取该屏画布的帧率设置）：0/缺省 = 原生播放；
+   * 低于 60 时 wallpaperLayer 改成 canvas 按目标帧率取帧。
+   */
+  fps?: number;
+}
+
+const wallpaperStateHandlers = new Set<(visible: boolean) => void>();
+const wallpaperLayerHandlers = new Set<(layer: WallpaperLayerState | null) => void>();
+let wallpaperStateBound = false;
+let lastWallpaperVisible = false;
+let lastWallpaperLayer: WallpaperLayerState | null = null;
+
+function applyWallpaperState(visible: boolean, layer: WallpaperLayerState | null): void {
+  // 把宿主的 visible 并进 layer：wallpaperLayer 的显隐判断要用它，
+  // 否则「设置里关掉总开关」这个动作在页面上看不出来。
+  if (layer) layer.visible = visible;
+  lastWallpaperVisible = visible;
+  lastWallpaperLayer = layer;
+  try {
+    document.documentElement.classList.toggle('is-wallpaper-layer', visible);
+  } catch {
+    // 非 DOM 环境忽略。
+  }
+  wallpaperStateHandlers.forEach((listener) => {
+    try {
+      listener(visible);
+    } catch (err) {
+      console.warn('[bridge] wallpaperState handler failed', err);
+    }
+  });
+  wallpaperLayerHandlers.forEach((listener) => {
+    try {
+      listener(layer);
+    } catch (err) {
+      console.warn('[bridge] wallpaperLayer handler failed', err);
+    }
+  });
+}
+
+function bindWallpaperState(): void {
+  if (wallpaperStateBound) return;
+  wallpaperStateBound = true;
+  host.onMessage((message) => {
+    const data = message as unknown as {
+      type?: string;
+      event?: string;
+      visible?: unknown;
+      layer?: WallpaperLayerState | null;
+    };
+    if (data.type !== 'host' || data.event !== 'wallpaperState') return;
+    const visible = typeof data.visible === 'boolean' ? data.visible : false;
+    const layer = data.layer && typeof data.layer === 'object' ? data.layer : null;
+    applyWallpaperState(visible, layer);
+  });
+}
+
+/** 订阅壁纸渲染指令（立即回调一次当前值）。返回取消订阅函数。 */
+export function onWallpaperLayer(handler: (layer: WallpaperLayerState | null) => void): () => void {
+  bindWallpaperState();
+  wallpaperLayerHandlers.add(handler);
+  handler(lastWallpaperLayer);
+  return () => {
+    wallpaperLayerHandlers.delete(handler);
+  };
+}
+
+/** 当前壁纸渲染指令（页面首次加载时用它补一次）。 */
+export function getWallpaperLayer(): WallpaperLayerState | null {
+  return lastWallpaperLayer;
+}
+
+/** 订阅壁纸层可见性（立即回调一次当前值）。返回取消订阅函数。 */
+export function onWallpaperState(handler: (visible: boolean) => void): () => void {
+  bindWallpaperState();
+  wallpaperStateHandlers.add(handler);
+  handler(lastWallpaperVisible);
+  return () => {
+    wallpaperStateHandlers.delete(handler);
+  };
+}
+
+/** 当前壁纸层是否可见（页面让出背景时为 true）。 */
+export function getWallpaperVisible(): boolean {
+  return lastWallpaperVisible;
+}
+
 export function onWindowState(handler: (maximized: boolean) => void): () => void {
   windowStateHandlers.add(handler);
   bindWindowState();
@@ -447,6 +601,10 @@ export interface MediaState {
   durationMs?: number;
   positionMs?: number;
   playing?: boolean;
+  /** 无缝过渡进行中（快捷键切下一首的交叉淡化窗口）。 */
+  transitioning?: boolean;
+  transitionProgress?: number;
+  transitionRemainingMs?: number;
 }
 
 /** 宿主 → 页面：系统媒体键 / 浮层按钮。 */
@@ -480,12 +638,49 @@ export function reportMedia(state: MediaState): void {
   if (state.artist) payload.artist = state.artist;
   if (state.album) payload.album = state.album;
   if (state.coverUrl) payload.coverUrl = state.coverUrl;
+  if (state.transitioning) payload.transitioning = true;
+  payload.transitionRemainingMs = finiteMs(state.transitionRemainingMs);
+  payload.transitionProgress = Number.isFinite(state.transitionProgress) ? Math.max(0, Math.min(1, state.transitionProgress!)) : 0;
   post({ v: 1, type: 'media', payload });
 }
 
+/** 桌面歌词上下文窗口里的一行（宿主整体替换上下文时按这个结构解析）。 */
+export interface DesktopLyricsLinePayload {
+  text: string;
+  translation: string;
+  startMs: number;
+  endMs: number;
+  words: Array<{ text: string; spaceBefore?: boolean; startMs: number; endMs: number }>;
+}
+
+/** 桌面歌词附加信息；lines 只在上下文窗口变化时携带。 */
+export interface DesktopLyricsExtra {
+  positionMs?: number;
+  playing?: boolean;
+  currentIndex?: number;
+  /** lines[0] 在整份歌词里的下标；每帧都发，宿主据此把窗口对齐到真实句子。 */
+  linesStart?: number;
+  /** 只有当前句窗口变化时才带：宿主收到就整体替换上下文。 */
+  lines?: DesktopLyricsLinePayload[];
+}
+
 /** 桌面歌词：把相邻两句、当前句和译文推给宿主窗口。 */
-export function updateDesktopLyrics(now: string, translation: string, previous = '', next = '', words: Array<{ text: string; spaceBefore?: boolean }> = [], activeWord = -1): void {
-  post({ v: 1, type: 'lyrics', event: 'line', now, translation, previous, next, words: words.map(({ text, spaceBefore }) => ({ text, spaceBefore })), activeWord });
+export function updateDesktopLyrics(
+  now: string, translation: string, previous = '', next = '',
+  words: Array<{ text: string; spaceBefore?: boolean; startMs?: number; endMs?: number }> = [],
+  activeWord = -1,
+  extra: DesktopLyricsExtra = {},
+): void {
+  post({
+    v: 1, type: 'lyrics', event: 'line', now, translation, previous, next,
+    words: words.map(({ text, spaceBefore, startMs, endMs }) => ({ text, spaceBefore, startMs: finiteMs(startMs), endMs: finiteMs(endMs) })),
+    activeWord,
+    positionMs: finiteMs(extra.positionMs),
+    playing: extra.playing === true,
+    currentIndex: Number.isFinite(extra.currentIndex) ? extra.currentIndex : -1,
+    linesStart: Number.isFinite(extra.linesStart) ? extra.linesStart : 0,
+    ...(extra.lines ? { lines: extra.lines } : {}),
+  });
 }
 
 /**

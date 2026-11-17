@@ -5,7 +5,8 @@
  * 背景窗口（`index.html?scene=backgroundLyrics`，由宿主挂在 WorkerW 下）：不启动整套 App，
  * 只创建一个 LyricsView，用宿主转发的媒体快照驱动播放头；歌词文档来自上面的 localStorage 快照。
  */
-import { host } from '../core/bridge';
+import { host, onWallpaperLayer } from '../core/bridge';
+import { pageImmersiveEnabled, refreshPageWallpaperSwitches } from '../wallpaper/client';
 import { getSettings, loadSettings, onSettingsChange } from '../core/settings';
 import { initOnline, onlineEndpoint, onOnlineChange } from '../online/client';
 import type { OnlineTrack } from '../online/types';
@@ -20,13 +21,14 @@ import {
   lumiereEffectOn,
 } from './bgLyricsCover';
 import { currentLyricDoc, LyricsView, loadLyricDoc, reloadSharedLyricSettings, setExternalLyricMode, type LyricDoc } from './lyrics';
+import { lumiereMode } from './lumiere';
 import { applyExternalPlayback, getTransitionTarget, onPlayer, peekUpcoming, playerState } from './player';
 import { readCrossfadeDebug } from './crossfadeDeck';
 
 /** 主窗口解析好的歌词文档快照键（含曲目与逐字时间轴）。 */
 const DOC_KEY = 'zilux2.bgLyricsDoc';
-/** 背景场景外推播放头的节奏：宿主只有 1 次/秒的媒体快照。 */
-const CLOCK_INTERVAL_MS = 100;
+/** 背景场景外推播放头的节奏：宿主快照约 5 次/秒，本地按 30fps 外推；太稀会让行切换看着比主窗慢。 */
+const CLOCK_INTERVAL_MS = 33;
 
 interface BackgroundDocSnapshot {
   track: OnlineTrack;
@@ -265,6 +267,12 @@ export async function bootBackgroundLyricsScene(): Promise<void> {
   // 背景页也要拿到宿主的在线源端点：封面是回环绝对地址，重启后端口会变，需要按当前端点重拼。
   initOnline();
   await loadSettings();
+  // 「背景歌词样式」选了动态壁纸时，这一页整块透明，让真正的桌面壁纸透过窗口显示。
+  // 桌面背景歌词要透出桌面壁纸的两种情况：
+  //  ① 背景歌词样式选了「动态壁纸」；
+  //  ② 播放效果是画布类（纯字 / 拼合 / 房间 / 唱片）——这些效果自带暗场，
+  //     用 screen 混合就能让壁纸透上来，不需要整页不透明把它们闷住。
+  if (pageImmersiveEnabled() || lumiereMode() !== 'off') document.documentElement.classList.add('is-bg-motion');
   // 模块级样式/偏移变量在导入时只读过一次；启动时重读一遍，保证背景窗口和主窗口一致。
   reloadSharedLyricSettings();
 
@@ -272,9 +280,76 @@ export async function bootBackgroundLyricsScene(): Promise<void> {
   view.root.classList.add('is-background-lyrics');
   document.body.append(view.root);
 
+  // 「动态壁纸」样式：这一页自己把壁纸铺在歌词下面，而不是指望窗口半透明。
+  // 窗口一旦变成 layered（AllowsTransparency），WebView2 的子窗口就不参与合成了，
+  // 结果就是「壁纸看得见、歌词一点没有」。所以壁纸由页面自己画，窗口保持不透明。
+  let motionLayer: import('./wallpaperLayer').WallpaperLayer | null = null;
+  // 这一层只在「动态壁纸」样式下才吃状态：同一样式切回去之后就不能再建媒体，
+  // 否则同一段视频会被解第二遍（用户能看到的两份解码）。
+  let motionOn = false;
+  let latestState: import('../core/bridge').WallpaperLayerState | null = null;
+
+  const applyMotion = (): void => {
+    const on = pageImmersiveEnabled() || lumiereMode() !== 'off';
+    motionOn = on;
+    document.documentElement.classList.toggle('is-bg-motion', on);
+    if (!on) {
+      // 切回「纯壁纸 / 封面在左」时把这一层彻底停掉：不占解码、也不在背后泛光。
+      motionLayer?.clear();
+      if (motionLayer) motionLayer.element.style.display = 'none';
+      return;
+    }
+
+    if (motionLayer) {
+      motionLayer.element.style.display = '';
+      if (latestState) motionLayer.apply(latestState);
+      return;
+    }
+
+    void (async () => {
+      try {
+        const { WallpaperLayer } = await import('./wallpaperLayer');
+        const layer = new WallpaperLayer();
+        // 壁纸要与歌词同处一个 stacking context，stage 的 screen 混合才混得到它。
+        view.root.insertBefore(layer.element, view.root.firstChild);
+        motionLayer = layer;
+        if (latestState) layer.apply(latestState);
+      } catch {
+        // 宿主机还没就绪：保持透明底，不阻塞歌词。
+      }
+    })();
+  };
+
+  // 手动订阅而不是 layer.start()：样式关掉之后仍然要收状态（缓存起来），
+  // 但只在 motionOn 时真正建/换媒体。
+  onWallpaperLayer((state) => {
+    latestState = state;
+    if (motionOn && motionLayer) motionLayer.apply(state);
+  });
+
+  applyMotion();
+
+  // 主窗口改「背景歌词样式」时，这一页要立刻跟着变。
+  // 跨窗口用同源 localStorage 的 storage 事件通知（页面间不共享模块状态）。
+    // 别人改了设置（快捷设置/设置页/API）时这一页也要跟上：
+  // 宿主只在推壁纸状态时才知道，选项本身不会广播，所以这里低频拉一次。
+  window.setInterval(() => {
+    void (async () => {
+      await refreshPageWallpaperSwitches();
+      applyMotion();
+    })();
+  }, 3000);
+window.addEventListener('storage', (event) => {
+    if (event.key !== 'zilux2.wallpaperOptionsStamp') return;
+    void (async () => {
+      await refreshPageWallpaperSwitches();
+      applyMotion();
+    })();
+  });
+
   // 「封面在左」样式：两层封面图交叉淡入淡出（换歌时旧封面压着新封面淡出，避免硬切），
-  // 铺满整宽并用 CSS mask 向右渐隐；歌词列由 CSS 挪到右半边。
-  // 每层再分「清晰」「模糊」两个 pane：右侧用同一张图的模糊副本渐入，过渡区才真的会糊。
+  // 铺满整宽；右侧的模糊由上层 pane 对同一张图做 backdrop-filter 得到，不再复制第二份封面，
+  // 因此清晰区和模糊区天然对齐，也不会把 Windows 桌面壁纸透进来。
   const createCoverPane = (extra: string): HTMLDivElement => {
     const pane = document.createElement('div');
     pane.className = `bg-cover-pane ${extra}`;
@@ -325,8 +400,12 @@ export async function bootBackgroundLyricsScene(): Promise<void> {
     const nextIndex = activeCoverLayer === 0 ? 1 : 0;
     const next = coverLayers[nextIndex];
     const image = url ? `url("${url}")` : 'none';
-    next.querySelectorAll<HTMLDivElement>('.bg-cover-pane').forEach((pane) => {
+    // 只给清晰层写图；模糊层靠 backdrop-filter 糊它下面这张图，本身不再持有封面。
+    next.querySelectorAll<HTMLDivElement>('.bg-cover-sharp').forEach((pane) => {
       pane.style.backgroundImage = image;
+    });
+    next.querySelectorAll<HTMLDivElement>('.bg-cover-blur').forEach((pane) => {
+      pane.style.backgroundImage = 'none';
     });
     // 两层封面都留在歌词框架之下（CSS z-index:1 / 框架 z-index:2），靠 DOM 顺序决定谁在上：
     // 把新层移到末尾，换歌时旧层压着新层淡出，不会挡住歌词。

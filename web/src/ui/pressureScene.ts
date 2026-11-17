@@ -1,4 +1,5 @@
 import type { LumiereSongInput } from './lumiere';
+import { setPressureText } from './pressureType';
 import {
   compilePressure,
   pressureIndex,
@@ -456,6 +457,7 @@ export function createPressureScene() {
     update,
     setSong(input: LumiereSongInput | null): void {
       song = input;
+      setPressureText((input?.lines ?? []).map((line) => line.text).join(' '));
       shots = compilePressure(input);
       typeEngines.forEach((engine) => engine.setSize(width, height));
       dirty = true;

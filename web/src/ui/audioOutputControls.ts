@@ -1,9 +1,10 @@
-﻿/**
+/**
  * 音频输出控件：
  *   - createAppOutputControl：本软件的播放设备（跟随系统 / 指定设备），设置页与快捷设置共用；
  *   - createSystemAudioPanel：系统默认播放设备轮换（只放在设置页「系统音频」）。
  */
 import { h, toast } from './dom';
+import { createSelectControl } from './selectControl';
 import { getSettings, onSettingsChange, patchSettings } from '../core/settings';
 import {
   cycleSystemAudioOutput,
@@ -23,12 +24,24 @@ export interface AppOutputControl {
 
 /** 本软件输出：下拉里第一项是「跟随系统」，其余是全部播放设备。 */
 export function createAppOutputControl(): AppOutputControl {
-  const select = h('select', {
-    class: 'set-select',
-    'aria-label': '扬声器输出',
-  }) as HTMLSelectElement;
+  const select = createSelectControl({
+    className: 'set-select',
+    ariaLabel: '扬声器输出',
+    menuWidth: 320,
+    options: [{ value: '', label: '跟随系统（Windows 默认设备）' }],
+    onChange: (value) => {
+      if (!value) {
+        patchSettings({ playback: { appOutputMode: 'system' } });
+        return;
+      }
+
+      const device = outputs.find((item) => item.id === value);
+      patchSettings({ playback: { appOutputMode: 'device', appOutputDeviceId: value } });
+      toast(`Zilux2 输出已切到「${device?.label ?? '所选设备'}」`);
+    },
+  });
   const note = h('div', { class: 'field-hint', text: '' });
-  const root = h('div', { class: 'app-output-control' }, select, note);
+  const root = h('div', { class: 'app-output-control' }, select.root, note);
 
   let outputs: AppAudioOutput[] = [];
   let loading = true;
@@ -37,15 +50,16 @@ export function createAppOutputControl(): AppOutputControl {
     const { playback } = getSettings();
     const saved = playback.appOutputDeviceId;
     const pinned = playback.appOutputMode === 'device' && saved;
-    select.replaceChildren();
-    select.append(h('option', { value: '', text: '跟随系统（Windows 默认设备）' }));
-    for (const device of outputs) {
-      select.append(h('option', { value: device.id, text: device.label }));
-    }
 
     const found = pinned && outputs.some((device) => device.id === saved);
-    select.value = found ? saved : '';
-    select.classList.toggle('is-missing', Boolean(pinned) && !found && outputs.length > 0);
+    select.setOptions(
+      [
+        { value: '', label: '跟随系统（Windows 默认设备）' },
+        ...outputs.map((device) => ({ value: device.id, label: device.label })),
+      ],
+      found ? saved : '',
+    );
+    select.setInvalid(Boolean(pinned) && !found && outputs.length > 0);
 
     if (loading) {
       note.textContent = '正在读取播放设备…';
@@ -72,18 +86,6 @@ export function createAppOutputControl(): AppOutputControl {
         if (root.isConnected) paint();
       });
   };
-
-  select.addEventListener('change', () => {
-    const value = select.value;
-    if (!value) {
-      patchSettings({ playback: { appOutputMode: 'system' } });
-      return;
-    }
-
-    const device = outputs.find((item) => item.id === value);
-    patchSettings({ playback: { appOutputMode: 'device', appOutputDeviceId: value } });
-    toast(`Zilux2 输出已切到「${device?.label ?? '所选设备'}」`);
-  });
 
   // 插拔设备 / 系统默认设备变化时刷新列表；控件被销毁后自动退订。
   const unsubscribe = onAppAudioOutputsChanged(() => {

@@ -29,8 +29,35 @@
              still covers the plain-WPF ErrorPanel shown when WebView2 cannot start. -->
         <wv2:WebView2 x:Name="Browser" Margin="0" Visibility="Hidden" />
 
-        <!-- 启动遮罩：窗口一出现就是纯色，等 WebView2 首帧后再淡出，避免黑底或桌面闪一下。 -->
-        <Border x:Name="StartupVeil" Background="#F3F1EA" IsHitTestVisible="False" />
+        <!-- 启动遮罩：窗口一出现就是纯色，等 WebView2 首帧后再淡出，避免黑底或桌面闪一下。
+             遮罩里就是启动画面本体（标题/副标题/底部进度条），文案取自 设置 → 启动；
+             原来这里只是一块纯色，设置里的「启动动画 / 启动标题 / 启动副标题」完全没生效。 -->
+        <Grid x:Name="StartupVeil" Background="#F3F1EA" IsHitTestVisible="False">
+            <StackPanel x:Name="SplashStack"
+                        HorizontalAlignment="Center" VerticalAlignment="Center"
+                        Opacity="0">
+                <TextBlock x:Name="SplashTitleText"
+                           Text="ZILUX2"
+                           FontSize="46" FontWeight="SemiBold"
+                           Foreground="#171A21"
+                           HorizontalAlignment="Center" />
+                <TextBlock x:Name="SplashSubtitleText"
+                           Text="新一代创意播放器"
+                           Margin="0,10,0,0"
+                           FontSize="14"
+                           Foreground="#8B8F99"
+                           HorizontalAlignment="Center" />
+                <Border x:Name="SplashBarTrack"
+                        Width="132" Height="3" Margin="0,30,0,0"
+                        CornerRadius="2" Background="#E3DFD4"
+                        ClipToBounds="True">
+                    <Border x:Name="SplashBar"
+                            Width="42" Height="3" CornerRadius="2"
+                            HorizontalAlignment="Left"
+                            Background="#8F7AE8" />
+                </Border>
+            </StackPanel>
+        </Grid>
 
         <!-- Plain WPF fallback (no WebView2 runtime / browser process gone): the user must
              never be left staring at an empty frame, and the host must not crash. -->

@@ -47,6 +47,15 @@ internal sealed class StemsRequest
 
     public int WindowSec { get; init; } = StemsContract.DefaultWindowSec;
 
+    /// <summary>
+    /// 请求的分离轨数：2 = vocals/instrumental（契约默认），4 = drums/bass/other/vocals。
+    /// 4 轨供进阶智能过渡的 stem swap 使用；两种模式文件名不同，互不覆盖。
+    /// </summary>
+    public int Stems { get; init; } = 2;
+
+    /// <summary>是否要 4 轨结果（drums/bass/other 会额外落盘）。</summary>
+    public bool FourStem => Stems >= 4;
+
     /// <summary>44.1 kHz 下的窗口起点；窗口号永远按 30 s 网格计算。</summary>
     public long StartFrame => Window * (long)StemsContract.WindowFrames;
 
@@ -61,6 +70,9 @@ internal sealed class StemsOutcome
     public int Window { get; init; }
 
     public int WindowSec { get; init; } = StemsContract.DefaultWindowSec;
+
+    /// <summary>本次请求的轨数：2 = 只有 vocals/inst（历史行为），4 = 额外落 drums/bass/other。</summary>
+    public int Stems { get; init; } = 2;
 
     public long Frames { get; init; }
 
@@ -83,6 +95,7 @@ internal sealed class StemsOutcome
             State = StemsState.Ready,
             Window = request.Window,
             WindowSec = request.WindowSec,
+            Stems = request.Stems,
             Frames = frames,
             Cached = cached,
             ElapsedMs = elapsedMs,
@@ -95,6 +108,7 @@ internal sealed class StemsOutcome
             State = StemsState.Computing,
             Window = request.Window,
             WindowSec = request.WindowSec,
+            Stems = request.Stems,
             RetryAfterMs = 800,
         };
 
@@ -104,11 +118,12 @@ internal sealed class StemsOutcome
             State = StemsState.Busy,
             Window = request.Window,
             WindowSec = request.WindowSec,
+            Stems = request.Stems,
             RetryAfterMs = 500,
         };
 
-    internal static StemsOutcome ModelMissing() =>
-        new() { State = StemsState.ModelMissing };
+    internal static StemsOutcome ModelMissing(StemsRequest? request = null) =>
+        new() { State = StemsState.ModelMissing, Stems = request?.Stems ?? 2 };
 
     internal static StemsOutcome Fail(StemsRequest request, string code, string message) =>
         new()
@@ -116,6 +131,7 @@ internal sealed class StemsOutcome
             State = StemsState.Error,
             Window = request.Window,
             WindowSec = request.WindowSec,
+            Stems = request.Stems,
             Code = code,
             Message = message,
         };
@@ -141,6 +157,8 @@ internal static class StemsJson
         {
             writer.WriteStartObject();
             writer.WriteString("state", StateName(outcome.State));
+            // 契约 §3.1 新增：2 = 旧两轨，4 = drums/bass/other/vocals。旧客户端忽略该键即可。
+            writer.WriteNumber("stems", outcome.Stems);
             switch (outcome.State)
             {
                 case StemsState.Ready:
@@ -223,6 +241,18 @@ internal sealed class StemsMeta
 
     public required int SegmentMs { get; init; }
 
+    /// <summary>这份缓存落了几轨：2 = 旧版（vocals + inst），4 = 额外有 drums/bass/other。</summary>
+    public int Stems { get; init; } = 2;
+
+    /// <summary>
+    /// 源文件身份（T2-7）：落盘时本地源文件的字节数与修改时间（UTC）。
+    /// 同名文件被重导出/替换后 trackKey 不变，读缓存必须靠这两个值判断是否已过期。
+    /// 在线曲目是临时下载文件、没有稳定身份，保持 0 / null；旧 meta 缺这两个键，读侧按未命中重算。
+    /// </summary>
+    public long SourceBytes { get; init; }
+
+    public DateTime? SourceModifiedUtc { get; init; }
+
     public required string ModelSha256 { get; init; }
 
     public required DateTime CreatedUtc { get; init; }
@@ -264,6 +294,17 @@ internal static class StemsMetaJson
                 Title = ReadString(root, "title"),
                 DurationMs = ReadInt64(root, "durationMs"),
                 SegmentMs = (int)ReadInt64(root, "segmentMs"),
+                // 旧版 meta 没有 stems 键：ReadInt64 返回 0，这里按 2 处理（T2-4 的读侧容错）。
+                Stems = ReadInt64(root, "stems") >= 4 ? 4 : 2,
+                // 旧 meta 没有这两个键：bytes=0 / 时间=null，读侧据此判未命中并重算一次（T2-7）。
+                SourceBytes = ReadInt64(root, "sourceBytes"),
+                SourceModifiedUtc = DateTime.TryParse(
+                    ReadString(root, "sourceModifiedUtc"),
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.RoundtripKind,
+                    out var sourceModified)
+                    ? sourceModified
+                    : null,
                 ModelSha256 = modelSha256,
                 CreatedUtc = DateTime.TryParse(
                     ReadString(root, "createdUtc"),
@@ -294,8 +335,17 @@ internal static class StemsMetaJson
             writer.WriteString("title", meta.Title);
             writer.WriteNumber("durationMs", meta.DurationMs);
             writer.WriteNumber("segmentMs", meta.SegmentMs);
+            writer.WriteNumber("stems", meta.Stems);
             writer.WriteString("modelSha256", meta.ModelSha256);
             writer.WriteString("createdUtc", meta.CreatedUtc.ToString("O", CultureInfo.InvariantCulture));
+            // 源文件身份：读缓存时与磁盘上的 FileInfo 比对，不一致就重算（T2-7）。
+            writer.WriteNumber("sourceBytes", meta.SourceBytes);
+            if (meta.SourceModifiedUtc is { } sourceModifiedUtc)
+            {
+                writer.WriteString(
+                    "sourceModifiedUtc",
+                    sourceModifiedUtc.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture));
+            }
             writer.WriteEndObject();
         }
 

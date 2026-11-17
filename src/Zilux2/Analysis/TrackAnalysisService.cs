@@ -56,6 +56,12 @@ internal sealed class TrackAnalysisService : IDisposable
     }
 
     /// <summary>
+    /// 本地曲目的 rel → 绝对路径（与 <see cref="PrepareAudioAsync"/> 用的是同一个回调）。
+    /// stems 缓存读侧靠它拿到源文件 FileInfo 来校验身份（T2-7）；在线曲目或未接线时返回 null。
+    /// </summary>
+    internal string? ResolveLocalPath(string? rel) => _localPathResolver?.Invoke(rel);
+
+    /// <summary>
     /// 在线曲目的分析音频只是临时下载；启动时清掉上次残留，
     /// 单次分析解码结束后也会立即删除，避免 C 盘长期保存整首歌副本。
     /// </summary>

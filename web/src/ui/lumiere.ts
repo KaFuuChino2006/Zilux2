@@ -31,6 +31,7 @@ import { playbackAnalyser } from '../core/audioTap';
 import { getSettings } from '../core/settings';
 import { onPlayer, playerState } from './player';
 import { lyricTextSettings, textSettingsToTuning, type LyricTextSettings } from './lumiereSettings';
+import { lyricDominantLang, lyricFontFamilyFor } from './lyricFont';
 
 /*
  * Zilux2 的改动：绘光原版的排版按镜头在「横排 / 竖排 / 交叉排」之间切换（竖排右起、交叉排会让周围
@@ -45,7 +46,7 @@ export type LumiereMode = 'off' | 'text' | 'room' | 'vinyl' | 'flow' | 'poem' | 
 
 export const LUMIERE_MODES: Array<{ id: LumiereMode; label: string; hint: string }> = [
   { id: 'flow', label: '拼合', hint: 'Folia 渲染：分镜排版、连续运镜、逐字入场、网点几何与反色文字' },
-  { id: 'off', label: '关闭', hint: '歌词页不显示播放效果' },
+  { id: 'off', label: '默认', hint: '默认歌词页：不叠加播放效果' },
   { id: 'text', label: '纯字', hint: 'folia 绘光的文字特效：发光大字、关键字染色、逐字点亮，可在「文字设置」里加背景光柱与雾' },
   { id: 'room', label: '房间', hint: '薄荷绿纵深 + 长条地毯：每句歌词拆成词散落在前方空间里，镜头跟着正在唱的那句推进；到「快捷设置 → 房间设置」可细调歌词风格、颜色与离散度' },
   { id: 'vinyl', label: '唱片', hint: '暖褐聆听室 + 33⅓ 转黑胶 + 黄铜唱臂：歌词压在唱片下方逐词点亮，暂停时唱片渐停、唱臂抬起；到「快捷设置 → 唱片设置」可细调盘面、唱臂与歌词样式' },
@@ -179,15 +180,19 @@ const keywordWordColors = (
  * 舞台的光色主要吃 accent，唱到的字吃 primary，没唱的字吃 secondary。
  * 混入强度仍由「文字设置 → 主题色占比」控制（0 就回到原来的香槟金）。
  */
-export function lumiereThemeForCover(mode: 'solid' | 'cover' | 'gradient', palette: string[] | null): Theme {
-  if (mode === 'solid' || !palette || palette.length === 0) return LUMIERE_THEME;
+export function lumiereThemeForCover(mode: 'solid' | 'cover' | 'gradient', palette: string[] | null, text = ''): Theme {
+  // 「歌词字体」是全局设置：主题带上 fontFamily 后，folia 的 resolveThemeFontStack 会把它放进栈首；
+  // 传了歌词文本时按主要语言选该语言的覆盖字体。
+  const customFont = lyricFontFamilyFor(lyricDominantLang(text));
+  const base: Theme = customFont ? { ...LUMIERE_THEME, fontFamily: customFont } : LUMIERE_THEME;
+  if (mode === 'solid' || !palette || palette.length === 0) return base;
   const at = (t: number): string => palette[Math.min(palette.length - 1, Math.max(0, Math.round(t * (palette.length - 1))))]!;
   // 自动渐变用色板首/中/尾，灯光、已唱字、未唱字各取一段，和「封面色」区分得开。
   const dominant = at(0);
   const second = mode === 'gradient' ? at(0.5) : palette[1] ?? dominant;
   const third = mode === 'gradient' ? at(1) : palette[2] ?? second;
   return {
-    ...LUMIERE_THEME,
+    ...base,
     name: mode === 'gradient' ? 'Zilux 封面渐变' : 'Zilux 封面色',
     accentColor: dominant,
     primaryColor: second ?? dominant,

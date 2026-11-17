@@ -12,6 +12,7 @@
  */
 
 import { extractLyricKeywords, keywordForWord, type LyricKeyword } from './keywords';
+import { lyricFontStack, lyricLangOf } from './lyricFont';
 import {
   lyricStyle,
   lyricStyleNeedsCharTiming,
@@ -82,7 +83,8 @@ const FONT_FAMILIES: Record<VinylStyleSettings['fontFamily'], string> = {
   serif: "'Noto Serif CJK SC', 'Source Han Serif SC', SimSun, serif",
   system: FONT_STACK,
 };
-const fontStackOf = (family: VinylStyleSettings['fontFamily']): string => FONT_FAMILIES[family];
+/** 全局歌词字体（若有）优先于唱片自带的字体族。 */
+const fontStackOf = (family: VinylStyleSettings['fontFamily'], text?: string): string => lyricFontStack(FONT_FAMILIES[family], text);
 
 interface Rgb {
   r: number;
@@ -193,6 +195,10 @@ const STYLE_CSS = `
 .zvs-line.is-visible{opacity:var(--vs-unsung-op,.34)}
 .zvs-line.is-sung{opacity:var(--vs-sung-op,.86)}
 .zvs-line.is-focus{opacity:var(--vs-active-op,1);scale:1}
+.zvs-char[data-lang="zh"]{font-family:var(--lyric-font-zh,var(--vs-font,${FONT_STACK}))}
+.zvs-char[data-lang="ja"]{font-family:var(--lyric-font-ja,var(--vs-font,${FONT_STACK}))}
+.zvs-char[data-lang="ko"]{font-family:var(--lyric-font-ko,var(--vs-font,${FONT_STACK}))}
+.zvs-char[data-lang="en"]{font-family:var(--lyric-font-en,var(--vs-font,${FONT_STACK}))}
 .zvs-word{display:inline;color:var(--vs-color,#f2e7d8);transition:color .32s ease,text-shadow .32s ease}
 .zvs-char{position:relative;display:inline-block;transition:color .3s ease,translate .32s ease,rotate .32s ease,opacity .3s ease}
 .zvs-line.is-focus .zvs-word[data-state="2"]{color:var(--vs-active,#ffe9c2);text-shadow:0 0 calc(16px * var(--vs-glow,.9)) var(--vs-glow-color,#ffcf8a)}
@@ -518,6 +524,7 @@ export function createVinylScene(options: VinylSceneOptions = {}): VinylScene {
           const cs = document.createElement('span');
           cs.className = 'zvs-char';
           cs.textContent = ch;
+          cs.dataset.lang = lyricLangOf(ch) || '';
           cs.style.setProperty('--ci', String(ci));
           const hash = scatterHash(line.text, ci);
           cs.style.setProperty('--drift-x', `${(scatterRandom(hash, 0) * 3.2 - 1.6).toFixed(2)}em`);
@@ -1052,11 +1059,11 @@ export function createVinylScene(options: VinylSceneOptions = {}): VinylScene {
         const titleFont = Math.max(9, labelRadius * 0.155);
         const ink = rgba(mixRgb(rgbLabel, rgbBlack, 0.74), 0.94);
         ctx.fillStyle = ink;
-        ctx.font = `${cfg.fontWeight} ${titleFont.toFixed(2)}px ${fontStackOf(cfg.fontFamily)}`;
+        ctx.font = `${cfg.fontWeight} ${titleFont.toFixed(2)}px ${fontStackOf(cfg.fontFamily, song.title)}`;
         ctx.fillText(truncate(song.title.trim() || '唱片', 16), 0, -labelRadius * 0.13);
         if (song.artist.trim()) {
           ctx.globalAlpha = 0.68;
-          ctx.font = `400 ${(titleFont * 0.6).toFixed(2)}px ${FONT_STACK}`;
+          ctx.font = `400 ${(titleFont * 0.6).toFixed(2)}px ${fontStackOf(cfg.fontFamily, song.artist)}`;
           ctx.fillText(truncate(song.artist.trim(), 22), 0, labelRadius * 0.16);
           ctx.globalAlpha = 1;
         }

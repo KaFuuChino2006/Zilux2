@@ -1,6 +1,6 @@
 /** 新前端入口：启动序列 + 全局快捷键 + 宿主就绪握手。 */
 
-import { host, hostAvailable, type UpdateSnapshot } from './core/bridge';
+import { host, hostAvailable, onWallpaperState, postMessage, type UpdateSnapshot } from './core/bridge';
 import { initAccount } from './core/account';
 import { loadSettings } from './core/settings';
 import { initAppAudioOutput, initSystemAudioOutput } from './core/audioOutput';
@@ -17,6 +17,12 @@ import { refreshArtworkCovers } from './online/artwork';
 import { initUpdates, downloadUpdate, installUpdate, openReleasePage, onUpdateChange, updateSnapshot } from './ui/updates';
 import { showUpdateNotes } from './ui/updateNotes';
 import { ignoreUpdateVersion, shouldPromptUpdate } from './ui/updateReminders';
+import { startWallpaperLayer } from './ui/wallpaperLayer';
+import { refreshPageWallpaperSwitches } from './wallpaper/client';
+import { startLyricVisualizer } from './ui/lyricsVisualizer';
+import { startAppearanceLink } from './ui/wallpaperAutoPreset';
+import { bootWallpaperScene, isWallpaperScene } from './ui/wallpaperScene';
+import { initAudio } from './core/audio';
 import { bootBackgroundLyricsScene, installBackgroundLyricsPublisher, isBackgroundLyricsScene } from './ui/backgroundLyrics';
 
 // 更新提示去重：同一个版本只提示一次，宿主重复推送也不会反复弹窗。
@@ -155,7 +161,27 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  // 音频特征：宿主 30Hz 推送 bins/bands/level/peak/beat/strength/bpm。
+  // 这个订阅必须早于任何消费端（壁纸节拍脉冲、可视化、歌词动效），否则它们永远拿到空帧。
+  initAudio();
+  onWallpaperState(() => {});
+  // 软件内壁纸层：订阅宿主推送、按页面开关决定显隐。
+  // TEMP-HOLD（2026-11-18）：软件内壁纸层与壁纸页/歌词页的组合仍会把主线程卡死（video 反复重建、
+  // media 请求被 abort），先不启动它；桌面层每块屏的页面独立渲染，不受影响。
+  startWallpaperLayer();
+  // 设置里的「页面显示壁纸」四个开关决定哪些页面把底让给壁纸：开机先读一次，
+  // 否则用户上次开着的开关要等他进过壁纸页（那次才拉 options）才生效。
+  refreshPageWallpaperSwitches();
+  startLyricVisualizer();
+  startAppearanceLink();
+
   // 桌面背景歌词：宿主把这块页面挂在桌面壁纸层下，只需要演出，不启动整套 App。
+  // 桌面壁纸层：挂在 Progman 下的第二个页面，只演壁纸，不启动整套 App。
+  if (isWallpaperScene()) {
+    await bootWallpaperScene();
+    return;
+  }
+
   if (isBackgroundLyricsScene()) {
     await bootBackgroundLyricsScene();
     return;
@@ -179,6 +205,12 @@ async function main(): Promise<void> {
   const root = document.getElementById('app');
   if (!root) throw new Error('#app not found');
 
+  root.style.opacity = '0';
+  root.style.transition = 'opacity 420ms cubic-bezier(.22,.8,.25,1)';
+  const revealFallback = window.setTimeout(() => {
+    root.style.opacity = '1';
+    document.querySelector('.splash')?.remove();
+  }, 11000);
   const app = new App();
   app.mount(root);
   installBackgroundLyricsPublisher();
@@ -190,6 +222,8 @@ async function main(): Promise<void> {
   const splashSubtitle = settings.general.splashSubtitle.trim();
   const splash = settings.general.splash ? createSplash(splashTitle, splashSubtitle) : null;
   if (splash) document.body.append(splash);
+  await Promise.race([document.fonts.ready, sleep(1500)]);
+  postMessage({ v: 1, type: 'startupPreview' });
   const startedAt = performance.now();
 
   const ready = await waitOnline(7000);
@@ -211,9 +245,23 @@ async function main(): Promise<void> {
   onUpdateChange(handleUpdatePrompt);
   handleUpdatePrompt(updateSnapshot());
 
+  // Font substitution changes title metrics; finish it before revealing the UI.
+  await Promise.race([document.fonts.ready, sleep(1500)]);
   const elapsed = performance.now() - startedAt;
   if (splash) {
     await sleep(Math.max(0, 800 - elapsed));
+
+  }
+
+  // The handshake above starts services; this separate signal reveals stable content.
+  await Promise.race([
+    new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
+    sleep(200),
+  ]);
+  window.clearTimeout(revealFallback);
+  postMessage({ v: 1, type: 'contentReady' });
+  root.style.opacity = '1';
+  if (splash) {
     splash.classList.add('is-done');
     window.setTimeout(() => splash.remove(), 520);
   }

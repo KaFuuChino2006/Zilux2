@@ -5,16 +5,17 @@
  *   - 单 <audio> 元素，队列由调用方传入（墙面/搜索结果/本地库）
  *   - CUE 分轨：track.startAt（秒）+ track.durationMs（该轨时长，0 = 播到文件尾）
  *   - 状态订阅：UI 只监听 onPlayer()，不直接摸 audio
- *   - Windows SMTC：reportMedia() ≤1 次/秒 + onMediaControl() 响应系统媒体键
+ *   - Windows SMTC：reportMedia() 约 5 次/秒（宿主再合并） + onMediaControl() 响应系统媒体键
  */
 
 import { onMediaControl, reportMedia, type MediaControl } from '../core/bridge';
+import { onlineArtwork } from '../online/artwork';
 import { registerAppAudioElement } from '../core/audioOutput';
 import { fetchStreamInfo, onlineInfo, qualityForSource, streamUrl, checkLiked, addLikedTrack, removeLikedTrack, recordRecent } from '../online/client';
 import { analyzeTrack, cachedAnalysis, type AnalysisResult } from '../online/analysis';
 import type { OnlineTrack } from '../online/types';
 import { getSettings } from '../core/settings';
-import { attachAudioTap, audioTapGraphActive, deckGraphConnected, ensureEqualizerGraph, setAudioTapVolume, setDeckGraphGain, setDeckTrimGain, setEqualizer, setLoudnessGainDb, setNightCompressor, setVocalFade } from '../core/audioTap';
+import { attachAudioTap, audioTapGraphActive, audioTapState, deckGraphConnected, ensureEqualizerGraph, resumeAudioContext, setAudioTapVolume, setDeckGraphGain, setDeckTrimGain, setEqualizer, setLoudnessGainDb, setNightCompressor, setVocalFade } from '../core/audioTap';
 import { compensationDbFor, loudnessEnabled, nightModeEnabled } from './loudness';
 import {
   cancelCrossfade,
@@ -22,6 +23,8 @@ import {
   crossfadeApplyVolume,
   crossfadeFinishNow,
   crossfadeIsFading,
+  crossfadeProgress,
+  crossfadeRemainingMs,
   crossfadeTick,
   MANUAL_FADE_DEFAULT_MS,
   prepareCrossfade,
@@ -207,6 +210,22 @@ let fx = readPlaybackFx();
 /** 渐变倍率：1=正常音量；淡出/淡入过程中在 0..1 之间。 */
 let fadeScale = 1;
 let fadeRaf = 0;
+
+/**
+ * 播放状态机（进度、音量斜坡、过渡调度）一律用定时器驱动，不用 requestAnimationFrame：
+ * 窗口最小化/被完全遮挡时 WebView2 可能停掉 rAF，整条状态机跟着冻住 —— 进度停在 0:00、
+ * 音量斜坡停在起点，听感就是「卡在 0 秒」或「在放但没声音，点回软件才出声」。
+ * 宿主已带 --disable-background-timer-throttling，定时器在后台不会被压到 1 次/秒。
+ * 24ms ≈ 41Hz，够跑进度和淡入淡出，也比 rAF 更抗后台。
+ */
+const FRAME_MS = 24;
+function nextFrame(callback: () => void): number {
+  return window.setTimeout(callback, FRAME_MS);
+}
+function cancelFrame(id: number): void {
+  window.clearTimeout(id);
+  window.cancelAnimationFrame(id);
+}
 let fadeToken = 0;
 /** 暂停结束时保留的人声保留量（0=无，1=最大）；恢复播放时从这里平滑回到 0。 */
 let vocalHold = 0;
@@ -229,7 +248,7 @@ window.addEventListener('zilux:playback-fx', () => {
 function cancelFade(): void {
   fadeToken += 1;
   if (fadeRaf) {
-    cancelAnimationFrame(fadeRaf);
+    cancelFrame(fadeRaf);
     fadeRaf = 0;
   }
 }
@@ -273,9 +292,9 @@ function fadeTo(
         resolve();
         return;
       }
-      fadeRaf = requestAnimationFrame(step);
+      fadeRaf = nextFrame(step);
     };
-    fadeRaf = requestAnimationFrame(step);
+    fadeRaf = nextFrame(step);
   });
 }
 
@@ -391,6 +410,10 @@ let lastReportAt = 0;
 let rafId = 0;
 /** 连续失败跳过计数：成功起播即清零，避免一次坏队列让自动跳过永久失效。 */
 let skipGuard = 0;
+/** 本次会话里确认播不出来的曲目（源:id）；切歌时直接越过，不再等它报错。 */
+const badTrackKeys = new Set<string>();
+/** 装填看门狗：换源后迟迟没有起播/可播就按失败处理。 */
+let loadWatchdogToken = 0;
 /** 「播完当前曲就停」一次性标记（睡眠定时 endOfTrack 模式）。 */
 let pauseAtTrackEnd = false;
 /** 是否正处在「暂停淡出」窗口内：此时按播放应撤销淡出恢复，而不是再叠一次暂停。 */
@@ -422,9 +445,14 @@ function emit(): void {
 }
 
 function setState(patch: Partial<PlayerState>): void {
+  const previousTrack = state.track;
+  const previousPlaying = state.playing;
   state = { ...state, ...patch };
   emit();
   if (state.track) schedulePersist();
+  // 换曲是所有上报路径的唯一收口：暂停态没有 tick、load 也可能提前 return，
+  // 只有挂在这里才能保证「切歌 → 宿主立刻收到」。
+  if ((patch.track && patch.track !== previousTrack) || state.playing !== previousPlaying) maybeReport(true);
 }
 /**
  * 桌面背景歌词场景：把宿主转发的播放快照并进状态并广播。
@@ -582,9 +610,36 @@ function durationMs(): number {
   return fallback;
 }
 
+/**
+ * 后台自愈：切歌后元素有时不真的起播（currentTime 一直 0、paused 仍为 true），
+ * 表现为「卡在 0 秒」；Web Audio 的上下文也可能被系统挂起，表现为「在放但没声音」。
+ * 这里每秒最多纠正一次，只在「界面上应该是播放状态」时动手。
+ */
+let lastHealAt = 0;
+function healPlayback(): void {
+  const now = Date.now();
+  if (now - lastHealAt < 1000) return;
+  if (!state.playing) return;
+  if (audio.paused && audio.currentTime <= 0.05) {
+    lastHealAt = now;
+    console.warn('[player] guarded play (deck stuck at 0)');
+    void audio.play().catch(() => {
+      /* 下一轮继续尝试 */
+    });
+    return;
+  }
+  const tap = audioTapState();
+  if (tap.context === 'suspended') {
+    lastHealAt = now;
+    console.warn('[player] resume suspended audio context');
+    resumeAudioContext();
+  }
+}
+
 function tick(): void {
   rafId = 0;
   if (!state.track) return;
+  healPlayback();
   // 兜底：引擎若在淡化中途自行取消（例如计划过期），界面不能停在已经切过去的 B 上。
   if (preview && !crossfadeIsFading()) restorePreview('engine-stopped');
   // 引擎永远看「正在淡出的 A」的进度；界面在过渡中看正在淡入的 B（preview）。
@@ -609,12 +664,25 @@ function tick(): void {
 
 function scheduleTick(): void {
   if (rafId) return;
-  rafId = window.requestAnimationFrame(tick);
+  rafId = nextFrame(tick);
 }
 
-function maybeReport(): void {
+// 回到可见时补一次：rAF 期间停摆的进度/斜坡在这里接上，同时把可能被挂起的
+// AudioContext 拉回来（后台切歌「在放但没声音」的另一半原因）。
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    resumeAudioContext();
+    scheduleTick();
+    maybeReport(true);
+  });
+}
+
+function maybeReport(force = false): void {
   const now = performance.now();
-  if (now - lastReportAt < 1000) return;
+  // force：换曲时必须报一次。播放中的 tick 会每 200ms 报一次，但暂停时 tick 不在跑，
+  // 只靠节流窗口内被吞掉就再也没有下一次了（后台切歌胶囊不弹就是这个原因）。
+  if (!force && now - lastReportAt < 200) return;
   lastReportAt = now;
   const track = state.track;
   if (!track) return;
@@ -626,10 +694,16 @@ function maybeReport(): void {
       title: current.title,
       artist: current.artist,
       album: current.album || undefined,
-      coverUrl: current.cover || undefined,
+      // 和播放条封面用同一个构造器：它会把 /api/cover 补成带 token 的回环地址，
+      // 宿主（SMTC 缩略图 / 后台切歌胶囊）才取得到图；没有封面就不传，让胶囊退回首字。
+      coverUrl: current.cover ? onlineArtwork(current, 300) : undefined,
       durationMs: state.durationMs,
       positionMs: state.positionMs,
       playing: state.playing,
+      // 无缝过渡进行中：宿主那边会把它显示成「过渡中」，而不是「正在播放」。
+      transitionProgress: crossfadeProgress(),
+      transitionRemainingMs: crossfadeRemainingMs(),
+      transitioning: state.playing && preview !== null && crossfadeIsFading(),
     });
   }, 20);
 }
@@ -731,9 +805,12 @@ function onEnded(element: HTMLAudioElement): void {
 }
 
 function onError(element: HTMLAudioElement): void {
-  // 预加载的 B 报错：放弃这次无缝衔接，不影响正在播放的 A。
+  // 预加载的 B 报错：放弃这次无缝衔接，并记下这首播不出来。
+  // 之后无论手动切到它还是自然播到它，load()/advance 都会直接越过。
   if (element !== audio) {
     cancelSeamless('standby-error');
+    const planned = plannedNextIndex !== null ? state.queue[plannedNextIndex] : null;
+    if (planned) badTrackKeys.add(trackKeyOf(planned));
     return;
   }
   cancelSeamless('error');
@@ -748,15 +825,33 @@ function onError(element: HTMLAudioElement): void {
     return;
   }
   console.warn('[player] audio error', track.title, audio.error?.code, audio.error?.message);
-  // 自动跳过失败曲目（最多连续跳 3 首，避免整队列空转）；成功起播会清零。
+  skipBrokenTrack(track, 'audio-error');
+}
+
+/** 记下并跳过一首播不出来的歌（最多连续跳 3 首，避免整队列空转）。 */
+function skipBrokenTrack(track: OnlineTrack, reason: string): void {
+  badTrackKeys.add(trackKeyOf(track));
   if (skipGuard >= 3) {
     skipGuard = 0;
     return;
   }
   skipGuard += 1;
+  console.warn('[player] skip unplayable track', track.title, reason);
   window.setTimeout(() => {
     if (state.track?.id === track.id) next();
   }, 240);
+}
+
+/** 从 start 开始（含）找下一首没被判定坏掉的曲目；全都坏掉时返回 start。 */
+function playableIndexFrom(start: number): number {
+  const length = state.queue.length;
+  if (length === 0) return start;
+  for (let step = 0; step < length; step += 1) {
+    const index = ((start + step) % length + length) % length;
+    const track = state.queue[index];
+    if (track && !badTrackKeys.has(trackKeyOf(track))) return index;
+  }
+  return start;
 }
 
 /** 载入并播放队列中某一首。skipFadeIn=true 时直接全音量起播（用于悬停试听的无缝交接）。 */
@@ -834,16 +929,27 @@ function maybeLookaheadRefill(): void {
 }
 
 function load(index: number, autoplay = true, startMs = 0, skipFadeIn = false): void {
-  const track = state.queue[index] ?? null;
+  let track = state.queue[index] ?? null;
   if (!track) {
     stop();
     return;
+  }
+  // 之前已经确认播不出来的曲目：手动切到它、或自动轮播到它时直接越过。
+  if (badTrackKeys.has(trackKeyOf(track)) && state.queue.length > 1) {
+    const playable = playableIndexFrom(index + 1);
+    if (playable !== index) {
+      index = playable;
+      track = state.queue[index] ?? null;
+      if (!track) { stop(); return; }
+    }
   }
   // 悬停试听交接：从曲内指定位置开始（普通切歌是 0）。
   const startOffsetSec = Math.max(0, startMs) / 1000;
   const startPositionMs = startOffsetSec > 0 ? Math.round(startOffsetSec * 1000) : 0;
   // 任何显式切歌都放弃上一首的无缝衔接计划（B 的预加载一并清掉）。
   cancelSeamless('load');
+  // 后台切歌时上下文可能已被系统挂起：先 resume，否则新的一首「在放但没声音」。
+  resumeAudioContext();
   resetBarLoop();
   // 过渡期的 WSOLA 变速不跨曲残留：新的一首从用户倍速开始（默认 1 = 原速）。
   applyDeckRate(audio);
@@ -894,6 +1000,14 @@ function load(index: number, autoplay = true, startMs = 0, skipFadeIn = false): 
     vocalHold = 0;
     setVocalFade(0);
     applyPlaybackVolume(true);
+    // 装填看门狗：12 秒还没起播、也没有可播数据，就按坏源跳过（自动/手动切歌同一套）。
+    const watchdog = ++loadWatchdogToken;
+    window.setTimeout(() => {
+      if (watchdog !== loadWatchdogToken) return;
+      if (state.track?.id !== track.id || state.playing || !state.loading) return;
+      if (audio.readyState >= 2) return;
+      skipBrokenTrack(track, 'load-timeout');
+    }, 12_000);
     void audio
       .play()
       .then(() => {
@@ -905,8 +1019,9 @@ function load(index: number, autoplay = true, startMs = 0, skipFadeIn = false): 
           }
         }
         if (token !== fadeToken) return;
-        // 起播成功：清空连续失败计数，避免一次坏歌单让自动跳过在整段会话里失效。
+        // 起播成功：清空连续失败计数与坏源标记，避免一次坏歌单让自动跳过在整段会话里失效。
         skipGuard = 0;
+        badTrackKeys.delete(trackKeyOf(track));
         setState({ playing: true, loading: false });
         scheduleTick();
         void recordRecent(track);
@@ -920,12 +1035,17 @@ function load(index: number, autoplay = true, startMs = 0, skipFadeIn = false): 
         fadeScale = 1;
         applyPlaybackVolume();
         setState({ playing: false, loading: false });
+        // 自动播放被策略拦住不是坏源；其余拒绝（解码/网络/格式）按播放失败跳过。
+        if ((err as { name?: string } | null)?.name === 'NotAllowedError') return;
+        if (!badTrackKeys.has(trackKeyOf(track))) skipBrokenTrack(track, 'play-rejected');
       });
   } else {
     setState({ playing: false, loading: false });
     // 暂停态也先预分析/预加载，用户按播放后可直接衔接。
     prepareSeamlessNext();
   }
+  // 换曲无条件上报一次：暂停态没有 tick，不主动报的话宿主永远收不到这一首。
+  maybeReport(true);
   // 这一首是队列末尾时，提前拉下一批续上（私人漫游），避免无缝计划绕回第一首。
   maybeRefillQueue();
 }
@@ -1384,6 +1504,18 @@ const MANUAL_SWITCH_DEBOUNCE_MS = 450;
  */
 function manualSwitch(index: number): void {
   if (index < 0 || index >= state.queue.length) return;
+  if (!state.queue[index]) return;
+  // 队列只有一首时「下一首」没有别的目标：直接从头重播，不能拿它跟自己做交叉淡化
+  // （同一条音轨叠在两条 deck 上会互相抵消音量，听感像卡住）。
+  if (index === state.index && state.queue.length === 1) {
+    if (state.track) load(index, true);
+    return;
+  }
+  // 队列里还有别的歌却解析回当前这首（预选下标失效/单曲模式边界）：顺延到下一首。
+  if (index === state.index) {
+    const forward = (state.index + 1) % state.queue.length;
+    if (forward !== state.index) index = forward;
+  }
   const target = state.queue[index];
   if (!target) return;
   const now = performance.now();
@@ -1417,6 +1549,7 @@ function manualSwitch(index: number): void {
   const manualFadeMs = averageBpm > 0
     ? Math.round(Math.max(2_200, Math.min(7_000, 8 * 60_000 / averageBpm)))
     : MANUAL_FADE_DEFAULT_MS;
+  resumeAudioContext();
   const fromDeck = audio;
   const nextDeck = standby;
   // 旧计划/预取先作废（之后所有异步回调看到 token 变化就放弃）。
@@ -2161,7 +2294,7 @@ function commitSeamless(
   attachAudioTap(audio);
   applyPlaybackVolume(true);
   void recordRecent(track);
-  maybeReport();
+  maybeReport(true);
   scheduleTick();
   // 无缝过渡也可能落在队列末尾（续接批次里的最后一首）：同样提前续上。
   maybeRefillQueue();
@@ -2231,3 +2364,25 @@ onMediaControl((control: MediaControl) => {
 /* 退出前把最后状态落盘 */
 window.addEventListener('pagehide', persistNow);
 window.addEventListener('beforeunload', persistNow);
+
+/**
+ * 真机排查钩子：CDP 里直接读当前 deck / 音频上下文，不改任何状态。
+ * 用来看「卡在 0 秒」到底是元素没起播还是只是界面没刷新。
+ */
+if (typeof window !== 'undefined') {
+  (window as unknown as { __ziluxDeck?: unknown }).__ziluxDeck = {
+    snapshot: () => ({
+      pos: state.positionMs,
+      playing: state.playing,
+      t: audio.currentTime,
+      paused: audio.paused,
+      ready: audio.readyState,
+      err: audio.error?.code ?? null,
+      vol: audio.volume,
+      muted: audio.muted,
+      ctx: audioTapState().context,
+      hidden: document.hidden,
+      standby: { t: standby.currentTime, paused: standby.paused, ready: standby.readyState },
+    }),
+  };
+}

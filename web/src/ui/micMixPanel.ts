@@ -3,6 +3,7 @@
  * 就能同时听到音乐和本机麦克风；本机扬声器照常播放。
  */
 import { h, toast } from './dom';
+import { createSelectControl, type SelectControl } from './selectControl';
 import { currentAppSinkId, listAppAudioOutputs, type AppAudioOutput } from '../core/audioOutput';
 import {
   listMicrophones,
@@ -78,8 +79,33 @@ export function createMicMixPanel(): MicMixPanelHandle {
   const toggle = h('button', { class: 'btn', type: 'button', text: '开启混音' });
   const testTone = h('button', { class: 'btn is-quiet', type: 'button', text: '测试 CABLE 输出' });
   const installCable = h('button', { class: 'btn is-quiet', type: 'button', text: '获取 VB-CABLE' });
-  const micSelect = h('select', { class: 'set-select', 'aria-label': '物理麦克风' }) as HTMLSelectElement;
-  const outputSelect = h('select', { class: 'set-select', 'aria-label': '虚拟音频线输出' }) as HTMLSelectElement;
+  const micSelect = createSelectControl({
+    className: 'set-select',
+    ariaLabel: '物理麦克风',
+    menuWidth: 320,
+    options: [{ value: '', label: '没有检测到麦克风' }],
+    onChange: (value) => {
+      config = { ...config, micDeviceId: value };
+      saveMicMixConfig(config);
+      paint();
+    },
+  });
+  const outputSelect = createSelectControl({
+    className: 'set-select',
+    ariaLabel: '虚拟音频线输出',
+    menuWidth: 320,
+    options: [{ value: '', label: '没有检测到播放设备' }],
+    onChange: (value) => {
+      const output = outputs.find((item) => item.id === value);
+      config = {
+        ...config,
+        outputDeviceId: value,
+        outputLabel: output?.label ?? '',
+      };
+      saveMicMixConfig(config);
+      paint();
+    },
+  });
   const musicSlider = sliderRow('音乐音量', '送进麦克风的音乐电平，不影响本机扬声器音量。', config.musicGain, (next) => {
     config = { ...config, musicGain: next };
     saveMicMixConfig(config);
@@ -130,14 +156,14 @@ export function createMicMixPanel(): MicMixPanelHandle {
       'div',
       { class: 'field is-stacked' },
       h('div', { class: 'field-label', text: '物理麦克风' }),
-      micSelect,
+      micSelect.root,
       h('div', { class: 'field-hint', text: '这里选你平时说话的麦克风；混音不会改变它在系统里的正常收音。' }),
     ),
     h(
       'div',
       { class: 'field is-stacked' },
       h('div', { class: 'field-label', text: '虚拟音频线输出' }),
-      outputSelect,
+      outputSelect.root,
       h('div', { class: 'field-hint mic-mix-output-hint', text: '' }),
     ),
     h('div', { class: 'mic-mix-sliders' }, musicSlider.root, micSlider.root, outputSlider.root),
@@ -145,7 +171,7 @@ export function createMicMixPanel(): MicMixPanelHandle {
   );
 
   const selectedOutput = (): AppAudioOutput | null =>
-    outputs.find((item) => item.id === outputSelect.value) ?? null;
+    outputs.find((item) => item.id === outputSelect.getValue()) ?? null;
 
   const paint = (): void => {
     const running = micMixRunning();
@@ -156,8 +182,8 @@ export function createMicMixPanel(): MicMixPanelHandle {
     testTone.disabled = !running || loading || busy;
     toggle.textContent = running ? '停止混音' : busy ? '正在启动…' : '开启混音';
     toggle.classList.toggle('is-danger', running);
-    micSelect.disabled = running || loading;
-    outputSelect.disabled = running || loading;
+    micSelect.setDisabled(running || loading);
+    outputSelect.setDisabled(running || loading);
     musicSlider.input.disabled = false;
     micSlider.input.disabled = false;
 
@@ -168,7 +194,7 @@ export function createMicMixPanel(): MicMixPanelHandle {
       status.textContent = '正在读取麦克风和虚拟音频线…';
       status.dataset.kind = 'muted';
     } else if (running) {
-      status.textContent = `运行中：音乐 + ${microphones.find((item) => item.id === micSelect.value)?.label ?? '麦克风'} → ${output?.label ?? '虚拟音频线'}`;
+      status.textContent = `运行中：音乐 + ${microphones.find((item) => item.id === micSelect.getValue())?.label ?? '麦克风'} → ${output?.label ?? '虚拟音频线'}`;
       status.dataset.kind = 'ok';
     } else if (!output) {
       status.textContent = '没有找到虚拟音频线输出（CABLE Input）。安装 VB-Audio Virtual Cable 后刷新设备。';
@@ -197,18 +223,13 @@ export function createMicMixPanel(): MicMixPanelHandle {
     }
   };
 
-  const fillSelect = (select: HTMLSelectElement, items: Array<{ id: string; label: string }>, value: string, empty: string): string => {
-    select.replaceChildren();
+  const fillSelect = (select: SelectControl, items: Array<{ id: string; label: string }>, value: string, empty: string): string => {
     if (items.length === 0) {
-      select.append(h('option', { value: '', text: empty }));
-      select.value = '';
+      select.setOptions([{ value: '', label: empty }], '');
       return '';
     }
-    for (const item of items) {
-      select.append(h('option', { value: item.id, text: item.label }));
-    }
     const next = items.some((item) => item.id === value) ? value : items[0].id;
-    select.value = next;
+    select.setOptions(items.map((item) => ({ value: item.id, label: item.label })), next);
     return next;
   };
 
@@ -244,10 +265,8 @@ export function createMicMixPanel(): MicMixPanelHandle {
       fillSelect(micSelect, microphones, savedMic, '没有检测到麦克风');
       if (nextOutput) {
         fillSelect(outputSelect, outputs, nextOutput, '没有检测到播放设备');
-        outputSelect.value = nextOutput;
       } else {
-        outputSelect.replaceChildren(h('option', { value: '', text: '未检测到 CABLE Input / 虚拟音频线' }));
-        outputSelect.value = '';
+        outputSelect.setOptions([{ value: '', label: '未检测到 CABLE Input / 虚拟音频线' }], '');
       }
       paint();
     } catch (error) {
@@ -265,7 +284,7 @@ export function createMicMixPanel(): MicMixPanelHandle {
 
   const start = async (): Promise<void> => {
     if (busy || micMixRunning()) return;
-    const mic = microphones.find((item) => item.id === micSelect.value);
+    const mic = microphones.find((item) => item.id === micSelect.getValue());
     const output = selectedOutput();
     if (!mic) {
       toast('请选择物理麦克风', 'error');
@@ -320,21 +339,6 @@ export function createMicMixPanel(): MicMixPanelHandle {
   installCable.addEventListener('click', () => {
     openCableDownload();
     toast('已打开 VB-CABLE 官方下载页；安装后点「重新打开设置」或重启 Zilux2');
-  });
-  micSelect.addEventListener('change', () => {
-    config = { ...config, micDeviceId: micSelect.value };
-    saveMicMixConfig(config);
-    paint();
-  });
-  outputSelect.addEventListener('change', () => {
-    const output = outputs.find((item) => item.id === outputSelect.value);
-    config = {
-      ...config,
-      outputDeviceId: outputSelect.value,
-      outputLabel: output?.label ?? '',
-    };
-    saveMicMixConfig(config);
-    paint();
   });
 
   // 面板销毁不停止混音：设置页关掉后音乐仍应继续送进麦克风；页面卸载由 micMix 自己收尾。

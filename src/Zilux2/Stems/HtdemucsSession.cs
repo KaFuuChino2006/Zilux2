@@ -9,9 +9,22 @@ namespace Zilux2.Stems;
 /// <summary>一次 30 s 窗口的分离结果（float32、44.1 kHz、立体声、已按统一 headroom 缩放）。</summary>
 internal sealed class StemSeparationResult
 {
+    /// <summary>模型输出的轨数（drums / bass / other / vocals）。</summary>
+    internal const int StemCount = 4;
+
     public required float[] VocalsLeft { get; init; }
 
     public required float[] VocalsRight { get; init; }
+
+    /// <summary>
+    /// 4 轨分离结果，索引与模型输出槽位一致：0=drums、1=bass、2=other、3=vocals。
+    /// 每条都是 44.1 kHz 立体声、长度 <see cref="Frames"/>，与 vocals/inst 乘同一个 headroom 增益，
+    /// 所以 drums+bass+other 可以直接相加（stem swap 依赖这一点）。
+    /// </summary>
+    public required float[][] StemLeft { get; init; }
+
+    /// <inheritdoc cref="StemLeft"/>
+    public required float[][] StemRight { get; init; }
 
     public required float[] InstrumentalLeft { get; init; }
 
@@ -42,13 +55,22 @@ internal sealed class HtdemucsException : Exception
 }
 
 /// <summary>
-/// HTDemucs 模型会话：分窗推理 + 25% 重叠三角窗 OLA + 尾段钳位 + 两轨统一 headroom。
+/// HTDemucs 模型会话：分窗推理 + 25% 重叠三角窗 OLA + 尾段钳位 + 全轨统一 headroom。
+/// 模型一次输出 4 轨（drums/bass/other/vocals），这里全套累加，2 轨视图只是其中的 vocals 槽位加
+/// mix − vocals 的 instrumental。
 /// 算法与 tools/stems-proto/Program.cs 保持一致，只是把缓冲区复用、把推理包成可复用会话。
 /// </summary>
 internal sealed class HtdemucsSession : IDisposable
 {
     /// <summary>模型输入维度必须等于它；否则说明模型不对，直接拒绝。</summary>
     internal const int RequiredSegmentFrames = StemsContract.SegmentFrames;
+
+    /// <summary>输出 4 轨布局里的槽位：drums, bass, other, vocals。</summary>
+    internal const int DrumStemIndex = 0;
+
+    internal const int BassStemIndex = 1;
+
+    internal const int OtherStemIndex = 2;
 
     /// <summary>输出 4 轨布局里的 vocals 槽位（drums, bass, other, vocals）。</summary>
     internal const int VocalStemIndex = 3;
@@ -151,7 +173,8 @@ internal sealed class HtdemucsSession : IDisposable
 
     /// <summary>
     /// 对一整窗 44.1 kHz 立体声做分离。输入数组长度至少为 <paramref name="frames"/>；
-    /// 返回两轨已经是统一 headroom、峰值 ≤ 0.999。
+    /// 4 轨（drums/bass/other/vocals）与派生的 vocals/instrumental 都已经是统一 headroom，
+    /// 峰值 ≤ 0.999。
     /// </summary>
     internal StemSeparationResult Separate(
         float[] mixLeft,
@@ -201,16 +224,25 @@ internal sealed class HtdemucsSession : IDisposable
         }
 
         var starts = BuildSegmentStarts(frames, _segment, _stride, clampTail: true);
-        var accLeft = new float[frames];
-        var accRight = new float[frames];
+
+        // 4 轨累加器，索引与模型输出槽位一致（drums/bass/other/vocals）。
+        // 多累加 3 轨只是一点内存带宽，远小于一次 ORT 推理，所以总是累加全套：
+        // 2 轨请求只取 vocals 槽位，4 轨请求直接拿全部；同一窗口的 vocals 在两种模式下
+        // 逐样本一致，切换模式不会听到音色变化。
+        var stemCount = StemSeparationResult.StemCount;
+        var stemLeft = new float[stemCount][];
+        var stemRight = new float[stemCount][];
+        for (var stem = 0; stem < stemCount; stem++)
+        {
+            stemLeft[stem] = new float[frames];
+            stemRight[stem] = new float[frames];
+        }
+
         var weightSum = new float[frames];
 
         // 复用同一块输入张量：每段只覆盖 Buffer，避免 5 段分配 5 次 2.7MB。
         var input = new DenseTensor<float>(new[] { 1, 2, _segment });
         var inputSpan = input.Buffer.Span;
-
-        var vocalLeftOffset = VocalStemIndex * 2 * _segment;
-        var vocalRightOffset = vocalLeftOffset + _segment;
 
         foreach (var start in starts)
         {
@@ -226,40 +258,47 @@ internal sealed class HtdemucsSession : IDisposable
             var tensor = FindOutput(results);
             if (tensor is DenseTensor<float> dense)
             {
-                Accumulate(dense.Buffer.Span, start, accLeft, accRight, weightSum);
+                Accumulate(dense.Buffer.Span, start);
             }
             else
             {
-                var array = tensor.ToArray();
-                Accumulate(array, start, accLeft, accRight, weightSum);
+                Accumulate(tensor.ToArray(), start);
             }
         }
 
-        void Accumulate(
-            ReadOnlySpan<float> output,
-            int start,
-            float[] targetLeft,
-            float[] targetRight,
-            float[] targetWeight)
+        void Accumulate(ReadOnlySpan<float> output, int start)
         {
-            // 输出布局 (1, 4, 2, segment)：stem 槽位 3 = vocals，两个声道各占一段。
-            if (output.Length < (VocalStemIndex + 1) * 2 * _segment)
+            // 输出布局 (1, 4, 2, segment)：槽位 0..3 = drums/bass/other/vocals，
+            // 每个槽位里两个声道各占一段。
+            if (output.Length < stemCount * 2 * _segment)
             {
                 throw new HtdemucsException(
                     "inference-failed",
-                    $"人声分离模型输出长度 {output.Length} 小于预期 {(VocalStemIndex + 1) * 2 * _segment}");
+                    $"人声分离模型输出长度 {output.Length} 小于预期 {stemCount * 2 * _segment}");
+            }
+
+            for (var stem = 0; stem < stemCount; stem++)
+            {
+                var leftOffset = stem * 2 * _segment;
+                var rightOffset = leftOffset + _segment;
+                var targetLeft = stemLeft[stem];
+                var targetRight = stemRight[stem];
+                for (var i = 0; i < _segment; i++)
+                {
+                    var weight = _window[i];
+                    var index = start + i;
+                    targetLeft[index] += output[leftOffset + i] * weight;
+                    targetRight[index] += output[rightOffset + i] * weight;
+                }
             }
 
             for (var i = 0; i < _segment; i++)
             {
-                var weight = _window[i];
-                var index = start + i;
-                targetLeft[index] += output[vocalLeftOffset + i] * weight;
-                targetRight[index] += output[vocalRightOffset + i] * weight;
-                targetWeight[index] += weight;
+                weightSum[start + i] += _window[i];
             }
         }
 
+        // 就地归一化：stemLeft/stemRight 从累加缓冲直接变成最终 4 轨，省掉一份 42 MB 的拷贝。
         var vocalLeft = new float[outputFrames];
         var vocalRight = new float[outputFrames];
         var instrumentalLeft = new float[outputFrames];
@@ -269,8 +308,14 @@ internal sealed class HtdemucsSession : IDisposable
         {
             // 三角窗权重和恒 > 0；下限只是防御性写法（与原型一致）。
             var inverse = 1f / MathF.Max(weightSum[i], WeightFloor);
-            var left = accLeft[i] * inverse;
-            var right = accRight[i] * inverse;
+            for (var stem = 0; stem < stemCount; stem++)
+            {
+                stemLeft[stem][i] *= inverse;
+                stemRight[stem][i] *= inverse;
+            }
+
+            var left = stemLeft[VocalStemIndex][i];
+            var right = stemRight[VocalStemIndex][i];
             var instLeft = mixLeft[i] - left;
             var instRight = mixRight[i] - right;
 
@@ -279,6 +324,8 @@ internal sealed class HtdemucsSession : IDisposable
             instrumentalLeft[i] = instLeft;
             instrumentalRight[i] = instRight;
 
+            // peak 只看 vocals + instrumental：headroom 增益必须与旧 2 轨实现逐样本一致，
+            // 否则同一窗口在旧版/新版算出的音轨对不上。4 轨沿用同一增益，保证仍可与 inst 相加。
             var magnitude = MathF.Max(
                 MathF.Max(MathF.Abs(left), MathF.Abs(right)),
                 MathF.Max(MathF.Abs(instLeft), MathF.Abs(instRight)));
@@ -288,8 +335,8 @@ internal sealed class HtdemucsSession : IDisposable
             }
         }
 
-        // instrumental = mix − vocals 的峰值可能略超 1（实测 1.07）；两轨同乘一个增益，
-        // 恒等式不变，前端也不会听到 vocals 比 instrumental 更响。
+        // instrumental = mix − vocals 的峰值可能略超 1（实测 1.07）；所有轨同乘一个增益，
+        // 恒等式不变，前端也不会听到某一路比另一路更响。
         var gain = peak > HeadroomPeak ? HeadroomPeak / peak : 1f;
         if (gain < 1f)
         {
@@ -299,6 +346,11 @@ internal sealed class HtdemucsSession : IDisposable
                 vocalRight[i] *= gain;
                 instrumentalLeft[i] *= gain;
                 instrumentalRight[i] *= gain;
+                for (var stem = 0; stem < stemCount; stem++)
+                {
+                    stemLeft[stem][i] *= gain;
+                    stemRight[stem][i] *= gain;
+                }
             }
         }
 
@@ -306,6 +358,8 @@ internal sealed class HtdemucsSession : IDisposable
         {
             VocalsLeft = vocalLeft,
             VocalsRight = vocalRight,
+            StemLeft = stemLeft,
+            StemRight = stemRight,
             InstrumentalLeft = instrumentalLeft,
             InstrumentalRight = instrumentalRight,
             Frames = outputFrames,

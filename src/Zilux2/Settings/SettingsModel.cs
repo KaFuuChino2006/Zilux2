@@ -21,7 +21,24 @@ internal sealed class SettingsModel
     // 全局快捷键（docs/zilux2-settings-contract.md §2，宿主解析并注册）。同样追加在最后。
     public ShortcutSettings Shortcuts { get; set; } = new();
 
+    // 手机局域网遥控（src/Zilux2/Remote/）。同样追加在最后，旧文件顺序不变。
+    public RemoteSettings Remote { get; set; } = new();
+
+    // 动态壁纸 v2（docs/wallpaper-v2-spec.md）。追加在最后，旧文件顺序不变。
+    public WallpaperSettings Wallpaper { get; set; } = new();
+
     public static SettingsModel CreateDefaults() => new();
+}
+
+/// <summary>
+/// 手机遥控：默认关闭；<see cref="Port"/> 为 0 表示由宿主自动挑一个空闲端口，
+/// 非 0 时优先使用该端口（占用则顺延并在日志里说明）。默认 8737，重启后链接不变。
+/// </summary>
+internal sealed class RemoteSettings
+{
+    public bool Enabled { get; set; }
+
+    public int Port { get; set; } = 8737;
 }
 
 internal sealed class GeneralSettings
@@ -88,6 +105,25 @@ internal sealed class GeneralSettings
     // 「切换系统输出」快捷键参与轮换的设备（MMDevice 端点 ID，按用户勾选顺序；空数组 = 全部
     // 活动播放设备）。只影响系统默认输出，不影响软件自己的音频通道。追加在最后，旧文件顺序不变。
     public string[] SystemOutputRotation { get; set; } = Array.Empty<string>();
+
+    // 桌面歌词样式：classic=原生三行（默认，1.1.95 起的窗口）；fan=旧版 Zilux 的悬浮扇形
+    // 歌词（弧形排列的玻璃卡片，当前句固定在中段）。追加在最后，旧 settings.json 顺序不变。
+    public const string DesktopLyricsStyleClassic = "classic";
+    public const string DesktopLyricsStyleFan = "fan";
+
+    internal static readonly string[] DesktopLyricsStyles =
+    {
+        DesktopLyricsStyleClassic,
+        DesktopLyricsStyleFan,
+    };
+
+    public string DesktopLyricsStyle { get; set; } = DesktopLyricsStyleClassic;
+
+    // 悬浮扇形：可见行数 5..15（默认 9，含当前句）；卡片宽度 px 180..360（默认 240）。
+    // 字号与逐行缩放由窗口按卡片宽度推算，不单独存。
+    public int DesktopLyricsFanLines { get; set; } = 9;
+
+    public int DesktopLyricsFanWidth { get; set; } = 240;
 }
 
 internal sealed class AppearanceSettings
@@ -361,6 +397,12 @@ internal sealed class ShortcutSettings
     /// <summary>切换 Windows 默认播放设备（系统级输出，不影响软件自己的通道）。</summary>
     public string SystemOutput { get; set; } = string.Empty;
 
+    /// <summary>下一张壁纸（第 39 轮 C：默认 Ctrl+Alt+Right 已被「下一首」占用，壁纸键默认留空由用户录制）。</summary>
+    public string WallpaperNext { get; set; } = string.Empty;
+
+    /// <summary>暂停/继续壁纸。</summary>
+    public string WallpaperPause { get; set; } = string.Empty;
+
     /// <summary>复制一份，避免调用方在锁外直接读写正在被序列化的实例。</summary>
     public ShortcutSettings Clone() => new()
     {
@@ -380,6 +422,8 @@ internal sealed class ShortcutSettings
         Crossfade = Crossfade,
         AppOutput = AppOutput,
         SystemOutput = SystemOutput,
+        WallpaperNext = WallpaperNext,
+        WallpaperPause = WallpaperPause,
     };
 }
 

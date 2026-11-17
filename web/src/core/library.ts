@@ -205,7 +205,7 @@ function withLoopbackToken(url: string): string {
 }
 
 /** 封面兜底：宿主可能返回 /api/cover 相对路径或未带 token 的回环 URL，这里统一补全。 */
-function resolveCover(url: string | undefined): string | undefined {
+export function resolveCoverUrl(url: string | undefined): string | undefined {
   if (!url) return undefined;
   if (/^data:/.test(url)) return url;
   if (/^http:\/\//.test(url)) return withLoopbackToken(url);
@@ -238,7 +238,7 @@ function normalizePlaylist(
     count,
     special: input.special === 'liked' ? 'liked' : null,
   };
-  const cover = resolveCover(typeof input.cover === 'string' ? input.cover : undefined);
+  const cover = resolveCoverUrl(typeof input.cover === 'string' ? input.cover : undefined);
   if (cover) playlist.cover = cover;
   if (typeof input.creator === 'string' && input.creator) playlist.creator = input.creator;
   return playlist;
@@ -284,7 +284,7 @@ function normalizeTrack(input: Partial<OnlineTrack>, fallbackSource: MusicSource
     artist: typeof input.artist === 'string' && input.artist ? input.artist : '未知歌手',
     album: typeof input.album === 'string' ? input.album : '',
     durationMs: typeof input.durationMs === 'number' && input.durationMs > 0 ? input.durationMs : 0,
-    cover: resolveCover(typeof input.cover === 'string' ? input.cover : undefined) ?? '',
+    cover: resolveCoverUrl(typeof input.cover === 'string' ? input.cover : undefined) ?? '',
     playable: input.playable === true,
   };
 }
@@ -306,7 +306,7 @@ function normalizePlaylistDetail(
     tracks,
     hasMore: input?.hasMore === true,
   };
-  const cover = resolveCover(typeof input?.cover === 'string' ? input.cover : undefined);
+  const cover = resolveCoverUrl(typeof input?.cover === 'string' ? input.cover : undefined);
   if (cover) detail.cover = cover;
   return detail;
 }

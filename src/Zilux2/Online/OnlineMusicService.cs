@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text.Json;
 using Zilux2.Analysis;
 using Zilux2.Online.Account;
 using Zilux2.Online.Library;
@@ -21,6 +22,8 @@ internal sealed class OnlineMusicService : IDisposable
     private DownloadService? _download;
     private TrackAnalysisService? _analysis;
     private StemSeparationService? _stems;
+    private Zilux2.Wallpaper.WallpaperHost? _wallpaper;
+    private Zilux2.Settings.SettingsService? _settings;
     private CancellationTokenSource? _accountVerifyCts;
     private bool _disposed;
 
@@ -43,6 +46,31 @@ internal sealed class OnlineMusicService : IDisposable
     public LibraryService Library { get; }
 
     public IReadOnlyList<string> Sources { get; }
+
+    /// <summary>
+    /// 动态壁纸宿主。窗口建好壁纸后才赋值，而 HTTP 服务可能更早启动，
+    /// 所以这里留住值，Start 时再灌给 server。
+    /// </summary>
+    internal Zilux2.Wallpaper.WallpaperHost? Wallpaper
+    {
+        get => _wallpaper;
+        set
+        {
+            _wallpaper = value;
+            if (_server is not null) _server.Wallpaper = value;
+        }
+    }
+
+    /// <summary>设置服务（壁纸 v2 的 /options 端点用），同样延后灌给 server。</summary>
+    internal Zilux2.Settings.SettingsService? Settings
+    {
+        get => _settings;
+        set
+        {
+            _settings = value;
+            if (_server is not null) _server.Settings = value;
+        }
+    }
 
     /// <summary>下载目录（由 App 指向设置里的 downloads.directory；空表示 Windows 音乐目录）。</summary>
     internal Func<string?>? DownloadDirectoryProvider { get; set; }
@@ -119,6 +147,8 @@ internal sealed class OnlineMusicService : IDisposable
                 LocalPathResolver = rel => LocalPathResolver?.Invoke(rel),
                 LocalFileChanged = path => LocalFileChanged?.Invoke(path),
                 OpenDevTools = () => OpenDevTools?.Invoke(),
+                Wallpaper = _wallpaper,
+                Settings = _settings,
             };
             var port = server.Start();
             _server = server;

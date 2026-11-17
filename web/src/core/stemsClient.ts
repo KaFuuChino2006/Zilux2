@@ -31,7 +31,8 @@ export interface StemsPrepareResponse {
   sha256?: string;
 }
 
-export type StemPart = 'vocals' | 'instrumental';
+/** 可取的轨：2 轨模式是 vocals/instrumental；4 轨模式另有 drums/bass/other。 */
+export type StemPart = 'vocals' | 'instrumental' | 'drums' | 'bass' | 'other';
 
 const SPEED_KEY = 'zilux2.stemSpeedMs';
 
@@ -94,13 +95,15 @@ function trackParams(track: OnlineTrack): Record<string, string> | null {
 export async function prepareStemsWindow(
   track: OnlineTrack,
   window: number,
-  options: { force?: boolean; windowSec?: number } = {},
+  options: { force?: boolean; windowSec?: number; stems?: 2 | 4 } = {},
 ): Promise<StemsPrepareResponse> {
   const params = trackParams(track);
   if (!params) throw new Error('这首曲目缺少文件路径，无法做人声分离');
   params.window = String(Math.max(0, Math.floor(window)));
   params.windowSec = String(Math.round(options.windowSec ?? STEM_WINDOW_SEC));
   if (options.force) params.force = '1';
+  // 4 轨模式必须先声明，否则宿主只算 2 轨、随后取 drums/bass/other 会 409（v2 T2-3）。
+  if (options.stems === 4) params.stems = '4';
   const windowSec = Math.round(options.windowSec ?? STEM_WINDOW_SEC);
   const response = await api<StemsPrepareResponse>('/api/stems', params, 60_000);
   // cached 命中是旧的耗时，不参与估算；只记真正算过的一次。
@@ -114,6 +117,7 @@ export async function loadStemWindow(
   track: OnlineTrack,
   window: number,
   part: StemPart,
+  options: { stems?: 2 | 4 } = {},
 ): Promise<AudioBuffer> {
   const params = trackParams(track);
   if (!params) throw new Error('这首曲目缺少文件路径，无法做人声分离');
@@ -122,6 +126,8 @@ export async function loadStemWindow(
   // 不带这个参数时宿主会按默认窗口找文件、直接 404。
   params.windowSec = String(Math.round(STEM_WINDOW_SEC));
   params.stem = part;
+  // 4 轨模式要显式声明：宿主按 stems 决定找哪套缓存文件（v2 T2-3）。
+  if (options.stems === 4) params.stems = '4';
   const url = onlineEndpoint('/api/stems/audio', params);
   if (!url) throw new Error('在线源尚未就绪');
   const response = await fetch(url, { cache: 'no-store' });
@@ -143,4 +149,23 @@ export async function loadStemWindowBoth(
     loadStemWindow(context, track, window, 'instrumental'),
   ]);
   return { vocals, instrumental };
+}
+
+/**
+ * 四轨窗口（内部测试版实时推拉用）：drums / bass / other / vocals。
+ * 宿主未装四轨（老版本/失败）时抛错，调用方回落到 `loadStemWindowBoth`。
+ */
+export async function loadStemWindowFour(
+  context: AudioContext,
+  track: OnlineTrack,
+  window: number,
+  stems = 4,
+): Promise<{ drums: AudioBuffer; bass: AudioBuffer; other: AudioBuffer; vocals: AudioBuffer; instrumental?: AudioBuffer }> {
+  const [drums, bass, other, vocals] = await Promise.all([
+    loadStemWindow(context, track, window, 'drums', { stems: stems === 4 ? 4 : 2 }),
+    loadStemWindow(context, track, window, 'bass', { stems: stems === 4 ? 4 : 2 }),
+    loadStemWindow(context, track, window, 'other', { stems: stems === 4 ? 4 : 2 }),
+    loadStemWindow(context, track, window, 'vocals', { stems: stems === 4 ? 4 : 2 }),
+  ]);
+  return { drums, bass, other, vocals };
 }

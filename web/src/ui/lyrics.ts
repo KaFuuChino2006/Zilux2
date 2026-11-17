@@ -4,7 +4,7 @@
  */
 
 import { decryptQrc } from 'qrc-decoder';
-import { fetchLyric, onlineReady } from '../online/client';
+import { fetchLyric, onlineReady, onOnlineChange } from '../online/client';
 import {
   applyTranslation,
   extractQrcPayload,
@@ -17,15 +17,16 @@ import {
 } from '../online/lrc';
 import { SOURCE_LABEL, type OnlineTrack } from '../online/types';
 import { onlineArtwork } from '../online/artwork';
-import { fetchLocalLrc, localLibrary, lrcOf } from './local';
+import { fetchLocalLrc, localLibrary, lrcOf, onLocalLibraryChange } from './local';
 import { fmtTime, h, icon } from './dom';
 import { onPlayer, playerState, seek, type PlayerState } from './player';
 import { getSettings, onSettingsChange } from '../core/settings';
+import type { DesktopLyricsLinePayload } from '../core/bridge';
 import { matchMinScore, matchTranslation, matchWordLyrics, setMatchMinScore, type LyricMatchResult } from './lyricMatch';
 import { coverColorsOf, fallbackColors } from './coverColors';
 import { createLumiereStage, lumiereMode, lumiereThemeForCover, setLumiereMode, type LumiereMode, type LumiereSongInput, type LumiereStage } from './lumiere';
-import { createRoomStage, setRoomLyricTintProvider, type RoomStage } from './room';
-import { createVinylStage, setVinylLyricTintProvider, type VinylStage } from './vinyl';
+import { createRoomStage, applyRoomStyleSettings, setRoomLyricTintProvider, type RoomStage } from './room';
+import { createVinylStage, applyVinylStyleSettings, setVinylLyricTintProvider, type VinylStage } from './vinyl';
 import { createFlowStage, type FlowStage } from './flow';
 import { createPoemStage, type PoemStage } from './poem';
 import { createPressureStage, type PressureStage } from './pressure';
@@ -33,6 +34,7 @@ import type { Theme } from './lumiere-folia/types';
 import type { LyricTextSettings } from './lumiereSettings';
 import { LYRIC_STYLES, lyricStyle, lyricStyleNeedsCharTiming, onLyricStyle, reloadLyricStyle } from './lyricStyle';
 import { BG_BLUR_PX, BG_COVER_EVENT, bgLyricsBlurLevel, bgLyricsBrightness, effectiveBgLyricsCoverStyle, lumiereEffectOn } from './bgLyricsCover';
+import { applyLyricFontVar, lyricLangOf, onLyricFont } from './lyricFont';
 
 /** 歌词页播放效果（纯字）；导出给快捷设置用。 */
 export type { LumiereMode };
@@ -114,6 +116,13 @@ setVinylLyricTintProvider(() => {
 });
 
 let activeLyricsView: LyricsView | null = null;
+
+// 全局「歌词字体」变更：默认 DOM 歌词靠 --lyric-font 立即生效，画布效果重排字面；
+// 背景歌词窗口是独立文档，由 lyricFont.ts 的 storage 事件同步。
+onLyricFont(() => {
+  applyLyricFontVar();
+  activeLyricsView?.refreshLyricFont();
+});
 
 /** 当前歌词页背景模式（快捷设置里展示用）。 */
 export function lyricsBackgroundMode(): LyricsBgMode {
@@ -297,6 +306,8 @@ let lyricSource = '';
 let primeKey = '';
 let primeRetryKey = '';
 let primeRetryAt = 0;
+/** 已经预取过的下一首（trackKey），避免 onPlayer 高频回调重复请求。 */
+let prefetchKey = '';
 let lyricMatchInfo: LyricMatchResult | null = null;
 let lyricMatchSkipped = false;
 let lyricMatchDone = false;
@@ -434,6 +445,9 @@ export function lyricMatchMinScore(): number {
 /** 调整匹配度阈值，并立刻用新阈值重跑当前歌曲的后台匹配。 */
 export function setLyricMatchMinScore(value: number): void {
   setMatchMinScore(value);
+  // 阈值变了，下一首预取的匹配结论也作废，重新按新阈值算一遍。
+  prefetchKey = '';
+  maybePrefetchNextLyric();
   const current = playerState().track;
   if (!lastDoc || !current) {
     lyricMatchDone = false;
@@ -535,6 +549,13 @@ export function setExternalLyricMode(enabled: boolean): void {
   externalLyricMode = enabled;
 }
 
+// 当前歌播放时提前准备下一首：队列/当前曲目变化都会触发，key 相同则跳过。
+onPlayer(() => maybePrefetchNextLyric());
+// 宿主接口/本地曲库晚于页面就绪时，等它们可用再补一次预取。
+onOnlineChange(() => maybePrefetchNextLyric());
+onLocalLibraryChange(() => maybePrefetchNextLyric());
+maybePrefetchNextLyric();
+
 function writeOffsets(): void {
   try {
     window.localStorage.setItem(OFFSET_KEY, JSON.stringify(lyricOffsets));
@@ -558,6 +579,48 @@ export function setLyricOffset(ms: number, trackKey: string): void {
   if (value === 0) delete lyricOffsets[trackKey];
   else lyricOffsets[trackKey] = value;
   writeOffsets();
+}
+
+/**
+ * 预取下一首的歌词与跨平台逐字匹配结果：当前歌还在播时就把下一首准备好。
+ *
+ * 换歌后 `primeLyrics` 会直接命中 `preloadLyricSong` 的文档缓存，
+ * `startLyricMatch` 会直接命中 `lyricMatch` 的结果缓存 —— 不再等播放开始后才去搜逐字替换。
+ * 这里只填缓存，不动当前曲目的 lastDoc / 来源标签 / 匹配状态。
+ */
+export function prefetchUpcomingLyric(track: OnlineTrack | null): void {
+  if (!track) return;
+  if (track.source === 'local' ? !localLibrary() : !onlineReady()) return;
+  const key = trackKeyOf(track);
+  if (!key || key === trackKeyOf(playerState().track)) return;
+  void preloadLyricSong(track)
+    .then((input) => {
+      if (input.lines.length === 0) return;
+      // 手动来源由用户指定，不预跑自动匹配（换歌后会沿用同一份手动歌词）。
+      if (readManual()[key]) return;
+      const baseLines = input.lines as LyricLine[];
+      return matchWordLyrics(track, baseLines).then((result) => {
+        if (result?.lines) return;
+        const baseHasTranslation = baseLines.some((line) => (line.translation ?? '').trim().length > 0);
+        if (baseHasTranslation) return;
+        return matchTranslation(track, baseLines);
+      });
+    })
+    .catch(() => undefined);
+}
+
+/** 队列里的下一首变化时才重新预取（onPlayer 是高频回调，靠 key 去重）。 */
+function maybePrefetchNextLyric(): void {
+  if (externalLyricMode) return;
+  const state = playerState();
+  const next = state.queue[state.index + 1] ?? null;
+  if (!next) return;
+  const key = trackKeyOf(next);
+  if (!key || key === prefetchKey) return;
+  // 宿主接口还没就绪时不记 key，等下一次 onPlayer 再试。
+  if (next.source === 'local' ? !localLibrary() : !onlineReady()) return;
+  prefetchKey = key;
+  prefetchUpcomingLyric(next);
 }
 
 /**
@@ -1064,6 +1127,24 @@ function splitPlainTokens(text: string): Array<{ text: string; spaceBefore: bool
   return tokens;
 }
 
+/** 把译文按语言切成连续的 run，供每个语言套用自己的字体。标点/空白跟随前一段。 */
+function splitLangRuns(text: string): Array<{ text: string; lang: ReturnType<typeof lyricLangOf> }> {
+  const runs: Array<{ text: string; lang: ReturnType<typeof lyricLangOf> }> = [];
+  for (const ch of Array.from(text)) {
+    const lang = lyricLangOf(ch);
+    const last = runs[runs.length - 1];
+    if (last && (last.lang === lang || !lang)) {
+      last.text += ch;
+    } else if (last && !last.lang) {
+      last.lang = lang;
+      last.text += ch;
+    } else {
+      runs.push({ text: ch, lang });
+    }
+  }
+  return runs;
+}
+
 /** 稳定的字级 hash：同一句、同一位置每次渲染得到同一组「飘入」偏移，避免重渲染时字乱跳。 */
 function scatterHash(lineText: string, index: number): number {
   let hash = 2166136261;
@@ -1097,11 +1178,17 @@ export function currentLyricLine(): string {
 }
 
 /** 桌面歌词窗口用：与关闭效果时的歌词栏相同，提供上下文和当前句译文。 */
-export function currentLyricDisplay(): { previous: string; now: string; next: string; translation: string; words: LyricWord[]; activeWord: number } {
+export function currentLyricDisplay(): {
+  previous: string; now: string; next: string; translation: string; words: LyricWord[]; activeWord: number;
+  positionMs: number; playing: boolean; index: number; lines: DesktopLyricsLinePayload[]; linesStart: number;
+} {
   const doc = lastDoc;
   const state = playerState();
   const track = state.track;
-  const empty = { previous: '', now: '', next: '', translation: '', words: [] as LyricWord[], activeWord: -1 };
+  const empty = {
+    previous: '', now: '', next: '', translation: '', words: [] as LyricWord[], activeWord: -1,
+    positionMs: state.positionMs, playing: state.playing, index: -1, lines: [] as DesktopLyricsLinePayload[], linesStart: 0,
+  };
   if (!doc || doc.lines.length === 0 || !track) return empty;
   // 换歌后新歌词还没拉回来时，lastDoc 仍是上一首的——不能把上一首的句子推给桌面歌词。
   if (doc.trackKey !== `${track.source}:${track.id}`) return empty;
@@ -1117,6 +1204,20 @@ export function currentLyricDisplay(): { previous: string; now: string; next: st
       break;
     }
   }
+  // 上下文窗口：当前句前 14 句到后 9 句，最多 24 行（宿主收到就整体替换上下文）。
+  const windowStart = Math.max(0, index - 14);
+  const windowEnd = Math.min(doc.lines.length, index + 10, windowStart + 24);
+  const lines: DesktopLyricsLinePayload[] = [];
+  for (let i = windowStart; i < windowEnd; i += 1) {
+    const entry = doc.lines[i]!;
+    lines.push({
+      text: entry.text,
+      translation: entry.translation,
+      startMs: entry.timeMs,
+      endMs: entry.timeMs + entry.durationMs,
+      words: entry.words.map((word) => ({ text: word.text, spaceBefore: word.spaceBefore, startMs: word.startMs, endMs: word.endMs })),
+    });
+  }
   return {
     previous: doc.lines[index - 1]?.text ?? '',
     now: line?.text ?? '',
@@ -1124,6 +1225,11 @@ export function currentLyricDisplay(): { previous: string; now: string; next: st
     translation: line?.translation ?? '',
     words,
     activeWord,
+    positionMs: position,
+    playing: state.playing,
+    index,
+    lines,
+    linesStart: windowStart,
   };
 }
 
@@ -1355,7 +1461,11 @@ export class LyricsView {
     this.applyCoverStyle();
     this.applyBgBrightness();
     const onCoverStyle = (): void => {
+      // 事件同时代表「封面样式 / 模糊强度 / 封面之后 / 亮度」四种改动：
+      // applyCoverStyle 只在样式真的翻转时才继续，模糊强度必须无条件重算，
+      // 否则停在「封面在左」时拖模糊滑块不会有任何变化。
       this.applyCoverStyle();
+      this.applyCoverBlurStyle();
       this.applyBgBrightness();
     };
     window.addEventListener(BG_COVER_EVENT, onCoverStyle);
@@ -1366,6 +1476,9 @@ export class LyricsView {
       if (lastDoc && lastDoc.trackKey === this.lastTrackKey) {
         this.doc = lastDoc;
         this.render();
+        // 匹配结果会替换整份歌词：画布效果的主题字体按新文本的主要语言重算一次，
+        // 否则会沿用上一首/上一版歌词的语言字体。
+        this.applyLumiereTheme();
       }
     });
 
@@ -1599,7 +1712,11 @@ export class LyricsView {
       return;
     }
     const image = new Image();
-    image.onload = swap;
+    // decode() 在后台线程把位图准备好再换：否则首次绘制时才解码，模糊层会额外掉一帧。
+    image.onload = () => {
+      const ready = typeof image.decode === 'function' ? image.decode() : Promise.resolve();
+      void ready.catch(() => undefined).then(swap);
+    };
     image.onerror = swap;
     image.src = url;
     window.setTimeout(swap, 700);
@@ -1739,10 +1856,10 @@ export class LyricsView {
       return;
     }
     const dark = document.documentElement.dataset.theme === 'dark';
-    // 语义令牌（译文 / 未唱字）沿用主题默认透明度；行色单独给一组，保持「远处更淡、邻近更亮」的层次。
+    // 语义令牌（译文 / 未唱字）沿用主题默认透明度；正在播放行的字与行色保持完全不透明。
     const tone = dark
-      ? [0.42, 0.64, 0.46, 0.5, 0.84, 0.9, 0.9]
-      : [0.62, 0.8, 0.66, 0.74, 0.84, 0.9, 0.9];
+      ? [0.42, 0.64, 0.46, 1, 0.84, 0.9, 1]
+      : [0.62, 0.8, 0.66, 1, 0.84, 0.9, 1];
     keys.forEach((key, index) => root.style.setProperty(key, unsungTone(custom, tone[index])));
   }
 
@@ -1903,10 +2020,20 @@ export class LyricsView {
 
   /** 「歌词颜色」跟着封面走时，纯字档的灯光与字色也一起换成封面色。 */
   private applyLumiereTheme(): void {
-    lumiereThemeNow = lumiereThemeForCover(this.bgMode, this.palette);
+    lumiereThemeNow = lumiereThemeForCover(this.bgMode, this.palette, this.doc.lines.map((line) => line.text).join(' '));
     lumierePaletteNow = this.palette ? [...this.palette] : null;
     this.lumiereText?.setTheme(lumiereThemeNow, lumierePaletteNow);
+    this.flowStage?.setTheme(lumiereThemeNow);
+  }
 
+  /** 「歌词字体」变了：主题、房间/唱片布局与两张画布效果都按新字面刷新。 */
+  refreshLyricFont(): void {
+    applyLyricFontVar();
+    this.applyLumiereTheme();
+    applyRoomStyleSettings();
+    applyVinylStyleSettings();
+    this.poemStage?.refreshFont();
+    this.pressureStage?.refreshFont();
   }
 
   /** 把当前歌词文档交给播放效果舞台（整首歌词）。 */
@@ -2229,6 +2356,7 @@ export class LyricsView {
     this.doc = doc;
     lastDoc = doc;
     this.render();
+    this.applyLumiereTheme();
     if (track) startLyricMatch(track, doc);
   }
 
@@ -2238,6 +2366,7 @@ export class LyricsView {
     this.doc = doc ?? EMPTY;
     lastDoc = doc ?? null;
     this.render();
+    this.applyLumiereTheme();
   }
 
   /** 背景场景：另一窗口改了共享设置（样式/背景/偏移）后重新取本地设置并重绘。 */
@@ -2287,6 +2416,9 @@ export class LyricsView {
       return;
     }
 
+    // 整首歌一次性建到 DocumentFragment 里再挂上去：原来每 append 一行都让浏览器重排一次，
+    // 84 行 × 逐字 span 的歌曲在切歌时会掉一帧（用户感觉「卡一下」）。
+    const frag = document.createDocumentFragment();
     for (const line of this.doc.lines) {
       const lineEl = h('div', { class: 'lyric-line' });
       const chars: HTMLSpanElement[] = [];
@@ -2298,24 +2430,34 @@ export class LyricsView {
         : splitPlainTokens(line.text);
       tokens.forEach((token, index) => {
         const gap = index > 0 && token.spaceBefore;
-        const span = h('span', { class: gap ? 'lyric-char has-gap' : 'lyric-char', text: token.text });
-        span.style.setProperty('--ci', String(index));
+        const lang = lyricLangOf(token.text);
+        const span = h('span', { class: gap ? 'lyric-char has-gap' : 'lyric-char', text: token.text, 'data-lang': lang || undefined });
         const hash = scatterHash(line.text, index);
-        span.style.setProperty('--drift-x', `${(scatterRandom(hash, 0) * 3.2 - 1.6).toFixed(2)}em`);
-        span.style.setProperty('--drift-y', `${(scatterRandom(hash, 1) * 2.2 - 1.1).toFixed(2)}em`);
-        span.style.setProperty('--drift-rot', `${(scatterRandom(hash, 2) * 60 - 30).toFixed(1)}deg`);
-        span.style.setProperty('--drift-dur', `${(0.5 + scatterRandom(hash, 3) * 0.35).toFixed(2)}s`);
+        // 一次写完整条 style：setProperty 连写 5 次会让每个字触发 5 次样式失效，
+        // 452 个字就是 2000+ 次；合并成一条字符串只走一次解析。
+        span.setAttribute(
+          'style',
+          `--ci:${index};--drift-x:${(scatterRandom(hash, 0) * 3.2 - 1.6).toFixed(2)}em;`
+            + `--drift-y:${(scatterRandom(hash, 1) * 2.2 - 1.1).toFixed(2)}em;`
+            + `--drift-rot:${(scatterRandom(hash, 2) * 60 - 30).toFixed(1)}deg;`
+            + `--drift-dur:${(0.5 + scatterRandom(hash, 3) * 0.35).toFixed(2)}s`,
+        );
         chars.push(span);
         lineEl.append(span);
       });
       if (tokens.length === 0) lineEl.textContent = line.text || ' ';
       if (line.translation) {
-        lineEl.append(h('span', { class: 'lyric-trans', text: line.translation }));
+        const transEl = h('span', { class: 'lyric-trans' });
+        for (const run of splitLangRuns(line.translation)) {
+          transEl.append(h('span', { class: 'lyric-trans-run', text: run.text, 'data-lang': run.lang || undefined }));
+        }
+        lineEl.append(transEl);
       }
       this.lineEls.push(lineEl);
       this.charEls.push(chars);
-      this.linesEl.append(lineEl);
+      frag.append(lineEl);
     }
+    this.linesEl.append(frag);
     this.measureLines();
     this.syncProgress(true);
     window.requestAnimationFrame(() => {
@@ -2337,9 +2479,20 @@ export class LyricsView {
     if (!state) return;
     const duration = state.durationMs || 0;
     const percent = duration > 0 ? Math.min(100, Math.max(0, (state.positionMs / duration) * 100)) : 0;
-    this.progressFill.style.width = `${percent}%`;
-    this.progressCur.textContent = fmtTime(state.positionMs);
-    this.progressDur.textContent = fmtTime(duration);
+    // 进度条每帧都在动：宽度变化不足 0.2% 时不写 DOM，避免 60 次/秒的样式失效
+    // （整页重排时这一帧的开销会叠加到切歌卡顿上）。时间文本同理，秒变了才写。
+    if (force || Math.abs(percent - this.progressPercent) >= 0.2) {
+      this.progressPercent = percent;
+      this.progressFill.style.width = `${percent}%`;
+    }
+    if (force || state.positionMs !== this.progressPosMs) {
+      this.progressPosMs = state.positionMs;
+      this.progressCur.textContent = fmtTime(state.positionMs);
+    }
+    if (force || duration !== this.progressDurMs) {
+      this.progressDurMs = duration;
+      this.progressDur.textContent = fmtTime(duration);
+    }
     if (this.doc.lines.length === 0) return;
     const lyricPos = state.positionMs + lyricOffsetOf(this.lastTrackKey);
     const nextIndex = activeIndexOf(this.doc.lines, lyricPos);
@@ -2381,8 +2534,20 @@ export class LyricsView {
     }
     const activeLine = this.doc.lines[this.activeIndex];
     currentLyricText = activeLine ? activeLine.text : '';
-    this.updateTranslationBar(activeLine?.translation ?? '');
+    // 译文条内部要 getBoundingClientRect + checkVisibility（强制布局），不能每帧都问：
+    // 换行时必查，其余情况最多每 300ms 复查一次（滚动后译文行可能露出来）。
+    const transNow = performance.now();
+    if (this.activeIndex !== this.transCheckIndex || transNow - this.transCheckAt > 300 || force) {
+      this.transCheckIndex = this.activeIndex;
+      this.transCheckAt = transNow;
+      this.updateTranslationBar(activeLine?.translation ?? '');
+    }
     // 当前行的演唱进度（0~1），驱动行下方的金色进度线
+    // 播放结束（或停在最后一帧）时，未唱到的字不能继续停在散开/半透明的中间态：
+    // 旋入等样式靠逐字状态归位，而音频结束后不会再有下一个字被唱到，画面会永久歪着。
+    // 这里只负责收尾归位，不改逐字配色——颜色仍按实际演唱进度保留。
+    const ended = duration > 0 && state.positionMs >= duration - 200;
+    this.root.classList.toggle('is-lyric-ended', ended);
     const activeEl = this.lineEls[this.activeIndex];
     if (activeEl && activeLine) {
       const spanMs = Math.max(240, activeLine.durationMs || 2600);
@@ -2390,8 +2555,10 @@ export class LyricsView {
       activeEl.style.setProperty('--p', ratio.toFixed(3));
       // 当前行的放大系数：起句快速弹入，冲过最大字号一点再平滑回落；
       // 计时用真实时间，跟播放进度的 40ms 跳变解耦，动起来是顺的。
-      const grow = growAt(performance.now() - this.growStartAt);
+      // 播放已结束时直接落到 1，避免停在收尾的缩放中间帧上。
+      const grow = ended ? 1 : growAt(performance.now() - this.growStartAt);
       activeEl.style.setProperty('--grow', grow.toFixed(4));
+      if (ended) activeEl.style.setProperty('--p', '1');
       if (this.bgMode === 'gradient') this.paintGradientFlow(performance.now());
     }
     if (activeLine && activeLine.words.length > 0) {
@@ -2515,6 +2682,13 @@ export class LyricsView {
    * 每行的可见度：默认按「离当前句几行」渐隐，越远越淡直到消失；
    * 用户手动滚动浏览时全部恢复为可见，否则滚上去的句子全是透明的没法看。
    */
+  private transCheckIndex = -2;
+  private transCheckAt = 0;
+
+  private progressPercent = -1;
+  private progressPosMs = -1;
+  private progressDurMs = -1;
+
   private colorKey = '';
   private gradPhase = 0;
   private gradTimer: number | null = null;

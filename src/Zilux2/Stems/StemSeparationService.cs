@@ -13,9 +13,10 @@ using Zilux2.Analysis;
 namespace Zilux2.Stems;
 
 /// <summary>
-/// 离线 2 轨人声分离的宿主侧服务（契约 docs/zilux2-stems-contract.md）：
+/// 离线分轨的宿主侧服务（契约 docs/zilux2-stems-contract.md）：
 /// 曲目解析/下载复用 <see cref="TrackAnalysisService"/>，自己负责 44.1 kHz 立体声窗口解码、
-/// 调用 <see cref="HtdemucsSession"/>、写 wNNN.vocals.wav / wNNN.inst.wav + meta.json，
+/// 调用 <see cref="HtdemucsSession"/>，写 wNNN.vocals.wav / wNNN.inst.wav + meta.json；
+/// 4 轨请求额外写 wNNN.drums.wav / wNNN.bass.wav / wNNN.other.wav，
 /// 以及缓存预算、同一 (trackKey, window) 单飞和全局一次一个任务的闸门。
 /// </summary>
 internal sealed class StemSeparationService : IDisposable
@@ -111,7 +112,7 @@ internal sealed class StemSeparationService : IDisposable
         var modelPath = ResolveModelPath();
         if (!File.Exists(modelPath))
         {
-            return StemsOutcome.ModelMissing();
+            return StemsOutcome.ModelMissing(request);
         }
 
         var trackKey = BuildTrackKey(request);
@@ -221,6 +222,13 @@ internal sealed class StemSeparationService : IDisposable
             return new StemsAudioOutcome { State = StemsState.Busy };
         }
 
+        // 4 轨 stem 只可能来自 4 轨缓存：该窗口还没算过 4 轨时返回 busy，
+        // 让前端继续等或去请求 /api/stems?stems=4，而不是 404 让它误判成「要重新分析」。
+        if (IsFourStemStem(stem))
+        {
+            return new StemsAudioOutcome { State = StemsState.Busy };
+        }
+
         return new StemsAudioOutcome
         {
             State = StemsState.Error,
@@ -253,6 +261,8 @@ internal sealed class StemSeparationService : IDisposable
         try
         {
             Directory.CreateDirectory(trackDirectory);
+            // 计算期间钉住这首的目录：整曲目录级 LRU 不能把正在写的窗口整目录删掉。
+            using var cachePin = StemCacheLru.Pin(trackDirectory);
 
             // 排队期间可能已经有别的请求算完了同一窗口。
             if (TryReadCache(trackDirectory, request, modelHash, out var frames, out var durationMs))
@@ -303,6 +313,14 @@ internal sealed class StemSeparationService : IDisposable
             var instrumentalPath = InstrumentalPath(trackDirectory, request.Window);
             StemsWav.Write16(vocalsPath, separation.VocalsLeft, separation.VocalsRight, separation.Frames);
             StemsWav.Write16(instrumentalPath, separation.InstrumentalLeft, separation.InstrumentalRight, separation.Frames);
+
+            // 只有 4 轨请求才多写三轨并把 inst 换成求和；2 轨请求的落盘与旧版逐字节一致。
+            if (request.FourStem)
+            {
+                WriteFourStem(trackDirectory, request.Window, separation);
+            }
+            // 源文件身份：读缓存时与磁盘 FileInfo 比对，不一致就按未命中重算（T2-7）。
+            var sourceIdentity = ReadSourceIdentity(prepared.Audio);
             StemsMetaJson.Write(Path.Combine(trackDirectory, StemsMetaJson.FileName), new StemsMeta
             {
                 TrackKey = trackKey,
@@ -310,8 +328,11 @@ internal sealed class StemSeparationService : IDisposable
                 Title = prepared.Audio.Title,
                 DurationMs = window.DurationMs,
                 SegmentMs = ModelSegmentMs,
+                Stems = request.Stems,
                 ModelSha256 = modelHash,
                 CreatedUtc = DateTime.UtcNow,
+                SourceBytes = sourceIdentity?.Length ?? 0,
+                SourceModifiedUtc = sourceIdentity?.LastWriteTimeUtc,
             });
 
             HostLog.Info(
@@ -363,6 +384,50 @@ internal sealed class StemSeparationService : IDisposable
             Interlocked.Decrement(ref _activeComputations);
             _computeGate.Release();
         }
+    }
+
+    /// <summary>
+    /// 4 轨模式的落盘：额外写 drums / bass / other，并把 inst 重写成三轨之和。
+    /// 2 轨模式下 inst 仍是 mix − vocals；两种模式都满足 inst ≈ mix − vocals，
+    /// 差别只有模型重建误差与 16-bit 量化（实测残差远低于 −60 dBFS）。
+    /// </summary>
+    private static void WriteFourStem(string trackDirectory, int window, StemSeparationResult separation)
+    {
+        var frames = separation.Frames;
+        var drumLeft = separation.StemLeft[HtdemucsSession.DrumStemIndex];
+        var drumRight = separation.StemRight[HtdemucsSession.DrumStemIndex];
+        var bassLeft = separation.StemLeft[HtdemucsSession.BassStemIndex];
+        var bassRight = separation.StemRight[HtdemucsSession.BassStemIndex];
+        var otherLeft = separation.StemLeft[HtdemucsSession.OtherStemIndex];
+        var otherRight = separation.StemRight[HtdemucsSession.OtherStemIndex];
+
+        StemsWav.Write16(DrumsPath(trackDirectory, window), drumLeft, drumRight, frames);
+        StemsWav.Write16(BassPath(trackDirectory, window), bassLeft, bassRight, frames);
+        StemsWav.Write16(OtherPath(trackDirectory, window), otherLeft, otherRight, frames);
+
+        // inst 由三轨求和生成，并顺手量一下与 mix − vocals 的残差，便于回归时确认恒等式没坏。
+        var sumLeft = new float[frames];
+        var sumRight = new float[frames];
+        var residualPeak = 0f;
+        for (var i = 0; i < frames; i++)
+        {
+            var left = drumLeft[i] + bassLeft[i] + otherLeft[i];
+            var right = drumRight[i] + bassRight[i] + otherRight[i];
+            sumLeft[i] = left;
+            sumRight[i] = right;
+
+            var residual = MathF.Max(
+                MathF.Abs(left - separation.InstrumentalLeft[i]),
+                MathF.Abs(right - separation.InstrumentalRight[i]));
+            if (residual > residualPeak)
+            {
+                residualPeak = residual;
+            }
+        }
+
+        StemsWav.Write16(InstrumentalPath(trackDirectory, window), sumLeft, sumRight, frames);
+        HostLog.Info(
+            $"stems.inst-sum window={window} frames={frames} residualDbfs={ToDbfs(residualPeak):0.#}");
     }
 
     private HtdemucsSession EnsureSession(string modelPath)
@@ -444,9 +509,30 @@ internal sealed class StemSeparationService : IDisposable
             return false;
         }
 
+        // 源文件身份（T2-7）：同名文件被重导出/替换后 trackKey 不变、内容已经变了，
+        // 必须按未命中重算，否则会把旧分轨发给新音频。
+        if (!SourceMatches(request, meta))
+        {
+            return false;
+        }
+
         var vocalsPath = VocalsPath(trackDirectory, request.Window);
         var instrumentalPath = InstrumentalPath(trackDirectory, request.Window);
         if (!File.Exists(vocalsPath) || !File.Exists(instrumentalPath))
+        {
+            return false;
+        }
+
+        // meta 里记录的轨数：旧 meta 缺键读成 2；4 轨请求遇到旧缓存直接判未命中，
+        // 走重算而不是报错（T2-4），也不把不完整的 4 轨当结果发出去。
+        if (request.FourStem && meta.Stems < StemSeparationResult.StemCount)
+        {
+            return false;
+        }
+
+        // 4 轨请求要求全套齐全：旧版本只算过 2 轨，缺 drums/bass/other 时按未命中处理，
+        // 走重算而不是把不存在的文件当结果发出去。
+        if (request.FourStem && !HasFourStem(trackDirectory, request.Window))
         {
             return false;
         }
@@ -467,7 +553,108 @@ internal sealed class StemSeparationService : IDisposable
 
         frames = vocalsFrames;
         durationMs = meta.DurationMs;
+        // 命中即刷新目录时间戳：整曲目录级 LRU 用它判断「最久未访问」。
+        StemCacheLru.Touch(trackDirectory);
         return true;
+    }
+
+    /// <summary>drums/bass/other 只存在于 4 轨缓存；vocals/instrumental 两代缓存都成立。</summary>
+    internal static bool IsFourStemStem(string stem) => stem is "drums" or "bass" or "other";
+
+    /// <summary>
+    /// 落盘时的源文件身份：本地曲目取 FileInfo；在线曲目是临时下载文件、没有稳定身份，返回 null（T2-7）。
+    /// </summary>
+    private static FileInfo? ReadSourceIdentity(PreparedTrackAudio audio)
+    {
+        if (audio.IsTemporary || string.IsNullOrWhiteSpace(audio.AudioPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            var info = new FileInfo(audio.AudioPath);
+            return info.Exists ? info : null;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+                                              or ArgumentException or NotSupportedException)
+        {
+            HostLog.Warn($"stems.source-info-failed path={audio.AudioPath}: {exception.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 缓存里的源文件身份是否仍与磁盘一致（T2-7）。同名文件被重导出/替换后 trackKey 并不变，
+    /// 只靠路径键会一直命中旧分轨，所以这里比对字节数与修改时间（精确到 tick）。
+    /// 旧 meta 缺这两个字段一律按未命中重算一次；取不到 FileInfo（文件没了/权限/网络盘）也不盲信缓存。
+    /// 在线曲目是临时下载文件、没有稳定身份，保持旧行为（只校验模型/段长/轨数）。
+    /// </summary>
+    private bool SourceMatches(StemsRequest request, StemsMeta meta)
+    {
+        if (!string.Equals((request.Source ?? string.Empty).Trim(), "local", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (meta.SourceBytes <= 0 || meta.SourceModifiedUtc is null)
+        {
+            HostLog.Info(
+                $"stems.cache-source-unknown key={meta.TrackKey} window={request.Window}: 旧 meta 没有源文件身份，按未命中重算");
+            return false;
+        }
+
+        var path = _analysis?.ResolveLocalPath(request.Rel);
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            HostLog.Warn(
+                $"stems.cache-source-unresolved key={meta.TrackKey} rel={request.Rel}: 无法解析源文件，按未命中处理");
+            return false;
+        }
+
+        try
+        {
+            var info = new FileInfo(path);
+            if (!info.Exists)
+            {
+                HostLog.Warn($"stems.cache-source-missing path={path}: 按未命中处理");
+                return false;
+            }
+
+            if (info.Length != meta.SourceBytes || info.LastWriteTimeUtc != meta.SourceModifiedUtc.Value)
+            {
+                HostLog.Info(
+                    $"stems.cache-stale key={meta.TrackKey} window={request.Window} " +
+                    $"bytes={meta.SourceBytes}->{info.Length} " +
+                    $"modified={meta.SourceModifiedUtc.Value:O}->{info.LastWriteTimeUtc:O}");
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+                                              or ArgumentException or NotSupportedException)
+        {
+            HostLog.Warn($"stems.cache-source-info-failed path={path}: {exception.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 4 轨是否齐全：drums/bass/other 都在，且帧数与 vocals 一致。缺一轨就返回 false，
+    /// 让调用方按未命中重算（缓存里可能只有旧版写下的 2 轨）。
+    /// </summary>
+    private static bool HasFourStem(string trackDirectory, int window)
+    {
+        var vocalsFrames = StemsWav.ReadFrameCount(VocalsPath(trackDirectory, window));
+        if (vocalsFrames <= 0)
+        {
+            return false;
+        }
+
+        return StemsWav.ReadFrameCount(DrumsPath(trackDirectory, window)) == vocalsFrames
+            && StemsWav.ReadFrameCount(BassPath(trackDirectory, window)) == vocalsFrames
+            && StemsWav.ReadFrameCount(OtherPath(trackDirectory, window)) == vocalsFrames;
     }
 
     /// <summary>
@@ -507,9 +694,30 @@ internal sealed class StemSeparationService : IDisposable
             return false;
         }
 
-        var candidate = string.Equals(stem, "instrumental", StringComparison.Ordinal)
-            ? InstrumentalPath(trackDirectory, request.Window)
-            : VocalsPath(trackDirectory, request.Window);
+        // drums/bass/other 只在 4 轨缓存里成立；meta 说是 2 轨就不算命中，
+        // 由 ResolveAudio 转成 409 busy，避免把半套文件发出去。
+        if (IsFourStemStem(stem) && meta.Stems < StemSeparationResult.StemCount)
+        {
+            return false;
+        }
+
+        // 源文件身份（T2-7）：与 TryReadCache 同一套判定，
+        // 避免 /api/stems/audio 在源文件被替换后继续发旧分轨。
+        if (!SourceMatches(request, meta))
+        {
+            return false;
+        }
+
+        // drums/bass/other 走各自的 wav；其余（含未知值）仍按旧行为落到 vocals，
+        // 参数合法性由 LocalMusicServer 在入口处校验。
+        var candidate = stem switch
+        {
+            "instrumental" => InstrumentalPath(trackDirectory, request.Window),
+            "drums" => DrumsPath(trackDirectory, request.Window),
+            "bass" => BassPath(trackDirectory, request.Window),
+            "other" => OtherPath(trackDirectory, request.Window),
+            _ => VocalsPath(trackDirectory, request.Window),
+        };
         if (!File.Exists(candidate))
         {
             return false;
@@ -548,6 +756,7 @@ internal sealed class StemSeparationService : IDisposable
 
         path = candidate;
         frames = count;
+        StemCacheLru.Touch(trackDirectory);
         return true;
     }
 
@@ -584,17 +793,8 @@ internal sealed class StemSeparationService : IDisposable
         }
     }
 
-    private static long ReadCacheLimitBytes()
-    {
-        var text = Environment.GetEnvironmentVariable("ZILUX2_STEMS_CACHE_MB");
-        if (long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var megabytes) && megabytes > 0)
-        {
-            return megabytes * 1024 * 1024;
-        }
-
-        // 设置页的缓存预算（cache-policy.json）优先于内置默认值，改了立即生效。
-        return Zilux2.Storage.CachePolicy.LimitBytes;
-    }
+    /// <summary>预算由 StemCacheLru 统一解析（cache-policy.json 的 maxStemCacheMb / 环境变量 / 设置页）。</summary>
+    private static long ReadCacheLimitBytes() => StemCacheLru.ResolveLimitBytes();
 
     private static string BuildTrackKey(StemsRequest request)
     {
@@ -604,8 +804,12 @@ internal sealed class StemSeparationService : IDisposable
             : source + ":" + (request.TrackId ?? string.Empty).Trim();
     }
 
+    // 4 轨与 2 轨分开单飞：否则 4 轨请求可能 join 到已在跑的 2 轨任务，
+    // 拿到 ready 却没有 drums/bass/other 文件。
     private static string BuildFlightKey(string trackKey, StemsRequest request) =>
-        string.Create(CultureInfo.InvariantCulture, $"{trackKey}|{request.Window}|{request.WindowSec}");
+        string.Create(
+            CultureInfo.InvariantCulture,
+            $"{trackKey}|{request.Window}|{request.WindowSec}|s{request.Stems}");
 
     private static string TrackDirectory(string trackKey) =>
         Path.Combine(CacheRoot, Sha1Hex(trackKey));
@@ -619,77 +823,34 @@ internal sealed class StemSeparationService : IDisposable
     private static string InstrumentalPath(string directory, int window) =>
         Path.Combine(directory, string.Create(CultureInfo.InvariantCulture, $"w{window:D3}.inst.wav"));
 
-    /// <summary>512 MB 预算，按最旧 LastWriteTimeUtc 淘汰；先删文件，再收掉空目录。</summary>
+    private static string DrumsPath(string directory, int window) => StemPath(directory, window, "drums");
+
+    private static string BassPath(string directory, int window) => StemPath(directory, window, "bass");
+
+    private static string OtherPath(string directory, int window) => StemPath(directory, window, "other");
+
+    /// <summary>4 轨 stem 的落盘路径：wNNN.drums.wav / wNNN.bass.wav / wNNN.other.wav。</summary>
+    private static string StemPath(string directory, int window, string stem) =>
+        Path.Combine(directory, string.Create(CultureInfo.InvariantCulture, $"w{window:D3}.{stem}.wav"));
+
+    /// <summary>线性幅度转 dBFS，仅用于日志（0 → -inf）。</summary>
+    private static double ToDbfs(float amplitude) =>
+        amplitude <= 0f ? double.NegativeInfinity : 20d * Math.Log10(amplitude);
+
+    /// <summary>
+    /// 整曲目录级 LRU（T2-5）：按目录 LastWriteTimeUtc 从旧到新整目录删除，直到预算内。
+    /// 正在计算的目录被 <see cref="StemCacheLru.Pin"/> 钉住，这里会跳过。
+    /// </summary>
     private void PruneCache()
     {
         try
         {
-            if (!Directory.Exists(CacheRoot))
-            {
-                return;
-            }
-
-            var files = new List<FileInfo>();
             var limit = ReadCacheLimitBytes();
-            var total = 0L;
-            foreach (var path in Directory.EnumerateFiles(CacheRoot, "*", SearchOption.AllDirectories))
+            var (removed, remaining) = StemCacheLru.Prune(CacheRoot, limit, StemCacheLru.IsPinned);
+            if (removed > 0)
             {
-                var info = new FileInfo(path);
-                if (!info.Exists)
-                {
-                    continue;
-                }
-
-                files.Add(info);
-                total += info.Length;
+                HostLog.Info($"stems.prune removed-dirs={removed} remaining={remaining} limit={limit}");
             }
-
-            if (total <= limit)
-            {
-                return;
-            }
-
-            files.Sort(static (left, right) => left.LastWriteTimeUtc.CompareTo(right.LastWriteTimeUtc));
-            var removed = 0;
-            foreach (var file in files)
-            {
-                if (total <= limit)
-                {
-                    break;
-                }
-
-                var length = file.Length;
-                try
-                {
-                    file.Delete();
-                    total -= length;
-                    removed++;
-                }
-                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-                {
-                    // 前端正在读这个窗口就跳过，下次再淘汰。
-                }
-            }
-
-            var directories = Directory
-                .EnumerateDirectories(CacheRoot, "*", SearchOption.AllDirectories)
-                .OrderByDescending(static directory => directory.Length);
-            foreach (var directory in directories)
-            {
-                try
-                {
-                    if (!Directory.EnumerateFileSystemEntries(directory).Any())
-                    {
-                        Directory.Delete(directory);
-                    }
-                }
-                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-                {
-                    // 忽略：下次再收。
-                }
-            }
-
-            HostLog.Info($"stems.prune removed={removed} remaining={total} limit={limit}");
         }
         catch (Exception exception)
         {

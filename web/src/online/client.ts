@@ -111,6 +111,9 @@ export function isMockOnline(): boolean {
 
 /** 供 <img> 等直接引用的回环地址（自动带 token）；在线源未就绪时返回空串。 */
 export function onlineEndpoint(path: string, params: Record<string, string> = {}): string {
+  // 已经是带 token 的绝对地址就直接用：桌面层那块页面拿不到 boot 数据，
+  // 宿主推过来的是绝对 URL，再拼一次前缀会变成 http://...http://... 而整块黑屏。
+  if (/^https?:\/\//i.test(path)) return path;
   if (!info) return '';
   const query = new URLSearchParams({ ...params, token: info.token });
   return `${baseUrl()}${path}?${query.toString()}`;

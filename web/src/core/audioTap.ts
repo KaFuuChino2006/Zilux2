@@ -179,6 +179,21 @@ export function appMusicOutputNode(): AudioNode | null {
   return nightCompressor;
 }
 
+/**
+ * 把共享 AudioContext 从挂起里拉回来。
+ * 后台（窗口不可见）时 Chromium 可能把上下文挂起，表现为「在放但没声音」；
+ * 这里只做 resume，不建图、不改任何增益，所以随便调都安全。
+ */
+export function resumeAudioContext(): void {
+  if (!context) return;
+  if (context.state === 'running') return;
+  try {
+    void context.resume();
+  } catch {
+    // 没有用户手势时 resume 可能被搁置，回到前台会再调一次。
+  }
+}
+
 /** 诊断：当前本地播放图状态（麦克风混音排查用）。 */
 export function audioTapState(): { running: boolean; localVolume: number; localGain: number; context: string } {
   return {
@@ -474,6 +489,32 @@ export function readDeckTrimState(): { src: string; trimDb: number; gain: number
 }
 
 /** 当前音频时钟（秒）；图没建立时返回 null（此时只能走元素音量路径）。 */
+/**
+ * 频谱快照：给动态壁纸的音频响应用。返回 8 段归一化能量与整体电平（0..1）。
+ * 拿不到分析器（未播放/未建图）时返回 null，调用方直接跳过这一拍。
+ */
+const BAND_BINS = 8;
+let bandBuffer: Uint8Array<ArrayBuffer> | null = null;
+
+export function audioSpectrum(): { bands: number[]; level: number } | null {
+  const node = analyser;
+  if (!node) return null;
+  const size = node.frequencyBinCount;
+  if (!bandBuffer || bandBuffer.length !== size) bandBuffer = new Uint8Array(new ArrayBuffer(size));
+  node.getByteFrequencyData(bandBuffer);
+  const per = Math.max(1, Math.floor(size / BAND_BINS));
+  const bands: number[] = [];
+  let sum = 0;
+  for (let i = 0; i < BAND_BINS; i += 1) {
+    let acc = 0;
+    for (let k = 0; k < per; k += 1) acc += bandBuffer[i * per + k] ?? 0;
+    const value = acc / per / 255;
+    bands.push(Math.round(value * 1000) / 1000);
+    sum += value;
+  }
+  return { bands, level: Math.round((sum / BAND_BINS) * 1000) / 1000 };
+}
+
 export function audioTapClock(): number | null {
   if (!context) return null;
   return Number.isFinite(context.currentTime) ? context.currentTime : null;
