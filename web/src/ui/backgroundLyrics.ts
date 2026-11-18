@@ -5,8 +5,8 @@
  * 背景窗口（`index.html?scene=backgroundLyrics`，由宿主挂在 WorkerW 下）：不启动整套 App，
  * 只创建一个 LyricsView，用宿主转发的媒体快照驱动播放头；歌词文档来自上面的 localStorage 快照。
  */
-import { host, onWallpaperLayer } from '../core/bridge';
-import { pageImmersiveEnabled, refreshPageWallpaperSwitches } from '../wallpaper/client';
+import { host } from '../core/bridge';
+import { refreshPageWallpaperSwitches } from '../wallpaper/client';
 import { getSettings, loadSettings, onSettingsChange } from '../core/settings';
 import { initOnline, onlineEndpoint, onOnlineChange } from '../online/client';
 import type { OnlineTrack } from '../online/types';
@@ -267,12 +267,10 @@ export async function bootBackgroundLyricsScene(): Promise<void> {
   // 背景页也要拿到宿主的在线源端点：封面是回环绝对地址，重启后端口会变，需要按当前端点重拼。
   initOnline();
   await loadSettings();
-  // 「背景歌词样式」选了动态壁纸时，这一页整块透明，让真正的桌面壁纸透过窗口显示。
-  // 桌面背景歌词要透出桌面壁纸的两种情况：
-  //  ① 背景歌词样式选了「动态壁纸」；
-  //  ② 播放效果是画布类（纯字 / 拼合 / 房间 / 唱片）——这些效果自带暗场，
-  //     用 screen 混合就能让壁纸透上来，不需要整页不透明把它们闷住。
-  if (pageImmersiveEnabled() || lumiereMode() !== 'off') document.documentElement.classList.add('is-bg-motion');
+  // 这一页本身就透明（body 背景 transparent），默认播放效果下桌面壁纸本来就能透出来，
+  // 所以只有画布类效果（纯字 / 拼合 / 房间 / 唱片）才需要把壁纸铺进这一页做 screen 混合。
+  // 「背景歌词样式 = 动态壁纸」在默认效果下不再额外叠一层壁纸（那是同一张视频解第二遍）。
+  if (lumiereMode() !== 'off') document.documentElement.classList.add('is-bg-motion');
   // 模块级样式/偏移变量在导入时只读过一次；启动时重读一遍，保证背景窗口和主窗口一致。
   reloadSharedLyricSettings();
 
@@ -280,52 +278,24 @@ export async function bootBackgroundLyricsScene(): Promise<void> {
   view.root.classList.add('is-background-lyrics');
   document.body.append(view.root);
 
-  // 「动态壁纸」样式：这一页自己把壁纸铺在歌词下面，而不是指望窗口半透明。
-  // 窗口一旦变成 layered（AllowsTransparency），WebView2 的子窗口就不参与合成了，
-  // 结果就是「壁纸看得见、歌词一点没有」。所以壁纸由页面自己画，窗口保持不透明。
-  let motionLayer: import('./wallpaperLayer').WallpaperLayer | null = null;
-  // 这一层只在「动态壁纸」样式下才吃状态：同一样式切回去之后就不能再建媒体，
-  // 否则同一段视频会被解第二遍（用户能看到的两份解码）。
-  let motionOn = false;
-  let latestState: import('../core/bridge').WallpaperLayerState | null = null;
-
+  // 壁纸由 main.ts 的 startWallpaperLayer() 铺好（#wallpaper-root 挂在 body 上）。
+  // 这一页**不再**自己新建一层：那会把同一段视频解第二遍，用户看到的就是「两个壁纸」。
+  // 需要做的只是把它挪进歌词页的 stacking context（画布效果的 screen 混合才混得到），
+  // 默认效果时再挪回 body —— 两种情况下都只有一份解码。
   const applyMotion = (): void => {
-    const on = pageImmersiveEnabled() || lumiereMode() !== 'off';
-    motionOn = on;
+    const on = lumiereMode() !== 'off';
     document.documentElement.classList.toggle('is-bg-motion', on);
-    if (!on) {
-      // 切回「纯壁纸 / 封面在左」时把这一层彻底停掉：不占解码、也不在背后泛光。
-      motionLayer?.clear();
-      if (motionLayer) motionLayer.element.style.display = 'none';
-      return;
+    const root = document.getElementById('wallpaper-root');
+    if (!root) return;
+    // 桌面歌词窗必须一直有底：就算「常规页面显示壁纸」被关掉，这一页也要显示，
+    // 否则窗口会变成一块不透明的黑。
+    root.classList.remove('is-hidden', 'is-fading');
+    if (on) {
+      if (root.parentElement !== view.root) view.root.insertBefore(root, view.root.firstChild);
+    } else if (root.parentElement !== document.body) {
+      document.body.insertBefore(root, document.body.firstChild);
     }
-
-    if (motionLayer) {
-      motionLayer.element.style.display = '';
-      if (latestState) motionLayer.apply(latestState);
-      return;
-    }
-
-    void (async () => {
-      try {
-        const { WallpaperLayer } = await import('./wallpaperLayer');
-        const layer = new WallpaperLayer();
-        // 壁纸要与歌词同处一个 stacking context，stage 的 screen 混合才混得到它。
-        view.root.insertBefore(layer.element, view.root.firstChild);
-        motionLayer = layer;
-        if (latestState) layer.apply(latestState);
-      } catch {
-        // 宿主机还没就绪：保持透明底，不阻塞歌词。
-      }
-    })();
   };
-
-  // 手动订阅而不是 layer.start()：样式关掉之后仍然要收状态（缓存起来），
-  // 但只在 motionOn 时真正建/换媒体。
-  onWallpaperLayer((state) => {
-    latestState = state;
-    if (motionOn && motionLayer) motionLayer.apply(state);
-  });
 
   applyMotion();
 
@@ -358,7 +328,13 @@ window.addEventListener('storage', (event) => {
   const coverLayers: HTMLDivElement[] = [0, 1].map(() => {
     const layer = document.createElement('div');
     layer.className = 'bg-cover-left';
-    layer.append(createCoverPane('bg-cover-sharp'), createCoverPane('bg-cover-blur'));
+    layer.append(
+      createCoverPane('bg-cover-sharp'),
+      createCoverPane('bg-cover-blur'),
+      // 「模糊铺满」用的第二块模糊带：遮罩一直铺到右缘，靠整层 opacity 淡入淡出。
+      // 单选一块 pane 改 mask 在本项目的合成路径里不会逐帧重绘，改成两层交叉淡入才稳。
+      createCoverPane('bg-cover-blur bg-cover-blur-fill'),
+    );
     view.root.append(layer);
     return layer;
   });
@@ -371,23 +347,115 @@ window.addEventListener('storage', (event) => {
 
   const coverMode = (): boolean => view.root.classList.contains('is-bg-cover-left');
 
-  /** 模糊强度 / 「封面之后」的填充方式：写到 root 的 CSS 变量与类上，由样式表消费。 */
-  const applyCoverBlur = (): void => {
+  /**
+   * 「桌面壁纸本身也一起模糊」只在「封面在左 + 模糊未关 + 不是模糊铺满」时成立。
+   * 这三件事任何一个变了都要重新同步，否则会出现「模糊关了还在」「切纯壁纸还糊」。
+   */
+  const syncWallpaperBlurClass = (wallBlur: boolean, fill: boolean): void => {
+    document.documentElement.classList.toggle('is-bg-cover-left', wallBlur);
+    document.documentElement.classList.toggle('is-bg-cover-fill', fill);
+  };
+
+  /**
+   * 模糊强度 / 「封面之后」的填充方式：写到 root 的 CSS 变量与类上，由样式表消费。
+   * 「渐隐到壁纸 ⇄ 模糊铺满」用 WAAPI 显式补一段 --bg-cover-fade 动画：色标终点的 CSS 过渡
+   * 在某些时机（切样式、首次合成）会被跳过，用动画就不会。
+   */
+  const applyCoverBlur = (animate = true): void => {
     if (lumiereEffectOn()) {
       view.root.classList.remove('is-bg-cover-noblur', 'is-bg-cover-fill');
+      syncWallpaperBlurClass(false, false);
       return;
     }
     const level = bgLyricsBlurLevel();
+    const fillNext = bgLyricsFillMode() === 'fill' && level !== 'off';
+    const fillPrev = view.root.classList.contains('is-bg-cover-fill');
     view.root.style.setProperty('--bg-cover-blur', `${BG_BLUR_PX[level]}px`);
+    // 默认效果下 #wallpaper-root 挂在 body 上（不在 .lyrics-view 里），变量必须挂到 <html>
+    // 才能被壁纸那条 filter 规则读到，否则永远落到 44px 的兜底值（表现为档位切了没变化）。
+    document.documentElement.style.setProperty('--bg-cover-blur', `${BG_BLUR_PX[level]}px`);
     view.root.classList.toggle('is-bg-cover-noblur', level === 'off');
-    view.root.classList.toggle('is-bg-cover-fill', bgLyricsFillMode() === 'fill' && level !== 'off');
+    view.root.classList.toggle('is-bg-cover-fill', fillNext);
+    // 两种「封面之后」壁纸都要跟着糊：铺满时右缘仍是同一块背景，不糊会看到一条清晰壁纸。
+    syncWallpaperBlurClass(coverMode() && level !== 'off', fillNext);
+    // 两种「封面之后」都要保留封面自己的模糊：
+    // 渐隐到壁纸 = 清晰封面 → 封面模糊带 → 右缘露出（已一起模糊的）壁纸；
+    // 模糊铺满   = 清晰封面 → 封面模糊带一直铺到右缘。
+    // 因此这里只清掉历史遗留的内联 opacity，可见性完全交给类与样式表。
+    coverLayers.forEach((layer) => {
+      layer.querySelectorAll<HTMLElement>('.bg-cover-blur').forEach((pane) => {
+        if (pane.style.opacity) pane.style.removeProperty('opacity');
+      });
+    });
+    // 换模糊档位靠 CSS 的 filter 过渡（.bg-cover-blur / #wallpaper-root 各有一条），
+    // 这里不再用 WAAPI 动 --bg-cover-blur：自定义属性变化不会让 Chromium 逐帧重绘 filter。
+    void BG_BLUR_PX[level];
+    // 「渐隐到壁纸 ⇄ 模糊铺满」用「多一层模糊带的 opacity 交叉淡入」来表达：
+    // mask 的色标终点是变量，改它不会逐帧重绘（WAAPI 动 maskImage 实测也没有中间值），
+    // 而 opacity 是合成属性，任何窗口都能稳定出帧。
+    void animate;
+    void fillPrev;
   };
 
-  /** 只改两层封面的可见性；切换本身交给 CSS 的 opacity 过渡。 */
+  /**
+   * 只改两层封面的可见性。
+   * 这里不用 CSS transition：首次进「封面在左」时整层是 opacity:0，Chromium 对这种
+   * 「首帧就没有合成层」的元素会跳过过渡（实测 0 → 1 直接到位），看起来就是整片糊上去。
+   * 用 WAAPI 显式补一段淡入，任何时刻切都成立。
+   */
+  const fadeCoverLayer = (layer: HTMLDivElement, on: boolean): void => {
+    const target = on ? '1' : '0';
+    const from = getComputedStyle(layer).opacity;
+    layer.style.opacity = target;
+    if (from === target) return;
+    layer.animate([{ opacity: from }, { opacity: target }], { duration: 700, easing: 'cubic-bezier(.22,.61,.24,1)' });
+  };
+
+  /** 封面先整幅立起来，再把右侧慢慢化开成设定的模糊（模糊 0 → 设定值）。 */
+  // 同一次进场里会被 syncCoverOpacity / applyCoverImage / visibility 多次触发；
+  // 重复起动画会让 WAAPI 先回落到 CSS 终值（64px）再从头开始 —— 看上去就是「闪一下糊满」。
+  let introUntil = 0;
+  const introCover = (layer: HTMLDivElement): void => {
+    const diag = window as unknown as { __bgIntro?: number[]; __bgIntroSkip?: string };
+    if (performance.now() < introUntil) {
+      diag.__bgIntroSkip = 'busy';
+      return;
+    }
+    diag.__bgIntro = [...(diag.__bgIntro ?? []), Date.now()];
+    introUntil = performance.now() + 900;
+    if (lumiereEffectOn()) {
+      diag.__bgIntroSkip = 'effect';
+      return;
+    }
+    const sharpTo = bgLyricsFillMode() === 'fill' && bgLyricsBlurLevel() !== 'off' ? '100%' : '54%';
+    layer.querySelectorAll<HTMLElement>('.bg-cover-sharp').forEach((pane) => {
+      const frames = [
+        { '--bg-cover-fade': '100%' },
+        { '--bg-cover-fade': sharpTo },
+      ] as unknown as Keyframe[];
+      pane.animate(frames, { duration: 1100, delay: 260, easing: 'cubic-bezier(.22,.61,.24,1)', fill: 'both' });
+    });
+    const level = bgLyricsBlurLevel();
+    if (level === 'off') return;
+    const to = `${BG_BLUR_PX[level]}px`;
+    // 这里只同步变量（档位/缩放/壁纸那条 filter 都读它）并让 CSS 的 filter 过渡生效。
+    // 不要再对模糊层做 opacity 动画、更不要写内联 opacity：
+    // 内联值会压过类规则，切回「渐隐到壁纸」时那层收不回去（右缘看起来和没渐隐一样）。
+    layer.querySelectorAll<HTMLElement>('.bg-cover-blur').forEach((pane) => {
+      pane.style.removeProperty('opacity');
+    });
+    // 变量也同步到终值，供缩放/换档等其它路径读取。
+    window.setTimeout(() => view.root.style.setProperty('--bg-cover-blur', to), 1420);
+  };
+
   const syncCoverOpacity = (): void => {
     const on = coverMode();
     coverLayers.forEach((layer, index) => {
-      layer.style.opacity = on && index === activeCoverLayer ? '1' : '0';
+      const want = on && index === activeCoverLayer;
+      const wasOn = layer.style.opacity === '1';
+      fadeCoverLayer(layer, want);
+      // 首次亮起来（或换封面后）才让模糊从 0 长上来；重复调用不重放，避免闪。
+      if (want && !wasOn) introCover(layer);
     });
   };
 
@@ -400,12 +468,13 @@ window.addEventListener('storage', (event) => {
     const nextIndex = activeCoverLayer === 0 ? 1 : 0;
     const next = coverLayers[nextIndex];
     const image = url ? `url("${url}")` : 'none';
-    // 只给清晰层写图；模糊层靠 backdrop-filter 糊它下面这张图，本身不再持有封面。
+    // 两层都写同一张图；模糊层用自身 filter: blur() 糊自己（不用 backdrop-filter，
+    // 那个在桌面歌词窗口里不逐帧重绘，只有整页重画时才更新）。
     next.querySelectorAll<HTMLDivElement>('.bg-cover-sharp').forEach((pane) => {
       pane.style.backgroundImage = image;
     });
     next.querySelectorAll<HTMLDivElement>('.bg-cover-blur').forEach((pane) => {
-      pane.style.backgroundImage = 'none';
+      pane.style.backgroundImage = image;
     });
     // 两层封面都留在歌词框架之下（CSS z-index:1 / 框架 z-index:2），靠 DOM 顺序决定谁在上：
     // 把新层移到末尾，换歌时旧层压着新层淡出，不会挡住歌词。
@@ -450,6 +519,8 @@ window.addEventListener('storage', (event) => {
     const commitStyle = (): void => {
       view.root.classList.toggle('is-bg-cover-left', wantCover);
       syncCoverOpacity();
+      // 切样式（含切回「纯壁纸」）后必须重算壁纸模糊，否则 html 上的类会留在旧状态。
+      applyCoverBlur(false);
     };
     if (!coverInitialized || !animate || !changed) {
       commitStyle();
@@ -464,6 +535,31 @@ window.addEventListener('storage', (event) => {
       coverSwitchTimer = window.setTimeout(() => view.root.classList.remove('is-bg-cover-switching'), 340);
     }, 160);
   };
+
+  // 窗口被宿主收起再显示（开始/暂停播放、切歌）时，页面其实刚被合成；
+  // 这时候补一次「封面淡入 + 模糊从 0 长到设定值」，否则看上去就是一下子糊满。
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden || !coverMode()) return;
+    const layer = coverLayers[activeCoverLayer];
+    fadeCoverLayer(layer, true);
+    introCover(layer);
+  });
+
+  // WebView2 在窗口被收起时会把 rAF 停掉，恢复后第一帧的时间差会很大。
+  // 用它当「刚被显示出来」的信号重放一次进场，避免动画在看不见的时候播完、一露脸就是糊的终态。
+  {
+    let lastFrame = performance.now();
+    const watchFrames = (now: number): void => {
+      if (now - lastFrame > 1200 && coverMode()) {
+        const layer = coverLayers[activeCoverLayer];
+        fadeCoverLayer(layer, true);
+        introCover(layer);
+      }
+      lastFrame = now;
+      window.requestAnimationFrame(watchFrames);
+    };
+    window.requestAnimationFrame(watchFrames);
+  }
 
   // 换歌时先让上一首的歌词/封面淡出 200ms，再换文档淡入；同一首（例如歌词来源刷新）直接替换。
   let switchTimer = 0;
