@@ -7530,10 +7530,24 @@ html.is-bg-lyrics-scene #app{display:none}
   /* 与主歌词页同一套起句放大：--line-emph 由 applyLineEmphasisCap 按行宽算，--grow 由节奏驱动。 */
   transform:translate(8px) scale(calc(1 + var(--line-emph, 0.207) * var(--grow, 0)))!important;
 }
+/* 「纯壁纸」这一档歌词是居中排版，起句动画要跟着从中间往外长；
+   「封面在左」仍按主歌词页的「行首弹出」保留，所以这两条必须排除 .is-bg-cover-left。 */
+.lyrics-view.is-background-lyrics:not(.is-lumiere):not(.is-bg-cover-left) .lyrics-right .lyric-line{
+  transform-origin:50% 50%!important;
+}
+.lyrics-view.is-background-lyrics:not(.is-lumiere):not(.is-bg-cover-left) .lyrics-right .lyric-line.is-active{
+  transform:scale(calc(1 + var(--line-emph, 0.207) * var(--grow, 0)))!important;
+}
 .lyrics-view.is-background-lyrics:not(.is-lumiere) .lyrics-right .lyric-line.is-active:before{display:none}
 
 /* 「封面在左」样式（播放效果=关闭时可切换）：封面铺左半边并向壁纸渐隐，歌词列移到右半边左对齐。
    封面层由 backgroundLyrics.ts 的 .bg-cover-left 创建，z-index 在压暗层之上、歌词框架之下。 */
+/* 「渐隐到壁纸」的淡出终点：54%（露壁纸）↔ 100%（封面铺满）。
+   注册成 <percentage> 才能在两种模式间做真正的插值——直接换 mask-image 的色标是硬切。 */
+@property --bg-cover-fade{syntax:'<percentage>';inherits:true;initial-value:54%}
+@property --bg-cover-blur-fade{syntax:'<percentage>';inherits:true;initial-value:58%}
+/* 模糊半径也要能插值：封面进来时从 0 长到设定值，而不是一上来就是满糊。 */
+@property --bg-cover-blur{syntax:'<length>';inherits:true;initial-value:44px}
 .lyrics-view.is-background-lyrics .bg-cover-left{
   position:absolute;inset:0;z-index:1;width:100%;height:100%;pointer-events:none;
   opacity:0;
@@ -7546,32 +7560,49 @@ html.is-bg-lyrics-scene #app{display:none}
    不再复制第二份封面图，所以模糊区和清晰区永远严丝合缝，不会有缩放错位。 */
 .lyrics-view.is-background-lyrics .bg-cover-pane{
   position:absolute;inset:0;background-position:left center;background-size:cover;background-repeat:no-repeat;
+  /* 模糊强度、「渐隐到壁纸 / 模糊铺满」都靠同一层的遮罩与 backdrop-filter 变化，
+     所以这里要给出过渡，切换才不是硬切。 */
+  transition:opacity .42s ease,-webkit-backdrop-filter .42s ease,backdrop-filter .42s ease,
+    -webkit-mask-image .42s ease,mask-image .42s ease,
+    --bg-cover-fade .42s ease,--bg-cover-blur-fade .42s ease;
 }
 .lyrics-view.is-background-lyrics .bg-cover-sharp{
-  /* 「渐隐到壁纸」：清晰封面从中间向右淡出，把桌面/软件壁纸让出来。 */
-  -webkit-mask-image:linear-gradient(90deg,#000 0%,#000 20%,rgb(0 0 0 / .5) 38%,transparent 54%);
-  mask-image:linear-gradient(90deg,#000 0%,#000 20%,rgb(0 0 0 / .5) 38%,transparent 54%);
+  /* 「渐隐到壁纸」：清晰封面从中间向右淡出，把桌面/软件壁纸让出来。
+     淡出终点是注册过的 --bg-cover-fade，切「模糊铺满」时它 54% → 100% 渐变过去。 */
+  -webkit-mask-image:linear-gradient(90deg,#000 0%,#000 20%,rgb(0 0 0 / .5) 38%,transparent var(--bg-cover-fade));
+  mask-image:linear-gradient(90deg,#000 0%,#000 20%,rgb(0 0 0 / .5) 38%,transparent var(--bg-cover-fade));
 }
-/* 「模糊铺满」：清晰封面保持整屏，右侧不再露出壁纸。 */
-.lyrics-view.is-background-lyrics.is-bg-cover-fill .bg-cover-sharp{
-  -webkit-mask-image:none;mask-image:none;
-}
+/* 「模糊铺满」：清晰封面保持整屏，右侧不再露出壁纸（终点推到 100%，色标不变才能插值）。 */
+.lyrics-view.is-background-lyrics.is-bg-cover-fill .bg-cover-sharp{--bg-cover-fade:100%}
 .lyrics-view.is-background-lyrics .bg-cover-blur{
-  background-image:none!important;
-  -webkit-backdrop-filter:blur(var(--bg-cover-blur, 44px)) saturate(1.1) brightness(var(--lyrics-bg-brightness, .92));
-  backdrop-filter:blur(var(--bg-cover-blur, 44px)) saturate(1.1) brightness(var(--lyrics-bg-brightness, .92));
-  transform:none;
-  -webkit-mask-image:linear-gradient(90deg,transparent 6%,rgb(0 0 0 / .5) 24%,rgb(0 0 0 / .95) 44%,#000 58%);
-  mask-image:linear-gradient(90deg,transparent 6%,rgb(0 0 0 / .5) 24%,rgb(0 0 0 / .95) 44%,#000 58%);
+  /* 用自身 filter 糊自己。backdrop-filter 在桌面歌词窗口里不逐帧重绘：
+     半径在算，画面却停在起始值，直到整页重画才「啪」地跳到终值。 */
+  -webkit-backdrop-filter:none;
+  backdrop-filter:none;
+  filter:blur(var(--bg-cover-blur, 44px)) saturate(1.1) brightness(var(--lyrics-bg-brightness, .92));
+  /* 档位切换（轻/中/重）与开关模糊都靠这条过渡；缺了它就是硬切。 */
+  transition:filter .52s ease, opacity .42s ease;
+  transform:scale(1.06);
+  -webkit-mask-image:linear-gradient(90deg,transparent 16%,rgb(0 0 0 / .5) 34%,rgb(0 0 0 / .92) 52%,rgb(0 0 0 / .55) 74%,transparent 92%);
+  mask-image:linear-gradient(90deg,transparent 16%,rgb(0 0 0 / .5) 34%,rgb(0 0 0 / .92) 52%,rgb(0 0 0 / .55) 74%,transparent 92%);
 }
-/* 模糊关掉：只留清晰封面。 */
-.lyrics-view.is-background-lyrics.is-bg-cover-noblur .bg-cover-blur{display:none}
-/* 模糊铺满：右侧更早进入模糊，且一直铺到窗口右缘。 */
-.lyrics-view.is-background-lyrics.is-bg-cover-fill .bg-cover-blur{
-  -webkit-mask-image:linear-gradient(90deg,transparent 6%,rgb(0 0 0 / .5) 24%,rgb(0 0 0 / .95) 44%,#000 62%);
-  mask-image:linear-gradient(90deg,transparent 6%,rgb(0 0 0 / .5) 24%,rgb(0 0 0 / .95) 44%,#000 62%);
+/* 模糊关掉：只留清晰封面。用 opacity 淡出而不是 display:none，
+   否则「从无到有」的模糊出现会是硬切。 */
+.lyrics-view.is-background-lyrics.is-bg-cover-noblur .bg-cover-blur{opacity:0}
+/* 模糊铺满：第二条模糊带一直铺到右缘，靠整层 opacity 交叉淡入。
+   （mask 的终点变量不会逐帧重绘，直接改 mask 只会「跳」。） */
+.lyrics-view.is-background-lyrics .bg-cover-blur-fill{
+  -webkit-mask-image:linear-gradient(90deg,transparent 16%,rgb(0 0 0 / .5) 34%,rgb(0 0 0 / .92) 52%,rgb(0 0 0 / .82) 74%,rgb(0 0 0 / .96) 92%);
+  mask-image:linear-gradient(90deg,transparent 16%,rgb(0 0 0 / .5) 34%,rgb(0 0 0 / .92) 52%,rgb(0 0 0 / .82) 74%,rgb(0 0 0 / .96) 92%);
+  opacity:0;
+  /* 这条必须同时带上 filter：单独写 opacity 会把基类那条 filter 过渡覆盖掉，
+     表现为「铺满模式下换档位没有过渡」。 */
+  transition:filter .52s ease, opacity .52s ease;
 }
-.lyrics-view.is-background-lyrics.is-bg-cover-left:not(.is-lumiere) .bg-cover-left{opacity:1}
+.lyrics-view.is-background-lyrics.is-bg-cover-fill .bg-cover-blur-fill{opacity:1}
+/* 显隐完全由 backgroundLyrics.ts 的内联 opacity 决定（WAAPI 淡入），
+   这里不要再写 opacity:1 —— 否则切到「封面在左」的那一帧 CSS 直接把整层点亮，
+   JS 的淡入就没有起点，看上去就是一下子糊上去。 */
 /* 封面层在压暗层之上，右侧压暗要画在封面自己身上；跟着 mask 一起淡出。 */
 .lyrics-view.is-background-lyrics .bg-cover-left::after{
   content:'';position:absolute;inset:0;pointer-events:none;
@@ -7627,6 +7658,18 @@ html.is-bg-lyrics-scene #app{display:none}
   transition:transform .54s cubic-bezier(.22,1.28,.36,1),opacity .2s ease;
 }
 .lyrics-view.is-background-lyrics .bg-cover-left{transition:opacity .46s ease}
+
+/* 「封面在左」：不能只糊封面 —— 桌面壁纸本身也要一起糊，两者才是同一块背景。
+   壁纸层整体加模糊（左侧被清晰封面盖住，右缘自然露出模糊后的壁纸）。
+   放大固定挂在场景上（不随模糊开关涨落），否则切样式时整块画面会位移。 */
+html.is-bg-lyrics-scene #wallpaper-root{transform:scale(1.06);transform-origin:center;transition:filter .52s ease}
+html.is-bg-lyrics-scene.is-bg-cover-left #wallpaper-root{
+  filter:blur(var(--bg-cover-blur,44px)) saturate(1.06) brightness(var(--lyrics-bg-brightness,.92));
+}
+/* 模糊铺满：右缘仍要露出同一块背景，所以壁纸也保持模糊（不再单独撤销）。 */
+
+/* 两种「封面之后」都保留封面自己的模糊带，区别只在它铺到哪（见上面的 mask）。 */
+
 .lyrics-view.is-background-lyrics.is-bg-doc-switching .lyrics-right .lyrics-lines{opacity:0}
 /* 纯壁纸 ⇄ 封面在左：布局尺寸缓慢过渡 + 内容先压暗再淡回（backgroundLyrics.ts 的 applyCoverStyle）。 */
 .lyrics-view.is-background-lyrics:not(.is-lumiere) .lyrics-frame{transition:padding .32s ease}

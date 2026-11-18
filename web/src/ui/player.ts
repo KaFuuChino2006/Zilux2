@@ -805,12 +805,16 @@ function onEnded(element: HTMLAudioElement): void {
 }
 
 function onError(element: HTMLAudioElement): void {
-  // 预加载的 B 报错：放弃这次无缝衔接，并记下这首播不出来。
-  // 之后无论手动切到它还是自然播到它，load()/advance 都会直接越过。
+  // 预加载的 B 报错：这次衔接作废，并且要接着往下走 —— 否则「手动切到一首下架的歌」
+  // 会停在过渡画面里出不来（B 挂掉、A 又没被换下）。
   if (element !== audio) {
+    const failed =
+      transitionTarget ??
+      (plannedNextIndex !== null ? state.queue[plannedNextIndex] : null);
     cancelSeamless('standby-error');
-    const planned = plannedNextIndex !== null ? state.queue[plannedNextIndex] : null;
-    if (planned) badTrackKeys.add(trackKeyOf(planned));
+    if (failed && state.track && queueKeyOf(failed) !== queueKeyOf(state.track)) {
+      skipToNextPlayable(failed, 'standby-error');
+    }
     return;
   }
   cancelSeamless('error');
@@ -837,9 +841,45 @@ function skipBrokenTrack(track: OnlineTrack, reason: string): void {
   }
   skipGuard += 1;
   console.warn('[player] skip unplayable track', track.title, reason);
+  announceSkipped(track, reason);
   window.setTimeout(() => {
     if (state.track?.id === track.id) next();
   }, 240);
+}
+
+/**
+ * 从「某一首播不出来」继续往下找：跳过它，切到其后第一首没被判定坏掉的曲目。
+ * 用于过渡里 B 来不及出声（下架 / 取流失败）的情形 —— 这时当前曲还没被换下，
+ * 不能只 next()，否则又会对准同一首坏歌。
+ */
+function skipToNextPlayable(failed: OnlineTrack, reason: string): void {
+  badTrackKeys.add(trackKeyOf(failed));
+  if (skipGuard >= 3) {
+    skipGuard = 0;
+    return;
+  }
+  skipGuard += 1;
+  const failedIndex = state.queue.findIndex((item) => queueKeyOf(item) === queueKeyOf(failed));
+  const start = failedIndex >= 0 ? failedIndex + 1 : state.index + 1;
+  const target = playableIndexFrom(start);
+  console.warn('[player] skip unplayable track', failed.title, reason, '→ index', target);
+  announceSkipped(failed, reason);
+  if (target === state.index) return;
+  window.setTimeout(() => {
+    if (state.index === target) return;
+    manualSwitch(target);
+  }, 240);
+}
+
+/** 通知界面「这首歌跳过了」，由 app 负责提示文案。 */
+function announceSkipped(track: OnlineTrack, reason: string): void {
+  try {
+    window.dispatchEvent(
+      new CustomEvent('zilux:track-skipped', { detail: { title: track.title, reason } }),
+    );
+  } catch {
+    /* 事件派发失败不影响播放 */
+  }
 }
 
 /** 从 start 开始（含）找下一首没被判定坏掉的曲目；全都坏掉时返回 start。 */

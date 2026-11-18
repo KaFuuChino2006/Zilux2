@@ -1088,6 +1088,13 @@ export class App {
     const onCrossfadeSettings = (): void => this.syncUpNextTransition(playerState());
     window.addEventListener('zilux:crossfade', onCrossfadeSettings);
     this.disposers.add(() => window.removeEventListener('zilux:crossfade', onCrossfadeSettings));
+    // 播放器跳过「取不到流」的歌（下架 / 版权失效）时给一句提示，否则用户只看到切歌失败。
+    const onTrackSkipped = (event: Event): void => {
+      const detail = (event as CustomEvent<{ title?: string }>).detail;
+      toast(`「${detail?.title ?? '这首歌'}」暂时无法播放，已自动跳过`, 'info');
+    };
+    window.addEventListener('zilux:track-skipped', onTrackSkipped);
+    this.disposers.add(() => window.removeEventListener('zilux:track-skipped', onTrackSkipped));
     this.localDispose = onLocalLibraryChange(() => {
       if (this.wall.kind === 'local') {
         if (localLibrary()) this.showLocal();
