@@ -226,7 +226,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\release.ps1 -Version <
 - Folia（AGPL-3.0，歌词渲染代码来源，见上方说明）
 - Mineradio（GPL-3.0，参考设计思路）
 
-开发工具：
-
-- **DeepSeek Harness** —— 本项目全程使用的 AI Agent 编程环境。
 
