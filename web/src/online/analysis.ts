@@ -10,7 +10,6 @@
 
 import { relOf } from '../ui/local';
 import { OnlineError, api, qualityForSource } from './client';
-import { mergeEnhancedFeatures, pollFeatures, type AnalysisFeatures } from './analysisFeatures';
 import type { OnlineTrack } from './types';
 
 /** 契约 §2.1 的 analysis.sections 元素。label：intro / outro / climax，或空串。 */
@@ -93,16 +92,6 @@ export interface BeatAnalysis {
   barChromaMs?: number[];
   /** p1-1：逐小节 12 音级 chroma 拼平（每小节已归一到单位长度），用于跨曲旋律相似度。 */
   barChroma?: number[];
-  /** 增强特征合并后的来源标记；缺失表示还在用 DSP 曲线。 */
-  activitySource?: 'dsp' | 'stems';
-  /** 分轨活动度所用的模型指纹（htdemucs 权重 SHA256）。 */
-  activityModel?: string;
-  /** 结构来源：DSP 能量分段 / SSM 自相似矩阵。 */
-  sectionsSource?: 'dsp' | 'ssm' | 'ssm+dsp';
-  /** SSM 结构边界（ms，含曲首）。 */
-  boundariesMs?: number[];
-  /** 已合并的增强特征版本串（stems/v1+structure/ssm-v1）。 */
-  featuresVersion?: string;
 }
 
 /** p1-0：三路活动度曲线，等长、按 `hopMs` 采样。 */
@@ -145,8 +134,6 @@ export interface AnalysisResult {
   audibleEndMs?: number;
   tailSilenceMs?: number;
   analysis: BeatAnalysis;
-  /** 已合并的增强特征（分轨活动度 / SSM 结构）；尚未就绪时为空。 */
-  features?: AnalysisFeatures | null;
 }
 
 export class AnalysisError extends Error {
@@ -180,8 +167,6 @@ interface AnalysisResponse {
   audibleEndMs?: number;
   tailSilenceMs?: number;
   analysis?: Partial<BeatAnalysis>;
-  /** 增强特征（若宿主已就绪，会在基础响应里顺带返回）。 */
-  features?: AnalysisFeatures | null;
 }
 
 const cache = new Map<string, AnalysisResult>();
@@ -249,10 +234,6 @@ export async function peekAnalysis(track: OnlineTrack): Promise<AnalysisResult |
       return null;
     }
     const result = normalizeResult(raw, track);
-    if (raw.features) {
-      mergeEnhancedFeatures(result.analysis, raw.features);
-      result.features = raw.features;
-    }
     missing.delete(key);
     cache.set(key, result);
     return result;
@@ -284,8 +265,6 @@ export async function analyzeTrack(track: OnlineTrack, options: { force?: boolea
     params.quality = qualityForSource(String(track.source));
   }
   if (options.force) params.force = '1';
-  // 触发宿主侧异步增强（htdemucs 活动度 + SSM 结构）；基础分析不等它。
-  params.enrich = '1';
 
   const pending = api<AnalysisResponse>('/api/analysis', params, ANALYSIS_TIMEOUT_MS).then(
     (raw) => {
@@ -293,14 +272,8 @@ export async function analyzeTrack(track: OnlineTrack, options: { force?: boolea
         throw new AnalysisError(raw?.code ?? 'internal-error', raw?.message ?? '节拍分析失败');
       }
       const result = normalizeResult(raw, track);
-      if (raw.features) {
-        mergeEnhancedFeatures(result.analysis, raw.features);
-        result.features = raw.features;
-      }
       missing.delete(key);
       cache.set(key, result);
-      // 后台把增强补齐；不 await，播放路径不被拖慢。
-      void hydrateFeatures(track, result);
       return result;
     },
     (err: unknown) => {
@@ -312,93 +285,6 @@ export async function analyzeTrack(track: OnlineTrack, options: { force?: boolea
   });
   inflight.set(key, tracked);
   return tracked;
-}
-
-type FeatureListener = (track: OnlineTrack, result: AnalysisResult) => void;
-
-const featureListeners = new Set<FeatureListener>();
-const hydrating = new Set<string>();
-
-/** 增强特征合并完成时通知（浮层/分析页重绘来源标记）。 */
-export function onAnalysisEnhanced(listener: FeatureListener): () => void {
-  featureListeners.add(listener);
-  return () => featureListeners.delete(listener);
-}
-
-function emitEnhanced(track: OnlineTrack, result: AnalysisResult): void {
-  for (const listener of featureListeners) {
-    try {
-      listener(track, result);
-    } catch {
-      // 监听器异常不能影响分析主流程。
-    }
-  }
-}
-
-/** 后台补齐增强特征；同一首只跑一条轮询。 */
-async function hydrateFeatures(track: OnlineTrack, result: AnalysisResult, budgetMs = 25_000): Promise<void> {
-  const key = analysisKey(track);
-  if (hydrating.has(key)) return;
-  if (result.features?.stems && result.features?.structure) return;
-  hydrating.add(key);
-  try {
-    const features = await pollFeatures(track, { budgetMs });
-    if (!features) return;
-    // force 分析可能已经换了新对象；只在缓存里仍是同一份 analysis 时合并。
-    const live = cache.get(key);
-    const target = live && live.analysis === result.analysis ? live : result;
-    if (mergeEnhancedFeatures(target.analysis, features)) {
-      target.features = features;
-      emitEnhanced(track, target);
-    }
-  } finally {
-    hydrating.delete(key);
-  }
-}
-
-/**
- * 过渡规划前的短等待：已有分轨曲线直接返回；还在跑最多等 budgetMs。
- * 绝不抛错——增强失败时调用方继续用 DSP 曲线。
- */
-export async function ensureEnhancedAnalysis(
-  track: OnlineTrack,
-  budgetMs = 1200,
-): Promise<AnalysisResult | null> {
-  const key = analysisKey(track);
-  const hit = cache.get(key);
-  if (!hit) return null;
-  if (hit.features?.stems && hit.features?.structure) return hit;
-  const features = await raceWithTimeout(pollFeatures(track, { budgetMs }), budgetMs + 200);
-  if (features && mergeEnhancedFeatures(hit.analysis, features)) {
-    hit.features = features;
-    emitEnhanced(track, hit);
-  }
-  return hit;
-}
-
-function raceWithTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
-  return new Promise((resolve) => {
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      resolve(null);
-    }, timeoutMs);
-    void promise.then(
-      (value) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve(value);
-      },
-      () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve(null);
-      },
-    );
-  });
 }
 
 function toAnalysisError(err: unknown): AnalysisError {
