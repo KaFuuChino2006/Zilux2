@@ -156,6 +156,8 @@ let vocalLow: BiquadFilterNode | null = null;
 let vocalHigh: BiquadFilterNode | null = null;
 let loudnessGain: GainNode | null = null;
 let nightCompressor: DynamicsCompressorNode | null = null;
+/** 母线真峰值限幅：threshold −1.5 dBFS、ratio 20、attack 1 ms、release 100 ms。 */
+let masterLimiter: DynamicsCompressorNode | null = null;
 /** 0=正常，1=最大程度压低伴奏；由 player.ts 在淡出时推动。 */
 let vocalFadeAmount = 0;
 /** 低频/高频最大衰减量（dB），只压伴奏不碰中频人声。 */
@@ -1328,7 +1330,7 @@ function buildLocalGraph(ctx: AudioContext): boolean {
     vocalHigh.type = 'highshelf';
     vocalHigh.frequency.value = 4200;
     vocalHigh.gain.value = 0;
-    // 串起来：deckMix → 10 段 EQ → 人声保留搁架 → 分轨闸 → 总音量 → 限幅 → 本地增益 → 输出。
+    // 串起来：deckMix → 10 段 EQ → 人声保留搁架 → 分轨闸 → 总音量 → 夜间压缩 → 本地增益 → 母闸 → 真峰值限幅 → 输出。
     let tail: AudioNode = deckMix;
     for (const filter of eqFilters) {
       tail.connect(filter);
@@ -1355,8 +1357,16 @@ function buildLocalGraph(ctx: AudioContext): boolean {
     masterGate = ctx.createGain();
     masterGate.gain.value = stemMonitorActive ? 0 : 1;
     localGain.connect(masterGate);
-    masterGate.connect(ctx.destination);
-    // 输出侧静音探针：masterGate 之后分一路进零增益的 analyser，
+    // 母线限幅：masterGate → limiter → destination。无 lookahead，ceiling 留 1.5 dB 余量。
+    masterLimiter = ctx.createDynamicsCompressor();
+    masterLimiter.threshold.value = -1.5;
+    masterLimiter.knee.value = 0;
+    masterLimiter.ratio.value = 20;
+    masterLimiter.attack.value = 0.001;
+    masterLimiter.release.value = 0.1;
+    masterGate.connect(masterLimiter);
+    masterLimiter.connect(ctx.destination);
+    // 输出侧静音探针：限幅之后分一路进零增益的 analyser，
     // 用它判断「播放器在放、但送出去的波形是静音」，而不是只看元素状态。
     try {
       outputAnalyser = ctx.createAnalyser();
@@ -1364,7 +1374,7 @@ function buildLocalGraph(ctx: AudioContext): boolean {
       outputAnalyser.smoothingTimeConstant = 0.3;
       outputSink = ctx.createGain();
       outputSink.gain.value = 0;
-      masterGate.connect(outputAnalyser);
+      masterLimiter.connect(outputAnalyser);
       outputAnalyser.connect(outputSink);
       outputSink.connect(ctx.destination);
     } catch (err) {

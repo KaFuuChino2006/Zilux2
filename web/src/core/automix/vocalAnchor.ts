@@ -475,7 +475,7 @@ export function firstVocalLineMs(
   const fromMs = Math.max(0, options.fromMs ?? 0);
   // 默认 1200 ms：段门槛由 findVocalSegments 先把关（≥700 ms、均值 ≥0.55），这里再要
   // 1.2 s 是为了滤掉「前奏里的单次呼吸/切片峰」——春めく 前奏第 2 秒就有一个 750 ms 的峰，
-  // 放行它会把整个过渡压成 2 s。（m04294）
+  // 放行它会把整个过渡压成 2 s。
   // 有些歌第一句本身就很短（Charlie Puth《Attention》开头那句 750 ms），需要放行时由调用方
   // 传 minMs: 600（浮层开关「短句也算第一句」）。
   const minMs = Math.max(200, options.minMs ?? 1_200);
@@ -514,7 +514,7 @@ export function firstStrongVocalMs(
       if (run >= needFrames) {
         // activity 曲线是「文件时间」：index 0 = 文件第 0 秒。
         // 不要加 cueInMs——那是「从哪一秒开始播」的建议点（本机实测 30–48 s），
-        // 加到曲线时间上会把入口推到歌中间（m03224 踩过）。
+        // 加到曲线时间上会把入口推到歌中间（踩过）。
         return Math.round(runStart * hop);
       }
     } else {
@@ -530,7 +530,7 @@ export function firstStrongVocalMs(
  *
  * 歌词是毫秒精度的，但网易云/QQ 的 LRC 经常整体偏移（不同版本、剪辑版、翻唱），
  * 而 activity 曲线一定对版、只是段边界粗。所以判据不是「谁更晚」，而是
- * 「歌词说的那个位置，音频里到底有没有人在唱」。（m04294）
+ * 「歌词说的那个位置，音频里到底有没有人在唱」。
  */
 export function vocalEnergyNear(
   analysis: BeatAnalysis,

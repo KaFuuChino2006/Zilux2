@@ -1099,7 +1099,7 @@ interface FadeSchedule {
   styleId?: TransitionStyleId;
   styleParams?: StyleParams;
   styleReasons?: string[];
-  /** B 侧让位（B 一开播就唱时，A 的人声还在就把 B 压住）。m05230 */
+  /** B 侧让位（B 一开播就唱时，A 的人声还在就把 B 压住）。 */
   bDuck?: DuckEvent[] | null;
   /** 尾段渐隐补回：识别结果 + 裁到过渡窗口内的抬升曲线（文件毫秒）。 */
   tailFade?: TailFadeInfo | null;
@@ -1240,7 +1240,7 @@ interface ActivePlan {
   styleId?: TransitionStyleId;
   styleParams?: StyleParams;
   styleReasons?: string[];
-  /** B 侧让位（B 一开播就唱时，A 的人声还在就把 B 压住）。m05230 */
+  /** B 侧让位（B 一开播就唱时，A 的人声还在就把 B 压住）。 */
   bDuck?: DuckEvent[] | null;
   /** 尾段渐隐识别结果（只做展示/日志）。 */
   tailFade?: TailFadeInfo | null;
@@ -2450,7 +2450,7 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
   // 旋律相似度（p1-1）：只用于浮层显示与日志，0 = 没算/没有 chroma。
   let melodySim = 0;
   // 「真开唱」的强判定结果（连续 1.5s ≥0.6）。歌词常把前奏的呼吸/人声切片标成第一句，
-  // 这时以曲线为准——否则 B 的整段前奏根本用不上（m03224）。
+  // 这时以曲线为准——否则 B 的整段前奏根本用不上。
   let strongVocalEntryMs = 0;
   if (v2VocalAnchor && settings.vocalAnchor !== 'off' && anchorPresenceOk(nextAnalysis)) {
     const entry = selectVocalEntry(
@@ -2584,7 +2584,7 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
   let vocalFileMs = vocalPosMs > 0 ? nextStartMs + vocalPosMs : 0;
   // 兜底：歌词和「唱句段」都没给出入口，但 B 确实有唱句（presence=vocal）时，
   //   直接取第一段唱句的起点。没有这一步，B 开头 1–2 s 就开口的对会拿到 entry=0，
-  //   于是「唱词衔接」整段不启用、B 侧让位也排不出事件（体检里 5.5% 的 NO_HANDOFF）。（m05396）
+  //   于是「唱词衔接」整段不启用、B 侧让位也排不出事件（体检里 5.5% 的 NO_HANDOFF）。
   if (v2VocalAnchor && vocalFileMs === 0 && vocalPresence(nextAnalysis) === 'vocal') {
     const firstSeg = findVocalSegments(nextAnalysis).find((seg) => seg.startMs >= nextStartMs);
     if (firstSeg && (!nextLimitMs || firstSeg.startMs < nextLimitMs)) {
@@ -2607,7 +2607,7 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
     // All anchors share a segment-relative tail budget, including CUE tracks.
     // 尾段预算要按 **A 的可听结尾** 算，不能按文件时长：带 20–30 s 静音尾巴的曲子
     //   （1012db42 这类）用文件时长会算出 tailStart=160.6 s，而它的可听结尾只有 162.2 s，
-    //   结果整段过渡只剩 1.7 s（全库体检里 TOO_SHORT 的来源）。（m05288）
+    //   结果整段过渡只剩 1.7 s（全库体检里 TOO_SHORT 的来源）。
     const tailRefEnd = fileAudibleEndMs > 0 ? fileAudibleEndMs : currentStartMs + durationMs;
     const tailSpanMs = Math.max(6000, tailRefEnd - currentStartMs);
     const tailStart = Math.max(currentStartMs + currentPosMs + 80,
@@ -2623,7 +2623,7 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
     let head = entry ? audibleIntroStart(nextAnalysis,nextStartMs,entry) : nextStartMs;
     // audibleIntroStart 只认「首句前那段连续有声」，安静段判宽了就会把整段前奏/第一段主歌
     //   当成静音跳过去 —— 听感就是「过渡完直接跳到 50 多秒、跳词」。
-    //   所以只要 [起点, head) 这段其实有声音（区域响度 > -45 LUFS），就老老实实从起点播。（m04554）
+    //   所以只要 [起点, head) 这段其实有声音（区域响度 > -45 LUFS），就老老实实从起点播。
     if (entry && head > nextStartMs + 500) {
       // 只量「被裁掉的那一段」：真正的静音头（1–2 s 的淡入/空白）响度必然很低，
       //   而有内容却超过 2 小节的裁切（如 8–9 s 的前奏被当成静音）会明显 > -45。
@@ -2701,7 +2701,7 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
     }
     // 尾段预算（按曲长 15%、最多 30 s）与「A 的实际可听结尾」打架时，让窗口往前扩：
     //   1012db42 这类曲子的可听结尾 162.2 s，但 15% 线算出来是 160.6 s，
-    //   两者只差 1.7 s → 整段过渡被压成 1.7 s 的硬切（全库体检 TOO_SHORT 的来源）。（m05288）
+    //   两者只差 1.7 s → 整段过渡被压成 1.7 s 的硬切（全库体检 TOO_SHORT 的来源）。
     if (end - earliest < MIN_AUTO_BLEND_MS) {
       earliest = Math.max(currentStartMs + currentPosMs + 80,
         Math.min(earliest, Math.round(end - MIN_AUTO_BLEND_MS)));
@@ -2711,7 +2711,7 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
     // 只在不越过可听结尾、且推后量不超过两个小节时生效，避免把尾奏整段拖进来。
     const lyricLastFile = hasLyricEnd && last > 0 && last <= audibleEndPosMs ? currentStartMs + last : 0;
     // A 还有人声时绝不能收尾：以前只放宽 2 小节，How Long 的末句比最后一击鼓点晚
-    // 4.75 s（≈2.2 小节）就被漏掉，过渡在末句唱到一半时开始。（m04470）
+    // 4.75 s（≈2.2 小节）就被漏掉，过渡在末句唱到一半时开始。
     if (lyricLastFile > end && lyricLastFile <= fileAudibleEndMs && lyricLastFile - end <= Math.min(MAX_FADE_MS, 6 * bar)) {
       end = Math.round(Math.min(fileAudibleEndMs, lyricLastFile + Math.min(400, bar * 0.15)));
     }
@@ -2738,7 +2738,7 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
     const introMs = entry ? entry-head : 0;
     // B 的首句离它起点太近（<3.2 s）时，硬把窗口压到 1.2–1.6 s 去「落在首句」是错的：
     //   那点长度连一次低频换手都放不下，听感是硬切。这种对不上就放弃唱句对齐，
-    //   改用结构窗口（4 小节起），让 B 的首句自然落进窗口里。（m05026 全库体检）
+    //   改用结构窗口（4 小节起），让 B 的首句自然落进窗口里。（全库体检）
     const entryUsable = entry > 0 && introMs >= MIN_AUTO_BLEND_MS;
     const entryAnchor = entryUsable ? entry : 0;
     if (entry && introMs < 250) return null;
@@ -2779,15 +2779,15 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
     if (!mix) return null;
     let {x,span,rate} = mix;
     // B 永远从它自己的起点（head）起播：composePhrase 给的 y 可能为了对齐鼓型往前挪，
-    //   那等于把 B 的开头整段跳过（听感=跳词）。窗口长度不够就让 B 的前奏自然铺在 A 后面。（m05026）
+    //   那等于把 B 的开头整段跳过（听感=跳词）。窗口长度不够就让 B 的前奏自然铺在 A 后面。
     let y = Math.round(head);
     // B 的首句必须落在淡化终点，同时**尽量少往后 seek**（跳到歌中间 = 跳词）。
     //   窗口能撑到「首句 − B 起点」就撑满：窗口越长，B 需要提前的量越少 → seek 越浅。
-    //   上限 MAX_FADE_MS，所以首句离起点超过 32 s 时仍会 seek（最多 32 s），但不会更多。（m04554）
+    //   上限 MAX_FADE_MS，所以首句离起点超过 32 s 时仍会 seek（最多 32 s），但不会更多。
     if (!introBridge && entryUsable) {
       const entryRel = Math.max(0, entryAnchor + delay - head);
       // 能撑的长度同时受三件事限制：首句位置、A 尾段可用长度、以及「过渡必须落在尾段」的
-      //   既有约束（不超过曲长的 15%，硬上限 30 s）。（m04554）
+      //   既有约束（不超过曲长的 15%，硬上限 30 s）。
       const curDurMs = Math.max(0, options.currentDurationMs ?? options.currentAnalysis?.durationMs ?? 0);
       const tailCap = curDurMs > 0
         ? Math.max(MIN_FADE_MS, Math.min(30_000, Math.round(curDurMs * 0.15)))
@@ -2800,11 +2800,11 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
       }
       // 绝不把 B seek 到歌中间：B 一律从它自己的起点（head）开始播。
       //   如果 A 的尾段装不下 B 的前奏，就让 B 的前奏在 A 结束后继续走，直到它自己的首句。
-      //   这比「跳到 50 多秒」正确得多（跳词 = 直接丢掉开头的段落）。（m04554）
+      //   这比「跳到 50 多秒」正确得多（跳词 = 直接丢掉开头的段落）。
       y = Math.round(head);
     }
     // 兜底：窗口短于 3.2 s 时（B 首句太近 / 鼓型匹配只给出很窄的窗口），
-    //   只要 A 尾段还有空间就撑到 4 小节或 floor —— 1.2 s 的「过渡」等于硬切。（m05026 全库体检）
+    //   只要 A 尾段还有空间就撑到 4 小节或 floor —— 1.2 s 的「过渡」等于硬切。（全库体检）
     if (!introBridge && span < MIN_AUTO_BLEND_MS) {
       const tailEnd = bridge?.extendedEndMs ?? end;
       const roomCap2 = Math.max(0, Math.round(tailEnd - earliest));
@@ -2823,9 +2823,9 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
       introBridge.bufferMs = Math.ceil(introBridge.delayMs*rate);
     }
     // 乐句路径以前直接 return，完全不经过 E10 质量门 —— 全库体检里 371/371 都没有质量数据。
-    //   这里补一次只读评估：附在计划上供浮层/日志看，只有严重超标才让位给常规 v2 路径。（m05026）
+    //   这里补一次只读评估：附在计划上供浮层/日志看，只有严重超标才让位给常规 v2 路径。
     // 先算出真正会施加的响度补偿，再让质量门按「补偿之后」评估 ——
-    //   以前质量门传 gainTrimDb:0，等于一边补偿一边判它没补偿，必然大面积 fail。（m05026）
+    //   以前质量门传 gainTrimDb:0，等于一边补偿一边判它没补偿，必然大面积 fail。
     const gainTrimDb = settings.loudnessMatch
       ? transitionMatchDb(analysis, nextAnalysis, x + Math.max(0, span - 3000), entry || y, Math.min(span, 3000), rate)
       : 0;
@@ -2924,7 +2924,7 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
       } catch { return null; }
     })();
     // 层 C 人声让位：以前只声明了 v2Duck 字段，从来没人生成过（全库体检才发现）。
-    //   A 在 B 唱的地方把 1.5–4 kHz 压 6 dB，两条咬字就不会互相盖住。（m05141）
+    //   A 在 B 唱的地方把 1.5–4 kHz 压 6 dB，两条咬字就不会互相盖住。
     const phraseDuck = buildDuckEvents({
       b: nextAnalysis, fadeStartBMs: y, fadeMs: span, tempoRate: rate,
       gateBeforeMs: entryUsable ? entryAnchor : 0,
@@ -2932,7 +2932,7 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
     });
     // B 一开播就唱（首句 < 3.2 s）：没有窗口能把首句摆到接缝上，但也不能就这么算了。
     //   反过来压 B —— A 还在唱的时候 B 的 1.5–4 kHz 压 6 dB，A 唱完立刻放开，
-    //   听感是「下一首在人声底下偷进来」，而不是两条人声互盖。（m05230）
+    //   听感是「下一首在人声底下偷进来」，而不是两条人声互盖。
     const tailLiftOn = localStorage.getItem('zilux2.dev.tailfade') !== '0';
     const aUnfade = tailLiftOn && tailFade && !trimTail ? clipLift(tailFade.points,x,x+span)
       .map(point => ({...point,liftDb:Math.min(6,point.liftDb)})) : null;
@@ -2945,7 +2945,7 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
       gainTrimDb,
       audibleEndPosMs,tailSilenceMs,nextVocalStartMs:vocalPosMs,vocalAligned:!groove && entryUsable,
       // handoff = 「有人声处理」；vocalAligned = 「B 的首句精确落在接缝上」。
-      //   两者分开：B 一开播就唱的对靠 bDuck 处理，handoff 仍是 true，只是没对齐。（m05230）
+      //   两者分开：B 一开播就唱的对靠 bDuck 处理，handoff 仍是 true，只是没对齐。
       handoff:entryUsable || phraseBDuck.some((e) => e.db < -1),
       lastVocalEndPosMs:Math.max(0,last),handoffHoldMs:0,
       quality: phraseQuality,
@@ -3014,7 +3014,7 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
     logEvent('automix-v2-anchor', `A ${tailReconcile.reason}`);
   }
   // 末句离可听结尾太远 = 检测漏了后面的唱段 / 歌词错位。此时宁可不锚，
-  // 让过渡落回结尾，也不要在歌还唱着的时候开始混（m02116「明明没唱完就过渡」）。
+  // 让过渡落回结尾，也不要在歌还唱着的时候开始混（「明明没唱完就过渡」）。
   if (
     v2VocalAnchor &&
     lastVocalEndPosMs > 0 &&
@@ -3262,7 +3262,7 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
   let fadeMs = structure ? structure.fadeMs : Math.round(handoff ? handoffFadeMs : fadeEndFile - fadeStartFile);
   if (fadeMs < MIN_FADE_MS) return null;
 
-  // ---- v2：A 已经进纯尾奏时把窗口往前挪一点（m08494）----
+  // ---- v2：A 已经进纯尾奏时把窗口往前挪一点----
   // 「两边都安静」是听感上最空的一种过渡：A 的尾奏只剩氛围垫、B 的前奏还没进。
   // 只要 A 的窗口平均唱词 < 0.3、且起始点后面还有余地，就整体前移，
   // 让窗口跨过 A 的最后一句——有内容的一侧撑住，另一侧才有「走进来」的感觉。
@@ -3296,7 +3296,7 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
   // 而是让 B 提前**穿插**进来（只放高频/鼓，低频在 A 末句之后才交接），
   // A 保持原样唱到自己的末句结束，然后才扫频变闷退出。
   //
-  // 血案记录（m01861「有些歌刚播放没多久就自动过渡」）：这里原来用 `vocalFileMs`
+  // 血案记录（「有些歌刚播放没多久就自动过渡」）：这里原来用 `vocalFileMs`
   // 当 mixEnd —— 那是 **B 的文件时间**（`nextStartMs + vocalPosMs`），拿它去当 A 的
   // 淡化终点，遇到「下一首前奏很短、第 5 秒就开口」的曲目，A 的过渡就被排到播放
   // 第 5 秒，听感就是「刚放就切歌」。必须锚 A 自己的末句/可听结尾。
@@ -3387,12 +3387,12 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
     if (Math.abs(shift) <= 220) bStartFileMs = Math.max(nextStartMs, Math.round(bStartFileMs + shift));
   }
 
-  // ---- B 的前奏就是混音窗口（m03224）----
+  // ---- B 的前奏就是混音窗口----
   // 用户听感：B 的人声之前的伴奏才是最好的混音时间（春めく 有 18 s 前奏）。
   // 那就把过渡长度直接设成「B 从起播到真开唱」的长度：A 在这段时间里被逐段减掉，
   // B 由 -18 dB 渐入（v2Plan 的 bEntry），到唱词开口的那一刻正好满音量。
 
-  // ---- B 的唱句必须落在淡化终点（m02584：衔接完不是从歌词开始唱）----
+  // ---- B 的唱句必须落在淡化终点（：衔接完不是从歌词开始唱）----
   // bStartFileMs 是 **B 的文件坐标**：把 B 的起播点回推 fadeMs×tempoRate，
   // B 的第一句唱词就正好在 A 的末句结束（= 淡化终点）那一刻开口。
   let vocalEntryGapMs = 0;
@@ -3404,7 +3404,7 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
     // 宁可让 B 的首句在淡化过程中间开口（A 此时已被低通/让位），也不砍长度。
     // B 的前奏（首句位置）本身就是「接唱」需要的窗口长度：
     //   前奏 9.3 s 的歌唱 12 s 的 floor 会把首句顶到淡化中间；前奏 2 s 时则只做 2 s 的短接。
-    //   所以下限取 min(floor, 前奏)，但绝不低于 MIN_FADE_MS。（m04470）
+    //   所以下限取 min(floor, 前奏)，但绝不低于 MIN_FADE_MS。
     const bPlayRate = tempoInverted ? 1 : Math.max(0.5, tempoRate);
     const introMsForFloor = Math.max(0, Math.round((vocalFileMs - nextStartMs) / bPlayRate));
     const shortenFloorMs = Math.max(MIN_FADE_MS, Math.min(floorMs, introMsForFloor || floorMs));
@@ -3419,7 +3419,7 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
       }
     };
     // A 的末句唱完就结束窗口：不让 A 后面那段「只剩器乐/渐隐」的尾巴把过渡拉长
-    //   （那会让 B 的前奏在 A 已经没人声的地方空转，听感就是「衔接不上最后一句」）。（m04470）
+    //   （那会让 B 的前奏在 A 已经没人声的地方空转，听感就是「衔接不上最后一句」）。
     if ((options.currentLastVocalEndMs ?? 0) > 0 && lastVocalEndPosMs > 0 && !structure) {
       const lastWordFile = Math.round(currentStartMs + lastVocalEndPosMs);
       const barA = barIntervalOf(analysis) || 2000;
@@ -3459,11 +3459,11 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
     }
     // B 永远从它自己的起点（曲首 / CUE 起点 / 手动起点）开始播，不 seek 到歌中间：
     //   以前 wanted = 首句 − fadeMs 会把 2 soon 这种「首句在 46 s」的歌直接 seek 到 24–50 s，
-    //   听感就是「过渡完直接跳到歌中间、跳词」。（m04554）
+    //   听感就是「过渡完直接跳到歌中间、跳词」。
     //   窗口长度 = 首句 − 起点，最长压到 MAX_FADE_MS；只有首句离起点超过上限时才必须跳。
     // 绝不把 B seek 到歌中间：B 一律从自己的起点播（曲首 / CUE 起点 / 手动起点），
     //   窗口长度 = min(当前过渡长, B 的起点到首句)，够不到就靠 shortenToVocal 收短。
-    //   这样 2 soon 这种「首句在 46 s」的歌不会一进来就跳到 24–50 s（听感=跳词）。（m04554）
+    //   这样 2 soon 这种「首句在 46 s」的歌不会一进来就跳到 24–50 s（听感=跳词）。
     bStartFileMs = nextStartMs;
     shortenToVocal();
     // 起点后移会让 B 更晚开始唱：真的放不下就退回 B 的入口再收一次淡化。
@@ -3619,7 +3619,7 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
   }
   // 半速/倍速关系（128 ↔ 64）：按 2:1 折叠播放速率，而不是硬拉 50%。
   // 注意：折叠是「手法的一部分」——手法后面可能因为窗口太短被丢弃，那时必须把速度还原，
-  // 否则会留下 B 以 ×0.5 慢放的空窗（m08895：3.2 s 窗口里 B 慢放，听感是拖长的糊音）。
+  // 否则会留下 B 以 ×0.5 慢放的空窗（：3.2 s 窗口里 B 慢放，听感是拖长的糊音）。
   let halfTimeFolded = false;
   if (autoStylePick?.id === 'halfTime' && analysis.bpm > 0 && nextAnalysis.bpm > 0) {
     const ratio = analysis.bpm / nextAnalysis.bpm;
@@ -3695,7 +3695,7 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
 
   // v2 的窗口下限：收尾规则（末尾只留半小节）与结构计划都会把窗口压到 1–2 s，
   // 那种长度连一次低频换手都放不下，听感就是硬切。只要还有余地，就把窗口向前
-  // 补到 MIN_AUTO_BLEND_MS（3.2 s）——向前补不会盖住 A 的末句，只多留一点交叠。（m08602）
+  // 补到 MIN_AUTO_BLEND_MS（3.2 s）——向前补不会盖住 A 的末句，只多留一点交叠。
   if (isAutomixV2(readMixTransitionMode()) && !hardCut && fadeMs < MIN_AUTO_BLEND_MS) {
     const room = Math.round(fadeStartFile - (currentStartMs + currentPosMs + 80));
     const want = Math.min(room, MIN_AUTO_BLEND_MS - fadeMs);
@@ -3708,7 +3708,7 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
 
   // 手法选完之后，窗口还可能被收尾规则 / 曲风预算压短。每种手法有自己的最短窗口
   // （halfTime 4 s、longBlend 8 s…），压到门槛以下那套参数就名不副实——1.6 s 的
-  // halfTime 听感就是硬切。这时宁可退回中性过渡，也不硬套手法。（m08602）
+  // halfTime 听感就是硬切。这时宁可退回中性过渡，也不硬套手法。
   if (autoStylePick) {
     const spec = STYLE_CATALOG.find((entry) => entry.id === autoStylePick!.id);
     if (spec && fadeMs + 1 < spec.minFadeMs) {
@@ -3747,7 +3747,7 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
   })();
   // A 有明显的母带渐隐时，窗口里那段「本来就该被补回来」的下坠允许补更多（6 dB）；
   // 3 dB 上限会把真正的渐隐补一半、留一个 3 LU 的坑。
-  // 补平的上限也收（m12266）：整窗补 6 dB 会让 A 听起来被「拉高」。
+  // 补平的上限也收：整窗补 6 dB 会让 A 听起来被「拉高」。
   const loudTrimCapDb = earlyTailFade && earlyTailFade.dropDb >= 8 ? 4 : 2;
   const plannedQuality: QualityReport | null = plannedV2
     ? (() => {
@@ -3805,7 +3805,7 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
     instSeam: instSeam ? { kind: instSeam.kind, ms: instSeam.ms, barsFromEnd: instSeam.barsFromEnd } : null,
     introBridge,
     // A 的器乐尾巴：末句之后还剩一大段伴奏时，不把它在窗口末切断，
-    // 让它在 B 的开头底下当一件乐器继续响，然后缓慢收干。（m04764）
+    // 让它在 B 的开头底下当一件乐器继续响，然后缓慢收干。
     aTailBleedMs: (() => {
       // 只在进阶 v2 档做（标准档的等功率过渡没有「把 A 尾巴当乐器」的位置）。
       if (!isAutomixV2(readMixTransitionMode())) return 0;
@@ -3821,7 +3821,7 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
       // 尾巴越长放得越多：8 s 以内按实际，8–20 s 最多铺 12 s（再多会盖住 B 的副歌）。
       const cap = restMs >= 8_000 ? 12_000 : restMs >= 5_000 ? 8_000 : 4_000;
       // 尾巴再长也不能活过整个过渡窗口：否则过渡结束 B 都进副歌了，A 的残影还在底下响。
-      // B 到顶之后 A 的低音还要多留一段（m12138「混出时间放长些」）：
+      // B 到顶之后 A 的低音还要多留一段（「混出时间放长些」）：
       // 原来上限 0.8×窗口，会把 A 的尾巴压在 B 到顶的同一秒里切掉。
       const windowCap = Math.max(600, Math.round(fadeMs * 1.15));
       const bleed = Math.min(cap, restMs - holdMs, windowCap);
@@ -3845,7 +3845,7 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
     bDuck: (() => {
       // A 是纯器乐时 handoff 永远为假（没有末句可交接），但 B 仍可能在 A 还没结束时就开口：
       // 那一段没有任何让位，B 的人声直接盖在 A 的乐器上。这里把「A 器乐 + B 早唱」也算进
-      // 入场让位——压的是 B 的 1.5–4 kHz，等 A 收干净再放开。（m09261 round 24）
+      // 入场让位——压的是 B 的 1.5–4 kHz，等 A 收干净再放开。（round 24）
       const aInstrumentalEntry = !handoff && !vocalAligned
         && vocalPresence(analysis) === 'instrumental';
       if (!handoff && !aInstrumentalEntry) return null;
@@ -4813,7 +4813,7 @@ const APPLE_RECIPE_BY_STYLE: Partial<Record<TransitionStyleId, number>> = {
 };
 
 function readReverbOptions(): ReverbOptions {
-  // 尾段混响收短（m12206）：1600 ms 的尾巴会把两首歌的残响叠在一起，听感「拖」；
+  // 尾段混响收短：1600 ms 的尾巴会把两首歌的残响叠在一起，听感「拖」；
   // 900 ms 只够把 A 的最后一口气送出去，不跨进 B 的第一句。
   const fallback: ReverbOptions = { sendDb: -9, returnDb: 6, fromP: 0.3, tailMs: 900 };
   try {
@@ -4942,7 +4942,7 @@ function startSplitMix(plan: ActivePlan, clock: number): boolean {
   // 关键：A 唱到哪，换手就推到哪之后。
   //   holdMs = A 最后一句在窗口内占掉的时长；尾巴 tailMs 才是「允许两首一起响」的空间。
   //   A 一路唱到结尾时 tailMs→0，换手压到最后 ~1.8 s —— A 的末句不被垫住，
-  //   这就是「唱到结束也不该把衔接方式抵消掉」。（m04127）
+  //   这就是「唱到结束也不该把衔接方式抵消掉」。
   const lastWordAbs = options.current.startAt * 1000 + Math.max(0, plan.lastVocalEndPosMs ?? 0);
   const holdMs = plan.lastVocalEndPosMs && plan.lastVocalEndPosMs > 0
     ? Math.max(0, Math.min(plan.fadeMs, lastWordAbs - plan.fadeStartFileMs)) : 0;
@@ -4969,7 +4969,7 @@ function startSplitMix(plan: ActivePlan, clock: number): boolean {
   );
   // 换手不钉在固定百分比上：在理想位置前后一个乐句内，挑「两边拍点最合 + B 的鼓最实」的那一拍。
   //   评分 = 0.6 ×（1 − 相位误差/半拍） + 0.4 × B 在该处的鼓活动度。
-  //   这样「在哪里加入下一首的声音」是跟着节拍走的，不是死板的时间比例。（m04678）
+  //   这样「在哪里加入下一首的声音」是跟着节拍走的，不是死板的时间比例。
   const curA = options.currentAnalysis.analysis;
   const nextA = options.nextAnalysis.analysis;
   const beatB = beatIntervalOf(nextA) || beatIntervalOf(curA) || 500;
@@ -5159,7 +5159,7 @@ function startSplitMix(plan: ActivePlan, clock: number): boolean {
   // 只在窗口够长时启用 —— 8 小节以下的空间打不开，硬塞只会糊成一片。
   const hallWanted = plan.fadeMs >= 6_000 && plan.styleId !== 'cut' && plan.styleId !== 'slam';
   if (hallWanted) {
-    // 收小（m12025）：原来 A −9 dB / B −12 dB 且 16% 就开、一直铺到 82%，
+    // 收小：原来 A −9 dB / B −12 dB 且 16% 就开、一直铺到 82%，
     // 两首歌的环境声叠在一起，听感是「混的啥也听不清」。
     // 现在：送出降 6 dB、进场推迟到 30%、峰值更短、尾巴更紧。
     const hall = {
@@ -5399,7 +5399,7 @@ function releaseSplitMix(plan: ActivePlan): void {
   runtime.doubling?.stop();
   try { runtime.a.setWetTap('pre'); } catch { /* 老 deck 没这个开关 */ }
   try { runtime.b.setWetTap('pre'); } catch { /* 同上 */ }
-  // 混响/回声的尾巴先自己走完，再拆链：直接 dispose 等于把 return 一步砍到 0（m05002）
+  // 混响/回声的尾巴先自己走完，再拆链：直接 dispose 等于把 return 一步砍到 0
   const releaseMs = 1_000;
   releaseAutomixV2Tail(runtime.a);
   releaseAutomixV2Tail(runtime.b);

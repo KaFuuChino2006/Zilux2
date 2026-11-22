@@ -241,7 +241,7 @@ export function buildAutomixV2Deck(element: HTMLAudioElement): AutomixV2Deck | n
   const highGain = ctx.createGain();
   highGain.gain.value = 0;
   // 中低层：从 120 Hz 以上再切一刀（1200 Hz），让「乐器主体」与「人声/镲片」
-  // 依次进场，而不是所有东西同时抬起来（m12025）。
+  // 依次进场，而不是所有东西同时抬起来。
   const [midA, midB] = makeLr4(ctx, 'lowpass', 1200);
   const [hiA, hiB] = makeLr4(ctx, 'highpass', 1200);
   const midGain = ctx.createGain();
@@ -914,7 +914,7 @@ export function scheduleLoudnessTrim(
   const at = (p: number): number => startSec + Math.max(0, Math.min(1, p)) * durationSec;
   try {
     param.cancelScheduledValues(startSec);
-    // 起手必须是 0 dB（m12235）：曲线首点常常已经有 +1…3 dB，直接 setValueAtTime
+    // 起手必须是 0 dB：曲线首点常常已经有 +1…3 dB，直接 setValueAtTime
     // 就是「一进过渡 A 瞬间被抬高一点」的来源。改成从 0 dB 用 lead-in 缓上来。
     const leadSec = Math.max(0.6, Math.min(2.5, durationSec * 0.12));
     param.setValueAtTime(1, startSec);

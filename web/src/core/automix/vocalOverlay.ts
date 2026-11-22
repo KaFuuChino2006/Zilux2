@@ -81,7 +81,7 @@ export function planVocalOverlay(input: VocalOverlayInput): VocalOverlayPlan {
 
   const short = fadeMs < OVERLAY_SHORT_MS;
   const rawBoost = 1.5 + aVocal * 2.5 - keyGap * 0.25;
-  // 抬 A 的人声只是「让它不被 B 盖住」，不是把它推上去（m12266）：上限从 4 dB 收到 2 dB。
+  // 抬 A 的人声只是「让它不被 B 盖住」，不是把它推上去：上限从 4 dB 收到 2 dB。
   const aBoostDb = half(clamp(short ? Math.min(1.5, rawBoost) : rawBoost, 0, 2));
   const bDuckDb = bVocal >= OVERLAY_BUSY_B_VOCAL ? -Math.round(clamp(2 + bVocal * 4, 2, 6)) : 0;
   const fromP = short ? 0.5 : 0.3;

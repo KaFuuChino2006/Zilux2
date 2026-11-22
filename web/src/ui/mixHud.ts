@@ -334,7 +334,7 @@ export function createMixHud(): MixHudHandle {
   v2BypassRow.append(v2Bypass, h('span', { text: '直通对比（下一次过渡不进 v2 链）' }));
 
   // 短首句（600–1200 ms）是否算「第一句」：Attention 这类歌第一句只有 750 ms，
-  // 关掉时按 1.2 s 门槛走，避免春めく 前奏第 2 秒的呼吸峰被当成第一句。（m04294）
+  // 关掉时按 1.2 s 门槛走，避免春めく 前奏第 2 秒的呼吸峰被当成第一句。
   const shortLine = h('input', { type: 'checkbox', class: 'mixhud-stem-check' }) as HTMLInputElement;
   try {
     shortLine.checked = window.localStorage.getItem('zilux2.dev.shortline') === '1';

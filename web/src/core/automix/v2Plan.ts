@@ -95,12 +95,12 @@ export interface V2PlanInput {
   /** B 的高通扫频在第几成进度完全打开（默认 0.5）。 */
   bOpenP?: number;
   /**
-   * B 侧「由远及近」进场（m03224）：用 B 的前奏长度当混音窗口时打开。
+   * B 侧「由远及近」进场：用 B 的前奏长度当混音窗口时打开。
    * 整条 B 从 -18 dB 起，到 90% 处到 0 dB——正好在 B 的第一句唱词前把音量拉满。
    */
   bEntry?: boolean;
   /**
-   * 紧凑换手（m03457）：把真正的换手压到最后这一段（占整条过渡的比例，0.06–0.9）。
+   * 紧凑换手：把真正的换手压到最后这一段（占整条过渡的比例，0.06–0.9）。
    * 0 / 未传 = 老行为（中段换手，整条都在互相渗透）。
    */
   swapShare?: number;
@@ -233,7 +233,7 @@ export function buildV2Plan(input: V2PlanInput): V2Plan {
   // B 的「从远处走近」：高通 12 kHz → 20 Hz。必须先开完，低频才交得过去。
   const bOpenP = clamp(input.bOpenP ?? (sweepEnabled ? 0.25 : 0.15), 0.05, 0.6);
 
-  // ---- 紧凑换手（m03457）----
+  // ---- 紧凑换手----
   // 用户听感：「17 s 过渡里人声、乐器、低音全都在响，很杂」「应该是接近尾端剩几秒
   // 才做完整的换调」。所以长窗前段 A **一点不动**，B 只是极低电平的「幽灵」，
   // 真正的换手压缩到最后 swapShare 这一段里完成。
@@ -293,7 +293,7 @@ export function buildV2Plan(input: V2PlanInput): V2Plan {
     if (compact) {
       // v = 换手段内的进度（0 = 还是 A 的完整结尾，1 = 已经完全换成 B）
       const v = clamp((p - swapStartP) / swapSpan, 0, 1);
-      // ---- 三层各自错开换手（m12025）----
+      // ---- 三层各自错开换手----
       // 用户要的是「乐器、人声、低音、其他**分开**混进来，各层自己混自己的」，
       // 而不是把整首歌当一个整体在最后 20% 一次性换掉。所以按频段拆三层，
       // 每层有自己的窗口，窗口彼此只交叠一小段：
@@ -304,7 +304,7 @@ export function buildV2Plan(input: V2PlanInput): V2Plan {
       //     两把贝斯重叠一小段再交给 B，听感是「混出来」而不是「被切走」）
       // 听感顺序：先听出"伴奏换了"，再听出"人声过来了"，最后低音才换地基。
       const ramp = (lo: number, hi: number) => clamp((v - lo) / Math.max(1e-6, hi - lo), 0, 1);
-      // 顺序要**严格排开**：任意时刻只有一层在换（m12182）。
+      // 顺序要**严格排开**：任意时刻只有一层在换。
       // 原来的 0–0.34 / 0.20–0.58 / 0.40–0.95 三层互相压着，换手段里同时有三层各半，
       // 听感就是「太乱」。现在中低换完才换高频，高频换完才换低频。
       const vMid = ramp(0, 0.28);
@@ -326,7 +326,7 @@ export function buildV2Plan(input: V2PlanInput): V2Plan {
       // 非 bEntry 时用 5% 窗口把 B 从 0 拉进幽灵电平（避免第 0 帧硬起 -60 dB）；
       // bEntry 的语义本来就是「B 从 -18 dB 就听得见」，不能渐入，否则前奏当窗口失效。
       const fadeIn = input.bEntry ? 1 : Math.min(1, v / Math.max(0.02, 0.05));
-      // B 的「预混入」（m12158）：用户能明确听出下一首的起始 —— 因为 B 在换手段之前是
+      // B 的「预混入」：用户能明确听出下一首的起始 —— 因为 B 在换手段之前是
       // −60 dB 的死寂，一进换手就在 1–2 s 内从无到满，那个「从无到有」本身就是最响的
       // 一个瞬态。现在让 B 从**窗口一开始**就以 −40 dB 垫着，一路爬到换手点的 −12 dB，
       // 再由三层曲线接手：等于「B 早就在混音里了，只是越来越清楚」。
@@ -345,7 +345,7 @@ export function buildV2Plan(input: V2PlanInput): V2Plan {
       // B 的高通必须在低频交接前开完，否则 B 的低频被自己挡着。
       bHpP = clamp(p / Math.max(step,handoffStartP), 0, 1);
       // A 的低通在换手后半段压到 700 Hz ——「变闷退出」发生在这几秒里。
-      // 扫频起点由手法的 sweepShare 决定（m12284）。
+      // 扫频起点由手法的 sweepShare 决定。
       // 以前这里写死 0.60，等于 filterSweep(1.0) / longBlend(0.35) / eqSwap(0.4) 的
       // 「扫多宽」全部无效 —— 16 种手法里有一半只在窗口长度上不同。
       const sweepLead = Number.isFinite(input.sweepShare) ? Math.max(0, Math.min(1, input.sweepShare as number)) : 0.4;

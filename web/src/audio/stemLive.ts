@@ -128,7 +128,7 @@ export function startStemLive(options: StemLiveOptions): StemLiveHandle | null {
   const stopAll = (): void => {
     // 让所有在飞的 scheduleWindow 结果作废：否则切歌瞬间那一次加载完成时，
     // 它会把自己 push 进 nodes 并按旧曲的 context 时间起播——听感是「新歌开头
-    // 叠了一下上一首的分轨」。（m08602）
+    // 叠了一下上一首的分轨」。
     generation += 1;
     for (const group of nodes) {
       for (const { source, gain } of group.sources) {
@@ -298,7 +298,7 @@ export function startStemLive(options: StemLiveOptions): StemLiveHandle | null {
       nextWindow += 1;
       scheduledUntilMs = boundaryElementMs + WINDOW_MS;
       // 预取失败（宿主还在分离 / 网络断）时要把游标退回去，否则下一拍会去排 window+1，
-      // 这一整个窗口就永久空着了——听感是「分轨试听突然静音 30 秒」。（m08400）
+      // 这一整个窗口就永久空着了——听感是「分轨试听突然静音 30 秒」。
       void scheduleWindow(window, 0, Math.max(ctx.currentTime + 0.02, atCtxSec)).then((ok) => {
         if (ok || disposed) return;
         nextWindow = Math.min(nextWindow, window);

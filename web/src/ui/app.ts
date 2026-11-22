@@ -125,7 +125,7 @@ import {
   sourceSupportsLikedWrite,
 } from '../online/sources';
 import { onlineArtwork } from '../online/artwork';
-import { analysisKey, analyzeTrack, cachedAnalysis } from '../online/analysis';
+import { analysisKey, analyzeTrack, cachedAnalysis, ensureEnhancedAnalysis } from '../online/analysis';
 import type { AnalysisResult } from '../online/analysis';
 import { resolveMixSources, saveMixSources, type MixKind } from './mixSources';
 import { buildAnalysisSection } from './analysisSection';
@@ -13848,6 +13848,8 @@ export class App {
           await this.waitCrossfadeIdle();
           try {
             const analysis = await this.withTimeout(analyzeTrack(track), ANALYSIS_TIMEOUT_MS);
+            // 规划前给增强特征一个短窗口：分轨曲线/SSM 结构一到就替换 DSP 结果。
+            await ensureEnhancedAnalysis(track, 2500).catch(() => null);
             const label = this.formatTempo(analysis);
             if (label) this.upnextTempo.set(key, label);
             analyzedNow += 1;

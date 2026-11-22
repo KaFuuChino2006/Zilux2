@@ -836,7 +836,7 @@ bundle `main-DxZsL9LI.js` 1,767.84 kB；部署后重启 PID 86072。
 | 2 | 同文件 `fillTempoLabel`/`pumpTempoQueue` | `analyzeTrack` 无超时，一次卡住就让占位永久停在「分析中…」 | `withTimeout(analyzeTrack, 25s)`，超时按失败计 |
 | 3 | 同文件 | 过渡进行中开分析：宿主解码/取流与两路播放抢资源，听感「卡一下」 | `waitCrossfadeIdle()`，`phase='fading'` 时最多等 10 s 再开工 |
 
-## 第五十六轮（m12284 手法有效性）
+## 第五十六轮（手法有效性）
 
 | # | 位置 | 症状 | 修法 |
 | --- | --- | --- | --- |

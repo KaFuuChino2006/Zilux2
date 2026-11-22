@@ -49,7 +49,7 @@ export interface QualityInput {
   /** B 的响度补偿（dB，正数 = B 被压低）。 */
   gainTrimDb?: number;
   /**
-   * B 用「前奏渐入」进场（m03224）：整条 B 从 -18 dB 起步、到 90% 才满音量。
+   * B 用「前奏渐入」进场：整条 B 从 -18 dB 起步、到 90% 才满音量。
    * 这时的混合电平本来就该先低后高，拿「平稳」去要求它只会把 B 顶 +4 dB。
    */
   bEntry?: boolean;
@@ -60,13 +60,13 @@ export interface QualityInput {
    *
    * 只用于区分「同一件事」的两种重叠：同调/近调（距离 ≤3，含关系大小调）两条人声
    * 叠在一起是和声，听众当成合唱；远调（≥4）叠在一起才是咬字打架。
-   * 这不是给指标放水——`vocalOverlapBeats` 一个字都不改，另开一个 `vocalClashBeats`。（m09630）
+   * 这不是给指标放水——`vocalOverlapBeats` 一个字都不改，另开一个 `vocalClashBeats`。
    */
   keyGap?: number;
   /**
    * 紧凑换手占比（A 在 1−swapShare 之前完全原样、B 只以 −60 dB 垫底）。
    * 响度漂移只该在真正的换手段里量：前段 A 没动、B 没进来，曲线当然是平的，
-   * 把整段算进去只会让「A 的渐隐 + B 的前奏」稀释掉真正的洞。（m05396）
+   * 把整段算进去只会让「A 的渐隐 + B 的前奏」稀释掉真正的洞。
    */
   swapShare?: number;
   /**
@@ -77,7 +77,7 @@ export interface QualityInput {
    *   之后才快速让位；B 同时只以 −60 dB 垫底，到让位段才抬起来。
    *
    * 用等功率去量 v2 会把「A 一直满电平」当成「A 已经在衰减」，窗口开头凭空出现一个
-   * 8–10 dB 的假坑（`--curves` 实测最差 4.92 LU 那一对就是这个形状）。（m07472）
+   * 8–10 dB 的假坑（`--curves` 实测最差 4.92 LU 那一对就是这个形状）。
    */
   weights?: 'equal' | 'compact' | 'plan';
   /**
@@ -254,7 +254,7 @@ export function estimateVocalOverlapBeats(input: QualityInput): number {
   // 层 C 人声让位现在是真接上的（§7.50）：B 唱的时候 A 的 1.5–4 kHz 压 6 dB（器乐 3 dB）。
   //   旧指标只看两条原始曲线，把「压过之后的 A」还按满量算，于是永远报重叠。
   //   这里按实际链路折算：A 在 B 有人声的那一拍按 −6 dB（×0.501）计权，
-  //   A 是纯器乐时按 −3 dB（×0.708）。阈值仍是 0.5 → 压完低于 0.5 就不算"还在唱"。（m05186）
+  //   A 是纯器乐时按 −3 dB（×0.708）。阈值仍是 0.5 → 压完低于 0.5 就不算"还在唱"。
   const duckGain = input.aInstrumental ? 0.708 : 0.501;
   // 阈值不能取 0.5：A 满嗓子 1.0 乘 0.501 就是 0.501，判据「>0.5」只在曲线恰好到 1.0 时成立，
   // 于是这个指标长期报 0（换手明显还听得见两条人声却显示「无重叠」）。取 0.35 表示
@@ -285,7 +285,7 @@ export function estimateVocalOverlapBeats(input: QualityInput): number {
  *     拿直线去拟合 → 96% 的对被判失败（p50 4.4 LU，全是形状不是问题）。
  * 真正难听的是曲线中途掉下去又涨回来（换手空档、支路漏音）或冲上去再掉回来
  * （相关低频 +3 dB）。所以这里只看**单调性破坏**的深度，单调下降/上升一律放过。
- * 3 点平滑后统计；没有 momentary 数据时返回 0。（m05230）
+ * 3 点平滑后统计；没有 momentary 数据时返回 0。
  */
 export interface LoudnessRamp {
   /** 采样点的归一化位置（0 = 过渡开头，1 = 结束）。 */
@@ -337,7 +337,7 @@ export function loudnessRampCurve(input: QualityInput): LoudnessRamp {
     let wB: number;
     if (input.weights === 'plan' && input.aEnv?.length && input.bEnv?.length) {
       // 直接采计划曲线：A 的低/高支路增益平方和、B 同理。这是链路的真实电平，
-      // 再往上套任何「等功率 / 保持」假设都只是猜测。（m07472）
+      // 再往上套任何「等功率 / 保持」假设都只是猜测。
       const pick = (arr: number[], p: number): number => {
         const pos = p * (arr.length - 1);
         const i0 = Math.floor(pos);
@@ -414,14 +414,14 @@ export function loudnessRampCurve(input: QualityInput): LoudnessRamp {
  *   - 两首歌电平差得多时，等功率叠加本来就是一条**弯**的单调曲线，
  *     拿直线去拟合 → 96% 的对被判失败（p50 4.4 LU，全是形状不是问题）。
  * 采样窗必须覆盖整个交叉段：早期版本从 1−swapShare 起采（只量尾段），
- * B 在中段掉 14 LU 时只要尾段平就报 0.00。没有 momentary 数据时返回 0。（m05230 / m07450）
+ * B 在中段掉 14 LU 时只要尾段平就报 0.00。没有 momentary 数据时返回 0。
  */
 export function estimateLoudnessDriftLu(input: QualityInput): number {
   return loudnessRampCurve(input).worst;
 }
 
 /**
- * B 侧让位（m05230 / m05396）：B 一起播就开唱的对（首句离它的起点 < 3.2 s）没有任何窗口
+ * B 侧让位：B 一起播就开唱的对（首句离它的起点 < 3.2 s）没有任何窗口
  * 能把「B 的首句」摆到接缝上，硬对齐只会把 B seek 到歌中间。这时换个方向处理：
  * 让 B 在 **A 还在唱的时候先压着走** —— 只要 A 的人声还在，就把 B 的 1.5–4 kHz 压住，
  * A 一唱完立刻放开。听感就是 DJ 的「下一首在人声底下偷进来」，两条人声不会互盖。

@@ -121,7 +121,7 @@ export function detectTailFade(
   // 段长必须够「渐隐」而不是「最后一下收尾」；这条要在修剪之后判，修剪会把平坦的头削掉。
   if (!(fadeEndMs - fadeStartMs >= MIN_FADE_MS)) return null;
 
-  // 参考电平取「渐隐开始前**一小节**」（m12235）：用户要的是「用往前一个节的音量」当基准。
+  // 参考电平取「渐隐开始前**一小节**」：用户要的是「用往前一个节的音量」当基准。
   // 取 6 秒会把渐隐之前那段本来就在收的音乐起伏也算进来，基准偏低、补得不够。
   const refSpanMs = Math.max(1_500, Math.min(8_000, Math.round(options.barMs ?? 6_000)));
   const ref = regionLufs(times, levels, Math.max(0, fadeStartMs - refSpanMs), refSpanMs)
@@ -144,7 +144,7 @@ export function detectTailFade(
     points.push({ ms: Math.round(times[i]), liftDb: Math.round(lift * 100) / 100 });
   }
   if (points.length < 3 || maxLiftDb < 3) return null;
-  // 缓速补偿（m12235）：逐点 3 点均值柔化，避免「一两格突然多抬 6 dB」的台阶。
+  // 缓速补偿：逐点 3 点均值柔化，避免「一两格突然多抬 6 dB」的台阶。
   for (let i = 1; i < points.length - 1; i += 1) {
     points[i].liftDb = Math.round(((points[i - 1].liftDb + points[i].liftDb * 2 + points[i + 1].liftDb) / 4) * 100) / 100;
   }

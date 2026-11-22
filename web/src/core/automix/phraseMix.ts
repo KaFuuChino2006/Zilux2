@@ -94,7 +94,7 @@ export function matchDrumPhrase(a: BeatAnalysis, b: BeatAnalysis, end: number,
     // 硬约束只限定「落点在首句之前」，窗口仍然自由选；在自由范围内用
     // 和声（barChroma）与调性一起打分，自动模式才能真正挑到「听起来同调」的那两小节。
     const harmony = harmonyCost(a,b,x,y);
-    // 人声重叠直接扣分：两边同时唱 = 两条咬字互相盖住，比鼓型差一点更明显更糟。（m05141）
+    // 人声重叠直接扣分：两边同时唱 = 两条咬字互相盖住，比鼓型差一点更明显更糟。
     const overlap = vocalOverlap(a,b,x,y,span,1);
     const similarity = drumSim - 0.45 * harmony - 1.2 * overlap - (lyric && y+span>lyric ? 0.035 : 0);
     if (similarity>=0.58 && (!best || similarity>best.similarity))
