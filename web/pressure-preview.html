@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>声压 · 文字 PV</title>
+<style>
+html,body{margin:0;height:100%;background:#111;color:#f1ecdf;font-family:system-ui}#stage{position:fixed;inset:0}canvas{width:100%;height:100%;display:block}
+footer{position:fixed;bottom:18px;left:6%;right:6%;display:flex;align-items:center;gap:14px;padding:10px 16px;background:#111e;border-radius:12px}button{background:none;color:inherit;border:0;font:inherit;cursor:pointer}input{flex:1;min-width:0;accent-color:#ff5026}span{font-variant-numeric:tabular-nums}
+</style>
+<div id="stage"></div><footer><button id="play">暂停</button><input id="seek" aria-label="播放进度" type="range" min="0" max="36000"><span id="time"></span></footer>
+<script type="module">
+import {createPressureScene} from '/src/ui/pressureScene.ts';
+const texts=['打破沉默','让心跳响彻夜空','就现在','向前冲','把所有不可能都改写','让世界听见我的声音','We are breaking through the silence','直到最后一束光燃烧'];
+const song={trackKey:'pressure-preview',title:'声压',artist:'ZILUX · SOUND PRESSURE',album:'',durationMs:36000,lyricOffsetMs:0,
+lines:texts.map((text,i)=>({text,translation:i===6?'我们正冲破这片沉默':'',timeMs:2000+i*4000,durationMs:3650,
+words:Array.from(text).map((text,j,chars)=>({text,startMs:2000+i*4000+j*3400/chars.length,endMs:2000+i*4000+(j+1)*3400/chars.length}))}))};
+const scene=createPressureScene();document.querySelector('#stage').append(scene.root);scene.setSong(song);
+let time=0,playing=true,previous=performance.now();const seek=document.querySelector('#seek'),button=document.querySelector('#play');
+button.onclick=()=>{playing=!playing;button.textContent=playing?'暂停':'播放'};seek.oninput=()=>time=Number(seek.value);
+window.pressurePreview={scene,song,seek(ms){time=ms;playing=false;button.textContent='播放';scene.update(time)},setSong(input){scene.setSong(input)}};
+function frame(now){if(playing)time=(time+now-previous)%36000;previous=now;scene.update(time);seek.value=String(time);document.querySelector('#time').textContent=`${(time/1000).toFixed(1)}s`;requestAnimationFrame(frame)}requestAnimationFrame(frame);
+</script>
+</html>

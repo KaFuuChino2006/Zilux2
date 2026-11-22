@@ -945,9 +945,43 @@ async function refresh(): Promise<void> {
   return task;
 }
 
+/**
+ * 同一首歌（同源 + 同 id + 同音质）只留一条「活」的记录。
+ *
+ * 「重试」在宿主侧是新建一个 job（`/api/download` 没有复用入口），于是列表里会出现
+ * 两条同名行：一条 error、一条 running。宿主快照按开始时间倒序，所以活的那条在前，
+ * 这里按 (source, trackId, quality) 去重、优先保留 running/paused，其次保留最新，
+ * 保证「重试」之后不会看到两条同样的歌。
+ */
+function dedupeJobs(list: DownloadJob[]): DownloadJob[] {
+  const kept: DownloadJob[] = [];
+  const index = new Map<string, number>();
+  for (const job of list) {
+    const key = `${job.source}|${job.trackId}|${job.quality}`;
+    const at = index.get(key);
+    if (at === undefined) {
+      index.set(key, kept.length);
+      kept.push(job);
+      continue;
+    }
+
+    const current = kept[at];
+    const jobAlive = job.state === 'running' || job.state === 'paused';
+    const currentAlive = current.state === 'running' || current.state === 'paused';
+    if (jobAlive && !currentAlive) {
+      kept[at] = job;
+    } else if (jobAlive === currentAlive && job.state === 'done' && current.state !== 'done') {
+      // 都非活：完成的优先于失败的（重试成功后旧的那条 error 不该盖住新完成）。
+      kept[at] = job;
+    }
+  }
+
+  return kept;
+}
+
 function applyList(nextJobs: DownloadJob[], nextDirectory?: string): void {
   const previous = new Map(jobs.map((job) => [job.id, job]));
-  jobs = Array.isArray(nextJobs) ? nextJobs.slice() : [];
+  jobs = Array.isArray(nextJobs) ? dedupeJobs(nextJobs) : [];
   if (typeof nextDirectory === 'string' && nextDirectory) directory = nextDirectory;
   updateSpeeds();
   updatedAt = Date.now();

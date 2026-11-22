@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>拼合 · Folia 原版渲染</title>
+<style>
+  html,body { margin:0; height:100%; background:#f2b7cb; font-family:system-ui; }
+  #stage { position:fixed; inset:0; } canvas { width:100%; height:100%; display:block; }
+  footer { position:fixed; bottom:22px; left:5%; right:5%; display:flex; align-items:center; gap:18px; color:white; padding:12px 18px; border-radius:30px; background:#181329cc; }
+  button { border:0; background:none; color:inherit; cursor:pointer; font:inherit; } input { flex:1; min-width:0; accent-color:#f2b7cb; }
+</style>
+<div id="stage"></div>
+<footer><button id="play">暂停</button><input id="seek" aria-label="播放进度" type="range" min="0" max="34000" value="0"><span id="time"></span></footer>
+<script type="module">
+  import { createFlowScene } from '/src/ui/flowScene.ts';
+  import { DAYLIGHT_THEME } from '/src/ui/lumiere-folia/services/baseThemes.ts';
+  const texts = ['让颜色随着歌声流动', '穿过每一个瞬间', '把未说完的话', '折成下一道光', 'We move into another morning', '在这片无边无际的色彩里寻找属于我们的回声', '直到世界慢慢安静'];
+  const song = { trackKey:'flow-preview', title:'拼合', artist:'ZILUX · Folia Tempera', album:'', durationMs:34000, lyricOffsetMs:0,
+    lines:texts.map((text,i) => ({ text, translation:['Let the colours follow your voice','Through every moment','The words we left unspoken','Fold into another light','走向另一个清晨','','Until the world grows quiet'][i], timeMs:2000+i*4400, durationMs:4000,
+      words:Array.from(text).map((text,j,chars) => ({ text, startMs:2000+i*4400+j*3800/chars.length, endMs:2000+i*4400+(j+1)*3800/chars.length })) })) };
+  const scene = createFlowScene(); document.querySelector('#stage').append(scene.root); scene.setSong(song); scene.resize();
+  const params = new URLSearchParams(location.search);
+  if (params.get('theme') === 'light') scene.setTheme(DAYLIGHT_THEME);
+  let time = Number(params.get('t') || 0), playing = !params.has('t'), previous = performance.now();
+  const seek = document.querySelector('#seek'), button = document.querySelector('#play');
+  button.textContent = playing ? '暂停' : '播放';
+  button.onclick = () => { playing = !playing; button.textContent = playing ? '暂停' : '播放'; };
+  seek.oninput = () => { time = Number(seek.value); };
+  window.flowPreview = { scene, song, seek(ms) { time = ms; playing = false; scene.update(time); } };
+  await scene.ready();
+  function frame(now) { if (playing) time = (time + now - previous) % song.durationMs; previous = now; scene.update(time); seek.value = String(time); document.querySelector('#time').textContent = `${(time/1000).toFixed(1)}s`; requestAnimationFrame(frame); }
+  requestAnimationFrame(frame);
+</script>
+</html>

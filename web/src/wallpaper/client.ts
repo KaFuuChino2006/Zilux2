@@ -217,6 +217,8 @@ export interface WallpaperMonitor {
   maxFps: number;
   follow: boolean;
   attached: boolean;
+  /** 这块屏单独设的音量（0–100）；null = 跟随全局「壁纸音量」。 */
+  volume?: number | null;
   title: string | null;
   coverPath: string | null;
 }
@@ -233,6 +235,14 @@ export function saveMonitor(patch: {
   follow?: boolean;
 }): Promise<{ ok: boolean }> {
   return api(`${WP}/monitors`, {}, 20_000, 'PUT', patch);
+}
+
+/**
+ * 让这块屏的真实画面自上而下扫一道光（点选屏幕时的定位提示）。
+ * 纯提示，不写状态；失败也不该影响选屏本身，所以调用方可以 fire-and-forget。
+ */
+export function sweepMonitor(key: string): Promise<{ ok: boolean }> {
+  return api(`${WP}/monitors/sweep`, {}, 8_000, 'POST', { key });
 }
 
 /* ------------------------------------------------------------------ 画布参数（第 89 轮） */
@@ -272,7 +282,7 @@ export function fetchCanvasSettings(kind: CanvasKind, monitor?: string | null): 
 export function saveCanvasSettings(
   kind: CanvasKind,
   monitor: string | null,
-  patch: Partial<CanvasPicture> & { fps?: number },
+  patch: Partial<CanvasPicture> & { fps?: number; volume?: number | null },
 ): Promise<CanvasSettingsState> {
   return api(`${WP}/canvas/${kind}/settings`, {}, 20_000, 'PUT', { monitor: monitor ?? undefined, ...patch });
 }

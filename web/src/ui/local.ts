@@ -48,8 +48,11 @@ function baseName(rel: string): string {
 }
 
 function stripExt(rel: string): string {
+  // 只看最后一段里的点：目录名带点（`/music/Vol.2/song.flac`）时
+  // 直接 `lastIndexOf('.')` 会把路径切断在目录名里，导致同名判定全错。
+  const slash = rel.lastIndexOf('/');
   const dot = rel.lastIndexOf('.');
-  return dot > 0 ? rel.slice(0, dot) : rel;
+  return dot > slash + 1 ? rel.slice(0, dot) : rel;
 }
 
 function decodeDisplayName(raw: string): string {

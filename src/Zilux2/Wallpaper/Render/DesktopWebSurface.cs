@@ -62,6 +62,15 @@ internal sealed partial class DesktopWebSurface : IDisposable
     /// <summary>这块表面负责的屏（物理像素，虚拟屏坐标系）；空 = 铺满整个虚拟屏。</summary>
     private System.Drawing.Rectangle _bounds;
 
+    /// <summary>
+    /// 窗口已经 Show 出来了，但还没搬进桌面层（页面还在加载）。
+    /// 这期间它停在屏幕外，别人看不到；等页面报第一帧再搬进来。
+    /// </summary>
+    private bool _pendingAttach;
+
+    /// <summary>兜底：页面迟迟不报 ready 也要搬进来，否则壁纸永远不出现。</summary>
+    private System.Windows.Threading.DispatcherTimer? _attachFallback;
+
     public DesktopWebSurface(
         CoreWebView2Environment environment,
         string navigationUrl,
@@ -78,7 +87,9 @@ internal sealed partial class DesktopWebSurface : IDisposable
         _browser = new WebView2
         {
             Margin = new Thickness(0),
-            DefaultBackgroundColor = System.Drawing.Color.Black,
+            // 透明底：页面首帧出来之前这层什么都不画，桌面图标下面露的是系统壁纸，
+            // 而不是一块黑。原来写 Black，就是「打开壁纸先黑一下」的来源。
+            DefaultBackgroundColor = System.Drawing.Color.Transparent,
         };
 
         _window = new Window
@@ -90,8 +101,15 @@ internal sealed partial class DesktopWebSurface : IDisposable
             ShowActivated = false,
             Topmost = false,
             AllowsTransparency = false,
-            Background = Brushes.Black,
+            // 不能给不透明底色：Show() 时 WebView2 还没画出第一帧，窗口自己那层底
+            // 会先在桌面上闪一个黑方块。页面与浏览器 backing 都是透明的，这里也必须透明。
+            Background = Brushes.Transparent,
             WindowStartupLocation = WindowStartupLocation.Manual,
+            // 先在屏幕外 Show：WebView2 需要一个真实 HWND 才能初始化，
+            // 但屏幕外那一块谁都看不见 —— 等页面报第一帧再搬回桌面层。
+            // 这样「窗口可见」和「已经有画面」在时间上是同一刻，黑方块无从产生。
+            Left = -32000,
+            Top = -32000,
             Width = 800,
             Height = 600,
             Content = _browser,
@@ -122,6 +140,9 @@ internal sealed partial class DesktopWebSurface : IDisposable
 
         try
         {
+            // 必须在 Ensure 之前 Show：WebView2 要窗口真正有 HWND 才会初始化，
+            // 窗口藏着不显示时 EnsureCoreWebView2Async 会一直等下去（曾经卡死在这里）。
+            // 此刻窗口在屏幕外（Left/Top = -32000），没人看得见。
             _window.Show();
             await _browser.EnsureCoreWebView2Async(_environment);
             if (_disposed || _browser.CoreWebView2 is null)
@@ -150,6 +171,9 @@ internal sealed partial class DesktopWebSurface : IDisposable
                     var text = args.WebMessageAsJson;
                     if (text.Contains("wallpaperReady", StringComparison.Ordinal))
                     {
+                        // 页面说它第一帧已经画好了 —— 现在把窗口从屏幕外搬进桌面层，
+                        // 观众看到的是已经有画面的窗口，不是一块空底。
+                        AttachIfPending();
                         PageReady?.Invoke();
                     }
                 }
@@ -177,9 +201,20 @@ internal sealed partial class DesktopWebSurface : IDisposable
             var separator = _navigationUrl.Contains('?') ? '&' : '?';
             _browser.CoreWebView2.Navigate($"{_navigationUrl}{separator}scene=wallpaper");
 
-            AttachToDesktop();
-            _health.Start();
-            return _attached;
+            // 窗口在 Ensure 之前就已经 Show 出来了（屏幕外）；这里只登记「等页面 ready
+            // 再搬进桌面层」，搬之前它一直待在屏幕外。
+            _pendingAttach = true;
+            _attachFallback = new System.Windows.Threading.DispatcherTimer
+            {
+                Interval = TimeSpan.FromSeconds(2.5),
+            };
+            _attachFallback.Tick += (_, _) =>
+            {
+                HostLog.Warn("[wallpaper] desktop surface ready timeout, attaching anyway");
+                AttachIfPending();
+            };
+            _attachFallback.Start();
+            return true;
         }
         catch (Exception exception)
         {
@@ -206,16 +241,48 @@ internal sealed partial class DesktopWebSurface : IDisposable
         }
     }
 
+    /// <summary>
+    /// 让这一块屏的实际画面自上而下扫过一道光（用户在画布设置里点选这块屏时用）。
+    /// 只是一条一次性消息，页面自己播完就丢，不参与状态机。
+    /// </summary>
+    public void PostSweep()
+    {
+        PostState("{\"v\":1,\"type\":\"host\",\"event\":\"monitorSweep\"}");
+    }
+
     /// <summary>分辨率/显示器变化后重新铺一次；幂等。</summary>
     public void Reposition()
     {
         AttachToDesktop();
     }
 
+    /// <summary>
+    /// 页面报到第一帧（或兜底超时）后，把窗口从屏幕外搬进桌面层。
+    /// 只搬一次：之后 Reposition/SetBounds 走正常路径。
+    /// </summary>
+    private void AttachIfPending()
+    {
+        if (!_pendingAttach || _disposed)
+        {
+            return;
+        }
+
+        AttachToDesktop();
+    }
+
     private void EnsureAttached()
     {
-        if (_disposed || !_attached)
+        if (_disposed)
         {
+            return;
+        }
+
+        // 还没挂上（开机自启时 Explorer 尚未就绪、`FindDesktopHost()` 返回 0）也要继续试：
+        // 以前这里 `!_attached` 直接 return，而健康巡检又只在挂成功后才 Start，
+        // 两条重试路径同时断掉 → 那块屏整场没有壁纸，只能重启 App。
+        if (!_attached)
+        {
+            AttachToDesktop();
             return;
         }
 
@@ -234,11 +301,32 @@ internal sealed partial class DesktopWebSurface : IDisposable
         AttachToDesktop();
     }
 
+    /// <summary>重建「待挂」兜底定时器（每次尝试都会先清掉它，所以失败时要重新排）。</summary>
+    private void EnsureAttachFallback()
+    {
+        if (_disposed || _attachFallback is not null) return;
+        _attachFallback = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(2.5),
+        };
+        _attachFallback.Tick += (_, _) => AttachIfPending();
+        _attachFallback.Start();
+    }
+
     private void AttachToDesktop()
     {
         if (_disposed)
         {
             return;
+        }
+
+        // 搬进来之后就不再是「待挂」状态：兜底定时器停掉，
+        // 之后 Reposition / SetBounds 走正常的重挂路径。
+        _pendingAttach = false;
+        if (_attachFallback is not null)
+        {
+            _attachFallback.Stop();
+            _attachFallback = null;
         }
 
         var handle = new WindowInteropHelper(_window).Handle;
@@ -252,8 +340,11 @@ internal sealed partial class DesktopWebSurface : IDisposable
         var (parent, insertAfter) = FindDesktopHost();
         if (parent == IntPtr.Zero)
         {
-            HostLog.Warn("[wallpaper] desktop host not found, leaving as plain window");
+            // 保留「待挂」状态并重排兜底定时器：Explorer 重启、开机抢先启动都会走到这里。
+            HostLog.Warn("[wallpaper] desktop host not found, retrying");
             _attached = false;
+            _pendingAttach = true;
+            EnsureAttachFallback();
             return;
         }
 
@@ -291,6 +382,9 @@ internal sealed partial class DesktopWebSurface : IDisposable
             SwpNoActivate | SwpFrameChanged | SwpShowWindow);
 
         _attached = placed;
+        // 挂上之后再开健康巡检：它会在父窗口丢了时重挂，挂之前开只会被当成
+        // 「还没挂上」而反复触发。
+        _health.Start();
         HostLog.Info($"[wallpaper] desktop web surface attached parent={parent} insertAfter={insertAfter} {width}x{height} at {left},{top} placed={placed}");
     }
 
@@ -369,6 +463,11 @@ internal sealed partial class DesktopWebSurface : IDisposable
 
         _disposed = true;
         _health.Stop();
+        if (_attachFallback is not null)
+        {
+            _attachFallback.Stop();
+            _attachFallback = null;
+        }
 
         try
         {

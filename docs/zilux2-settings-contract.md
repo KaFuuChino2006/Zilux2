@@ -1,6 +1,6 @@
 # Zilux2 设置契约（Settings v1）
 
-> 状态：v1 冻结 · 2026-10-18（v1.6 增量协议，最近更新 2026-11-04）
+> 状态：v1 冻结 · 2026-10-18（v1.7 增量协议，最近更新 2026-11-21）
 > 关联：`docs/zilux2-host-contract.md`（消息通道）、`docs/zilux2-online-music.md`（在线服务）
 > 本文档是在宿主契约 v1 之上的**增量协议**，不修改既有消息语义。
 
@@ -122,6 +122,7 @@
 | `general.desktopLyricsLeft` | number\|null | `null` | `-200000 ~ 200000`，有限数 | 桌面歌词上次关闭位置 X；`null`=未记录。MainWindow 关闭时 patch，启动优先恢复 |
 | `general.desktopLyricsTop` | number\|null | `null` | `-200000 ~ 200000`，有限数 | 同上，Y 坐标 |
 | `general.systemOutputRotation` | string[] | `[]` | ≤32 项、每项 ≤512 字符、去重 | 「系统输出轮换」快捷键参与的设备（WASAPI 端点 ID，按勾选顺序）；空数组 = 全部活动播放设备 |
+| `general.uiTemplate` | enum | `"standard"` | `standard` / `fx` | 界面模板：`standard`=完整界面；`fx`=新界面样板（当前只保留底部播放条，顶栏/分类栏/内容区与背景层全部移除）。只切前端的 `.app.is-fx` 类，播放器与过渡共用同一实例，切换不中断播放；宿主只做持久化与白名单校验（v1.7）|
 
 > 歌词互斥（v1.6）：`patch` 同时把两个歌词开关设为 `true` 时，`backgroundLyrics` 优先，宿主把 `desktopLyrics` 改回 `false` 并在同一次 ACK 中回推；加载时若文件里两者都为 `true`，同样保留 `backgroundLyrics`、关闭 `desktopLyrics`，日志 `[settings] load: desktopLyrics disabled because backgroundLyrics was enabled`。
 
@@ -215,7 +216,7 @@
 > 版本变更：v1.2 新增 `updates`；v1.3 新增 `shortcuts`；v1.4 新增 `autoLaunch` / `watchLocalFolder`；
 > v1.5 新增 `autoStartHidden` / `alwaysHandleMediaKeys`；v1.6 补齐 `mediaSession`、桌面/背景歌词、
 > 迷你播放器、`audioReactive`、睡眠定时、下载段、`quality`、`directConnection`、八个扩展快捷键，
-> 并明确加载/patch 的校验语义。
+> 并明确加载/patch 的校验语义；v1.7 新增 `general.uiTemplate`（界面模板：`standard` / `fx`）。
 
 ## 3. 消息协议（复用 host 通道 `{v:1,type,...}`）
 

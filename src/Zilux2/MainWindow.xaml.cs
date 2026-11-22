@@ -772,22 +772,48 @@ public partial class MainWindow : Window
             // 之前只有 --wallpaper-only 分支会调 StartWallpaperDesktopHost()，普通启动一直是关的。
             if (_settings.WallpaperSnapshot.DesktopEnabled)
             {
-                Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
-                {
-                    try
-                    {
-                        _wallpaperHost?.AttachDesktop();
-                    }
-                    catch (Exception exception)
-                    {
-                        HostLog.Warn($"[wallpaper] auto attach failed: {exception.Message}");
-                    }
-                }));
+                TryAttachDesktopWhenReady(0);
             }
         }
         catch (Exception exception)
         {
             HostLog.Warn($"[wallpaper] 启动失败：{exception.GetType().Name}: {exception.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 等主 WebView2 环境就绪再接管桌面：环境没建好时 AttachDesktop 会落到旧的
+    /// WPF 位图兜底（多屏就是一片纯色）。这里每 250ms 试一次，最多 10 秒。
+    /// </summary>
+    private void TryAttachDesktopWhenReady(int attempt)
+    {
+        if (_wallpaperHost is null)
+        {
+            return;
+        }
+
+        if (_host?.SharedEnvironment is null && attempt < 40)
+        {
+            var timer = new DispatcherTimer(DispatcherPriority.Background)
+            {
+                Interval = TimeSpan.FromMilliseconds(250),
+            };
+            timer.Tick += (_, _) =>
+            {
+                timer.Stop();
+                TryAttachDesktopWhenReady(attempt + 1);
+            };
+            timer.Start();
+            return;
+        }
+
+        try
+        {
+            _wallpaperHost.AttachDesktop();
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[wallpaper] auto attach failed: {exception.Message}");
         }
     }
 
@@ -1077,6 +1103,20 @@ public partial class MainWindow : Window
     private void OnHostEnvironmentReady()
     {
         ApplyBackgroundLyricsSettings();
+
+        // 桌面层如果是启动早期就尝试接入，那时 WebView2 环境还没建好，会落到旧的
+        // WPF 位图兜底（多屏就没画面）。环境一就绪就补一次，切回 WebView2 表面。
+        if (_settings?.WallpaperSnapshot.DesktopEnabled == true)
+        {
+            try
+            {
+                _wallpaperHost?.AttachDesktop();
+            }
+            catch (Exception exception)
+            {
+                HostLog.Warn($"[wallpaper] attach after environment ready failed: {exception.Message}");
+            }
+        }
     }
 
     internal void ApplyBackgroundLyricsSettings()
@@ -1129,7 +1169,13 @@ public partial class MainWindow : Window
     }
 
     /// <summary>页面播放状态变化 → 托盘菜单文案同步（B23）。</summary>
-    internal void NotifyPlaybackState(bool playing) => App.Tray?.UpdatePlaybackState(playing);
+    internal void NotifyPlaybackState(bool playing)
+    {
+        App.Tray?.UpdatePlaybackState(playing);
+        // 「和音乐抢声音时」：音乐一放就把壁纸音轨压下去，停播再涨回来。
+        // 这里拿到的是页面报上来的播放状态（smtc 消息），比轮询音频输出可靠。
+        _wallpaperHost?.NotifyMusicPlaying(playing);
+    }
 
     /// <summary>把当前壁纸状态推给托盘菜单。</summary>
     private void NotifyWallpaperState()
@@ -2912,6 +2958,9 @@ public partial class MainWindow : Window
             Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
             {
                 _backgroundLyricsWindow?.RepositionToDesktop();
+                // 桌面壁纸是独立子窗口，不会跟着 WPF 布局走：不显式重铺就停在旧尺寸
+                // （分辨率/缩放变了 → 黑边/拉伸；新插的屏 → 完全没有壁纸）。
+                _wallpaperHost?.RepositionDesktop();
                 ApplyWindowCornerRegion();
             }));
         }

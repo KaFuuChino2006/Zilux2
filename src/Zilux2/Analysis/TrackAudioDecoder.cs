@@ -130,9 +130,23 @@ internal static class TrackAudioDecoder
                 }
             }
 
-            var durationMs = truncated
-                ? MaxDurationMs
-                : (long)Math.Round(sourceFrames / (double)sourceRate * 1000.0);
+            // 时长永远是「这首歌有多长」，截断只影响分析样本长度。
+            // 以前 truncated 时硬写成 MaxDurationMs(720000)，12 分钟以上的 DJ mix
+            // 进度条/拍网格/段落全部止于 12 分钟，而音频还在放。
+            var fullFrames = sourceFrames;
+            try
+            {
+                if (reader.TotalTime > TimeSpan.Zero)
+                {
+                    fullFrames = Math.Max(fullFrames, (long)Math.Round(reader.TotalTime.TotalSeconds * sourceRate));
+                }
+            }
+            catch
+            {
+                /* TotalTime 不可用时退回已读帧数 */
+            }
+
+            var durationMs = (long)Math.Round(fullFrames / (double)sourceRate * 1000.0);
             if (durationMs <= 0)
             {
                 durationMs = (long)Math.Round(samples.Count / (double)TargetSampleRate * 1000.0);

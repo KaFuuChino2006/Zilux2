@@ -68,7 +68,7 @@ const LIGHT_RANGES: RangeSpec[] = [
 ];
 
 const BEAM_TOGGLES: ToggleSpec[] = [
-  { key: 'beams', label: '背景光柱', hint: '在文字后面加绘光的光柱与雾；关掉就只剩字' },
+  { key: 'beams', label: '背景光柱', hint: '在文字后面加光柱与雾气；关掉就只剩字' },
 ];
 
 const BEAM_RANGES: RangeSpec[] = [

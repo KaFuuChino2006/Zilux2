@@ -18,16 +18,15 @@ const SRC = path.resolve(__dirname, '..', 'src', 'ui', 'app.ts');
 const source = fs.readFileSync(SRC, 'utf8');
 
 function quickPaneCells() {
-  const lines = source.split(/\r?\n/);
-  const start = lines.findIndex((line) => line.includes("cell('音量'"));
-  const end = lines.findIndex((line, i) => i > start && line.includes("cell('歌词衔接'"));
-  assert.ok(start > 0 && end > start, '找不到快捷设置的 cell 列表边界（app.ts 结构变了？）');
-  const titles = [];
-  for (const line of lines.slice(start, end + 1)) {
-    const m = line.match(/cell\('([^']+)'/);
-    if (m) titles.push(m[1]);
-  }
-  return titles;
+  // 按字符位置切片而不是按行：`cell(` 的标题可能和参数换行写（「歌词衔接」就是多行形态，
+  // 因为它带一个条件提示子节点），按行匹配会漏掉它、连带把边界也判错。
+  const startMatch = /\bcell\(\s*'音量'/.exec(source);
+  assert.ok(startMatch, '找不到快捷设置起点 cell（app.ts 结构变了？）');
+  const start = startMatch.index;
+  const endMatch = /\bcell\([\s\S]{0,120}?'歌词衔接'/.exec(source.slice(start));
+  assert.ok(endMatch, '找不到快捷设置终点 cell「歌词衔接」（app.ts 结构变了？）');
+  const end = start + endMatch.index + endMatch[0].length;
+  return Array.from(source.slice(start, end).matchAll(/cell\(\s*'([^']+)'/g)).map((m) => m[1]);
 }
 
 function groupEntries() {

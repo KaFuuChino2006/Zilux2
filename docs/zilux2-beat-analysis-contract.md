@@ -269,3 +269,36 @@ GET http://127.0.0.1:<port>/api/analysis?source=local&rel=<rel>&token=<token>
 3. 在线曲目（代理可用时）走完整链路：分析成功、缓存命中第二次 `cached=true` 且 `elapsedMs` < 300 ms。
 4. 失败路径：不存在曲目返回 `not-found`；不可播返回 `not-playable`；页面展示错误文案不崩。
 5. 关闭窗口到托盘/后台时分析仍可完成（不依赖前台定时器）。
+
+### 2.3 p1-0 新增字段（activity / keyTimeline / loopUnits）
+
+`analyzer` 升到 `p1-0-activity` 起，`analysis` 里多三组字段（旧宿主/旧缓存没有，前端必须容忍缺失）：
+
+```json
+{
+  "activity": {
+    "hopMs": 250,
+    "vocal": [0.481, 0.393, 0.261],
+    "drum":  [0.812, 0.799, 0.804],
+    "bass":  [0.021, 0.026, 0.033]
+  },
+  "keyTimelineMs": [2322, 6025.6, 9717.6],
+  "keyTimeline":   ["7B", "7B", "7A"],
+  "loopUnits": [
+    { "startMs": 192493.4, "endMs": 205496.6, "bars": 4, "score": 0.986, "kind": "repeat" }
+  ]
+}
+```
+
+| 字段 | 语义 | 约束 |
+|---|---|---|
+| `activity.hopMs` | 曲线时间分辨率（毫秒） | 固定 250 |
+| `activity.vocal` | 人声活动度 0–1（300–3500 Hz 谐波性 × 齿音，已归一） | 与 drum/bass 等长 |
+| `activity.drum` | 打击活动度 0–1（低频通量） | 同上 |
+| `activity.bass` | 低频占比 0–1（<150 Hz 能量占全带比例） | 同上 |
+| `keyTimelineMs` | 每段调性时间戳（毫秒，曲内） | 严格递增 |
+| `keyTimeline` | 对应 Camelot 记号 | 与 `keyTimelineMs` 等长；低置信段为空串 |
+| `loopUnits` | 可循环单元（两半自相似） | 按 score 降序，最多 8 条 |
+
+消费方：`web/src/core/automix/v2Quality.ts`（质量门与 duck）、`automixPlan.ts`（形态选择与 loop 挑选）、
+`web/src/core/automix/bridgePlan.ts`（结构桥接）。

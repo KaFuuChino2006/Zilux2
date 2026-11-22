@@ -109,6 +109,8 @@ let publishedEmpty = true;
 let retryAfterPublish = false;
 /** 空歌词自动补发的次数（避免无歌词的纯音乐无限重试）。 */
 let emptyRetries = 0;
+/** 补发定时器句柄：切歌/关开关时要取消，否则旧曲的定时器会把新曲的发布流程再打一遍。 */
+let emptyRetryTimer = 0;
 /** 补发次数用完、已确认没有歌词的曲目：播放器每帧回调不再重复拉取/写快照。 */
 let settledEmptyKey = '';
 /** 上一次写入快照的内容签名（不含 savedAt）：内容没变就不重复写 localStorage。 */
@@ -142,6 +144,8 @@ function publishCurrent(force = false): void {
     publishedKey = '';
     settledEmptyKey = '';
     publishedSignature = '';
+    window.clearTimeout(emptyRetryTimer);
+    emptyRetryTimer = 0;
     return;
   }
 
@@ -152,6 +156,8 @@ function publishCurrent(force = false): void {
   if (key !== publishedKey) {
     emptyRetries = 0;
     settledEmptyKey = '';
+    window.clearTimeout(emptyRetryTimer);
+    emptyRetryTimer = 0;
   }
   // 非空歌词：同一首只发一次，播放器的每帧回调直接跳过。
   // 空歌词：补发次数还没用完时继续尝试；确认没有歌词后也不再每帧重拉。
@@ -179,7 +185,7 @@ function publishCurrent(force = false): void {
 function docSignature(key: string, doc: LyricDoc, cover: string): string {
   let hash = 2166136261;
   for (const line of doc.lines) {
-    const text = `${line.timeMs}|${line.durationMs}|${line.text}|${line.translation}|${line.words.length}\n`;
+    const text = `${line.timeMs}|${line.durationMs}|${line.text}|${line.translation}|${line.words.map((word) => `${word.startMs}:${word.text}`).join(',')}\n`;
     for (let index = 0; index < text.length; index += 1) {
       hash ^= text.charCodeAt(index);
       hash = Math.imul(hash, 16777619) >>> 0;
@@ -231,7 +237,11 @@ async function publishDoc(track: OnlineTrack, key: string): Promise<void> {
     } else if (publishedEmpty && emptyRetries < 3) {
       // 启动早期歌词接口可能还没就绪：隔一会儿补发，直到拿到非空歌词或重试次数用完。
       emptyRetries += 1;
-      window.setTimeout(() => publishCurrent(true), 1500 * emptyRetries);
+      window.clearTimeout(emptyRetryTimer);
+      emptyRetryTimer = window.setTimeout(() => {
+        emptyRetryTimer = 0;
+        publishCurrent(true);
+      }, 1500 * emptyRetries);
     } else if (publishedEmpty) {
       // 确认这首没有歌词：记下来，之后的每帧回调不再重拉。
       settledEmptyKey = publishedKey;
@@ -261,8 +271,19 @@ let appliedTrackKey = '';
  * 背景场景的入口。必须在正常 App 启动之前分叉调用：
  * 这里不创建 App、不启动在线服务，只把一块 LyricsView 铺满窗口。
  */
+let sceneBooted = false;
+let clockId = 0;
+let settingsPollId = 0;
+
 export async function bootBackgroundLyricsScene(): Promise<void> {
+  // 这一页里有 33ms 的时钟 setInterval 和 3s 的设置轮询，都没有卸载路径；
+  // 页面只 boot 一次时没问题，但重复 boot（热重载、宿主重新导航）会把定时器叠起来。
+  if (sceneBooted) return;
+  sceneBooted = true;
   document.documentElement.classList.add('is-bg-lyrics-scene');
+  // 首帧先别露歌词：行高/居中/字号都要等字体与布局算完，
+  // 否则会先按兜底字体画一帧再跳到正确位置（用户看到的就是「闪现位移」）。
+  document.documentElement.classList.add('is-bg-booting');
   setExternalLyricMode(true);
   // 背景页也要拿到宿主的在线源端点：封面是回环绝对地址，重启后端口会变，需要按当前端点重拼。
   initOnline();
@@ -303,7 +324,7 @@ export async function bootBackgroundLyricsScene(): Promise<void> {
   // 跨窗口用同源 localStorage 的 storage 事件通知（页面间不共享模块状态）。
     // 别人改了设置（快捷设置/设置页/API）时这一页也要跟上：
   // 宿主只在推壁纸状态时才知道，选项本身不会广播，所以这里低频拉一次。
-  window.setInterval(() => {
+  settingsPollId = window.setInterval(() => {
     void (async () => {
       await refreshPageWallpaperSwitches();
       applyMotion();
@@ -677,7 +698,28 @@ window.addEventListener('storage', (event) => {
     pushClock();
   });
 
-  window.setInterval(pushClock, CLOCK_INTERVAL_MS);
+  clockId = window.setInterval(pushClock, CLOCK_INTERVAL_MS);
   pushClock();
+  // 字体就绪 + 两帧之后才让歌词淡入：这两帧里 applyOffset 会把居中偏移硬落位，
+  // 露出来的时候位置已经是对的，不会再有「先画错、再跳过去」的位移。
+  const revealLyrics = (): void => {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => document.documentElement.classList.remove('is-bg-booting'));
+    });
+  };
+  const fonts = (document as Document & { fonts?: FontFaceSet }).fonts;
+  if (fonts) void fonts.ready.then(revealLyrics, revealLyrics);
+  else revealLyrics();
+  // 页面级 teardown：壁纸/背景歌词页在热重载或换壁纸引擎时会被整块替换，
+  // 不清理就是每次多一条 33 ms 时钟 + 一条 3 s 轮询（越用越卡）。
+  window.addEventListener('pagehide', () => {
+    if (clockId) window.clearInterval(clockId);
+    if (settingsPollId) window.clearInterval(settingsPollId);
+    clockId = 0;
+    settingsPollId = 0;
+    sceneBooted = false;
+  }, { once: true });
+  // 兜底：字体接口异常或永不 resolve 时也要把歌词放出来。
+  window.setTimeout(() => document.documentElement.classList.remove('is-bg-booting'), 1500);
   host.ready();
 }

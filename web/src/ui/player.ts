@@ -15,12 +15,14 @@ import { fetchStreamInfo, onlineInfo, qualityForSource, streamUrl, checkLiked, a
 import { analyzeTrack, cachedAnalysis, type AnalysisResult } from '../online/analysis';
 import type { OnlineTrack } from '../online/types';
 import { getSettings } from '../core/settings';
-import { attachAudioTap, audioTapGraphActive, audioTapState, deckGraphConnected, ensureEqualizerGraph, resumeAudioContext, setAudioTapVolume, setDeckGraphGain, setDeckTrimGain, setEqualizer, setLoudnessGainDb, setNightCompressor, setVocalFade } from '../core/audioTap';
+import { attachAudioTap, audioTapGraphActive, audioTapState, deckGraphConnected, ensureEqualizerGraph, kickAudioContext, outputLevel, readDeckTrimState, resumeAudioContext, setAudioTapVolume, setDeckGraphGain, setDeckTrimGain, setEqualizer, setLoudnessGainDb, setNightCompressor, setVocalFade } from '../core/audioTap';
 import { compensationDbFor, loudnessEnabled, nightModeEnabled } from './loudness';
 import {
   cancelCrossfade,
   crossfadeApplyPlaybackRate,
   crossfadeApplyVolume,
+  crossfadeBridgeActive,
+  crossfadeTailBleedActive,
   crossfadeFinishNow,
   crossfadeIsFading,
   crossfadeProgress,
@@ -636,10 +638,154 @@ function healPlayback(): void {
   }
 }
 
+/**
+ * 输出侧静音看门狗。
+ *
+ * 现象：界面在放、进度在走、元素 readyState=4，但扬声器没有声音。
+ * 这条链路上任何一道闸（fadeScale、副歌试听 duck、本地 gain、deck trim、AudioContext 挂起、
+ * 元素陷在坏的解码状态）都会表现成同一件事，用户分不出来。这里用输出侧波形电平判「真的没声」，
+ * 按严重程度自愈：先复位增益与上下文；两次仍静音就清掉响度补偿；三次仍静音就按当前位置重装元素。
+ * 只在「刚过曲首 2.5 秒、没有淡入淡出、没有过渡」时判定，避免把正常留白当成故障。
+ */
+let lastSilenceProbeAt = 0;
+let silentStreak = 0;
+let silenceHealCount = 0;
+let lastSilenceHealAt = 0;
+
+/**
+ * 「有播放但没声音」里最容易卡死的三处闸门：
+ *  1. `fadeScale` 卡在 0.x：淡入的 ramp 中途被取消（切歌 / 暂停 / 计划过期）时 token 失效，
+ *     `fadeTo` 直接 resolve、不再写 1 —— 听感就是声音忽然没了，而且旧版看门狗只要
+ *     `fadeScale < 0.9` 就直接 return，永远修不到；
+ *  2. `previewDuck` 卡在 0：副歌试听压低后就再没恢复；
+ *  3. 元素被谁手动置了 `muted` / `volume=0`（蓝牙切换、系统混音重连都会）。
+ * 三条都只在「确实在播」时才动，避免打断正常的淡入淡出。
+ */
+let stuckFadeSince = 0;
+let stuckDuckSince = 0;
+
+function repairOutputGates(): void {
+  if (!state.playing || audio.paused || pauseFadePending || crossfadeIsFading()) {
+    stuckFadeSince = 0;
+    stuckDuckSince = 0;
+    return;
+  }
+  const now = performance.now();
+  if (fadeScale < 0.9) {
+    if (stuckFadeSince === 0) stuckFadeSince = now;
+    else if (now - stuckFadeSince > 2500) {
+      console.warn('[player] fade stuck, forcing full gain', { fade: fadeScale, duck: previewDuck, volume: state.volume });
+      fadeScale = 1;
+      stuckFadeSince = 0;
+      applyPlaybackVolume(true);
+    }
+  } else {
+    stuckFadeSince = 0;
+  }
+  if (previewDuck < 0.9) {
+    if (stuckDuckSince === 0) stuckDuckSince = now;
+    else if (now - stuckDuckSince > 2500) {
+      console.warn('[player] preview duck stuck, restoring', { fade: fadeScale, duck: previewDuck });
+      previewDuck = 1;
+      stuckDuckSince = 0;
+      applyPlaybackVolume(true);
+    }
+  } else {
+    stuckDuckSince = 0;
+  }
+  if (state.volume > 0.001 && (audio.muted || audio.volume <= 0.001)) {
+    console.warn('[player] element muted unexpectedly', { muted: audio.muted, volume: audio.volume, user: state.volume });
+    audio.muted = false;
+    applyPlaybackVolume(true);
+  }
+}
+
+function silenceWatchdog(): void {
+  if (!state.playing || audio.paused || audio.readyState < 3) {
+    silentStreak = 0;
+    return;
+  }
+  if (state.positionMs < 2500) {
+    silentStreak = 0;
+    return;
+  }
+  if (fadeScale < 0.9 || previewDuck < 0.9 || pauseFadePending || crossfadeIsFading()) {
+    silentStreak = 0;
+    return;
+  }
+  const now = performance.now();
+  if (now - lastSilenceProbeAt < 700) return;
+  lastSilenceProbeAt = now;
+  const level = outputLevel();
+  if (level === null) {
+    silentStreak = 0;
+    return;
+  }
+  if (level > 0.0015) {
+    silentStreak = 0;
+    silenceHealCount = 0;
+    return;
+  }
+  silentStreak += 1;
+  if (silentStreak < 4) return;
+  silentStreak = 0;
+  const tap = audioTapState();
+  const withinWindow = now - lastSilenceHealAt < 12_000;
+  silenceHealCount = withinWindow ? silenceHealCount + 1 : 1;
+  lastSilenceHealAt = now;
+  console.warn('[player] output silent while playing', {
+    level,
+    fade: fadeScale,
+    duck: previewDuck,
+    volume: state.volume,
+    context: tap.context,
+    localGain: tap.localGain,
+    localVolume: tap.localVolume,
+    decks: readDeckTrimState(),
+    title: state.track?.title,
+    heal: silenceHealCount,
+  });
+  resumeAudioContext();
+  if (silenceHealCount >= 2 && audioTapGraphActive() && deckGraphConnected(audio)) {
+    // 响度补偿算错时 trim 会把这首先压成几乎听不见：清回 0dB 试一次。
+    setDeckTrimGain(audio, 0);
+  }
+  fadeScale = 1;
+  previewDuck = 1;
+  vocalHold = 0;
+  setVocalFade(0);
+  applyPlaybackVolume(true);
+  if (silenceHealCount >= 3) {
+    // 前两级都试过还是没声，多半是 Web Audio 的输出路由掉了（设备切换 / 休眠唤醒）：
+    // 挂起再拉起，让 Chromium 重新打开输出流。
+    kickAudioContext();
+    try {
+      const at = audio.currentTime;
+      audio.load();
+      audio.addEventListener(
+        'loadedmetadata',
+        () => {
+          try {
+            audio.currentTime = at;
+          } catch {
+            /* 元数据未就绪时忽略 */
+          }
+        },
+        { once: true },
+      );
+      void audio.play().catch(() => undefined);
+    } catch {
+      /* 忽略 */
+    }
+  }
+}
+
 function tick(): void {
   rafId = 0;
   if (!state.track) return;
   healPlayback();
+  repairOutputGates();
+  silenceWatchdog();
   // 兜底：引擎若在淡化中途自行取消（例如计划过期），界面不能停在已经切过去的 B 上。
   if (preview && !crossfadeIsFading()) restorePreview('engine-stopped');
   // 引擎永远看「正在淡出的 A」的进度；界面在过渡中看正在淡入的 B（preview）。
@@ -771,7 +917,14 @@ function applyCue(track: OnlineTrack | null): void {
 
 function onEnded(element: HTMLAudioElement): void {
   // 只有活跃 deck 的 ended 有意义：B 在淡化中被忽略（预加载失败等场景也不切歌）。
-  if (element !== audio) return;
+  if (element !== audio) {
+    console.info('[player] standby ended (ignored)', state.track?.title ?? '-', element.currentTime);
+    return;
+  }
+  // 进阶 v2 的结构桥接：A 的元素已经放完，但那几小节尾奏正由预渲染 buffer 顶着。
+  // 这时收尾会把补出来的乐句切掉，等过渡自己走完。
+  if (crossfadeBridgeActive()) return;
+  if (crossfadeTailBleedActive()) return;
   // 过渡进行中 A 先放完：直接收尾到 B，不要再 load 一次（自动/手动/单曲循环过渡同理）。
   if (crossfadeFinishNow('ended')) return;
   // 睡眠定时「播完当前曲」：不走自动下一首，暂停在曲首，并把曲末事件交给宿主。
@@ -1027,6 +1180,11 @@ function load(index: number, autoplay = true, startMs = 0, skipFadeIn = false): 
   }
   audio.src = url;
   attachAudioTap(audio);
+  silentStreak = 0;
+  silenceHealCount = 0;
+  lastSilenceProbeAt = 0;
+  stuckFadeSince = 0;
+  stuckDuckSince = 0;
   // 图未建立时不存在「活跃 deck 在图外」的问题；图建立后绑定的是此时挂上的元素。
   if (!audioTapGraphActive()) activeDeckOutsideGraph = false;
   srcPort = onlineInfo()?.port ?? 0;
@@ -2007,7 +2165,7 @@ function clearStandbyDeck(): void {
 }
 
 /** 过渡中界面显示的进度：从正在淡入的 B 读。 */
-function previewPositionMs(): number {
+export function previewPositionMs(): number {
   if (!preview) return positionMs();
   const raw = Number.isFinite(preview.deck.currentTime) ? preview.deck.currentTime : preview.startAt;
   return Math.max(0, (raw - preview.startAt) * 1000);
@@ -2288,6 +2446,14 @@ function commitSeamless(
   preview = null;
   audio = nextDeck;
   standby = previousDeck;
+  // 过渡尾部就把 B 放完的极端情况：ended 事件早于这次晋升被忽略，晋升后补一次，
+  // 否则会停在「歌曲末尾但不再往下走」。
+  window.setTimeout(() => {
+    if (audio !== nextDeck) return;
+    if (!(nextDeck.ended || nextDeck.paused)) return;
+    console.info('[player] promote ended deck, restart ended', track.title);
+    onEnded(nextDeck);
+  }, 0);
   // 过渡结束：新 deck 回到用户倍速（引擎已把 WSOLA tempoRate 平滑拉回），旧预选/过渡目标作废。
   applyDeckRate(audio, userRate);
   applyDeckRate(standby, userRate);
@@ -2368,6 +2534,25 @@ function wireDeck(element: HTMLAudioElement): void {
 wireDeck(deckA);
 wireDeck(deckB);
 
+/**
+ * 「停在歌尾不再往下走」的兜底：只要状态还是 playing，而 deck 已经放完或被浏览器停在
+ * 末尾（ended 事件在晋升前被忽略、或事件本身没送达），一秒内补发一次推进。
+ * 同一首只补一次，避免和正常 ended 抢跑。
+ */
+let stalledEndKey = '';
+function watchStalledEnd(): void {
+  if (!state.playing || !state.track) return;
+  const dur = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0;
+  if (!dur) return;
+  if (!(audio.ended || (audio.paused && dur - audio.currentTime <= 0.05))) return;
+  const key = `${state.track.source}:${state.track.id}#${state.index}`;
+  if (stalledEndKey === key) return;
+  stalledEndKey = key;
+  console.info('[player] stalled at track end, resume advance', state.track.title);
+  onEnded(audio);
+}
+window.setInterval(watchStalledEnd, 1_000);
+
 /* 设置里的无缝衔接开关/时长变化：关 = 立即取消并回退硬切；开 = 重新准备。 */
 window.addEventListener('zilux:crossfade', () => {
   if (!readCrossfadeSettings().enabled) {
@@ -2422,6 +2607,11 @@ if (typeof window !== 'undefined') {
       muted: audio.muted,
       ctx: audioTapState().context,
       hidden: document.hidden,
+      // 排查「在放但没声」：fadeScale=0 会把 localVolume 压成 0（基础音量乘数为 0），
+      // duck<1 说明副歌试听的压低没恢复。两个都只在真机排查时读。
+      fade: Math.round(fadeScale * 1000) / 1000,
+      duck: Math.round(previewDuck * 1000) / 1000,
+      userVolume: Math.round(state.volume * 1000) / 1000,
       standby: { t: standby.currentTime, paused: standby.paused, ready: standby.readyState },
     }),
   };

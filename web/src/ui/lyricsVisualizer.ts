@@ -119,6 +119,8 @@ class LyricVisualizer {
   private readonly root: HTMLDivElement;
   private readonly visualizer: WallpaperVisualizer;
   private started = false;
+  private appObserver: MutationObserver | null = null;
+  private mountObserver: MutationObserver | null = null;
 
   constructor() {
     this.root = document.createElement('div');
@@ -129,11 +131,9 @@ class LyricVisualizer {
 
     window.addEventListener('resize', () => this.resize());
     // 只在歌词页可见时跑动画：.app 的 class 由页面自己切，观察 body 子树最稳（.app 可能晚于这里挂载）。
-    new MutationObserver(() => this.syncRunning()).observe(document.body, {
-      subtree: true,
-      attributes: true,
-      attributeFilter: ['class'],
-    });
+    // 原来直接观察 body 子树上的 class：全应用任何元素切 class 都会触发回调。
+    // 现在只等 .app 挂载，挂上后改成只看它自己的 class。
+    this.watchApp();
     this.resize();
     this.apply();
   }
@@ -168,6 +168,22 @@ class LyricVisualizer {
     const prefs = lyricVisualPrefs();
     this.visualizer.setTuning({ bottomInset: this.bottomInset(prefs.gap) });
     this.visualizer.resize(window.innerWidth, window.innerHeight);
+  }
+
+  private watchApp(): void {
+    const app = document.querySelector('.app');
+    if (app) {
+      this.mountObserver?.disconnect();
+      this.mountObserver = null;
+      this.appObserver?.disconnect();
+      this.appObserver = new MutationObserver(() => this.syncRunning());
+      this.appObserver.observe(app, { attributes: true, attributeFilter: ['class'] });
+      this.syncRunning();
+      return;
+    }
+
+    this.mountObserver ??= new MutationObserver(() => this.watchApp());
+    this.mountObserver.observe(document.body, { childList: true, subtree: true });
   }
 
   private syncRunning(): void {

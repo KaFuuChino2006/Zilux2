@@ -50,6 +50,21 @@ internal static class HostLog
         Writer.Start();
     }
 
+    /// <summary>
+    /// 高频细节（每个 Range 分片一条这类）。默认不写：本地播放每首歌会刷几十条，
+    /// 把排队的 WARN/ERROR 挤掉。需要排查时设 `ZILUX2_DEBUG_LOG=1`。
+    /// </summary>
+    private static readonly bool DebugEnabled =
+        Environment.GetEnvironmentVariable("ZILUX2_DEBUG_LOG") == "1";
+
+    public static void Debug(string message)
+    {
+        if (DebugEnabled)
+        {
+            Write("DEBUG", message);
+        }
+    }
+
     public static void Info(string message) => Write("INFO", message);
 
     public static void Warn(string message) => Write("WARN", message);

@@ -258,6 +258,8 @@ internal sealed class StemSeparationService : IDisposable
         }
 
         Interlocked.Increment(ref _activeComputations);
+        // 4 轨残差归位后的重建误差（dBFS）：写进 meta，回归/诊断时用来证明「四轨之和 == 原音」。
+        var lastReconDbfs = double.NaN;
         try
         {
             Directory.CreateDirectory(trackDirectory);
@@ -317,18 +319,35 @@ internal sealed class StemSeparationService : IDisposable
             // 只有 4 轨请求才多写三轨并把 inst 换成求和；2 轨请求的落盘与旧版逐字节一致。
             if (request.FourStem)
             {
-                WriteFourStem(trackDirectory, request.Window, separation);
+                WriteFourStem(
+                    trackDirectory,
+                    request.Window,
+                    separation,
+                    window.Left,
+                    window.Right,
+                    out lastReconDbfs);
             }
             // 源文件身份：读缓存时与磁盘 FileInfo 比对，不一致就按未命中重算（T2-7）。
             var sourceIdentity = ReadSourceIdentity(prepared.Audio);
-            StemsMetaJson.Write(Path.Combine(trackDirectory, StemsMetaJson.FileName), new StemsMeta
+            // Stems 记「已经产出了几轨」而不是「这次请求了几轨」：
+            // 2 轨/4 轨来回切时，若这里写成请求值，切回 4 轨的第一个窗口会被判未命中，
+            // 明明四个 wav 都在也要再跑几十秒推理。
+            var metaPath = Path.Combine(trackDirectory, StemsMetaJson.FileName);
+            var producedStems = request.FourStem ? StemSeparationResult.StemCount : 2;
+            if (StemsMetaJson.TryRead(metaPath, out var priorMeta) && priorMeta is not null)
+            {
+                producedStems = Math.Max(producedStems, priorMeta.Stems);
+            }
+
+            StemsMetaJson.Write(metaPath, new StemsMeta
             {
                 TrackKey = trackKey,
                 Source = prepared.Audio.Source,
                 Title = prepared.Audio.Title,
                 DurationMs = window.DurationMs,
                 SegmentMs = ModelSegmentMs,
-                Stems = request.Stems,
+                Stems = producedStems,
+                ReconErrorDbfs = lastReconDbfs,
                 ModelSha256 = modelHash,
                 CreatedUtc = DateTime.UtcNow,
                 SourceBytes = sourceIdentity?.Length ?? 0,
@@ -340,12 +359,14 @@ internal sealed class StemSeparationService : IDisposable
                 $"segments={separation.Segments} peak={separation.Peak:0.####} gain={separation.Gain:0.####} " +
                 $"elapsedMs={watch.ElapsedMilliseconds}");
             PruneCache();
-            return StemsOutcome.Ready(
+            var outcome = StemsOutcome.Ready(
                 request,
                 separation.Frames,
                 cached: false,
                 elapsedMs: watch.ElapsedMilliseconds,
                 durationMs: window.DurationMs);
+            outcome.ReconErrorDbfs = lastReconDbfs;
+            return outcome;
         }
         catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
         {
@@ -391,8 +412,15 @@ internal sealed class StemSeparationService : IDisposable
     /// 2 轨模式下 inst 仍是 mix − vocals；两种模式都满足 inst ≈ mix − vocals，
     /// 差别只有模型重建误差与 16-bit 量化（实测残差远低于 −60 dBFS）。
     /// </summary>
-    private static void WriteFourStem(string trackDirectory, int window, StemSeparationResult separation)
+    private static void WriteFourStem(
+        string trackDirectory,
+        int window,
+        StemSeparationResult separation,
+        float[] mixLeft,
+        float[] mixRight,
+        out double reconErrorDbfs)
     {
+        reconErrorDbfs = double.NaN;
         var frames = separation.Frames;
         var drumLeft = separation.StemLeft[HtdemucsSession.DrumStemIndex];
         var drumRight = separation.StemRight[HtdemucsSession.DrumStemIndex];
@@ -400,6 +428,28 @@ internal sealed class StemSeparationService : IDisposable
         var bassRight = separation.StemRight[HtdemucsSession.BassStemIndex];
         var otherLeft = separation.StemLeft[HtdemucsSession.OtherStemIndex];
         var otherRight = separation.StemRight[HtdemucsSession.OtherStemIndex];
+
+        // ---- 残差归位（C）：把「原音 − 四轨之和」补进 other ----
+        // 模型重建 + 分块拼接 + 16 bit 量化都会留下误差；只要误差留在 other 里，
+        // 「四轨相加 == 原音」就是恒等式（误差归位后只剩 float→16bit 的量化噪声），
+        // 于是「原音」与「分轨」两条路可以无缝 A/B 对照。
+        var vocalsLeft = separation.VocalsLeft;
+        var vocalsRight = separation.VocalsRight;
+        var foldPeak = 0f;
+        var rawPeak = 0f;
+        for (var i = 0; i < frames; i++)
+        {
+            var residualLeft = mixLeft[i] - (vocalsLeft[i] + drumLeft[i] + bassLeft[i] + otherLeft[i]);
+            var residualRight = mixRight[i] - (vocalsRight[i] + drumRight[i] + bassRight[i] + otherRight[i]);
+            rawPeak = MathF.Max(rawPeak, MathF.Max(MathF.Abs(residualLeft), MathF.Abs(residualRight)));
+            otherLeft[i] += residualLeft;
+            otherRight[i] += residualRight;
+            foldPeak = MathF.Max(
+                foldPeak,
+                MathF.Max(
+                    MathF.Abs(mixLeft[i] - (vocalsLeft[i] + drumLeft[i] + bassLeft[i] + otherLeft[i])),
+                    MathF.Abs(mixRight[i] - (vocalsRight[i] + drumRight[i] + bassRight[i] + otherRight[i]))));
+        }
 
         StemsWav.Write16(DrumsPath(trackDirectory, window), drumLeft, drumRight, frames);
         StemsWav.Write16(BassPath(trackDirectory, window), bassLeft, bassRight, frames);
@@ -426,8 +476,10 @@ internal sealed class StemSeparationService : IDisposable
         }
 
         StemsWav.Write16(InstrumentalPath(trackDirectory, window), sumLeft, sumRight, frames);
+        reconErrorDbfs = ToDbfs(foldPeak);
         HostLog.Info(
-            $"stems.inst-sum window={window} frames={frames} residualDbfs={ToDbfs(residualPeak):0.#}");
+            $"stems.inst-sum window={window} frames={frames} residualDbfs={ToDbfs(residualPeak):0.#} " +
+            $"rawDbfs={ToDbfs(rawPeak):0.#} foldedDbfs={reconErrorDbfs:0.#}");
     }
 
     private HtdemucsSession EnsureSession(string modelPath)
@@ -1031,7 +1083,12 @@ internal sealed class StemSeparationService : IDisposable
         }
     }
 
-    /// <summary>任意声道数 → 交错立体声（单声道复制，≥2 声道取前两声道）。</summary>
+    /// <summary>
+    /// 任意声道数 → 交错立体声。
+    /// 单声道复制；立体声直通；≥3 声道按「中置 −3 dB 混入、环绕 −3 dB 混入、LFE 丢弃」下混
+    /// ——5.1 的声道序是 FL/FR/FC/LFE/BL/BR，只取前两声道会把中置（流行歌人声主体）整轨丢掉，
+    /// 分离出的人声近乎空白，用户会以为模型没跑。
+    /// </summary>
     private sealed class StereoAdapter : ISampleProvider
     {
         private readonly ISampleProvider _source;
@@ -1066,10 +1123,37 @@ internal sealed class StemSeparationService : IDisposable
                 {
                     left = right = _buffer[frame];
                 }
-                else
+                else if (_channels == 2)
                 {
                     left = _buffer[frame * _channels];
                     right = _buffer[frame * _channels + 1];
+                }
+                else
+                {
+                    var baseIndex = frame * _channels;
+                    left = _buffer[baseIndex];
+                    right = _buffer[baseIndex + 1];
+                    // 中置（人声/主旋律）与环绕按 −3 dB（0.7071）混入；LFE（index 3）丢弃，
+                    // 它的能量集中在 120 Hz 以下，混进来只会让分离器把低频当成人声残留。
+                    if (_channels >= 3)
+                    {
+                        var center = _buffer[baseIndex + 2] * 0.7071f;
+                        left += center;
+                        right += center;
+                    }
+
+                    for (var channel = 4; channel < _channels; channel++)
+                    {
+                        var surround = _buffer[baseIndex + channel] * 0.7071f;
+                        if ((channel & 1) == 0)
+                        {
+                            left += surround;
+                        }
+                        else
+                        {
+                            right += surround;
+                        }
+                    }
                 }
 
                 buffer[frame * 2] = left;
@@ -1167,7 +1251,10 @@ internal sealed class StemSeparationService : IDisposable
 
         internal static void Write16(string path, float[] left, float[] right, int frames)
         {
-            var temp = path + ".tmp";
+            // 唯一临时名：多实例/同一窗口被两条 flight 同时写时，共用 path+".tmp"
+            // 会在 FileShare.None 上抛 IOException（被上层 catch 吞掉 → 缓存静默丢失），
+            // finally 里的 TryDelete 还可能删掉别人正在写的文件。
+            var temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
             try
             {
                 using (var stream = new FileStream(

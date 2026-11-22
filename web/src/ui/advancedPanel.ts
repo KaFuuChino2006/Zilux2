@@ -20,7 +20,7 @@ import {
   MIX_TEMPLATE_ORDER,
   MIX_TRANSITION_HINTS,
   MIX_TRANSITION_LABELS,
-  MIX_TRANSITION_ORDER,
+  MIX_TRANSITION_UI_ORDER,
   readMixTransitionEngine,
   readMixTransitionMode,
   readMixTransitionTemplate,
@@ -220,7 +220,7 @@ function buildPanel(): HTMLElement {
     writeMixTransitionEngine(v as Parameters<typeof writeMixTransitionEngine>[0]);
     hint.textContent = MIX_ENGINE_HINTS[readMixTransitionEngine()];
   }));
-  body.append(selectRow('模式', MIX_TRANSITION_ORDER, MIX_TRANSITION_LABELS, readMixTransitionMode(), (v) => {
+  body.append(selectRow('模式', MIX_TRANSITION_UI_ORDER, MIX_TRANSITION_LABELS, readMixTransitionMode(), (v) => {
     writeMixTransitionMode(v as Parameters<typeof writeMixTransitionMode>[0]);
     hint.textContent = MIX_TRANSITION_HINTS[readMixTransitionMode()];
   }));

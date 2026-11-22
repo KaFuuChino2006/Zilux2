@@ -6,11 +6,23 @@
 
 import type { LibraryPlaylist } from '../core/library';
 import { SOURCE_LABEL, type OnlineSource, type OnlineTrack } from '../online/types';
+import { fetchCats, fetchCharts, fetchPlaylists } from '../online/discover';
 import { onlineArtwork } from '../online/artwork';
 import { h, icon } from './dom';
+import { BlockEntrance } from './blockEntrance';
+import { MOTION, prefersReducedMotion } from './motion';
 import { onPlayer, playerState } from './player';
 import { ui } from './theme';
 import { enableWheelScroll } from './wheelScroll';
+
+/* 首页逐块运动：可变体、可打断的入场 / 出场统一交给 BlockEntrance，这里只定选择器。 */
+/** 逐块目标：今日推荐卡 / 最近播放行 / 歌单封面（区块标题单独走轻量款）。 */
+const HOME_ITEMS = '.daily-card, .recent-item, .ui-tile';
+const HOME_HEADS = '.ui-section-head';
+/** 首页的大字：区块标题 + 今日推荐那行大标题，逐字上浮显影。 */
+const HOME_TITLES = '.ui-section-title, .daily-title';
+/** 推荐行换 tab 时，面板内逐块运动的目标（和首页整页同一款引擎，范围缩到这一行）。 */
+const PROVIDER_ITEMS = '.daily-card, .ui-tile, .home-cat-picker';
 
 /** 热门歌单的播放次数：12345 → 1.2 万次播放。 */
 function formatPlays(value: number): string {
@@ -20,7 +32,14 @@ function formatPlays(value: number): string {
   return `${Math.round(value)} 次播放`;
 }
 
-export type PlayScope = 'daily' | 'recent' | 'liked' | 'radar';
+export type PlayScope = 'daily' | 'recent' | 'liked' | 'radar' | 'special';
+
+/**
+ * 首页「推荐」行里的专属内容：
+ * 网易云 —— 私人漫游（原私人 FM）、相似歌曲；
+ * QQ 音乐 —— 猜你喜欢（私人 FM）、百万收藏、新歌推荐。
+ */
+export type HomeSpecialKind = 'netNew' | 'roam' | 'similar' | 'guess' | 'million' | 'newsong';
 
 export interface HomeCallbacks {
   onLogin(): void;
@@ -35,8 +54,12 @@ export interface HomeCallbacks {
   onDailyFilter(anchor: HTMLElement): void;
   onDaily30(): void;
   onRadar(): void;
+  /** 打开首页推荐行里的整页歌单（网易云私人漫游 / 相似歌曲、QQ 猜你喜欢 / 百万收藏 / 新歌推荐）。 */
+  onSpecial(kind: HomeSpecialKind): void;
   onSearch(): void;
-  onPlay(tracks: OnlineTrack[], index: number, scope: PlayScope): void;
+  onChart(source: string, id: string): void;
+  onArtistSearch(name: string): void;
+  onPlay(tracks: OnlineTrack[], index: number, scope: PlayScope, specialKind?: HomeSpecialKind): void;
   onPlaylist(item: LibraryPlaylist): void;
 }
 
@@ -72,6 +95,20 @@ export interface HomeData {
   neteasePlaylists: LibraryPlaylist[];
   /** 每日推荐歌单（网易云 + QQ 交错，排在热门歌单之前） */
   recommendPlaylists: LibraryPlaylist[];
+  /** 推荐行：网易云私人漫游 / 相似歌曲 + QQ 猜你喜欢 / 百万收藏 / 新歌推荐（没登录的平台不出卡）。 */
+  specials: HomeSpecial[];
+}
+
+export interface HomeSpecial {
+  kind: HomeSpecialKind;
+  /** 这条内容属于哪个平台：卡片的区块标题按它分组 */
+  source: OnlineSource;
+  /** 「私人漫游」/「相似歌曲」/「猜你喜欢」/「百万收藏」/「新歌推荐」 */
+  label: string;
+  /** 卡片上的小标签，如「QQ 音乐 · 私人 FM」 */
+  kicker: string;
+  meta: string;
+  tracks: OnlineTrack[];
 }
 
 export class HomeView {
@@ -88,10 +125,16 @@ export class HomeView {
   private recentTracks: OnlineTrack[] = [];
   private recentShown = 0;
   private recentBound = false;
+  private selectedTabs = { netease: 0, qq: 0 };
+  /** 逐块入场 / 出场 / 打断。 */
+  private readonly entrance: BlockEntrance;
+  /** 每个推荐行面板自己的逐块运动器：换 tab 时新旧各自开演，规则与整页那套完全相同。 */
+  private readonly panelMotions = new WeakMap<HTMLElement, BlockEntrance>();
   private readonly playerDispose: () => void;
 
   constructor(private readonly callbacks: HomeCallbacks) {
     this.root = h('div', { class: ui.page('home') });
+    this.entrance = new BlockEntrance(this.root, { items: HOME_ITEMS, heads: HOME_HEADS, titles: HOME_TITLES });
     this.playerDispose = onPlayer((state) => {
       this.syncDailyDeck(state.track, true);
       this.syncLikedDeck(state.track, true);
@@ -100,9 +143,15 @@ export class HomeView {
 
   dispose(): void {
     this.playerDispose();
+    this.entrance.dispose();
   }
 
-  update(data: HomeData): void {
+  /**
+   * 整页重建。
+   * `options.animate === false` 用于「后台数据补上了」这种静默刷新：只换内容，
+   * 不重放入场——否则用户正看着的页面会突然整屏重置一次。
+   */
+  update(data: HomeData, options: { animate?: boolean } = {}): void {
     this.dailyTracks = data.daily;
     this.radarTracks = data.radar;
     this.deckEl = null;
@@ -133,6 +182,13 @@ export class HomeView {
     }
     this.bindRecentScroll();
 
+    // 推荐行（网易云私人漫游 / 相似歌曲 + QQ 猜你喜欢 / 百万收藏 / 新歌推荐）：
+    // 按平台各排一行，有数据才出，卡片沿用收藏卡的放大样式。
+    for (const source of ['netease', 'qq'] as const) {
+      this.root.append(this.buildProviderSection(source, data));
+    }
+    for (const section of this.buildSpecialSections(data.specials.filter(item => item.source === 'kugou'))) this.root.append(section);
+
     // 左中：各平台收藏；右侧：最近播放（窄栏，内部滚动）。下面每日推荐、热门歌单。
 
     const recommendPlaylists = this.buildPlaylistSection(data.recommendPlaylists, '每日推荐歌单', true);
@@ -146,6 +202,10 @@ export class HomeView {
 
     this.syncDailyDeck(playerState().track, false);
     this.syncLikedDeck(playerState().track, false);
+    // 数据落定 = 每块内容各自出发：卡片逐张翻进来、最近播放逐行落下、歌单逐个封面抬起。
+    // 页面此刻没露着就不播（动画会播在隐形层上）；切回来时 reveal() 会补一遍。
+    if (options.animate === false) return;
+    if (this.entrance.isVisible()) this.entrance.play();
   }
 
   /** 只刷新今日推荐卡（切换混合平台时用，避免整页重建）。 */
@@ -159,6 +219,18 @@ export class HomeView {
     if (current) current.replaceWith(next);
     else this.root.prepend(next);
     this.syncDailyDeck(playerState().track, false);
+    // 只给换上去的这一块单独出发：切平台不该把整页其它内容再翻一遍。
+    this.entrance.playOn(Array.from(next.querySelectorAll<HTMLElement>('.daily-card')));
+  }
+
+  /** 这一层刚亮出来（app.ts 切舞台时调）：收掉可能在跑的出场，再重发一遍入场。 */
+  reveal(): void {
+    this.entrance.reveal();
+  }
+
+  /** 全页出场：每块沿自己入场那款的反向轨迹退回去；收完或被打断都会 resolve。 */
+  playLeave(): Promise<void> {
+    return this.entrance.leave();
   }
 
   /* ------------------------------------------------------------------ */
@@ -186,7 +258,6 @@ export class HomeView {
               this.playTopTrack();
             });
             layer.append(play);
-            layer.addEventListener('click', () => this.playTopTrack());
           }
           deck.append(layer);
         });
@@ -234,6 +305,9 @@ export class HomeView {
       }
     }
 
+    // 封面区点击 = 进入整页；只有右侧「播放全部」才是直接播放。
+    deck.addEventListener('click', () => this.callbacks.onDaily());
+    deck.classList.add('is-openable');
     const card = h(
       'div',
       { class: `daily-card${covers.length > 0 ? '' : ' is-empty'}` },
@@ -278,7 +352,6 @@ export class HomeView {
               this.playRadar();
             });
             layer.append(play);
-            layer.addEventListener('click', () => this.playRadar());
           }
           deck.append(layer);
         });
@@ -302,6 +375,11 @@ export class HomeView {
       actions.append(playAll, more);
     }
 
+    if (data.radar.length > 0) {
+      // 封面区点击 = 进入雷达整页；播放/查看全部各管各的。
+      deck.addEventListener('click', () => this.callbacks.onRadar());
+      deck.classList.add('is-openable');
+    }
     return h(
       'div',
       { class: `daily-card radar-card${covers.length > 0 ? '' : ' is-empty'}` },
@@ -588,7 +666,319 @@ export class HomeView {
     return h('section', { class: ui.section('home-liked') }, card);
   }
 
-  private buildPlaylistSection(items: LibraryPlaylist[], title: string, withMore: boolean): HTMLElement | null {
+  /* ------------------------------------------------------------------ */
+  /* 推荐行（网易云：私人漫游 / 相似歌曲；QQ：猜你喜欢 / 百万收藏 / 新歌） */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * 首页推荐行换 tab：和切页面走同一套逐块运动，不是整块淡入淡出。
+   * 旧面板里每块沿自己入场那款反向退场（反向错帧，最后进来的先走），收完再摘；
+   * 新面板每块随机挑款、各自延迟散开落定 —— 就是 `HomeView.entrance` 在整页上做的事，
+   * 只是把范围缩到这一行，所以观感和「离开首页 / 回到首页」一致。
+   */
+  private swapProviderBody(body: HTMLElement, next: HTMLElement): void {
+    if (prefersReducedMotion()) {
+      body.replaceChildren(next);
+      return;
+    }
+    // 先让新面板入位再开演：逐块入场要在文档里才看得见（CSS 动画未渲染时不推进）。
+    for (const el of Array.from(body.children) as HTMLElement[]) {
+      if (el === next) continue;
+      el.classList.add('is-provider-leaving');
+      const motion = this.panelMotion(el);
+      // 打断规则：同一实例再调 leave() 会先把上一段收干净，不叠加、不排队。
+      void motion.leave().then(() => {
+        motion.dispose();
+        this.panelMotions.delete(el);
+        el.remove();
+      });
+      // 兜底：掉帧 / 后台标签页里收尾定时器不一定准时，到点直接摘，
+      // 免得退场块叠在内容上、越切越多。
+      window.setTimeout(() => el.remove(), MOTION.base + 420);
+    }
+    body.append(next);
+    const motion = this.panelMotion(next);
+    // 空壳（「暂无推荐内容」/「加载失败」）不演，和整页那条「加载中不演」的规矩一致。
+    if (motion.hasTargets()) motion.play();
+  }
+
+  /** 面板自己的逐块运动器（复用，不每次新建：打断要落在同一实例上）。 */
+  private panelMotion(panel: HTMLElement): BlockEntrance {
+    let motion = this.panelMotions.get(panel);
+    if (!motion) {
+      motion = new BlockEntrance(panel, { items: PROVIDER_ITEMS });
+      this.panelMotions.set(panel, motion);
+    }
+    return motion;
+  }
+
+  private buildProviderSection(source: 'netease' | 'qq', data: HomeData): HTMLElement {
+    const netease = source === 'netease';
+    const labels = netease ? ['为你推荐', '官方歌单', '精品歌单', '风格分类'] : ['热门歌单', '新歌速递', '榜单推荐', '歌手精选'];
+    const title = netease ? '网易云推荐' : 'QQ 音乐推荐';
+    const head = h('div', { class: ui.sectionHead() }, h('h2', { class: ui.sectionTitle(), text: title }));
+    // 复用全站统一的分段控件 .seg：白色滑块由 app.ts 的 enhanceSegs 注入并负责滑动，
+    // 这里只加 .home-provider-tabs 做首页这一行的排布微调。
+    const tabs = h('div', { class: 'seg seg-sm home-provider-tabs' });
+    head.append(tabs);
+    if (!netease) {
+      const more = h('button', { class: ui.sectionMore(), text: '查看更多 ›' });
+      more.onclick = () => this.callbacks.onRecommend();
+      head.append(more);
+    }
+    const body = h('div', { class: 'home-provider-body' });
+    const section = h('section', { class: ui.section('home-provider') }, head, body);
+    const specials = data.specials.filter(item => item.source === source);
+    const tracks = specials.flatMap(item => item.tracks);
+    let version = 0;
+    const buttons = labels.map((text, index) => {
+      const button = h('button', { class: 'seg-btn home-provider-tab', text });
+      button.onclick = () => void select(index);
+      tabs.append(button);
+      return button;
+    });
+    const select = async (index: number): Promise<void> => {
+      const current = ++version;
+      this.selectedTabs[source] = index;
+      buttons.forEach((button, n) => {
+        button.classList.toggle('is-on', n === index);
+        button.setAttribute('aria-pressed', String(n === index));
+      });
+      // 内容先在离屏的 panel 里建好，最后再一次性交叉换上去：
+      // 换的时候如果先塞空容器，区块高度会瞬间塌一下，下面的推荐行跟着跳。
+      const panel = h('div', { class: 'home-provider-panel' });
+      // `animate` 只给「异步补进来的那一批」用：面板已经上场之后再换内容，
+      // 新块要自己再开一次入场（否则它们会静止地凭空出现，和整页刷新时不重播的规矩不同）。
+      const shelf = (items: LibraryPlaylist[], open?: (item: LibraryPlaylist) => void, animate = false): void => {
+        const result = this.buildPlaylistSection(items, '', false, open);
+        const filled = result?.lastElementChild ?? h('p', { class: 'ui-empty', text: '暂无推荐内容' });
+        panel.replaceChildren(filled);
+        if (animate) this.panelMotion(panel).playOn(Array.from(filled.querySelectorAll<HTMLElement>(PROVIDER_ITEMS)));
+      };
+      try {
+        if (netease && index === 0) {
+          const row = h('div', { class: 'home-collections' });
+          for (const item of specials) {
+            const card = this.buildSpecialCard(item);
+            if (card) row.append(card);
+          }
+          if (row.childElementCount) panel.append(row);
+          else shelf(data.neteasePlaylists);
+        } else if (!netease && index === 0) {
+          const items = data.playlists.filter(item => item.source === source);
+          const initial = items.length ? items : data.recommendPlaylists.filter(item => item.source === source);
+          shelf(initial);
+          if (initial.length < 12) {
+            try {
+              const page = await fetchPlaylists(source, '全部', 'hot', 0, 24);
+              if (current !== version) return;
+              const merged = new Map(initial.map(item => [item.id, item]));
+              for (const item of page.playlists) merged.set(item.id, { ...item, source });
+              shelf([...merged.values()], undefined, true);
+            } catch { /* Keep the already loaded shelf available offline. */ }
+          }
+        } else if (netease && index === 3) {
+          const cats = await fetchCats(source);
+          if (current !== version) return;
+          const results = h('div');
+          // 原生 <select> 的下拉列表是系统绘制的：圆角、配色、动效一概改不了，
+          // 和这套界面摆在一起像一块外挂控件。这里换成自定义下拉——触发器沿用 tab 的胶囊形，
+          // 列表走面板令牌，出入场与全站一致（淡入下移 / 反向收回，过渡本身就能打断）。
+          const picker = h('div', { class: 'home-cat-picker' });
+          const currentName = h('span', { class: 'home-cat-current', text: cats[0]?.name ?? '全部' });
+          const trigger = h(
+            'button',
+            { class: 'home-cat-trigger', type: 'button', 'aria-haspopup': 'listbox', 'aria-expanded': 'false' },
+            currentName,
+            icon('chevronDown', 13),
+          );
+          const menu = h('div', { class: 'home-cat-menu', role: 'listbox', 'aria-label': '歌单风格' });
+          let open = false;
+          let activeId = cats[0]?.id ?? '全部';
+          const setOpen = (next: boolean): void => {
+            if (open === next) return;
+            open = next;
+            picker.classList.toggle('is-open', next);
+            trigger.setAttribute('aria-expanded', String(next));
+            if (next) menu.querySelector<HTMLElement>('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
+          };
+          const options: HTMLElement[] = [];
+          const load = async (): Promise<void> => {
+            const cat = activeId;
+            try {
+              const page = await fetchPlaylists(source, cat);
+              if (activeId !== cat) return;
+              // 面板已经上场了，这批结果是后到的：让它们自己再开一次逐块入场。
+              const tiles = this.buildPlaylistSection(page.playlists.map(item => ({ ...item, source })), '', false);
+              const filled = tiles?.lastElementChild ?? h('p', { text: '暂无歌单' });
+              results.replaceChildren(filled);
+              if (panel.isConnected) {
+                this.panelMotion(panel).playOn(Array.from(filled.querySelectorAll<HTMLElement>(PROVIDER_ITEMS)));
+              }
+            } catch { if (activeId === cat) results.textContent = '歌单暂时无法加载'; }
+          };
+          const choose = (id: string, name: string): void => {
+            activeId = id;
+            currentName.textContent = name;
+            for (const option of options) option.setAttribute('aria-selected', String(option.dataset.id === id));
+            setOpen(false);
+            void load();
+          };
+          for (const cat of cats) {
+            const option = h('button', {
+              class: 'home-cat-option',
+              type: 'button',
+              role: 'option',
+              'aria-selected': String(cat.id === activeId),
+              text: cat.name,
+            });
+            option.dataset.id = cat.id;
+            option.onclick = () => choose(cat.id, cat.name);
+            options.push(option);
+            menu.append(option);
+          }
+          trigger.onclick = (event) => {
+            event.stopPropagation();
+            setOpen(!open);
+          };
+          // 面板会随 tab 切换被整段替换掉：监听在 document 上，所以每次触发都先看看自己还在不在，
+          // 不在就顺手摘掉，别给已经卸掉的面板留钩子。
+          const onOutside = (event: PointerEvent): void => {
+            if (!picker.isConnected) {
+              dropListeners();
+              return;
+            }
+            if (!open || picker.contains(event.target as Node)) return;
+            setOpen(false);
+          };
+          const onKey = (event: KeyboardEvent): void => {
+            if (!picker.isConnected) {
+              dropListeners();
+              return;
+            }
+            if (!open || event.key !== 'Escape') return;
+            event.stopPropagation();
+            setOpen(false);
+            trigger.focus();
+          };
+          const dropListeners = (): void => {
+            document.removeEventListener('pointerdown', onOutside, true);
+            document.removeEventListener('keydown', onKey, true);
+          };
+          document.addEventListener('pointerdown', onOutside, true);
+          document.addEventListener('keydown', onKey, true);
+          picker.append(trigger, menu);
+          panel.append(picker, results);
+          // 不 await：picker 先上场，歌单结果到了自己填进去（和切页后异步补内容一致）。
+          void load();
+        } else if (netease && index === 2) {
+          shelf([...data.neteasePlaylists].sort((a, b) => b.count - a.count));
+        } else if (netease || index === 2) {
+          const groups = await fetchCharts(source);
+          if (current !== version) return;
+          const charts = groups.flatMap(group => group.categories.flatMap(cat => cat.charts));
+          shelf(charts.map(chart => ({ ...chart, source })), item => this.callbacks.onChart(source, item.id));
+        } else if (index === 1) {
+          const item = specials.find(entry => entry.kind === 'newsong');
+          const card = item && this.buildSpecialCard(item);
+          if (card) panel.append(h('div', { class: 'home-collections' }, card));
+          else panel.textContent = '暂无新歌推荐';
+        } else {
+          const artists = new Map<string, LibraryPlaylist>();
+          for (const track of [...tracks, ...data.recent.filter(t => t.source === source)]) {
+            if (track.artist && !artists.has(track.artist)) artists.set(track.artist, {
+              source, id: track.artist, title: track.artist, cover: track.cover, count: 0,
+            });
+          }
+          shelf([...artists.values()], item => this.callbacks.onArtistSearch(item.title));
+        }
+      } catch { panel.textContent = '推荐暂时无法加载，点击分类可重试'; }
+      if (current !== version) return;
+      this.swapProviderBody(body, panel);
+    };
+    void select(this.selectedTabs[source]);
+    return section;
+  }
+
+  private buildSpecialSections(items: HomeSpecial[]): HTMLElement[] {
+    const sections: HTMLElement[] = [];
+    const order: OnlineSource[] = ['netease', 'qq', 'kugou'];
+    for (const source of order) {
+      const group = items.filter((item) => item.source === source);
+      const cards = group
+        .map((item) => this.buildSpecialCard(item))
+        .filter((item): item is HTMLElement => item !== null);
+      if (cards.length === 0) continue;
+      const row = h('div', { class: 'home-collections' });
+      row.append(...cards);
+      const title = source === 'netease' ? '网易云推荐' : source === 'qq' ? 'QQ 音乐推荐' : '酷狗推荐';
+      sections.push(
+        h(
+          'section',
+          { class: ui.section('home-special') },
+          h('div', { class: ui.sectionHead() }, h('h2', { class: ui.sectionTitle(), text: title })),
+          row,
+        ),
+      );
+    }
+    return sections;
+  }
+
+  private buildSpecialCard(item: HomeSpecial): HTMLElement | null {
+    const covers = item.tracks.slice(0, 5);
+    if (covers.length === 0) return null;
+    const deck = h('div', { class: 'daily-deck' });
+    covers
+      .map((track, index) => ({ track, index }))
+      .reverse()
+      .forEach(({ track, index }) => {
+        const layer = h('div', { class: `daily-cover daily-cover-${index}` });
+        layer.append(h('img', { src: track.cover || onlineArtwork(track, 300), loading: 'lazy', alt: '' }));
+        if (index === 0) {
+          const play = h(
+            'button',
+            { class: 'daily-play', type: 'button', title: `播放${item.label}` },
+            icon('play', 18),
+          );
+          play.addEventListener('click', (event) => {
+            event.stopPropagation();
+            this.callbacks.onPlay(item.tracks, 0, 'special', item.kind);
+          });
+          layer.append(play);
+        }
+        layer.addEventListener('click', () => this.callbacks.onSpecial(item.kind));
+        deck.append(layer);
+      });
+
+    const actions = h('div', { class: 'daily-actions' });
+    const playAll = h(
+      'button',
+      { class: ui.btn({ variant: 'primary' }) },
+      icon('play', 16),
+      h('span', { text: '播放全部' }),
+    );
+    playAll.addEventListener('click', () => this.callbacks.onPlay(item.tracks, 0, 'special', item.kind));
+    const more = h('button', { class: ui.btn({ variant: 'ghost' }) }, h('span', { text: '查看全部' }));
+    more.addEventListener('click', () => this.callbacks.onSpecial(item.kind));
+    actions.append(playAll, more);
+
+    const card = h(
+      'div',
+      { class: 'daily-card' },
+      deck,
+      h(
+        'div',
+        { class: 'daily-body' },
+        h('div', { class: 'daily-kicker' }, icon('sparkle', 13), h('span', { text: item.kicker })),
+        h('h2', { class: 'daily-title', text: item.label }),
+        h('div', { class: 'daily-meta', text: item.meta }),
+        actions,
+      ),
+    );
+    return h('section', { class: ui.section('home-liked') }, card);
+  }
+
+  private buildPlaylistSection(items: LibraryPlaylist[], title: string, withMore: boolean, open = this.callbacks.onPlaylist): HTMLElement | null {
     if (items.length === 0) return null;
     const section = h('section', { class: ui.section() });
     const head = h(
@@ -616,7 +1006,7 @@ export class HomeView {
         h('span', { class: ui.tileName(), text: item.title }),
         h('span', { class: ui.tileMeta(), text: `${SOURCE_LABEL[item.source] ?? ''} · ${formatPlays(item.count)}` }),
       );
-      tile.addEventListener('click', () => this.callbacks.onPlaylist(item));
+      tile.addEventListener('click', () => open(item));
       scroller.append(tile);
     });
     section.append(head, scroller);

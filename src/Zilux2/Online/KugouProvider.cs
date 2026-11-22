@@ -144,7 +144,10 @@ internal sealed class KugouProvider : IOnlineMusicProvider
                 lrc = await TryFetchLrcAsync(lyricId, accessKey, cancellationToken).ConfigureAwait(false);
             }
 
-            if (wordLyric.Length > 0 && (lrc.Length > 0 || wordLyric.Length > 0))
+            // 两者都拿到才收工：原来条件是 `wordLyric > 0 && (lrc > 0 || wordLyric > 0)`，
+            // 化简后等于「有 KRC 就 break」—— 逐字轨有、纯文本没有的候选会挡住后面能补
+            // LRC 的候选，前端就只剩一份带 `(0,200)` 时间码的伪歌词。
+            if (wordLyric.Length > 0 && lrc.Length > 0)
             {
                 break;
             }
@@ -155,11 +158,8 @@ internal sealed class KugouProvider : IOnlineMusicProvider
             return new LyricData();
         }
 
-        if (lrc.Length == 0)
-        {
-            lrc = wordLyric;
-        }
-
+        // 不再用逐字文本冒充 Lrc：KRC 的字符行形如 `[start,dur](start,dur)字`，
+        // 塞进 lrc 会让正文混入 `(0,200)` 时间码。前端优先解析 `yrc`，Lrc 留空即可。
         OnlineHttp.Info($"GET kugou/lyric id={hash} ok lrcChars={lrc.Length} krcChars={wordLyric.Length}");
         return new LyricData
         {
@@ -288,11 +288,9 @@ internal sealed class KugouProvider : IOnlineMusicProvider
                 words.Append('(').Append(lineStart + offset).Append(',').Append(duration).Append(')').Append(word);
             }
 
-            if (words.Length == 0)
-            {
-                continue;
-            }
-
+            // 空词行（纯音乐间奏 / KRC 把一句拆成空行）也要保留：整行丢掉等于把这一段的时长
+            // 从时间轴上抹掉，前后句的间隔被拉长，自动滚动与逐字区间都会错位。
+            // 正文为空即可，前端渲染时会跳过空文本行，但时间轴仍然完整。
             builder.Append('[').Append(lineStart).Append(',').Append(lineDuration).Append(']')
                 .Append(words).Append('\n');
         }

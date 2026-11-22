@@ -62,6 +62,8 @@ internal sealed class WallpaperHost : IDisposable
     private readonly DispatcherTimer _sequenceTimer;
     private WallpaperSequence? _inAppSequence;
     private int _sequenceIndex;
+    /// <summary>序列投在哪一层（桌面 / 软件内）。Tick 必须按这个走，否则桌面序列会去推软件内。</summary>
+    private CanvasKind? _sequenceKind;
     private bool _sequenceAdvancing;
     private readonly RuleEngine _rules;
     private readonly object _gate = new();
@@ -81,6 +83,21 @@ internal sealed class WallpaperHost : IDisposable
     /// <summary>WPF 渲染档位：0=软件渲染，1=部分硬件，2=全部硬件。</summary>
     public static int RenderTier => System.Windows.Media.RenderCapability.Tier >> 16;
     private bool _inAppPaused;
+    /// <summary>前台有全屏应用（游戏/全屏视频）时挂起：画面暂停但不销毁，退出后原地续播。</summary>
+    private bool _fullscreenHold;
+    private DispatcherTimer? _fullscreenTimer;
+
+    // ── 「和音乐抢声音时」那三项设置（淡出/淡入/遮挡静音）原来只存不用 ──────────────
+    // 现在做法：host 维护一个 0~1 的增益包络 _audioGain，所有 payload 的音量都乘它。
+    // 优点是不用碰页面：换个增益就重推一次 payload，页面照常把 volume 设到 <video>。
+    private bool _musicPlaying;
+    private bool _occluded;
+    private double _audioGain = 1;
+    private DispatcherTimer? _audioGainTimer;
+    private DateTime _audioGainStarted;
+    private double _audioGainFrom = 1;
+    private double _audioGainTo = 1;
+    private TimeSpan _audioGainSpan;
     /// <summary>最近一次 onset 的时间戳（Environment.TickCount64），供「卡拍切」判定。</summary>
     private long _lastBeatTicks;
     private long _lastBeatSeen;
@@ -88,6 +105,8 @@ internal sealed class WallpaperHost : IDisposable
     private Action? _beatQueued;
     private long _beatQueuedAt;
     private DispatcherTimer? _beatTimer;
+    /// <summary>`App.Audio.Frame` 是否已订阅（Dispose 时要按同一条件退订）。</summary>
+    private bool _audioHooked;
     private string? _lastError;
     private CancellationTokenSource? _scanCancellation;
     private bool _disposed;
@@ -121,6 +140,19 @@ internal sealed class WallpaperHost : IDisposable
         _rules = new RuleEngine(_store);
         _rules.Matched += OnRuleMatched;
         ApplyRotationTimer();
+
+        // 「有全屏应用时暂停」：Windows 没有现成的通知，1.2 秒轮询一次前台窗口就够
+        // （GetForegroundWindow 是常数级开销，实测占不满 0.1% 单核）。
+        _fullscreenTimer = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = TimeSpan.FromMilliseconds(1200),
+        };
+        _fullscreenTimer.Tick += (_, _) =>
+        {
+            CheckFullscreenForeground();
+            CheckAudioOcclusion();
+        };
+        _fullscreenTimer.Start();
 
         _settings.WallpaperChanged += OnSettingsChanged;
     }
@@ -165,6 +197,7 @@ internal sealed class WallpaperHost : IDisposable
         if (App.Audio is { } audio)
         {
             audio.Frame += OnAudioFrameForBeat;
+            _audioHooked = true;
         }
 
         _beatTimer ??= new DispatcherTimer(DispatcherPriority.Input) { Interval = TimeSpan.FromMilliseconds(12) };
@@ -279,6 +312,8 @@ internal sealed class WallpaperHost : IDisposable
         {
             Kind = CanvasKind.InApp,
             AssetId = asset.Id,
+            // 换素材：画面参数跟着素材走（素材自己记住的一套），别把上一张的位移/缩放留在这块画布上。
+            FilterJson = FilterJsonForAssetSwitch(CanvasKind.InApp, null, asset.Id),
             Paused = false,
         });
 
@@ -299,15 +334,18 @@ internal sealed class WallpaperHost : IDisposable
         if (sequence is null || sequence.Items.Count == 0) return false;
 
         _inAppSequence = sequence;
+        _sequenceKind = kind;
         _sequenceIndex = 0;
         _rotationTimer.Stop();
-        _rules.Dispose();
-        _store.SaveCanvas(new CanvasState
+        // 只是暂停规则轮询，不能 Dispose：Dispose 会连带退订 Tick，而全仓没有第二次 Start()，
+        // 于是「用过一次序列 → 所有自动换壁纸规则静默失效」。（审计 P1）
+        _rules.Stop();
+        SaveCanvasPreserving(kind, null, canvas =>
         {
-            Kind = kind,
-            AssetId = sequence.Items[0].AssetId,
-            SequenceId = sequence.Id,
-            Paused = false,
+            canvas.AssetId = sequence.Items[0].AssetId;
+            canvas.SequenceId = sequence.Id;
+            canvas.FilterJson = FilterJsonForAssetSwitch(kind, null, sequence.Items[0].AssetId);
+            canvas.Paused = false;
         });
         ShowSequenceItem(kind);
         RaiseStateChanged();
@@ -325,14 +363,49 @@ internal sealed class WallpaperHost : IDisposable
 
         _sequenceTimer.Stop();
         _inAppSequence = null;
+        _sequenceKind = null;
         _sequenceIndex = 0;
-        _store.SaveCanvas(new CanvasState { Kind = kind, AssetId = _inAppAsset?.Id, Paused = _inAppPaused });
+        // 以前不分 kind，桌面行也被写成「软件内那张素材」→ 退出桌面序列会把桌面壁纸换掉。
+        // 同时用增量保存，避免把 filter_json（每屏 fps 就存在这里）写成 NULL。
+        SaveCanvasPreserving(kind, null, canvas =>
+        {
+            canvas.AssetId = kind == CanvasKind.Desktop ? _desktopAsset?.Id : _inAppAsset?.Id;
+            canvas.SequenceId = null;
+            canvas.Paused = kind == CanvasKind.Desktop ? _desktopPaused : _inAppPaused;
+        });
         ApplyRotationTimer();
+        _rules.Start();
         RaiseStateChanged();
     }
 
     /// <summary>序列里当前这一条的索引（0 基），没在跑序列时返回 -1。</summary>
     public int SequenceIndex => _inAppSequence is null ? -1 : _sequenceIndex;
+
+    /// <summary>
+    /// 增量保存画布状态：先读现有行，只改调用方点到的字段。
+    /// 直接用 `new CanvasState{...}` 调 `SaveCanvas` 是整行 UPSERT，没赋值的字段会被写成 NULL ——
+    /// 每屏 fps 就存在 `filter_json` 里，所以「暂停一次」会把该屏帧率、裁剪、转场一起抹掉。
+    /// </summary>
+    private void SaveCanvasPreserving(CanvasKind kind, string? monitorId, Action<CanvasState> mutate)
+    {
+        var existing = _store.GetCanvas(kind, monitorId);
+        var next = new CanvasState
+        {
+            Id = existing.Id,
+            Kind = kind,
+            MonitorId = monitorId,
+            AssetId = existing.AssetId,
+            SequenceId = existing.SequenceId,
+            FitMode = existing.FitMode,
+            FilterJson = existing.FilterJson,
+            TransitionId = existing.TransitionId,
+            Paused = existing.Paused,
+        };
+        mutate(next);
+        next.Kind = kind;
+        next.MonitorId = monitorId;
+        _store.SaveCanvas(next);
+    }
 
     private void ShowSequenceItem(CanvasKind kind)
     {
@@ -446,7 +519,8 @@ internal sealed class WallpaperHost : IDisposable
     {
         if (_inAppSequence is null || _sequenceAdvancing) return;
         _sequenceIndex++;
-        ShowSequenceItem(CanvasKind.InApp);
+        // 之前硬编码 InApp：桌面序列只会播第一张，却把软件内壁纸一起带着轮播。
+        ShowSequenceItem(_sequenceKind ?? CanvasKind.InApp);
         RaiseStateChanged();
     }
 
@@ -546,14 +620,24 @@ internal sealed class WallpaperHost : IDisposable
         {
             _desktopPaused = paused;
             if (paused) _desktopPlayer.Pause(); else _desktopPlayer.Resume();
-            _store.SaveCanvas(new CanvasState { Kind = CanvasKind.Desktop, AssetId = _desktopAsset?.Id, Paused = paused });
+            SaveCanvasPreserving(CanvasKind.Desktop, null, canvas =>
+            {
+                canvas.AssetId = _desktopAsset?.Id;
+                canvas.Paused = paused;
+            });
             RaiseStateChanged();
+            // 桌面页是独立 WebView，不跟着 StateChanged 走：不显式推一次，点暂停画面不会停。
+            PushDesktopState();
             return;
         }
 
         _inAppPaused = paused;
         _player.Pause();
-        _store.SaveCanvas(new CanvasState { Kind = CanvasKind.InApp, AssetId = _inAppAsset?.Id, Paused = paused });
+        SaveCanvasPreserving(CanvasKind.InApp, null, canvas =>
+        {
+            canvas.AssetId = _inAppAsset?.Id;
+            canvas.Paused = paused;
+        });
         RaiseStateChanged();
     }
 
@@ -582,8 +666,10 @@ internal sealed class WallpaperHost : IDisposable
             _inAppAsset?.Id,
             _inAppAsset?.Title,
             _inAppAsset?.CoverPath,
-            _inAppPaused,
-            _inAppAsset is not null && !_inAppPaused,
+            // 全屏挂起算「暂停但不改用户暂停状态」：Running 要跟着掉，页面顶栏才不会
+            // 显示成一个“在播”但其实没动的状态。
+            _inAppPaused || _fullscreenHold,
+            _inAppAsset is not null && !_inAppPaused && !_fullscreenHold,
             _lastError);
 
         var desktop = new CanvasSnapshot(
@@ -591,8 +677,10 @@ internal sealed class WallpaperHost : IDisposable
             _desktopAsset?.Id,
             _desktopAsset?.Title,
             _desktopAsset?.CoverPath,
-            _desktopPaused,
-            _runtime is not null ? _desktopAsset is not null && !_desktopPaused : _desktopPlayer.IsRunning,
+            _desktopPaused || _fullscreenHold,
+            _runtime is not null
+                ? _desktopAsset is not null && !_desktopPaused && !_fullscreenHold
+                : _desktopPlayer.IsRunning && !_fullscreenHold,
             _desktopError);
         var (_, total) = _store.List(new AssetQuery { Limit = 1 });
 
@@ -764,13 +852,28 @@ internal sealed class WallpaperHost : IDisposable
             _ => options.DimBase,
         };
 
-        if (!options.Enabled)
+        // 软件内层也分开控：「软件内背景层」关掉时 WPF 兜底同样要收。
+        if (!(options.Enabled && options.InAppEnabled))
         {
             SetVisible(false);
         }
         else if (_inAppAsset is not null)
         {
             SetVisible(true);
+        }
+
+        // 桌面层要跟着两个开关走：总开关关了，或者「桌面层（桌面图标下面）」关了，
+        // 都要把表面收掉（不能只是把画面藏起来，否则 WebView2 还在后台解码三路 4K）。
+        // 反过来，两个开关都开着而当前没挂，就补挂一次。
+        var wantDesktop = options.Enabled && options.DesktopEnabled;
+        var hasDesktop = _runtime is not null || _desktop is not null;
+        if (!wantDesktop && hasDesktop)
+        {
+            DetachDesktop();
+        }
+        else if (wantDesktop && !hasDesktop && !_webSurfacesFailed)
+        {
+            AttachDesktop();
         }
 
         ApplyRotationTimer();
@@ -803,13 +906,33 @@ internal sealed class WallpaperHost : IDisposable
                 var source = WebSurfaceSource?.Invoke();
                 if (source?.Environment is { } environment && !string.IsNullOrWhiteSpace(source.Value.NavigationUrl))
                 {
+                    // 启动早期环境还没就绪时会先落到下面的 WPF 位图兜底；等环境好了
+                    // 再切回 WebView2 时，那一层要先撤掉，否则两层叠在一起。
+                    if (_desktop is not null)
+                    {
+                        try
+                        {
+                            _desktop.Detach();
+                        }
+                        catch (Exception exception)
+                        {
+                            HostLog.Warn($"[wallpaper] fallback desktop detach failed: {exception.Message}");
+                        }
+
+                        _desktop = null;
+                    }
+
                     var runtime = new WallpaperRuntime(_ui, WebSurfaceSource, BuildMonitorPayload, OnlineSource);
                     runtime.SurfacesStarted += ready => OnDesktopSurfacesStarted(runtime, ready);
                     _runtime = runtime;
                     _desktopError = null;
                     RestoreDesktopCanvas();
                     runtime.Apply(BuildDesktopTargets());
-                    _settings.UpdateWallpaper(options => options.DesktopAttached = true);
+                    _settings.UpdateWallpaper(options =>
+                    {
+                        options.DesktopEnabled = true;
+                        options.DesktopAttached = true;
+                    });
                     RaiseStateChanged();
                     return true;
                 }
@@ -819,7 +942,11 @@ internal sealed class WallpaperHost : IDisposable
                 _desktopError = null;
                 RestoreDesktopCanvas();
                 RefreshDesktopTargets();
-                _settings.UpdateWallpaper(options => options.DesktopAttached = true);
+                _settings.UpdateWallpaper(options =>
+                    {
+                        options.DesktopEnabled = true;
+                        options.DesktopAttached = true;
+                    });
                 RaiseStateChanged();
                 return true;
             }
@@ -841,7 +968,11 @@ internal sealed class WallpaperHost : IDisposable
             asset ??= AutoPickDesktop();
             if (asset is not null) ApplyToDesktop(asset);
 
-            _settings.UpdateWallpaper(options => options.DesktopAttached = true);
+            _settings.UpdateWallpaper(options =>
+                    {
+                        options.DesktopEnabled = true;
+                        options.DesktopAttached = true;
+                    });
             ApplyDesktopOverlay();
             RaiseStateChanged();
             return true;
@@ -849,9 +980,16 @@ internal sealed class WallpaperHost : IDisposable
         catch (Exception exception)
         {
             _desktopError = exception.Message;
+            HostLog.Warn($"[wallpaper] attach desktop failed: {exception.GetType().Name}: {exception.Message}");
             RaiseStateChanged();
             return false;
         }
+    }
+
+    /// <summary>让某一块屏的实际画面扫一道光（画布设置里点选屏幕时的「就是这块」提示）。</summary>
+    public void SweepMonitor(string monitorKey)
+    {
+        _runtime?.Sweep(monitorKey);
     }
 
     /// <summary>取消桌面接管。</summary>
@@ -876,7 +1014,14 @@ internal sealed class WallpaperHost : IDisposable
             // 资源管理器重启时句柄可能已经失效。
         }
 
-        _settings.UpdateWallpaper(options => options.DesktopAttached = false);
+        // 「释放」= 关掉桌面层，必须连 DesktopEnabled 一起落盘：只清 DesktopAttached
+        // 的话，这次设置保存本身就会触发 OnSettingsChanged，它算出的 wantDesktop 仍是
+        // true，于是立刻又 AttachDesktop —— 表现就是「点了释放，壁纸马上又回来了」。
+        _settings.UpdateWallpaper(options =>
+        {
+            options.DesktopEnabled = false;
+            options.DesktopAttached = false;
+        });
         RaiseStateChanged();
     }
 
@@ -916,7 +1061,13 @@ internal sealed class WallpaperHost : IDisposable
         _desktopAsset = asset;
         _desktopPaused = false;
         _desktopError = null;
-        _store.SaveCanvas(new CanvasState { Kind = CanvasKind.Desktop, AssetId = asset.Id });
+        _store.SaveCanvas(new CanvasState
+        {
+            Kind = CanvasKind.Desktop,
+            AssetId = asset.Id,
+            // 换素材：画面参数跟着素材走（每张壁纸记住自己的一套，下次用到自动带回来）。
+            FilterJson = FilterJsonForAssetSwitch(CanvasKind.Desktop, null, asset.Id),
+        });
 
         // 桌面层走 WebView2 时，画面由页面自己画，宿主只负责更新状态并推过去。
         if (_runtime is not null)
@@ -972,9 +1123,131 @@ internal sealed class WallpaperHost : IDisposable
         }
     }
 
-    /// <summary>把桌面层状态推给每块屏上的页面（各自一份，互不干扰）。</summary>
-    private void PushDesktopState()
+    /// <summary>
+    /// 前台全屏应用（游戏、全屏视频）进来就挂起壁纸，退出后自动续播。
+    ///
+    /// 为什么用「暂停」而不是销毁：暂停把解码停了（一路 4K 视频约占 30~40% 单核），
+    /// 但播放位置还在，退出全屏能接着原处播；销毁重建会从 0 重来，还会重新拉一次流。
+    /// </summary>
+    private void CheckFullscreenForeground()
     {
+        if (_disposed) return;
+
+        var options = _settings.WallpaperSnapshot;
+        var hold = options.Enabled
+            && options.PauseOnFullscreen
+            && FullscreenWatcher.IsFullscreenForeground();
+
+        if (hold == _fullscreenHold) return;
+        _fullscreenHold = hold;
+        HostLog.Info($"[wallpaper] fullscreen {(hold ? "hold" : "release")}");
+
+        // 桌面层各屏各自一份 payload，重推一次即可；软件内层与桌面歌词窗口
+        // 都靠 StateChanged 让主窗口重推（MainWindow 里两条推送都挂在它上面）。
+        PushDesktopState();
+        RaiseStateChanged();
+    }
+
+    /// <summary>页面报上来的音乐播放状态（WebViewHost 的 smtc 消息里带 playing）。</summary>
+    internal void NotifyMusicPlaying(bool playing)
+    {
+        if (_disposed || playing == _musicPlaying) return;
+        _musicPlaying = playing;
+        StartAudioEnvelope();
+    }
+
+    /// <summary>「被窗口盖住多少就静音」：前台窗口盖住它那块屏超过阈值就把壁纸音轨压掉。</summary>
+    private void CheckAudioOcclusion()
+    {
+        if (_disposed) return;
+
+        var options = _settings.WallpaperSnapshot;
+        var threshold = Math.Clamp(options.OccludeThreshold, 0.1, 1);
+        var covered = options.AudioEnabled
+            && FullscreenWatcher.ForegroundCoverage() >= threshold;
+        if (covered == _occluded) return;
+
+        _occluded = covered;
+        HostLog.Info($"[wallpaper] audio occlusion {(covered ? "mute" : "restore")}");
+        StartAudioEnvelope();
+    }
+
+    /// <summary>
+    /// 把增益推向下一个目标值：音乐在放 / 被窗口盖住 → 0，否则 → 1。
+    /// 时长直接取设置里的「音乐起播时壁纸淡出」「音乐停后壁纸淡入」，0 表示立即切。
+    /// </summary>
+    private void StartAudioEnvelope()
+    {
+        if (_disposed) return;
+        if (!_ui.CheckAccess())
+        {
+            _ui.BeginInvoke(DispatcherPriority.Render, new Action(StartAudioEnvelope));
+            return;
+        }
+
+        var options = _settings.WallpaperSnapshot;
+        var target = _musicPlaying || _occluded ? 0d : 1d;
+        if (Math.Abs(target - _audioGain) < 0.001)
+        {
+            _audioGainTimer?.Stop();
+            return;
+        }
+
+        var ms = target < _audioGain ? options.MusicDuckMs : options.MusicRestoreMs;
+        if (ms <= 0)
+        {
+            _audioGain = target;
+            _audioGainTimer?.Stop();
+            HostLog.Info($"[wallpaper] audio gain {target:0.##} (immediate)");
+            RaiseStateChanged();
+            return;
+        }
+
+        _audioGainFrom = _audioGain;
+        _audioGainTo = target;
+        _audioGainStarted = DateTime.UtcNow;
+        _audioGainSpan = TimeSpan.FromMilliseconds(ms);
+
+        _audioGainTimer ??= new DispatcherTimer(DispatcherPriority.Render)
+        {
+            Interval = TimeSpan.FromMilliseconds(33),
+        };
+        _audioGainTimer.Tick -= OnAudioGainTick;
+        _audioGainTimer.Tick += OnAudioGainTick;
+        _audioGainTimer.Start();
+        HostLog.Info($"[wallpaper] audio gain {_audioGainFrom:0.##}→{target:0.##} over {ms}ms");
+    }
+
+    private void OnAudioGainTick(object? sender, EventArgs e)
+    {
+        var elapsed = (DateTime.UtcNow - _audioGainStarted).TotalMilliseconds;
+        var span = Math.Max(1, _audioGainSpan.TotalMilliseconds);
+        var t = Math.Clamp(elapsed / span, 0, 1);
+        // smoothstep：两端各留缓入缓出，听感上不会有硬拐点
+        var eased = t * t * (3 - 2 * t);
+        var next = _audioGainFrom + (_audioGainTo - _audioGainFrom) * eased;
+
+        if (t >= 1)
+        {
+            // 收尾必须推：中途有「变化小于 0.005 就不推」的节流，
+            // 最后一跳如果不推，页面会永远停在 0.9x 的旧音量上（实测差 4%）。
+            _audioGainTimer?.Stop();
+            if (Math.Abs(_audioGainTo - _audioGain) > 0.0005)
+            {
+                _audioGain = _audioGainTo;
+                RaiseStateChanged();
+            }
+
+            return;
+        }
+
+        if (Math.Abs(next - _audioGain) < 0.005) return;
+        _audioGain = next;
+        RaiseStateChanged();
+    }
+
+    /// <summary>把桌面层状态推给每块屏上的页面（各自一份，互不干扰）。</summary>
+    private void PushDesktopState()    {
         if (_runtime is null) return;
         // WebView2 的 PostWebMessageAsJson 只能在 UI 线程调，后台线程一律转过去。
         if (!_ui.CheckAccess())
@@ -994,8 +1267,7 @@ internal sealed class WallpaperHost : IDisposable
     }
 
     /// <summary>桌面表面一轮启动结束（false = 一块都没挂上，退回 WPF 位图）。</summary>
-    private void OnDesktopSurfacesStarted(WallpaperRuntime runtime, bool anyReady)
-    {
+    private void OnDesktopSurfacesStarted(WallpaperRuntime runtime, bool anyReady)    {
         if (!_ui.CheckAccess())
         {
             _ui.BeginInvoke(new Action(() => OnDesktopSurfacesStarted(runtime, anyReady)));
@@ -1070,12 +1342,28 @@ internal sealed class WallpaperHost : IDisposable
         var asset = target.AssetId is { } assetId ? _store.FindById(assetId) : null;
         if (asset is null) return null;
         var canvas = _store.GetCanvas(CanvasKind.Desktop, target.Key);
-        return BuildPayload(
+        var payload = BuildPayload(
             asset,
-            _desktopPaused,
+            _desktopPaused || _fullscreenHold,
             _settings.WallpaperSnapshot.Enabled,
-            CanvasSettings.Read(canvas.FilterJson, asset.Transform),
-            target.Fps);
+            CanvasSettings.Read(
+                canvas.FilterJson,
+                CanvasSettings.Read(_store.GetAssetCanvasSettings(asset.Id), asset.Transform)),
+            target.Fps,
+            _fullscreenHold);
+
+        // 这块屏单独调过音量就用自己的，没调过跟全局。
+        // 两种都要再乘增益包络（音乐在放 / 被窗口盖住时它是 0）。
+        if (CanvasSettings.ReadVolume(canvas.FilterJson) is { } volume)
+        {
+            payload = payload with
+            {
+                AudioVolume = (int)Math.Round(volume * _audioGain),
+                AudioEnabled = payload.AudioEnabled && volume > 0 && _audioGain > 0.001,
+            };
+        }
+
+        return payload;
     }
 
     /// <summary>按最新屏/画布重建 targets 并推给运行时（原地换片优先）。</summary>
@@ -1124,7 +1412,8 @@ internal sealed class WallpaperHost : IDisposable
                 following,
                 _runtime?.Has(key) == true,
                 asset?.Title,
-                asset?.CoverPath));
+                asset?.CoverPath,
+                CanvasSettings.ReadVolume(canvas.FilterJson)));
         }
 
         return result;
@@ -1162,14 +1451,21 @@ internal sealed class WallpaperHost : IDisposable
         var current = _store.GetCanvas(CanvasKind.Desktop, monitorKey);
         var maxFps = MonitorCatalog.MaxRefresh(screen);
         var nextFps = MonitorCatalog.Clamp(fps ?? MonitorCatalog.ReadFps(current.FilterJson), maxFps);
+        var nextAsset = follow ? null : assetId ?? current.AssetId;
+        var ownPicture = CanvasSettings.OnlyPicture(current.FilterJson);
+        // 这块屏换了壁纸：画面参数换成新素材自己记住的那套（跟随全局时沿用全局素材的）。
+        // 没换但本屏从没单独调过（只剩 fps）：也补上素材记住的那套，别让「已经在这张上」的屏落回默认。
+        var picture = nextAsset == current.AssetId && ownPicture is not null
+            ? ownPicture
+            : FilterJsonForAssetSwitch(CanvasKind.Desktop, monitorKey, nextAsset);
         var next = new CanvasState
         {
             Kind = CanvasKind.Desktop,
             MonitorId = monitorKey,
-            AssetId = follow ? null : assetId ?? current.AssetId,
+            AssetId = nextAsset,
             SequenceId = null,
             FitMode = current.FitMode,
-            FilterJson = MonitorCatalog.WriteFps(current.FilterJson, nextFps),
+            FilterJson = MonitorCatalog.WriteFps(picture, nextFps),
             TransitionId = current.TransitionId,
             Paused = current.Paused,
         };
@@ -1199,7 +1495,8 @@ internal sealed class WallpaperHost : IDisposable
         bool Follow,
         bool Attached,
         string? Title,
-        string? CoverPath);
+        string? CoverPath,
+        int? Volume);
 
     /// <summary>一个画布的画面参数（/api/wallpaper/v2/canvas/{kind}/settings 读回来的）。</summary>
     internal sealed record CanvasSettingsSnapshot(
@@ -1230,7 +1527,9 @@ internal sealed class WallpaperHost : IDisposable
             var asset = _inAppAsset ?? (canvas.AssetId is { } id ? _store.FindById(id) : null);
             var inAppPicture = CanvasSettings.Read(
                 canvas.FilterJson,
-                asset?.Transform ?? new WallpaperTransform());
+                CanvasSettings.Read(
+                    asset?.Id is { } inAppAssetId ? _store.GetAssetCanvasSettings(inAppAssetId) : null,
+                    asset?.Transform ?? new WallpaperTransform()));
             return new CanvasSettingsSnapshot("inapp", null, false, asset?.Id, 0, 0, inAppPicture);
         }
 
@@ -1245,10 +1544,14 @@ internal sealed class WallpaperHost : IDisposable
         var target = effectiveId is { } assetId ? _store.FindById(assetId) : null;
         var maxFps = MonitorCatalog.MaxRefresh(screen);
         var baseTransform = target?.Transform ?? new WallpaperTransform();
+        // 这张素材自己记住的一套先垫在素材 Transform 上面，再叠全局 / 本屏的覆盖。
+        var assetPicture = CanvasSettings.Read(
+            effectiveId is { } pictureAssetId ? _store.GetAssetCanvasSettings(pictureAssetId) : null,
+            baseTransform);
         var picture = following
             // 跟随全局：全局面板调的那套先叠上，本屏自己再调的在最上面。
-            ? CanvasSettings.Read(row.FilterJson, CanvasSettings.Read(global.FilterJson, baseTransform))
-            : CanvasSettings.Read(row.FilterJson, baseTransform);
+            ? CanvasSettings.Read(row.FilterJson, CanvasSettings.Read(global.FilterJson, assetPicture))
+            : CanvasSettings.Read(row.FilterJson, assetPicture);
 
         return new CanvasSettingsSnapshot(
             "desktop",
@@ -1301,6 +1604,13 @@ internal sealed class WallpaperHost : IDisposable
         {
             filterJson = MonitorCatalog.WriteFps(filterJson, MonitorCatalog.Clamp(fps, maxFps));
         }
+        else if (kind == CanvasKind.Desktop)
+        {
+            // 这次没带 fps（改画面位置/大小这类），帧率必须原样留住 ——
+            // 早先有版本在这里把 fps 弄丢，结果「动一下缩放，刷新率掉回 30」。
+            var keepFps = MonitorCatalog.ReadFps(current.FilterJson, 0);
+            if (keepFps > 0) filterJson = MonitorCatalog.WriteFps(filterJson, keepFps);
+        }
 
         var next = new CanvasState
         {
@@ -1315,9 +1625,18 @@ internal sealed class WallpaperHost : IDisposable
         };
         _store.SaveCanvas(next);
 
+        // 这套参数同时记在「这张壁纸」名下：换到别的屏、下次再用它，自动带回来。
+        var owner = current.AssetId
+            ?? (kind == CanvasKind.Desktop ? _store.GetCanvas(CanvasKind.Desktop, null).AssetId : null);
+        if (owner is { } ownerId)
+        {
+            _store.SaveAssetCanvasSettings(ownerId, CanvasSettings.OnlyPicture(filterJson));
+        }
+
         HostLog.Info(
             $"[wallpaper] canvas settings saved kind={(kind == CanvasKind.Desktop ? "desktop" : "inapp")} " +
             $"monitor={(key is null ? "global" : MonitorCatalog.Short(key))} " +
+            $"asset={owner?.ToString() ?? "none"} " +
             $"keys={string.Join(',', patch.Select(pair => pair.Key).Where(name => !string.Equals(name, "monitor", StringComparison.OrdinalIgnoreCase)))}");
 
         if (kind == CanvasKind.Desktop) RefreshDesktopTargets();
@@ -1325,8 +1644,20 @@ internal sealed class WallpaperHost : IDisposable
         return true;
     }
 
-    private WallpaperAsset? AutoPickDesktop()
+    /// <summary>
+    /// 换素材要写的 filter_json：用这张素材自己记住的那套画面参数。
+    /// 桌面层额外把这台屏的 fps 带住——fps 是屏的属性，跟着素材走会串到别的屏。
+    /// </summary>
+    private string? FilterJsonForAssetSwitch(CanvasKind kind, string? monitorKey, long? assetId)
     {
+        var json = assetId is { } id ? _store.GetAssetCanvasSettings(id) : null;
+        if (kind != CanvasKind.Desktop) return json;
+
+        var fps = MonitorCatalog.ReadFps(_store.GetCanvas(CanvasKind.Desktop, monitorKey).FilterJson, 0);
+        return fps > 0 ? MonitorCatalog.WriteFps(json, fps) : json;
+    }
+
+    private WallpaperAsset? AutoPickDesktop()    {
         var options = _settings.WallpaperSnapshot;
         var ids = _store.ListRotatableIds(options.RotationFavoriteFirst);
         return ids.Count == 0 ? null : _store.FindById(ids[0]);
@@ -1458,7 +1789,16 @@ internal sealed class WallpaperHost : IDisposable
         if (asset is null) return null;
 
         var canvas = _store.GetCanvas(CanvasKind.InApp, null);
-        return BuildPayload(asset, _inAppPaused, _settings.WallpaperSnapshot.Enabled, CanvasSettings.Read(canvas.FilterJson, asset.Transform));
+        // 「软件内背景层」是独立开关：关掉后这一层要真的停（页面收到 visible=false 会销毁 <video>）。
+        var options = _settings.WallpaperSnapshot;
+        return BuildPayload(
+            asset,
+            _inAppPaused || _fullscreenHold,
+            options.Enabled && options.InAppEnabled,
+            CanvasSettings.Read(
+                canvas.FilterJson,
+                CanvasSettings.Read(_store.GetAssetCanvasSettings(asset.Id), asset.Transform)),
+            suspended: _fullscreenHold);
     }
 
     /// <summary>桌面层（Progman 下的第二个 WebView2）用的载荷：资产与暂停状态都是桌面画布的。</summary>
@@ -1477,7 +1817,7 @@ internal sealed class WallpaperHost : IDisposable
             return null;
         }
 
-        return BuildPayload(asset, _desktopPaused, _settings.WallpaperSnapshot.Enabled);
+        return BuildPayload(asset, _desktopPaused, _settings.WallpaperSnapshot.Enabled, suspended: _fullscreenHold);
     }
 
     private WallpaperLayerPayload BuildPayload(
@@ -1485,12 +1825,18 @@ internal sealed class WallpaperHost : IDisposable
         bool paused,
         bool enabled,
         CanvasOverrides? overrides = null,
-        int fps = 0)
+        int fps = 0,
+        bool suspended = false)
     {
         var options = _settings.WallpaperSnapshot;
         var visible = enabled && !paused;
         // 画面参数按画布取：这块屏/这个画布自己调过就用它的，没调过就用素材的。
         var picture = overrides ?? CanvasOverrides.FromTransform(asset.Transform);
+        // 音量同理：设置里那个百分比是「用户想要多大」，实际发出去还要乘增益包络
+        // （音乐在放 / 被窗口盖住 → 0），否则「和音乐抢声音时」那三项不会生效。
+        var gain = _audioGain;
+        var audioOn = options.AudioEnabled && gain > 0.001;
+        var audioVolume = (int)Math.Round(options.AudioVolume * gain);
         return new WallpaperLayerPayload(
             visible,
             asset.Id,
@@ -1507,10 +1853,9 @@ internal sealed class WallpaperHost : IDisposable
             options.Brightness,
             options.Contrast,
             options.Saturation,
-            options.AudioEnabled,
-            options.AudioVolume,
-            options.FitMode,
-            options.BeatStrength,
+            audioOn,
+            audioVolume,
+            options.FitMode,            options.BeatStrength,
             options.OverlayEnabled,
             options.OverlayTemplate,
             options.VisualizerEnabled,
@@ -1527,7 +1872,8 @@ internal sealed class WallpaperHost : IDisposable
             picture.CropBottom,
             picture.Zoom,
             picture.Blur,
-            fps);
+            fps,
+            suspended);
     }
 
     private string BuildDiagnosticsJson()
@@ -1622,6 +1968,15 @@ internal sealed class WallpaperHost : IDisposable
         writer.Write(content);
     }
 
+    /// <summary>停表 + 退订（Dispose 用；两处都不能漏，否则回调会打到已释放的对象上）。</summary>
+    private static void StopTimer(ref DispatcherTimer? timer, EventHandler handler)
+    {
+        if (timer is null) return;
+        timer.Stop();
+        timer.Tick -= handler;
+        timer = null;
+    }
+
     public void Dispose()
     {
         if (_disposed) return;
@@ -1630,6 +1985,20 @@ internal sealed class WallpaperHost : IDisposable
         _settings.WallpaperChanged -= OnSettingsChanged;
         _scanCancellation?.Cancel();
         _rotationTimer.Stop();
+        _fullscreenTimer?.Stop();
+        _fullscreenTimer = null;
+        // 以前只停了轮换与全屏两个定时器：12 ms 的节拍定时器、序列定时器、音量增益定时器
+        // 仍在跑且 Tick 没退订，回调会进已 Dispose 的 _inApp/_db（退出瞬间偶发崩溃、CPU 抖动）。
+        StopTimer(ref _beatTimer, OnBeatTimerTick);
+        StopTimer(ref _audioGainTimer, OnAudioGainTick);
+        _sequenceTimer.Stop();
+        _sequenceTimer.Tick -= OnSequenceTick;
+        if (_audioHooked && App.Audio is { } audio)
+        {
+            audio.Frame -= OnAudioFrameForBeat;
+            _audioHooked = false;
+        }
+        _rules.Dispose();
 
         _player.FrameReady -= OnFrameReady;
         _player.Ended -= OnPlayerEnded;
@@ -1684,4 +2053,7 @@ internal sealed record WallpaperLayerPayload(
     double CropBottom,
     double PictureZoom,
     double PictureBlur,
-    int Fps);
+    int Fps,
+    // 全屏挂起：只是「先淡出、别挡着游戏」，和用户手动暂停不一样 ——
+    // 页面收到它要把整层淡到透明（露出系统桌面壁纸），退出全屏再淡回来。
+    bool Suspended);

@@ -2,6 +2,7 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Zilux2.Storage;
 
 namespace Zilux2.Online.Account;
 
@@ -243,16 +244,8 @@ internal sealed class AccountStore : IDisposable
                 Directory.CreateDirectory(directory);
             }
 
-            var tempPath = _path + ".tmp";
-            File.WriteAllText(tempPath, json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-            if (File.Exists(_path))
-            {
-                File.Replace(tempPath, _path, null);
-            }
-            else
-            {
-                File.Move(tempPath, _path);
-            }
+            // 固定 ".tmp" 名字在两个写入方并发时会互踩：AtomicFile 用 GUID 临时名 + 原子覆盖。
+            AtomicFile.WriteAllText(_path, json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 
             _dirty = false;
             OnlineHttp.Info($"[account] save path={_path} entries={_accounts.Count}");

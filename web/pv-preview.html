@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PV 版面预览</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #191a1c; overflow: hidden; }
+      #stage { position: fixed; inset: 0; }
+    </style>
+  </head>
+  <body>
+    <div id="stage"></div>
+    <script type="module">
+      import { createPvScene } from '/src/ui/pvScene.ts';
+      import { DEFAULT_PV_SETTINGS } from '/src/ui/pvSettings.ts';
+
+      const params = new URLSearchParams(location.search);
+      const fixedT = params.has('t') ? Number(params.get('t')) : null;
+
+      // ?palette=arc|navy|red|sage|mono &tilt= &transitions= &grain= &glitch= &chrome=0
+      const style = { ...DEFAULT_PV_SETTINGS };
+      for (const key of ['palette', 'tilt', 'transitions', 'grain', 'glitch', 'sizeScale']) {
+        if (params.has(key)) {
+          const raw = params.get(key);
+          style[key] = key === 'palette' ? raw : Number(raw);
+        }
+      }
+      if (params.has('chrome')) style.showChrome = params.get('chrome') !== '0';
+
+      // 12 句，正好把五幕（墨蓝 → 白与卡 → 朱红 → 灰绿 → 收尾）都走一遍。
+      const lines = [
+        { timeMs: 2000, text: 'あなたは', tr: 'you are' },
+        { timeMs: 5000, text: '錯覚を理解している', tr: 'understanding the illusion' },
+        { timeMs: 8400, text: '視界が', tr: 'the field of view' },
+        { timeMs: 11200, text: '小さくなる', tr: 'grows small' },
+        { timeMs: 14400, text: '当たり前に過ぎてく', tr: 'passing as if natural' },
+        { timeMs: 17600, text: '眠り過ぎた頭痛で', tr: 'with a headache from oversleeping' },
+        { timeMs: 20800, text: 'どこにももう', tr: 'nowhere anymore' },
+        { timeMs: 23400, text: 'どうしたいの', tr: 'what do you want' },
+        { timeMs: 26200, text: '教えてくれないの', tr: "won't you tell me" },
+        { timeMs: 29200, text: '遠くへ', tr: 'far away' },
+        { timeMs: 32200, text: '動けない', tr: "can't move" },
+        { timeMs: 35200, text: 'あなたの横顔を見て', tr: 'looking at your profile' },
+      ];
+
+      function toLyric(line) {
+        const chars = Array.from(line.text);
+        const start = line.timeMs;
+        const duration = 2600;
+        const step = (duration - 400) / Math.max(1, chars.length);
+        const words = chars.map((ch, i) => ({
+          text: ch,
+          startMs: start + i * step,
+          endMs: start + (i + 1) * step,
+          spaceBefore: false,
+        }));
+        return { timeMs: start, durationMs: duration, text: line.text, translation: line.tr, words };
+      }
+
+      // ?layouts=1：按 12 句跑一遍，用来抽查新引擎分到的版面（换句时每句两秒）。
+      const song = params.get('layouts') === '1'
+        ? {
+          trackKey: 'pv-preview-layouts',
+          title: '版面走查',
+          artist: 'ZILUX2',
+          album: 'preview',
+          durationMs: 44000,
+          lyricOffsetMs: 0,
+          lines: [
+            'あ な た は', '錯 覚 を', '視 界 が', '小 さ く な る',
+            '当 た り 前 に', '眠 り 過 ぎ た', 'ど こ に も も う', 'ど う し た い の',
+            '教 え て', '遠 く へ', '動 け な い', 'あ な た の',
+          ].map((text, index) => {
+            const start = 1500 + index * 3200;
+            const tokens = text.split(/\s+/).filter(Boolean);
+            return {
+              timeMs: start,
+              durationMs: 3000,
+              text,
+              translation: index % 3 === 0 ? 'demo translation' : '',
+              words: tokens.map((token, wordIndex) => ({
+                text: token,
+                startMs: start + (wordIndex * 2600) / Math.max(1, tokens.length),
+                endMs: start + ((wordIndex + 1) * 2600) / Math.max(1, tokens.length),
+                spaceBefore: wordIndex > 0,
+              })),
+            };
+          }),
+        }
+        : {
+          trackKey: 'pv-preview',
+          title: '凝彩',
+          artist: 'ZILUX2',
+          album: 'preview',
+          durationMs: 39000,
+          lyricOffsetMs: 0,
+          lines: lines.map(toLyric),
+        };
+
+      const stage = document.getElementById('stage');
+      const scene = createPvScene({
+        style,
+        onPainted: () => {},
+      });
+      stage.appendChild(scene.root);
+      scene.setSong(song);
+      scene.resize();
+
+      window.__scene = scene;
+      window.__song = song;
+
+      const paintAt = (t) => {
+        scene.update(Math.max(0, t - 80), true, 0.55);
+        scene.update(t, true, 0.6);
+      };
+
+      if (fixedT != null) {
+        document.fonts.ready.then(() => {
+          paintAt(fixedT);
+          document.documentElement.dataset.ready = '1';
+        });
+      } else {
+        const start = performance.now();
+        const loop = (now) => {
+          scene.update((now - start) % song.durationMs, true, 0.6);
+          requestAnimationFrame(loop);
+        };
+        requestAnimationFrame(loop);
+      }
+    </script>
+  </body>
+</html>

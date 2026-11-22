@@ -60,6 +60,12 @@ public sealed partial class DesktopBackgroundWindow : Window
     private string? _onlineJson;
     private string? _wallpaperJson;
 
+    /// <summary>窗口已 Show 但还没搬进桌面层（页面还在加载）；这期间它停在屏幕外。</summary>
+    private bool _pendingAttach;
+
+    /// <summary>兜底：页面迟迟不报 ready 也要搬进来，否则歌词永远不出现。</summary>
+    private System.Windows.Threading.DispatcherTimer? _attachFallback;
+
     /// <summary>WebView2 初始化失败（窗口随之关闭）；宿主据此回滚 backgroundLyrics 开关（B09）。</summary>
     internal event Action? InitFailed;
 
@@ -69,6 +75,10 @@ public sealed partial class DesktopBackgroundWindow : Window
         _settings = settings;
         _plan = plan;
         InitializeComponent();
+        // 先在屏幕外 Show：WebView2 要真实 HWND 才合成，但这一块谁都看不见，
+        // 等页面报第一帧再搬进桌面层 —— 「窗口可见」与「已有画面」同一刻，黑方块无从产生。
+        Left = -32000;
+        Top = -32000;
         Loaded += OnLoaded;
         Closed += OnClosed;
     }
@@ -101,8 +111,19 @@ public sealed partial class DesktopBackgroundWindow : Window
             core.Navigate(_plan.NavigationUrl + separator + "scene=backgroundLyrics");
             HostLog.Info($"[bgLyrics] navigate {_plan.NavigationUrl}{separator}scene=backgroundLyrics");
 
-            // WebView2 初始化完成后再 reparent：先建子 HWND 再换父窗口，尺寸与合成都更稳。
-            AttachToDesktop();
+            // 不再紧接导航就 reparent：此刻页面还是白的/空的，挂上去就是在桌面上
+            // 闪一帧黑块。窗口已经 Show（屏幕外），等 ready 或 2.5s 兜底再搬进来。
+            _pendingAttach = true;
+            _attachFallback = new System.Windows.Threading.DispatcherTimer
+            {
+                Interval = TimeSpan.FromSeconds(2.5),
+            };
+            _attachFallback.Tick += (_, _) =>
+            {
+                HostLog.Warn("[bgLyrics] page ready timeout, attaching anyway");
+                AttachIfPending();
+            };
+            _attachFallback.Start();
         }
         catch (Exception exception)
         {
@@ -144,12 +165,34 @@ public sealed partial class DesktopBackgroundWindow : Window
         AttachToDesktop();
     }
 
+    /// <summary>
+    /// 页面报到第一帧（或兜底超时）后，把窗口从屏幕外搬进桌面层。
+    /// 只搬一次：之后再调 AttachToDesktop 走正常的重挂路径。
+    /// </summary>
+    private void AttachIfPending()
+    {
+        if (!_pendingAttach || _disposed)
+        {
+            return;
+        }
+
+        AttachToDesktop();
+    }
+
     private void AttachToDesktop()
     {
         var handle = new WindowInteropHelper(this).Handle;
         if (handle == IntPtr.Zero || _disposed)
         {
             return;
+        }
+
+        // 搬进来之后就不再是「待挂」状态。
+        _pendingAttach = false;
+        if (_attachFallback is not null)
+        {
+            _attachFallback.Stop();
+            _attachFallback = null;
         }
 
         var appliedStyles = ApplyOverlayStyles(handle);
@@ -311,6 +354,8 @@ public sealed partial class DesktopBackgroundWindow : Window
                 : null;
             if (type == "ready")
             {
+                // 页面报到第一帧：现在才把窗口从屏幕外搬进桌面层。
+                AttachIfPending();
                 PostSnapshot();
                 // 场景页的 initOnline 在 ready 之前就已注册监听；把最近一次端点补发一次（B04）。
                 if (_onlineJson is not null)
@@ -459,6 +504,13 @@ public sealed partial class DesktopBackgroundWindow : Window
     private void OnClosed(object? sender, EventArgs e)
     {
         _disposed = true;
+        _pendingAttach = false;
+        if (_attachFallback is not null)
+        {
+            _attachFallback.Stop();
+            _attachFallback = null;
+        }
+
         DisposeBrowser();
     }
 

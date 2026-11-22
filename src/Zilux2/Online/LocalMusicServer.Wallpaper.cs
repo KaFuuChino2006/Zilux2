@@ -47,6 +47,10 @@ internal sealed partial class LocalMusicServer
             case ["monitors"] when isPut || isPost:
                 return await SaveWallpaperMonitorAsync(context, host!).ConfigureAwait(false);
 
+            // 点选某块屏时让那块真屏扫一道光（纯提示，不写任何状态）。
+            case ["monitors", "sweep"] when isPost:
+                return await SweepWallpaperMonitorAsync(context, host!).ConfigureAwait(false);
+
             case ["canvas", var settingsKind, "settings"] when isGet:
                 return WriteWallpaperCanvasSettings(context, host!, settingsKind);
 
@@ -819,7 +823,9 @@ internal sealed partial class LocalMusicServer
     private async Task<int> ScanWallpaperLibraryAsync(HttpListenerContext context, WallpaperHost host)
     {
         var body = await ReadWallpaperBodyAsync(context).ConfigureAwait(false);
-        var full = body is not null && IsTruthy(body["full"]?.GetValue<string>());
+        // 前端发的是 JSON 布尔（`full: true`），`GetValue<string>()` 对 bool 节点会抛
+        // InvalidOperationException → 整个 /scan 变 500。统一走能处理任意节点的 IsTruthy。
+        var full = body is not null && IsTruthy(body["full"]);
         var result = host.ScanOnce(full);
         WriteWallpaperJson(context, 200, new JsonObject
         {
@@ -994,6 +1000,7 @@ internal sealed partial class LocalMusicServer
                 ["attached"] = monitor.Attached,
                 ["title"] = monitor.Title,
                 ["coverPath"] = monitor.CoverPath,
+                ["volume"] = monitor.Volume,
             });
         }
 
@@ -1042,6 +1049,23 @@ internal sealed partial class LocalMusicServer
             return WriteError(context, 400, "bad-request", error ?? "保存失败");
         }
 
+        WriteWallpaperJson(context, 200, new JsonObject { ["ok"] = true });
+        return 200;
+    }
+
+    /// <summary>点选某块屏 → 让那块真屏的画面扫一道光。不落盘、不触发重新应用。</summary>
+    private async Task<int> SweepWallpaperMonitorAsync(HttpListenerContext context, WallpaperHost host)
+    {
+        var body = await ReadWallpaperBodyAsync(context).ConfigureAwait(false);
+        var key = body?["key"] is JsonValue keyValue && keyValue.TryGetValue<string>(out var rawKey)
+            ? rawKey.Trim()
+            : string.Empty;
+        if (key.Length == 0)
+        {
+            return WriteError(context, 400, "bad-request", "缺少显示器 key");
+        }
+
+        host.SweepMonitor(key);
         WriteWallpaperJson(context, 200, new JsonObject { ["ok"] = true });
         return 200;
     }
@@ -1439,6 +1463,7 @@ internal sealed partial class LocalMusicServer
             var start = 0L;
             var end = length - 1;
             var partial = false;
+            var unsatisfiable = false;
             if (!string.IsNullOrEmpty(range) && range.StartsWith("bytes=", StringComparison.OrdinalIgnoreCase))
             {
                 var spec = range["bytes=".Length..].Split(',')[0];
@@ -1447,21 +1472,65 @@ internal sealed partial class LocalMusicServer
                 {
                     var head = spec[..dash].Trim();
                     var tail = spec[(dash + 1)..].Trim();
-                    if (head.Length == 0 && long.TryParse(tail, out var suffix) && suffix > 0)
+                    if (head.Length == 0)
                     {
-                        start = Math.Max(0, length - suffix);
+                        // `bytes=-N`：末尾 N 字节。N=0 在 RFC 7233 里就是不可满足，
+                        // 以前会被当成「整段 206」发回去，播放器会一直收到全文件。
+                        if (long.TryParse(tail, out var suffix) && suffix > 0)
+                        {
+                            start = Math.Max(0, length - suffix);
+                        }
+                        else if (tail.Length > 0)
+                        {
+                            unsatisfiable = true;
+                        }
                     }
                     else if (long.TryParse(head, out var from))
                     {
-                        start = Math.Clamp(from, 0, Math.Max(0, length - 1));
-                        if (tail.Length > 0 && long.TryParse(tail, out var to))
+                        // 起点越界不能再 clamp 到 last byte：那样客户端会永远收到 1 字节 206，
+                        // 循环播放就卡在最后一帧（音乐流那条路径已经按 RFC 返回 416）。
+                        if (from >= length || from < 0)
                         {
-                            end = Math.Clamp(to, start, length - 1);
+                            unsatisfiable = true;
+                        }
+                        else
+                        {
+                            start = from;
+                            if (tail.Length > 0 && long.TryParse(tail, out var to))
+                            {
+                                if (to < start)
+                                {
+                                    unsatisfiable = true;
+                                }
+                                else
+                                {
+                                    end = Math.Clamp(to, start, length - 1);
+                                }
+                            }
                         }
                     }
 
                     partial = true;
                 }
+            }
+
+            if (unsatisfiable)
+            {
+                response.StatusCode = 416;
+                response.Headers["Content-Range"] = $"bytes */{length}";
+                response.ContentLength64 = 0;
+                return 416;
+            }
+
+            // 播放器请求「从这里到结尾」时（`bytes=N-`），一次把剩下几十 MB 全灌过去没有意义：
+            // 客户端缓冲够了就会主动断开，写循环要等 backpressure 才退出，实测 one-shot 请求
+            // 平均要 5 s（host.log 里 media/<id> status=206 5000ms），还白占一个线程和文件句柄。
+            // 按块上限返回并让 `Content-Range` 如实报告，播放器会按需续请求下一段。
+            const long MaxChunkBytes = 2L * 1024 * 1024;
+            if (end - start + 1 > MaxChunkBytes)
+            {
+                end = start + MaxChunkBytes - 1;
+                partial = true;
             }
 
             var count = end - start + 1;
@@ -1478,7 +1547,20 @@ internal sealed partial class LocalMusicServer
             while (remaining > 0)
             {
                 var want = (int)Math.Min(buffer.Length, remaining);
-                var read = await stream.ReadAsync(buffer.AsMemory(0, want), _shutdown.Token).ConfigureAwait(false);
+                // 与音乐流同样的看门狗：壁纸循环播放在切场景/最小化时客户端会半挂，
+                // 没有超时的话这条读循环会一直占着线程和文件句柄。
+                int read;
+                try
+                {
+                    read = await stream.ReadAsync(buffer.AsMemory(0, want), _shutdown.Token)
+                        .AsTask().WaitAsync(StreamStallTimeout, _shutdown.Token).ConfigureAwait(false);
+                }
+                catch (TimeoutException)
+                {
+                    OnlineHttp.Info($"wallpaper media stalled id={id} 主动断开让客户端重试");
+                    break;
+                }
+
                 if (read <= 0)
                 {
                     break;

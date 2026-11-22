@@ -26,6 +26,15 @@ internal sealed class NeteaseLibraryProvider
     private const string PrivateRadarPlaylistId = "3136952023";
     private const string PrivateRadarTitle = "私人雷达";
 
+    // 「私人漫游」（原先叫私人 FM）：一次只回 3 首，所以要循环攒够 limit 再去重。
+    // 2026-11 起 /api/personal/fm（含 eapi 形态）已经下线，只剩旧入口 /api/v1/radio/get 可用，
+    // 它不需要加密参数、GET 带 cookie 就行（匿名也能取），所以这里直接走 web 形态。
+    private const string PersonalFmEndpoint = "https://music.163.com/api/v1/radio/get";
+
+    // 「相似歌曲」：/api/discovery/simiSong 以一首歌为种子，匿名调用只回空数组，必须带登录 cookie。
+    private const string SimilarSongEndpoint = "https://music.163.com/api/discovery/simiSong";
+    private const string SimilarSongEapiUri = "/api/discovery/simiSong";
+
     private const int MaxPlaylists = 60;
     private const int SongDetailBatchSize = 500;
 
@@ -366,6 +375,13 @@ internal sealed class NeteaseLibraryProvider
     // 发现面板：最近播放（/api/v1/play/record）、每日推荐（/api/v3/discovery/recommend/songs）
     // 与私人雷达（固定 id 的个人化歌单，复用歌单详情链路）。
     internal async Task<List<OnlineTrack>> GetFeedAsync(string kind, int limit, CancellationToken cancellationToken)
+        => await GetFeedAsync(kind, limit, null, cancellationToken).ConfigureAwait(false);
+
+    internal async Task<List<OnlineTrack>> GetFeedAsync(
+        string kind,
+        int limit,
+        string? seedId,
+        CancellationToken cancellationToken)
     {
         if (!IsLoggedIn)
         {
@@ -376,6 +392,16 @@ internal sealed class NeteaseLibraryProvider
         if (string.Equals(kind, "radar", StringComparison.Ordinal))
         {
             return await GetPrivateRadarAsync(limit, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (string.Equals(kind, "roam", StringComparison.Ordinal))
+        {
+            return await GetPersonalFmAsync(limit, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (string.Equals(kind, "similar", StringComparison.Ordinal))
+        {
+            return await GetSimilarAsync(seedId, limit, cancellationToken).ConfigureAwait(false);
         }
         var daily = string.Equals(kind, "daily", StringComparison.Ordinal);
         string url;
@@ -459,6 +485,111 @@ internal sealed class NeteaseLibraryProvider
         }
 
         HostLog.Info($"[library] netease feed kind={(daily ? "daily" : "recent")} count={tracks.Count}");
+        return tracks;
+    }
+
+    // 私人漫游：一次只回 3 首，循环攒到 limit；某几轮没有新歌就提前收手，避免死循环。
+    private async Task<List<OnlineTrack>> GetPersonalFmAsync(int limit, CancellationToken cancellationToken)
+    {
+        var tracks = new List<OnlineTrack>(limit);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        for (var round = 0; round < 8 && tracks.Count < limit; round++)
+        {
+            var want = Math.Clamp(limit - tracks.Count, 3, 10);
+            using var document = await FetchWebJsonAsync($"{PersonalFmEndpoint}?limit={want}", cancellationToken)
+                .ConfigureAwait(false);
+            var root = document.RootElement;
+            if (root.TryGetProperty("code", out var codeElement)
+                && codeElement.TryGetInt32(out var code)
+                && code != 200)
+            {
+                throw new OnlineUpstreamException($"网易云接口返回 code={code}", 502);
+            }
+
+            var added = 0;
+            if (root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var song in data.EnumerateArray())
+                {
+                    var track = ParseFeedSong(song);
+                    if (track is null || track.Title.Length == 0 || !seen.Add(track.Id))
+                    {
+                        continue;
+                    }
+
+                    tracks.Add(track);
+                    added++;
+                    if (tracks.Count >= limit)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            if (added == 0)
+            {
+                break;
+            }
+        }
+
+        HostLog.Info($"[library] netease feed kind=roam count={tracks.Count}");
+        return tracks;
+    }
+
+    // 相似歌曲：种子来自「最近播放」的第一首网易云歌曲（见 LocalMusicServer 的 kind=similar 分支）。
+    private async Task<List<OnlineTrack>> GetSimilarAsync(
+        string? seedId,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(seedId))
+        {
+            throw new OnlineUpstreamException(
+                "相似歌曲需要一首基准歌曲：先随便播一首网易云的歌，再回来打开它",
+                409);
+        }
+
+        // 上游每次只回 5 首（limit/offset 都不认），所以拿最近播放的几首当种子各问一次再去重，
+        // 这样整页才不会只有 5 张海报。
+        var seeds = seedId
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.Ordinal)
+            .Take(3)
+            .ToList();
+        var tracks = new List<OnlineTrack>();
+        var firstSeed = seeds[0];
+        foreach (var seed in seeds)
+        {
+            if (tracks.Count >= limit)
+            {
+                break;
+            }
+
+            using var document = await FetchJsonAsync(
+                    SimilarSongEapiUri,
+                    new JsonObject { ["songid"] = seed, ["limit"] = limit },
+                    $"{SimilarSongEndpoint}?songid={Uri.EscapeDataString(seed)}&limit={limit}",
+                    $"netease.native library similar seed={seed}",
+                    cancellationToken)
+                .ConfigureAwait(false);
+            var root = document.RootElement;
+            if (root.TryGetProperty("code", out var codeElement)
+                && codeElement.TryGetInt32(out var code)
+                && code != 200)
+            {
+                throw new OnlineUpstreamException($"网易云接口返回 code={code}（相似歌曲需要登录）", 502);
+            }
+
+            if (root.TryGetProperty("songs", out var songs) && songs.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var song in songs.EnumerateArray())
+                {
+                    AddFeedTrack(tracks, song, limit);
+                }
+            }
+        }
+
+        HostLog.Info($"[library] netease feed kind=similar seed={firstSeed} seeds={seeds.Count} count={tracks.Count}");
         return tracks;
     }
 

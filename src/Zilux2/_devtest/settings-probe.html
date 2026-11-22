@@ -61,7 +61,7 @@
 
     if (scenario === 'patch') {
       setTimeout(() => {
-        const patch = { appearance: { reduceMotion: true, theme: 'midnight' }, playback: { volume: 0.5 }, general: { startMaximized: false } };
+        const patch = { appearance: { reduceMotion: true, theme: 'midnight' }, playback: { volume: 0.5 }, general: { startMaximized: false, uiTemplate: 'fx' } };
         log('settingsprobe patch sent ' + JSON.stringify(patch));
         bridge.postMessage({ v: 1, type: 'settings', action: 'patch', patch: patch });
       }, 400);

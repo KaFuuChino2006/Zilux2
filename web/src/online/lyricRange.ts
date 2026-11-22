@@ -190,7 +190,9 @@ function rangeFromQrc(raw: string | null | undefined): SingingRange | null {
 /** 普通 LRC：第一句人声；最后一句结束时间用最后几声间隔的中位数估算（夹在 1.5–9 秒）。 */
 function rangeFromLrc(raw: string | null | undefined): SingingRange | null {
   if (!raw) return null;
-  const lines = parseLrc(raw).filter((line) => line.timeMs > 0 && isSingingLine(line.text));
+  // `timeMs > 0` 会把 `[00:00.00]` 首句删掉：开口就在第一拍上的歌，人声区间会被推到第二句，
+  // 于是「首句不参与发光、也不计入范围」。时间戳 0 是合法位置，只按文本过滤。
+  const lines = parseLrc(raw).filter((line) => line.timeMs >= 0 && isSingingLine(line.text));
   if (lines.length === 0) return null;
   const firstMs = Math.max(0, Math.round(lines[0]!.timeMs));
   const lastStartMs = Math.max(0, Math.round(lines[lines.length - 1]!.timeMs));

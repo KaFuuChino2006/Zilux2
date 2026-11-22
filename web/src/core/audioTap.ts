@@ -84,7 +84,11 @@ let mediaSource: MediaElementAudioSourceNode | null = null;
 let localGain: GainNode | null = null;
 /** 交叉淡化用的混音入口：所有 deck 的 gain 先汇到这里，再统一进 EQ / 本地 gain。 */
 let deckMix: GainNode | null = null;
-/** 已接进图的 deck 源节点缓存（同一元素只能建一次 MediaElementAudioSourceNode）。 */
+/**
+ * 分轨试听用的监听闸：平时 1（直通），试听时把 deck 混音这一路压到 0，
+ * 只留分轨 buffer 出声（分轨接 stemMonitorBus，绕开这一闸）。
+ */
+let stemMonitorMute: GainNode | null = null;
 interface DeckGraphNodes {
   source: MediaElementAudioSourceNode;
   /** 「交融」风格的低通/高通互补扫频：A 逐渐闷掉、B 逐渐变亮，两首频谱错开后叠在一起也不糊。 */
@@ -114,11 +118,25 @@ const FILTER_FREQ_MAX = 20000;
 /** 「低频交接」用的低架滤波中心频率（Hz）。 */
 const BASS_SHELF_FREQ = 120;
 const deckNodes = new Map<HTMLAudioElement, DeckGraphNodes>();
+/**
+ * v2 链的插入记录：元素 → { 入口, 静音闸, 还原 }。
+ * 有记录时 `attachDeckToGraph` 不能把 gain 直连 deckMix，否则会并联绕过 v2 分频/换手。
+ */
+const deckTaps = new WeakMap<HTMLAudioElement, {
+  input: GainNode;
+  gate: GainNode;
+  output: AudioNode;
+  restore: () => void;
+}>();
 let workletNode: AudioWorkletNode | null = null;
 let processor: ScriptProcessorNode | null = null;
 let silentGain: GainNode | null = null;
 let analyser: AnalyserNode | null = null;
 let analyserSink: GainNode | null = null;
+/** 输出侧静音探针：接在总闸之后，量的是「真正送出去的波形」（含所有增益/静音闸）。 */
+let outputAnalyser: AnalyserNode | null = null;
+let outputSink: GainNode | null = null;
+let outputBuffer: Uint8Array<ArrayBuffer> | null = null;
 let running = false;
 let pendingStart = false;
 /** 播放器音量（0~1），取流期间本地 gain 恒为 0，停止取流后回落到这个值。 */
@@ -192,6 +210,19 @@ export function resumeAudioContext(): void {
   } catch {
     // 没有用户手势时 resume 可能被搁置，回到前台会再调一次。
   }
+}
+
+/**
+ * 输出路由复位：设备切换 / 系统休眠唤醒之后，Web Audio 有时仍自报 running，
+ * 却不再往（新的）默认设备送样本——听感就是「在放但没声音」。
+ * 挂起再拉起会让 Chromium 重新打开输出流，代价是一小段静音，所以只在自愈流程里调。
+ */
+export function kickAudioContext(): void {
+  if (!context) return;
+  void context
+    .suspend()
+    .then(() => context?.resume())
+    .catch(() => undefined);
 }
 
 /** 诊断：当前本地播放图状态（麦克风混音排查用）。 */
@@ -285,6 +316,7 @@ function buildDeckChain(
 
 /** 过渡期间允许把伴奏压低的幅度（dB）。超过这个值听起来会像电话音。 */
 const DECK_TILT_LIMIT_DB = 12;
+/** 独听链用两级同频 Butterworth（Q=0.7071）串接 = 24 dB/oct，区间外压得更干净。 */
 
 /** 设置 deck 的伴奏衰减（负值 = 压低低频/高频，中频人声保留）；未接入图时静默忽略。 */
 export function setDeckGraphTilt(element: HTMLAudioElement, lowDb: number, highDb: number): void {
@@ -329,12 +361,15 @@ export function attachDeckToGraph(element: HTMLAudioElement): boolean {
   if (!deckMix) return false;
   const existing = deckNodes.get(element);
   if (existing) {
-    try {
-      existing.gain.connect(deckMix);
-    } catch {
-      /* 已连接时忽略 */
+    // v2 链在场时不能把 gain 直接接回 deckMix：那会绕过分频/换手，等于两路并联。
+    if (!deckTaps.has(element)) {
+      try {
+        existing.gain.connect(deckMix);
+      } catch {
+        /* 已连接时忽略 */
+      }
     }
-    element.volume = 1;
+    element.volume = stemMonitorActive ? 0 : 1;
     return true;
   }
   try {
@@ -342,13 +377,86 @@ export function attachDeckToGraph(element: HTMLAudioElement): boolean {
     const built = buildDeckChain(ctx, source);
     if (!built) return false;
     built.chain.gain.connect(deckMix);
-    element.volume = 1;
+    element.volume = stemMonitorActive ? 0 : 1;
     deckNodes.set(element, { source, ...built.chain });
     return true;
   } catch (err) {
     console.warn('[audioTap] attachDeckToGraph failed', err);
     return false;
   }
+}
+
+/**
+ * 进阶混音 v2 的插入点：把 deck 的 gain 从 deckMix 上摘下来，交给调用方串一条专用链。
+ *
+ * 标准路径完全不碰这里 —— 只有 `readMixTransitionMode() === 'automixV2'` 时
+ * `crossfadeDeck` 才会调它，所以「两种独立过渡」在节点图层面就是两条互斥的链路。
+ *
+ * 返回的 `output` 就是 deckMix：调用方把自己链路的末端接上去，听感才和标准路径同一条
+ * 母线（共用 EQ / 响度 / 分析）。`restore()` 幂等，负责断开自己的链路并把 gain 接回
+ * deckMix；即使过渡中途崩掉，只要走到收尾就能恢复原样。
+ */
+export function attachDeckAutomixTap(
+  element: HTMLAudioElement,
+): { input: GainNode; gate: GainNode; output: AudioNode; restore: () => void } | null {
+  const node = deckNodes.get(element);
+  if (!node || !deckMix) return null;
+  const existing = deckTaps.get(element);
+  if (existing) {
+    // 复用的前提是「这条 tap 还挂在当前这张图上」。`teardownTapNodes` 会重建 deckMix，
+    // 但不清 deckTaps；此时旧 tap 的出口指向已经不在图里的旧 deckMix，
+    // 直接复用会让整段过渡没有声音（外观上进度在走、耳朵里是静音）。
+    const sameContext = existing.input.context === node.gain.context;
+    const sameOutput = existing.output === deckMix;
+    if (sameContext && sameOutput) {
+      return { input: existing.input, gate: existing.gate, output: deckMix, restore: existing.restore };
+    }
+    // 旧链还给常规路径（restore 会按当前 deckMix 重新接），再从头建一条。
+    existing.restore();
+  }
+  const ctx = node.gain.context as AudioContext;
+  // gate：元素自己的门。结构桥接时把元素压到 0、让 buffer 接管这段尾奏；
+  // buffer 接在 input 上，所以不受 gate 影响。
+  const gate = ctx.createGain();
+  gate.gain.value = 1;
+  const input = ctx.createGain();
+  input.gain.value = 1;
+  try {
+    node.gain.disconnect();
+    node.gain.connect(gate);
+    gate.connect(input);
+  } catch (err) {
+    console.warn('[audioTap] attachDeckAutomixTap failed', err);
+    return null;
+  }
+  let restored = false;
+  const restore = (): void => {
+    if (restored) return;
+    restored = true;
+    deckTaps.delete(element);
+    try {
+      gate.disconnect();
+    } catch {
+      /* 忽略 */
+    }
+    try {
+      input.disconnect();
+    } catch {
+      /* 忽略 */
+    }
+    try {
+      node.gain.disconnect();
+    } catch {
+      /* 忽略 */
+    }
+    try {
+      if (deckMix) node.gain.connect(deckMix);
+    } catch {
+      /* 忽略 */
+    }
+  };
+  deckTaps.set(element, { input, gate, output: deckMix, restore });
+  return { input, gate, output: deckMix, restore };
 }
 
 /** 某个 deck 是否已经接在 Web Audio 图里（交叉淡化据此决定走图内增益还是元素音量）。 */
@@ -393,6 +501,16 @@ export function deckAudioContext(element: HTMLAudioElement): AudioContext | null
   return node ? (node.gain.context as AudioContext) : null;
 }
 
+/**
+ * 本地音频图的共享 AudioContext（分轨监听用）。与 deck 无关，只要图建起来就可用，
+ * 这样浮层在「还没开始过渡」时也能试听四轨。
+ */
+export function stemMonitorContext(): AudioContext | null {
+  if (context) return context;
+  const ensured = ensureAppAudioGraph();
+  return ensured ?? null;
+}
+
 function rampGain(param: AudioParam, target: number, rampMs: number, now: number): void {
   try {
     param.cancelScheduledValues(now);
@@ -419,6 +537,16 @@ export function setDeckMixGain(element: HTMLAudioElement, value: number, rampMs 
 }
 
 /** 设置分离音轨支路增益（0~1），用于淡入淡出两轨的交接。 */
+export function scheduleElementEntry(element: HTMLAudioElement, start: number, end: number, recovery: number): void {
+  const param = deckNodes.get(element)?.mixGain.gain;
+  if (!param) return;
+  param.cancelScheduledValues(start);
+  param.setValueAtTime(0,start);
+  param.linearRampToValueAtTime(0.12,start+(end-start)*0.55);
+  param.linearRampToValueAtTime(0.3,end);
+  param.linearRampToValueAtTime(1,end+recovery);
+}
+
 export function setDeckStemGain(element: HTMLAudioElement, value: number, rampMs = 0): void {
   const node = deckNodes.get(element);
   if (!node) return;
@@ -454,26 +582,195 @@ export function setDeckStemGain(element: HTMLAudioElement, value: number, rampMs
 
 /** Separate from track normalization: hold the regional correction across the transition,
  * then return to neutral over four seconds. Deck commit must not cancel this envelope. */
-export function scheduleDeckMatch(element: HTMLAudioElement, clock: number, db: number, fadeMs: number): void {
+export function scheduleDeckMatch(
+  element: HTMLAudioElement,
+  clock: number,
+  db: number,
+  fadeMs: number,
+  options?: { hold?: boolean; holdSec?: number; maxDb?: number },
+): void {
   const node = deckNodes.get(element);
   if (!node) return;
-  const gain = 10 ** (Math.max(-3, Math.min(3, Number.isFinite(db) ? db : 0)) / 20);
+  const maxDb = Number.isFinite(options?.maxDb) ? Math.max(0, Number(options?.maxDb)) : 3;
+  const gain = 10 ** (Math.max(-maxDb, Math.min(maxDb, Number.isFinite(db) ? db : 0)) / 20);
   const param = node.match.gain;
   param.cancelScheduledValues(clock);
   param.setValueAtTime(gain, clock);
   param.setValueAtTime(gain, clock + fadeMs / 1000);
-  param.exponentialRampToValueAtTime(1, clock + fadeMs / 1000 + 4);
+  // 临时补偿必须在过渡后放掉：长期响度由每轨 trim 负责。
+  // 但直接 4 秒放开会让 B 在交接后突然跳响，所以 v2 用更长的衰减窗（holdSec）。
+  // hold = true 表示整首保持（不再使用：会把 B 永久抬 2–6 dB，听感就是「被放大过」）。
+  if (!options?.hold) {
+    const decay = Number.isFinite(options?.holdSec) ? Math.max(1, Number(options?.holdSec)) : 4;
+    param.exponentialRampToValueAtTime(1, clock + fadeMs / 1000 + decay);
+  }
+}
+
+/**
+ * 应用混音浮层的削减设置（三组）。
+ *
+ * 只削减不提升：诊断工具一旦能提升，就会把问题频段「填平」，反而听不出原貌。
+ * 图还没建时先存参数，等 `ensureTapGraph` 建好链后再补一次（见 `applyHudEqGains` 调用处）。
+ */
+/**
+ * 应用混音浮层的区间设置（三组）。
+ *
+ * 入参是**区间**（lowHz/highHz + gainDb + solo），这里换算成单只 peaking 的（中心, Q），
+ * 再把 solo 的槽位交给独听链（HP 级联 + LP 级联）。图还没建时先存参数，
+ * 等 `ensureTapGraph` 建好链后再补一次（建图末尾会调 `applyHudEqToNodes`）。
+ */
+/**
+ * 分轨监听的接入点：分轨 buffer 接这里。
+ *
+ * 它连的是 `stemOut → destination`，**不经过** `masterGate`。
+ * 这样「分轨试听」可以把整机输出掐掉、只留分轨这一路。
+ */
+export function stemMonitorBus(): AudioNode | null {
+  return stemOut;
+}
+
+/**
+ * 掐掉 deck 混音那一路（只留分轨）。`on=true` 时元素本身还在放，但听不到；
+ * 关掉时立刻恢复。用在「分轨试听」的 A/B 对照上，不做淡入淡出（诊断用途）。
+ */
+let stemMonitorActive = false;
+/**
+ * 应用总输出的最后一道闸（`localGain → masterGate → destination`）。
+ * 分轨试听时压到 0：软件**任何**经过音频图的声音都消失，不只是 deck。
+ */
+let masterGate: GainNode | null = null;
+/**
+ * 分轨专用输出（`stemOut → destination`，不经过 masterGate，也不经过音量/限幅）。
+ * 只有分轨试听开着时它才是 1，其余时刻恒 0。
+ */
+let stemOut: GainNode | null = null;
+/** 静音前各元素的元素级音量，恢复时按原值放回。 */
+const stemMuteVolumes = new Map<HTMLAudioElement, { volume: number; muted: boolean }>();
+
+/**
+ * 分轨试听的监听闸。
+ *
+ * 两道保险，缺一不可：
+ * 1. `stemMonitorMute`（图内闸）挡住 deck 混音这一路；
+ * 2. **元素级** `volume = 0`。元素音量在 Chrome 里作用在 `MediaElementSource` 之前，
+ *    所以它连「图外漏音」也能堵死 —— 只靠图内闸时，任何并联/重建路径都会让原音漏出来，
+ *    表现就是「开了分轨试听，原唱还在」。
+ */
+export function setStemMonitor(on: boolean): void {
+  stemMonitorActive = on;
+  for (const node of [stemMonitorMute, masterGate, stemOut]) {
+    if (!node) continue;
+    const ctx = node.context;
+    const target = node === stemOut ? (on ? 1 : 0) : on ? 0 : 1;
+    try {
+      node.gain.setTargetAtTime(target, ctx.currentTime, 0.008);
+    } catch {
+      node.gain.value = target;
+    }
+  }
+  // 关键：不能只认 `deckNodes`。
+  // 普通播放（没进 graphMode / 没做过过渡）时元素根本没接进音频图，
+  // 它直接由浏览器播放到扬声器 —— 那时 `deckNodes` 是空的、`stemMonitorMute` 也不存在，
+  // 只按 deckNodes 遍历等于什么都没做，原唱当然还在响。
+  // 所以这里把「图里的元素」和「页面上所有 <audio>」并集全部压到 0。
+  for (const element of collectMediaElements()) {
+    if (on) {
+      if (!stemMuteVolumes.has(element)) {
+        stemMuteVolumes.set(element, { volume: element.volume, muted: element.muted });
+      }
+      element.volume = 0;
+      element.muted = true;
+    } else {
+      const saved = stemMuteVolumes.get(element);
+      if (saved) {
+        element.volume = saved.volume;
+        element.muted = saved.muted;
+      } else if (deckNodes.has(element)) {
+        // 试听期间才接进图里的 deck：`attachDeckToGraph` 按 `stemMonitorActive` 把元素音量
+        // 压成 0，却没有进 `stemMuteVolumes`。以前这里 `saved` 为空就跳过，于是退出试听后
+        // 这一路永久停在 0 音量 —— 表现是「听完分轨回来，切歌/过渡里有一边没声音」。
+        element.volume = 1;
+        element.muted = false;
+      }
+      stemMuteVolumes.delete(element);
+    }
+  }
+
+  // 退出试听时还要把「已经不在页面上」的残留登记清掉：元素被换掉/移除后
+  // `collectMediaElements()` 再也扫不到它，登记会一直攥着这个元素（强引用）
+  // 并让它的 volume 永久停在 0 —— 下次被复用就是「有一边没声音」。
+  if (!on) {
+    for (const [element, saved] of [...stemMuteVolumes.entries()]) {
+      element.volume = saved.volume;
+      element.muted = saved.muted;
+      stemMuteVolumes.delete(element);
+    }
+  }
+}
+
+/** 页面上正在出声/可能出声的所有媒体元素（音频图里的 + DOM 里的）。 */
+function collectMediaElements(): HTMLAudioElement[] {
+  const seen = new Set<HTMLAudioElement>();
+  for (const element of deckNodes.keys()) seen.add(element);
+  try {
+    for (const node of document.querySelectorAll('audio')) seen.add(node as HTMLAudioElement);
+    for (const node of document.querySelectorAll('video')) seen.add(node as unknown as HTMLAudioElement);
+  } catch {
+    /* document 不可用时只认 deckNodes */
+  }
+  return [...seen];
+}
+
+/** 分轨监听闸是否真的处于「静音原音」状态（浮层用来核对）。 */
+export function stemMonitorState(): {
+  active: boolean;
+  gain: number;
+  master: number;
+  stemOut: number;
+  mutedElements: number;
+} {
+  return {
+    active: stemMonitorActive,
+    gain: stemMonitorMute ? Math.round(stemMonitorMute.gain.value * 1000) / 1000 : -1,
+    master: masterGate ? Math.round(masterGate.gain.value * 1000) / 1000 : -1,
+    stemOut: stemOut ? Math.round(stemOut.gain.value * 1000) / 1000 : -1,
+    mutedElements: stemMuteVolumes.size,
+  };
 }
 
 /** 调试：各 deck 的响度补偿（dB）与当前增益，供 CDP 验收用。 */
-export function readDeckTrimState(): { src: string; trimDb: number; gain: number }[] {
+export function readDeckTrimState(): {
+  src: string;
+  trimDb: number;
+  gain: number;
+  t: number;
+  paused: boolean;
+}[] {
   return [...deckNodes.entries()].map(([element, node]) => ({
     src: (element.currentSrc || element.src || '').slice(-48),
     trimDb: Math.round(20 * Math.log10(Math.max(1e-6, node.trim.gain.value)) * 10) / 10,
     gain: Math.round(node.gain.gain.value * 1000) / 1000,
+    // 排查「在放但没声」：把每个 deck 自己的进度一起报出来，才能判断
+    // 「进度在走的那个元素」和「增益为 1 的那个元素」是不是同一个。
+    t: Math.round(element.currentTime * 10) / 10,
+    paused: element.paused,
   }));
 }
 (window as unknown as { __ziluxDeckTrim?: () => unknown }).__ziluxDeckTrim = readDeckTrimState;
+
+/**
+ * 真机排查钩子：一次读出整条本地发声链路的增益与当前频谱电平。
+ * localGain 是最后一道闸（running=true 即投送静音），deck.gain 是两 deck 的音量，
+ * spectrum.level 近似 0 说明图里没信号（链路断在源/EQ 一侧），不是设备没声。
+ */
+(window as unknown as { __ziluxAudioTap?: () => unknown }).__ziluxAudioTap = () => ({
+  ...audioTapState(),
+  master: masterGate ? Math.round(masterGate.gain.value * 1000) / 1000 : -1,
+  stemMute: stemMonitorMute ? Math.round(stemMonitorMute.gain.value * 1000) / 1000 : -1,
+  deck: readDeckTrimState(),
+  spectrum: audioSpectrum(),
+  output: outputLevel(),
+});
 
 /**
  * 冻结某个 AudioParam 上已经排好的自动化：停在当前值、丢掉后面的事件。
@@ -495,6 +792,25 @@ export function readDeckTrimState(): { src: string; trimDb: number; gain: number
  */
 const BAND_BINS = 8;
 let bandBuffer: Uint8Array<ArrayBuffer> | null = null;
+
+/**
+ * 输出侧电平（0..1，时域 RMS）。null = 图没建立或探针没接上（此时只能看元素状态）。
+ * 用途：识别「界面在放、元素在跑，但送出去的是静音」——增益闸、静音闸、上下文挂起都会落到这里。
+ */
+export function outputLevel(): number | null {
+  const node = outputAnalyser;
+  if (!node) return null;
+  if (!outputBuffer || outputBuffer.length !== node.fftSize) {
+    outputBuffer = new Uint8Array(new ArrayBuffer(node.fftSize));
+  }
+  node.getByteTimeDomainData(outputBuffer);
+  let sum = 0;
+  for (let i = 0; i < outputBuffer.length; i += 1) {
+    const v = (outputBuffer[i] - 128) / 128;
+    sum += v * v;
+  }
+  return Math.sqrt(sum / outputBuffer.length);
+}
 
 export function audioSpectrum(): { bands: number[]; level: number } | null {
   const node = analyser;
@@ -621,11 +937,56 @@ export function releaseDeckFx(element: HTMLAudioElement, gain?: number): void {
   }
 }
 
+/**
+ * 把一条 deck 的音色节点全部归零（bass/low/high/presence + 高低通回到直通）。
+ *
+ * 用途：v2 链接手前先把元素自己的音色「擦干净」。任何残留的 shelf/peaking 增益
+ * （上次过渡取消、歌词聚焦没撤、tilt 停在 ±12 dB）都会被听成「原曲低频/高频被拉满」，
+ * 所以 v2 起链时必须显式归零，而不是假设它是 0。
+ */
+export function resetDeckTone(element: HTMLAudioElement): void {
+  const node = deckNodes.get(element);
+  if (!node) return;
+  try {
+    node.bass.gain.value = 0;
+    node.low.gain.value = 0;
+    node.high.gain.value = 0;
+    node.presence.gain.value = 0;
+    node.lowpass.frequency.value = FILTER_FREQ_MAX;
+    node.highpass.frequency.value = FILTER_FREQ_MIN;
+  } catch {
+    /* 忽略：节点已拆 */
+  }
+}
+
+/** 读一条 deck 的音色状态（dB / Hz），供浮层核对「原曲到底有没有被动过」。 */
+export function readDeckTone(element: HTMLAudioElement): {
+  bassDb: number;
+  lowDb: number;
+  highDb: number;
+  presenceDb: number;
+  lowpassHz: number;
+  highpassHz: number;
+} | null {
+  const node = deckNodes.get(element);
+  if (!node) return null;
+  return {
+    bassDb: Math.round(node.bass.gain.value * 10) / 10,
+    lowDb: Math.round(node.low.gain.value * 10) / 10,
+    highDb: Math.round(node.high.gain.value * 10) / 10,
+    presenceDb: Math.round(node.presence.gain.value * 10) / 10,
+    lowpassHz: Math.round(node.lowpass.frequency.value),
+    highpassHz: Math.round(node.highpass.frequency.value),
+  };
+}
+
 /** 把 deck 从混音入口上摘下来（元素本身保留源节点，下次重新 attach 复用）。 */
 export function detachDeckFromGraph(element: HTMLAudioElement): void {
   const node = deckNodes.get(element);
   if (!node) return;
   try {
+    // v2 链若还挂着，先让它把自己拆干净（把 gain 接回 deckMix），再走正常摘除。
+    deckTaps.get(element)?.restore();
     // 摘下来时把「交融」的扫频与「人声/伴奏分离」的搁架滤波一起复位，避免下一首继承过渡期的滤镜。
     releaseDeckFx(element);
     node.gain.disconnect();
@@ -713,7 +1074,13 @@ export function playbackAnalyser(): AnalyserNode | null {
       analyserSink = ctx.createGain();
       analyserSink.gain.value = 0;
       const analyserSource = eqOutput();
-      if (!analyserSource) return null;
+      if (!analyserSource) {
+      // 早退必须回滚：否则下一次进来 `analyser` 已存在会跳过整段接线，
+      // 频谱永远是 0，而音频本身正常（最难查的一类）。
+      analyser = null;
+      analyserSink = null;
+      return null;
+    }
       analyserSource.connect(analyser);
       analyser.connect(analyserSink);
       analyserSink.connect(ctx.destination);
@@ -934,6 +1301,8 @@ function buildLocalGraph(ctx: AudioContext): boolean {
       }
       mediaSource = null;
       localGain = null;
+      outputAnalyser = null;
+      outputSink = null;
       deckMix = null;
       deckNodes.clear();
       audio.volume = localVolume;
@@ -959,6 +1328,7 @@ function buildLocalGraph(ctx: AudioContext): boolean {
     vocalHigh.type = 'highshelf';
     vocalHigh.frequency.value = 4200;
     vocalHigh.gain.value = 0;
+    // 串起来：deckMix → 10 段 EQ → 人声保留搁架 → 分轨闸 → 总音量 → 限幅 → 本地增益 → 输出。
     let tail: AudioNode = deckMix;
     for (const filter of eqFilters) {
       tail.connect(filter);
@@ -966,6 +1336,7 @@ function buildLocalGraph(ctx: AudioContext): boolean {
     }
     tail.connect(vocalLow);
     vocalLow.connect(vocalHigh);
+    // 共享的总音量/限幅：所有 deck（以及分轨试听）都从这里出去，电平基准才一致。
     loudnessGain = ctx.createGain();
     loudnessGain.gain.value = 1;
     nightCompressor = ctx.createDynamicsCompressor();
@@ -974,10 +1345,36 @@ function buildLocalGraph(ctx: AudioContext): boolean {
     nightCompressor.ratio.value = 1;
     nightCompressor.attack.value = 0.004;
     nightCompressor.release.value = 0.24;
-    vocalHigh.connect(loudnessGain);
+    // 分轨试听用的监听闸：平时 1（直通），试听时把 deck 混音这一路压到 0。
+    stemMonitorMute = ctx.createGain();
+    stemMonitorMute.gain.value = 1;
+    vocalHigh.connect(stemMonitorMute);
+    stemMonitorMute.connect(loudnessGain);
     loudnessGain.connect(nightCompressor);
     nightCompressor.connect(localGain);
-    localGain.connect(ctx.destination);
+    masterGate = ctx.createGain();
+    masterGate.gain.value = stemMonitorActive ? 0 : 1;
+    localGain.connect(masterGate);
+    masterGate.connect(ctx.destination);
+    // 输出侧静音探针：masterGate 之后分一路进零增益的 analyser，
+    // 用它判断「播放器在放、但送出去的波形是静音」，而不是只看元素状态。
+    try {
+      outputAnalyser = ctx.createAnalyser();
+      outputAnalyser.fftSize = 512;
+      outputAnalyser.smoothingTimeConstant = 0.3;
+      outputSink = ctx.createGain();
+      outputSink.gain.value = 0;
+      masterGate.connect(outputAnalyser);
+      outputAnalyser.connect(outputSink);
+      outputSink.connect(ctx.destination);
+    } catch (err) {
+      console.warn('[audioTap] output probe unavailable', err);
+      outputAnalyser = null;
+      outputSink = null;
+    }
+    stemOut = ctx.createGain();
+    stemOut.gain.value = stemMonitorActive ? 1 : 0;
+    stemOut.connect(ctx.destination);
     applyEqGains();
     applyVocalFade();
   }

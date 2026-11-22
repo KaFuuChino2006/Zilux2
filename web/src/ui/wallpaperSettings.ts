@@ -13,10 +13,12 @@ import {
   exportDiagnostics,
   fetchDiagnostics,
   fetchLibrary,
+  fetchMonitors,
   fetchOptions,
   fetchSequences,
   fetchStorage,
   runSelfCheck,
+  saveCanvasSettings,
   saveSequence,
   patchOptions,
   type WallpaperDiagnostics,
@@ -239,6 +241,12 @@ const GROUPS: Group[] = [
       { kind: 'section', label: '壁纸自己的声音' },
       { kind: 'switch', key: 'audioEnabled', label: '播放壁纸音轨', hint: '壁纸视频自带的声音，默认关。' },
       { kind: 'range', key: 'audioVolume', label: '壁纸音量', min: 0, max: 100, step: 1, format: (v) => `${v}%` },
+      {
+        kind: 'custom',
+        label: '每块屏的音量',
+        hint: '同一张壁纸铺在多块屏上时只会有一块屏出声（省解码、也不会有回声）；不同壁纸可以各自调音量。',
+        build: buildMonitorVolumes,
+      },
       { kind: 'switch', key: 'audioFollowSystem', label: '跟随系统音量', hint: '关掉表示用上面的固定音量。' },
       { kind: 'section', label: '和音乐抢声音时' },
       { kind: 'range', key: 'musicDuckMs', label: '音乐起播时壁纸淡出', min: 0, max: 2000, step: 50, format: (v) => `${v} ms` },
@@ -729,8 +737,70 @@ export class WallpaperSettingsPanel {
 
 /* ------------------------------------------------------------------ 自定义字段 */
 
-function buildWatchFolders(options: WallpaperOptions, commit: (patch: Partial<WallpaperOptions>) => void): HTMLElement {
-  // options 只用于首次渲染。
+/** 每块屏的音量：滑块默认停在全局音量上（显示「跟随全局」），拖动后才写这块屏自己的覆盖值。 */
+function buildMonitorVolumes(options: WallpaperOptions): HTMLElement {
+  const wrap = h('div', { class: 'wp-monitor-volumes' });
+  const status = h('div', { class: 'wp-muted', text: '读取屏幕音量…' });
+  const fallback = Math.round(options.audioVolume ?? 100);
+  wrap.append(status);
+
+  void fetchMonitors()
+    .then(({ items }) => {
+      status.remove();
+      if (items.length === 0) {
+        wrap.append(h('div', { class: 'wp-muted', text: '没有检测到屏幕。' }));
+        return;
+      }
+      for (const monitor of items) {
+        const own = monitor.volume;
+        const following = own === null || own === undefined;
+        const value = h('span', {
+          class: 'wp-range-value',
+          text: following ? '跟随全局' : `${own}%`,
+        });
+        const input = h('input', {
+          class: 'wp-range',
+          type: 'range',
+          min: '0',
+          max: '100',
+          step: '5',
+          value: String(following ? fallback : own),
+        });
+        input.addEventListener('input', () => {
+          value.textContent = `${input.value}%`;
+        });
+        input.addEventListener('change', () => {
+          const volume = Number(input.value);
+          // 拖回全局音量就等于「跟随全局」，清掉覆盖值，省得以后全局改了这块屏不动。
+          const next = volume === fallback ? null : volume;
+          value.textContent = next === null ? '跟随全局' : `${volume}%`;
+          void saveCanvasSettings('desktop', monitor.key, { volume: next })
+            .then(() => {
+              toast(next === null ? `${monitor.index} 号屏恢复跟随全局` : `${monitor.index} 号屏音量已设为 ${volume}%`);
+            })
+            .catch((error: unknown) => {
+              value.textContent = following ? '跟随全局' : `${own}%`;
+              input.value = String(following ? fallback : own);
+              toast(`音量保存失败：${error instanceof Error ? error.message : String(error)}`, 'error');
+            });
+        });
+        const name = h('span', {
+          class: 'wp-monitor-vol-name',
+          text: `${monitor.index}${monitor.primary ? ' · 主屏' : ''}  ${monitor.w}×${monitor.h}`,
+        });
+        wrap.append(
+          h('div', { class: 'wp-monitor-vol-row' }, name, h('div', { class: 'wp-range-box' }, input, value)),
+        );
+      }
+    })
+    .catch((error: unknown) => {
+      status.textContent = `读取失败：${error instanceof Error ? error.message : String(error)}`;
+    });
+
+  return wrap;
+}
+
+function buildWatchFolders(options: WallpaperOptions, commit: (patch: Partial<WallpaperOptions>) => void): HTMLElement {  // options 只用于首次渲染。
   const list = h('div', { class: 'wp-folder-list' });
 
   const paint = (folders: string[]): void => {

@@ -275,6 +275,7 @@ function Assert-DefaultValues([string]$Name, $Json) {
     $ok = ($Json.version -eq 1) -and
         ($Json.general.splash -eq $true) -and
         ($Json.general.startMaximized -eq $false) -and
+        ($Json.general.uiTemplate -eq 'standard') -and
         ($Json.general.autoLaunch -eq $false) -and
         ($Json.general.autoStartHidden -eq $true) -and
         ($Json.general.watchLocalFolder -eq $true) -and
@@ -450,6 +451,8 @@ if ($s2Text) {
     Assert 'S2 patch ACK snapshot present' ($null -ne $snap2)
     Assert 'S2 patch ACK has new values' ($null -ne $snap2 -and [double]$snap2.playback.volume -eq 0.5 -and $snap2.appearance.reduceMotion -eq $true -and $snap2.appearance.theme -eq 'midnight')
     Assert 'S2 patch keys logged' ($s2Text -match '\[settings\] patch keys=')
+    # 界面模板：新键的最小闭环（patch ACK → 落盘 → 重启后还在），宿主少一处白名单就会在这里红。
+    Assert 'S2 patch ACK has uiTemplate' ($null -ne $snap2 -and $snap2.general.uiTemplate -eq 'fx')
 }
 
 $s2Exit = Close-SettingsHost $s2 'S2'
@@ -463,6 +466,7 @@ if (Test-Path -LiteralPath $s2Settings) {
     Assert 'S2 file keeps patched volume' ([double]$s2File.Json.playback.volume -eq 0.5)
     Assert 'S2 file keeps patched reduceMotion' ($s2File.Json.appearance.reduceMotion -eq $true)
     Assert 'S2 file keeps patched theme' ($s2File.Json.appearance.theme -eq 'midnight')
+    Assert 'S2 file keeps patched uiTemplate' ($s2File.Json.general.uiTemplate -eq 'fx')
     Assert 'S2 file keeps unpatched default' ([double]$s2File.Json.playback.searchLimit -eq 20)
 } else {
     Fail 'S2 settings file exists' 'missing after exit'
@@ -479,6 +483,7 @@ if (Test-Path -LiteralPath $s2Settings) {
         Assert 'S3 volume persisted' ($null -ne $snap3 -and [double]$snap3.playback.volume -eq 0.5)
         Assert 'S3 reduceMotion persisted' ($null -ne $snap3 -and $snap3.appearance.reduceMotion -eq $true)
         Assert 'S3 theme persisted' ($null -ne $snap3 -and $snap3.appearance.theme -eq 'midnight')
+        Assert 'S3 uiTemplate persisted' ($null -ne $snap3 -and $snap3.general.uiTemplate -eq 'fx')
     }
     $s3Exit = Close-SettingsHost $s3 'S3'
     Assert 'S3 exit code 0' ($s3Exit -eq 0)

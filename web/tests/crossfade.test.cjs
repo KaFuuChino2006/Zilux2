@@ -25,7 +25,11 @@ function harness({ graph = true } = {}) {
     // core/ 下的纯函数模块与 ui/ 分目录：按名找，让 crossfadeDeck 的新依赖也能加载。
     const uiFile = path.resolve(__dirname, '../src/ui', name + '.ts');
     const coreFile = path.resolve(__dirname, '../src/core', name + '.ts');
-    const file = fs.existsSync(uiFile) ? uiFile : coreFile;
+    const automixFile = path.resolve(__dirname, '../src/core/automix', name + '.ts');
+    const audioFile = path.resolve(__dirname, '../src/audio', name + '.ts');
+    const file = fs.existsSync(uiFile) ? uiFile
+      : fs.existsSync(coreFile) ? coreFile
+      : fs.existsSync(automixFile) ? automixFile : audioFile;
     if (modules.has(file)) return modules.get(file);
     let source = fs.readFileSync(file, 'utf8');
     if (name === 'crossfadeDeck') source += '\nexport { buildSchedule, buildAmTracks, resolveTransitionStyle, readCrossfadeDebug };';
@@ -37,14 +41,17 @@ function harness({ graph = true } = {}) {
       exports, console, window, performance: { now: () => now },
       localStorage: { getItem: k => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) },
       CustomEvent: class {},
-      require: name => name.includes('advancedReadiness') ? readiness
-        : name.includes('audioTap') ? audio
-        : ['./transitionMath', './transitionLoudness', './loudness', './advancedHandoff', './mixTransitionMode',
-           './transitionTimeline', '../core/advancedHandoff', '../core/mixTransitionMode',
-           '../core/advancedTransition', '../core/transitionPlan', '../core/tempoGate', '../core/djMoves',
-           '../core/stemSwap', './tempoGate', './transitionPlan', './djMoves', './stemSwap',
-           '../core/beatPll', './beatPll'].includes(name)
-          ? load(name.slice(name.lastIndexOf('/') + 1)) : {},
+      require: name => {
+        if (name.includes('advancedReadiness')) return readiness;
+        if (name.includes('audioTap')) return audio;
+        const base = name.slice(name.lastIndexOf('/') + 1);
+        // 只放行纯函数依赖；其余（online/analysis 等类型/运行时模块）给空对象。
+        const allowed = new Set(['phraseMix', 'transitionMath', 'transitionLoudness', 'loudness', 'advancedHandoff',
+          'mixTransitionMode', 'transitionTimeline', 'advancedTransition', 'transitionPlan', 'tempoGate',
+          'djMoves', 'stemSwap', 'beatPll', 'vocalAnchor', 'introBridge', 'tailFade', 'v2Plan',
+          'v2Quality', 'automixPlan', 'bridgePlan', 'pitchShift', 'styleKit', 'melodyAnchor', 'echoTail', 'backspin', 'loopRoll', 'dropEntry', 'doubling', 'genreProfile', 'appleRecipes']);
+        return allowed.has(base) ? load(base) : {};
+      },
     }, { filename: file });
     return exports;
   }
@@ -119,6 +126,33 @@ test('lyric pre-roll finishes before first word, including accelerated B', () =>
   assert.ok(s.fadeStartPosMs >= opts.currentLastVocalEndMs);
 });
 
+test('v2 最短混音锚在 A 的末句，不会被 B 的前奏唱词拉早（m01861 回归）', () => {
+  const h = harness();
+  h.store.set('mixTransitionMode', 'automixV2');
+  const opts = h.options();
+  // A：50 s 处唱完，之后是器乐尾声；B：第 5 秒就开口（前奏极短）。
+  const curve = (lengthMs, fromMs, toMs) => {
+    const hop = 250;
+    const out = new Array(Math.floor(lengthMs / hop)).fill(0);
+    for (let i = 0; i < out.length; i += 1) {
+      const ms = i * hop;
+      out[i] = ms >= fromMs && ms <= toMs ? 0.9 : 0;
+    }
+    return out;
+  };
+  opts.currentAnalysis.analysis.activity = { hopMs: 250, vocal: curve(60000, 5000, 50000), drum: [], bass: [] };
+  opts.nextAnalysis.analysis.activity = { hopMs: 250, vocal: curve(60000, 5000, 59000), drum: [], bass: [] };
+  opts.nextVocalStartMs = 5000;
+  opts.currentLastVocalEndMs = 50000;
+  const s = h.engine.buildSchedule(opts);
+  assert.ok(s, '应该排出一次过渡');
+  // 关键断言：过渡不能被排到 A 播放的头 5 秒（旧实现拿 B 的 vocalFileMs 当 A 的终点）。
+  assert.ok(s.fadeStartPosMs > 30000, `过渡起点不该早于 30 s，实为 ${Math.round(s.fadeStartPosMs)} ms`);
+  // v2 的「尾端穿插」允许 B 在 A 末句前进入，但最多提前一个 mixFloor（12 s）。
+  assert.ok(s.fadeStartPosMs >= opts.currentLastVocalEndMs - 13_000,
+    `穿插最多提前一个 mixFloor，实为 ${Math.round(s.fadeStartPosMs)} ms`);
+});
+
 test('missing lyric timing falls back to structure; poor tempo evidence preserves an audible blend', () => {
   const h = harness(), opts = h.options();
   opts.currentLastVocalEndMs = null;
@@ -141,7 +175,9 @@ test('a two-minute song never ends at an early cue-out or an incomplete lyric ti
   const s = h.engine.buildSchedule(opts);
   assert.ok(s.fadeStartPosMs >= 100000, `started at ${s.fadeStartPosMs}ms`);
   assert.ok(Math.abs(s.fadeStartPosMs + s.fadeMs - 120000) < 10);
-  assert.ok(s.fadeMs >= 6000, `collapsed to ${s.fadeMs}ms`);
+  // B 前奏只有 3.5 s：交叠跟着缩短到「B 首句刚好落在淡出之后」，不再整段放弃歌词衔接。
+  assert.equal(s.handoff, true);
+  assert.ok(s.fadeMs >= 3000, `collapsed to ${s.fadeMs}ms`);
 });
 
 test('suspicious audible-end metadata does not cut off half a song', () => {
@@ -177,10 +213,11 @@ test('B stays silent until the last lyric finishes when enough outro remains', a
   opts.currentLastVocalEndMs = 55000;
   opts.nextVocalStartMs = 1500; // short B intro must not bypass A's last line
   const s = h.engine.buildSchedule(opts);
-  assert.equal(s.handoff, false);
-  assert.ok(s.fadeStartPosMs >= 55400, `B starts at ${s.fadeStartPosMs}ms`);
+  // 前奏只有 1.5 s：交叠缩到 1.35 s，但仍然走歌词衔接（B 首句紧接淡出）。
+  assert.equal(s.handoff, true);
+  assert.ok(s.fadeStartPosMs >= 58400, `B starts at ${s.fadeStartPosMs}ms`);
   assert.ok(Math.abs(s.fadeStartPosMs + s.fadeMs - 60000) < 10);
-  assert.ok(s.fadeMs >= 3200);
+  assert.ok(s.fadeMs >= 1200);
   assert.equal(h.engine.prepareCrossfade(opts), true);
   h.engine.crossfadeTick(55000, 60000);
   assert.equal(h.calls.some(c => c[0] === 'scheduleDeckGain'), false);
@@ -217,9 +254,25 @@ test('short or missing B intro never collapses automatic mixing into a sub-secon
     opts.currentLastVocalEndMs = 50000;
     const s = h.engine.buildSchedule(opts);
     assert.ok(s, `schedule should exist for intro ${vocalMs}ms`);
-    assert.ok(s.fadeMs >= 3200, `intro ${vocalMs}ms collapsed fade to ${s.fadeMs}ms`);
-    assert.equal(s.handoff, false);
+    // 前奏再短也只把交叠缩到 MIN_FADE_MS（1.2 s），不会退回「普通淡化」。
+    assert.ok(s.fadeMs >= 1200, `intro ${vocalMs}ms collapsed fade to ${s.fadeMs}ms`);
+    assert.equal(s.handoff, true);
   }
+});
+
+test('switching 歌词衔接 off stops anchoring the fade to the last lyric', () => {
+  const h = harness(), opts = h.options();
+  opts.currentLastVocalEndMs = 55000;
+  opts.nextVocalStartMs = 1500;
+  const on = h.engine.buildSchedule(opts);
+  h.engine.writeCrossfadeSettings({ handoff: false });
+  const off = h.engine.buildSchedule(opts);
+  assert.equal(on.handoff, true);
+  assert.equal(off.handoff, false);
+  // 关掉后：淡化按小节铺满（不等末句），B 从曲首 / 强拍入场，与打开时的听感明确不同。
+  assert.ok(off.fadeStartPosMs < on.fadeStartPosMs, `off ${off.fadeStartPosMs} vs on ${on.fadeStartPosMs}`);
+  assert.ok(off.fadeMs >= 3000, `off fade ${off.fadeMs}ms`);
+  assert.ok(off.autoNote.includes('已关闭'), off.autoNote);
 });
 
 test('when the first word is too early, B remains audible during a multi-second overlap', () => {
@@ -229,7 +282,7 @@ test('when the first word is too early, B remains audible during a multi-second 
   const { naturalGains } = h.load('transitionMath');
   const [a, b] = naturalGains(500 / schedule.fadeMs);
   assert.ok(a > .5 && b > 0);
-  assert.ok(schedule.fadeMs >= 3200);
+  assert.ok(schedule.fadeMs >= 1200);
 });
 
 test('short-intro playback schedules several seconds of simultaneous A and B audio', async () => {
@@ -245,7 +298,7 @@ test('short-intro playback schedules several seconds of simultaneous A and B aud
   const a = gains[0][3], b = gains[1][3];
   const quarter = 50;
   assert.ok(a[quarter].gain > .5 && b[quarter].gain > .2);
-  assert.ok(a.at(-1).atMs >= 3200);
+  assert.ok(a.at(-1).atMs >= 1200);
   assert.equal(a.at(-1).gain, 0);
   assert.equal(b.at(-1).gain, 1);
 });
@@ -729,4 +782,177 @@ test('手法设置：auto 时不带 hint（让能量/段落规则自己决定）
   h.engine.crossfadeTick(s.fadeStartPosMs, 60000);
   await Promise.resolve();
   assert.equal(captured && captured.hint, undefined);
+});
+
+test('v2 唱词衔接：B 的首句必须落在淡化终点（m02584 回归）', () => {
+  const h = harness();
+  h.store.set('mixTransitionMode', 'automixV2');
+  // B 前奏短（第 8 秒开口）：B 从入口起播，淡化被收短到正好在首句结束。
+  const short = h.engine.buildSchedule(h.options());
+
+  assert.ok(short, '应该排出一次过渡');
+  const entryShort = short.bStartFileMs + (short.fadeMs - (short.introBridge?.delayMs ?? 0)) * short.tempoRate;
+  assert.ok(Math.abs(entryShort - h.options().nextVocalStartMs) <= 200,
+    `首句应落在淡化终点，实为 ${Math.round(entryShort)} ms`);
+  assert.equal(short.handoff, true);
+
+  // B 前奏长（第 30 秒开口）：B 起播点回推 fadeMs×rate，首句仍在淡化终点。
+  const h2 = harness();
+  h2.store.set('mixTransitionMode', 'automixV2');
+  const opts2 = h2.options();
+  opts2.nextVocalStartMs = 30000;
+  const long = h2.engine.buildSchedule(opts2);
+  assert.ok(long, '应该排出一次过渡');
+  // m04554：B 一律从它自己的起点起播（不 seek 到歌中间）。首句在 30 s、A 尾段装不下
+  // 整段前奏时，B 的前奏在 A 结束后继续走，而不是把 B 跳到 20 多秒。
+  assert.equal(long.bStartFileMs, 0, 'B 必须从曲首起播');
+  const entryLong = long.bStartFileMs + long.fadeMs * long.tempoRate;
+  assert.ok(entryLong <= 30200, `B 的首句不能早于淡化终点，实为 ${Math.round(entryLong)} ms`);
+});
+
+test('进阶接歌不会让长前奏或曲中末句把起点拉出尾段', () => {
+  const h = harness();
+  h.store.set('mixTransitionMode','automixV2');
+  for (const duration of [60000,240000]) {
+    const opts = h.options();
+    opts.currentDurationMs = duration;
+    opts.currentAnalysis.analysis.audibleEndMs = duration;
+    opts.currentLastVocalEndMs = duration / 2;
+    opts.nextVocalStartMs = 30000;
+    const plan = h.engine.buildSchedule(opts);
+    assert.ok(plan);
+    assert.ok(plan.fadeStartPosMs >= duration-Math.min(30000,duration*0.15));
+  }
+});
+
+test('无歌词时 A 播完可听尾奏，B 的 8 秒前奏直接覆盖最后 8 秒', () => {
+  const h = harness();
+  h.store.set('mixTransitionMode','automixV2');
+  const opts = h.options();
+  opts.currentLastVocalEndMs = 0;
+  const plan = h.engine.buildSchedule(opts);
+  assert.ok(plan);
+  assert.equal(plan.fadeStartFileMs + plan.fadeMs, 60000);
+  assert.equal(plan.bStartFileMs, 0);
+  assert.equal(plan.fadeMs, 8000);
+  assert.equal(plan.introBridge, null);
+});
+
+test('按曲对选择器乐铺底：保留有加花的前奏长度，安静前奏沿用自然衔接', () => {
+  const h=harness();
+  h.store.set('mixTransitionMode','automixV2');
+  const opts=h.options();
+  const activity = level => ({hopMs:250,drum:Array(240).fill(level),bass:Array(240).fill(.3),vocal:Array(240).fill(0)});
+  opts.currentAnalysis.analysis.activity=activity(.7);
+  opts.nextAnalysis.analysis.activity=activity(.8);
+  const drumPlan=h.engine.buildSchedule(opts);
+  assert.equal(drumPlan.cleanPickup,true);
+  assert.equal(drumPlan.fadeMs,8000);
+  assert.equal(drumPlan.bStartFileMs,0);
+  opts.nextAnalysis.analysis.activity=activity(.1);
+  assert.equal(h.engine.buildSchedule(opts).cleanPickup,false);
+});
+
+test('A 的最后一句比最后一击鼓点晚时，过渡不得在唱完之前收尾（m04024 回归）', () => {
+  const h = harness();
+  h.store.set('mixTransitionMode', 'automixV2');
+  const opts = h.options();
+  // 鼓点在 54 s 收干净，之后是 6 s 纯散音；但 A 的最后一句唱到 55 s
+  const hop = 250, frames = Math.ceil(60000 / hop);
+  const drum = Array(frames).fill(0);
+  for (let i = Math.floor(1000 / hop); i < Math.ceil(54000 / hop); i++) drum[i] = i % 4 === 0 ? 0.8 : 0.25;
+  const vocal = Array(frames).fill(0.7);
+  for (let i = 0; i < Math.ceil(1000 / hop); i++) vocal[i] = 0;
+  opts.currentAnalysis.analysis.activity = { hopMs: hop, drum, bass: drum.slice(), vocal };
+  opts.currentLastVocalEndMs = 55000;
+  const plan = h.engine.buildSchedule(opts);
+  assert.ok(plan);
+  const fadeEnd = plan.fadeStartFileMs + plan.fadeMs;
+  assert.ok(fadeEnd >= 55000, `过渡在 ${fadeEnd} 就收尾，早于 A 的末句 55000`);
+});
+
+test('A 一路唱到结尾时仍要正常过渡（唱词衔接不被抵消，m04127 回归）', () => {
+  const h = harness();
+  h.store.set('mixTransitionMode', 'automixV2');
+  const opts = h.options();
+  const hop = 250, frames = Math.ceil(60000 / hop);
+  const drum = Array(frames).fill(0.7);
+  const vocal = Array(frames).fill(0.75);
+  opts.currentAnalysis.analysis.activity = { hopMs: hop, drum, bass: drum.slice(), vocal };
+  opts.currentLastVocalEndMs = 59500;
+  const plan = h.engine.buildSchedule(opts);
+  assert.ok(plan);
+  assert.equal(plan.handoff, true, 'A 唱到结尾时 handoff 被关掉了');
+  assert.ok(plan.fadeMs >= 3000, `过渡被压成 ${plan.fadeMs}ms`);
+  const landing = plan.bStartFileMs + plan.fadeMs * plan.tempoRate;
+  assert.ok(Math.abs(landing - 8000) <= 400, `B 落点 ${landing} 偏离首句 8000`);
+});
+
+test('hard cut really cuts: cut/slam shrink the window and land on a downbeat (m05660)', () => {
+  const h = harness(), opts = h.options();
+  h.store.set('mixTransitionMode', 'automixV2');
+  h.store.set('zilux2.dev.hardcut', '1');
+  h.engine.writeCrossfadeSettings({ lengthMode: 'seconds', lengthValue: 12 });
+  // BPM 差 28%+：激进策略下应该真砸一下，而不是拖 12 s 的交叠。
+  opts.currentAnalysis.analysis = { ...h.analysis(128), energy: 0.85 };
+  opts.nextAnalysis.analysis = { ...h.analysis(92), energy: 0.35 };
+  const s = h.engine.buildSchedule(opts);
+  assert.ok(s, 'schedule should exist');
+  assert.equal(s.style, 'cut');
+  // 硬切不是「亚秒切」：2.6–4 s 保留冲击力，又不至于听起来像放错了。
+  assert.ok(s.fadeMs <= 4000, `cut window ${s.fadeMs}ms`);
+  assert.ok(s.fadeMs >= 2600, `cut window ${s.fadeMs}ms`);
+  assert.equal(s.handoff, false);
+  const end = s.fadeStartFileMs + s.fadeMs;
+  const near = (opts.currentAnalysis.analysis.downbeats ?? [])
+    .some((ms) => Math.abs(ms - end) <= 10);
+  assert.ok(near, `cut should end on a downbeat, ended at ${end}`);
+});
+
+test('halfTime folds a 2:1 tempo relationship instead of stretching 50% (m05660)', () => {
+  const h = harness(), opts = h.options();
+  h.store.set('mixTransitionMode', 'automixV2');
+  opts.currentAnalysis.analysis = h.analysis(128);
+  opts.nextAnalysis.analysis = h.analysis(64);
+  const s = h.engine.buildSchedule(opts);
+  assert.ok(s, 'schedule should exist');
+  assert.equal(s.styleId, 'halfTime');
+  assert.equal(s.tempoRate, 2);
+});
+
+test('v2 窗口下限：收尾规则压短后仍补够 3.2 s，且手法不超过自身最短窗口（m08602 回归）', () => {
+  const h = harness();
+  h.store.set('mixTransitionMode', 'automixV2');
+  const opts = h.options();
+  // A 长 109 s、66 BPM（小节 3.3 s），尾段只剩氛围；B 136 BPM（折叠成 68 ≈ 同速）。
+  const hop = 250;
+  const curve = (lengthMs, fromMs, toMs, value = 0.9) => {
+    const out = new Array(Math.floor(lengthMs / hop)).fill(0);
+    for (let i = 0; i < out.length; i += 1) {
+      const ms = i * hop;
+      out[i] = ms >= fromMs && ms <= toMs ? value : 0;
+    }
+    return out;
+  };
+  opts.currentDurationMs = 109500;
+  opts.currentAnalysis = { analysis: { ...h.analysis(66.5), audibleEndMs: 108910, cueOutMs: 99242,
+    barCount: 30, sections: [{ label: 'chorus', startMs: 41494 }, { label: 'outro', startMs: 99242 }],
+    activity: { hopMs: 250, vocal: curve(109500, 41494, 96000), drum: curve(109500, 0, 99000, 0.8), bass: [] } },
+    durationMs: 109500 };
+  opts.nextAnalysis = { analysis: { ...h.analysis(136), audibleEndMs: 155020, barCount: 89,
+    sections: [{ label: 'chorus', startMs: 137996 }, { label: 'outro', startMs: 152114 }],
+    activity: { hopMs: 250, vocal: curve(157000, 8000, 150000), drum: [], bass: [] } },
+    durationMs: 157000 };
+  opts.nextVocalStartMs = 8000;
+  opts.currentLastVocalEndMs = 96000;
+  const s = h.engine.buildSchedule(opts);
+  assert.ok(s, '应该排出一次过渡');
+  assert.ok(s.fadeMs >= 3200, `窗口不该短于 3.2 s，实为 ${Math.round(s.fadeMs)} ms`);
+  // 手法与窗口必须自洽：记了手法就得够它自己的最短窗口。
+  const { STYLE_CATALOG } = h.load('styleKit');
+  const spec = STYLE_CATALOG.find((entry) => entry.id === s.styleId);
+  if (s.styleId && spec) {
+    assert.ok(s.fadeMs + 1 >= spec.minFadeMs,
+      `手法 ${s.styleId} 要求 >= ${spec.minFadeMs} ms，实为 ${Math.round(s.fadeMs)} ms`);
+  }
 });

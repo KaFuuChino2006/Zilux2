@@ -50,6 +50,10 @@ export function initOnline(): void {
       host.log('warn', '[online] bad online payload');
       return;
     }
+    // 宿主会在启动、导航完成、以及页面刷新后重放同一份状态（见 WebViewHost 的 replay）。
+    // 端口与 token 都没变时直接忽略：否则每次重放都重跑一遍监听器（重新拉曲库、重建在线源），
+    // 日志里也会出现三条一样的 `host ready`。
+    if (info && info.port === payload.port && info.token === payload.token) return;
     info = {
       port: payload.port,
       token: payload.token,
@@ -245,17 +249,36 @@ export async function fetchLyric(source: OnlineSource, id: string, options?: { a
   return api<OnlineLyric>('/api/lyric', options?.amll ? { source, id, amll: '1' } : { source, id });
 }
 
-/** /api/library/feed 的 kind：最近播放 / 每日推荐 / 私人雷达（网易云）。 */
-export type FeedKind = 'recent' | 'daily' | 'radar';
+/**
+ * /api/library/feed 的 kind：最近播放 / 每日推荐 / 私人雷达、私人漫游、相似歌曲（网易云）/
+ * 猜你喜欢、百万收藏、新歌推荐（QQ 音乐首页那三块）。
+ */
+export type FeedKind = 'recent' | 'daily' | 'radar' | 'roam' | 'similar' | 'guess' | 'million' | 'newsong';
 
 /** 发现面板：最近播放 / 每日推荐（/api/library/feed）。 */
 export async function fetchFeed(
   source: OnlineSource,
   kind: FeedKind,
   limit = 60,
+  songId?: string,
 ): Promise<{ source: OnlineSource; kind: FeedKind; tracks: OnlineTrack[] }> {
   if (mockMode) {
-    const label = kind === 'daily' ? '每日推荐' : kind === 'radar' ? '私人雷达' : '最近播放';
+    const label =
+      kind === 'daily'
+        ? '每日推荐'
+        : kind === 'radar'
+          ? '私人雷达'
+          : kind === 'roam'
+            ? '私人漫游'
+            : kind === 'similar'
+              ? '相似歌曲'
+              : kind === 'guess'
+                ? '猜你喜欢'
+                : kind === 'million'
+                  ? '百万收藏'
+                  : kind === 'newsong'
+                    ? '新歌推荐'
+                    : '最近播放';
     const platform = source === 'qq' ? 'QQ 音乐' : '网易云音乐';
     const tracks: OnlineTrack[] = Array.from({ length: 8 }, (_, index) => ({
       source,
@@ -273,6 +296,7 @@ export async function fetchFeed(
     source,
     kind,
     limit: String(limit),
+    ...(songId ? { songId } : {}),
   });
 }
 
@@ -562,7 +586,43 @@ function mockApi<T>(path: string, params: Record<string, string>): Promise<T> {
   if (path === '/api/lyric') {
     return Promise.resolve(mockLyric(params.source as OnlineSource, params.id ?? '') as T);
   }
+  // 题材/歌单：首页「风格分类」下拉要用它们，缺了在 ?mock=1 下会整块报「推荐暂时无法加载」，
+  // 也就没法在本地验收下拉本身的样式。
+  const discover = mockDiscoverApi<T>(path, params);
+  if (discover) return discover;
   return Promise.reject(new OnlineError('mock-unsupported', '演示模式下不支持该接口'));
+}
+
+/** 只给「发现」那几条只读接口用的假数据；不是这些路径就返回 null，由调用方继续走真实请求。 */
+export function mockDiscoverApi<T>(path: string, params: Record<string, string>): Promise<T> | null {
+  if (path === '/api/discover/cats') {
+    return Promise.resolve({ categories: MOCK_CATS.map((name) => ({ id: name, name })) } as T);
+  }
+  if (path === '/api/discover/playlists') {
+    return Promise.resolve(mockDiscoverPlaylists(params.source as OnlineSource, params.cat ?? '全部') as T);
+  }
+  return null;
+}
+
+/** 演示模式下的题材表（形状与宿主返回的 `categories[{id,name}]` 一致）。 */
+const MOCK_CATS = [
+  '全部', '流行', '摇滚', '民谣', '电子', '古风', '轻音乐', '影视原声',
+  'ACG', '华语', '欧美', '日语', '韩语', '爵士', '夜晚', '清晨', '学习', '工作', '运动', '旅行',
+];
+
+function mockDiscoverPlaylists(source: OnlineSource, cat: string): unknown {
+  return {
+    source,
+    cat,
+    playlists: Array.from({ length: 10 }, (_, index) => ({
+      id: `mock-${source}-${cat}-${index + 1}`,
+      title: `${cat}歌单 ${String(index + 1).padStart(2, '0')}`,
+      count: 24 + index * 13,
+      creator: '演示数据',
+      source,
+    })),
+    hasMore: false,
+  };
 }
 
 /** 记录本机播放历史（宿主持久化，最近播放用；失败静默）。 */

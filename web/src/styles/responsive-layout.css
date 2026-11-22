@@ -227,3 +227,340 @@
     width: min(1180px, 62vw);
   }
 }
+
+/* Desktop home reference: keep page colors and geometry local to the scrolling content. */
+.home-host .ui-page.home {
+  --home-card: linear-gradient(155deg, #fff 12%, color-mix(in srgb, var(--accent) 8%, white));
+  --home-border: #dfe8ed;
+  --text: #101820;
+  --muted: #65717f;
+  color: var(--text);
+  background: transparent;
+  padding-inline: max(clamp(14px, 2.35vw, 40px), calc((100% - var(--home-max-w)) / 2));
+}
+.home-host .home .daily-card {
+  background: var(--home-card);
+  border: 1px solid var(--home-border);
+  box-shadow: none;
+  border-radius: 18px;
+}
+.home-host .home .daily-cover:not(.daily-cover-0):not(.is-ghost) { display: none; }
+.home-host .home .daily-cover-0 {
+  border-radius: 13px;
+  box-shadow: 0 3px 9px #24413925;
+}
+.home-host .home .daily-kicker { color: color-mix(in srgb, var(--accent) 76%, #172127); }
+.home-host .home .daily-actions .ui-btn {
+  background: #fff;
+  color: #263239;
+  border: 1px solid #d7dfe1;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.home-host .home .daily-actions .ui-btn--primary {
+  background: linear-gradient(110deg, color-mix(in srgb, var(--accent) 88%, white), var(--accent));
+  border-color: transparent;
+  color: var(--accent-contrast);
+}
+.home-host .home .home-daily-row .daily-card {
+  min-height: clamp(136px, 9.7vw, 166px);
+  padding: 14px clamp(15px, 1.3vw, 22px);
+  column-gap: clamp(16px, 1.8vw, 30px);
+}
+.home-host .home .home-daily-row .daily-deck {
+  width: clamp(90px, 8.1vw, 138px);
+  height: auto;
+  aspect-ratio: 1;
+  margin: 0;
+}
+.home-host .home .home-row { margin-top: 22px; }
+.home-host .home .home-row .home-collections > .home-liked .daily-card {
+  display: flex;
+  gap: clamp(14px, 1.55vw, 26px);
+  padding: 15px 18px;
+  min-height: 154px;
+}
+.home-host .home .home-row .home-collections > .home-liked .daily-card > .daily-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+.home-host .home .home-collections > .home-liked .daily-card > .daily-deck {
+  flex: none;
+  width: clamp(76px, 6.1vw, 104px);
+  height: auto;
+  aspect-ratio: 1;
+  margin: 0;
+}
+.home-host .home .home-row .home-recent .recent-strip {
+  height: 160px;
+  max-height: 160px;
+  gap: 0;
+  padding: 0;
+  background: none;
+  border: 0;
+  box-shadow: none;
+}
+.home-host .home .home-recent .recent-item { min-height: 32px; padding: 1px 4px; }
+.home-host .home .home-recent .recent-thumb { width: 29px; height: 29px; }
+.home-host .home > .home-provider { margin-top: 20px; }
+.home-host .home .home-provider > .ui-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: clamp(12px, 2vw, 34px);
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+/* 首页推荐行的切换器直接用全站统一的分段控件（.seg / .seg-sm，白色滑块由 app.ts 注入），
+   这里只补这一行的排布：折行时不撑破标题行。 */
+.home-provider-tabs {
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+.home-provider-tab { flex: 0 0 auto; }
+
+/* 换 tab 时的交叉：旧内容脱离文档流叠在原位往上走，新内容在原位浮入，
+   两块重叠 260ms，看起来是同一块区域在换内容（与 switchStageLayer 同一套语言）。 */
+.home-provider-body { position: relative; }
+.home-provider-panel { position: relative; z-index: 1; }
+.home-provider-body > .is-provider-leaving {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.home-provider .ui-section-more { margin-left: auto; }
+.home-host .home .ui-tile-meta { display: none; }
+.home-provider select { margin-bottom: 10px; }
+
+/* 「风格分类」的题材下拉：原生 <select> 的列表由系统绘制，圆角/配色/动效改不动，
+   深色主题下尤其突兀。换成自定义下拉——触发器与列表都用**首页自己的浅色卡片语言**
+   （父级 `.home-host .ui-page.home` 已把 --text 改成 #101820 深字、--home-border 改成浅边），
+   这样和旁边的 tab、歌单卡片是一套，而不是半透明深面板压在白卡中间（那样文字会深字压深底）。 */
+.home-cat-picker { position: relative; display: inline-block; margin-bottom: 12px; }
+.home-cat-trigger {
+  font: inherit;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 132px;
+  padding: 7px 14px 7px 16px;
+  border-radius: 999px;
+  border: 1px solid var(--home-border);
+  /* 与 .home-host .home .daily-card 同一个底色：白胶囊，和 tab 并排不打架。 */
+  background: #fff;
+  color: var(--text);
+  cursor: pointer;
+  transition:
+    background var(--motion-quick) var(--ease),
+    border-color var(--motion-quick) var(--ease),
+    box-shadow var(--motion-quick) var(--ease),
+    color var(--motion-quick) var(--ease);
+}
+.home-cat-trigger:hover { border-color: color-mix(in srgb, var(--text) 26%, transparent); }
+.home-cat-trigger:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 62%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+.home-cat-trigger[aria-expanded='true'] {
+  border-color: color-mix(in srgb, var(--accent) 62%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.home-cat-trigger > svg { flex: none; opacity: .56; transition: transform var(--motion-fast) var(--ease); }
+.home-cat-trigger[aria-expanded='true'] > svg { transform: rotate(180deg); }
+.home-cat-current { white-space: nowrap; }
+
+.home-cat-menu {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 8px);
+  left: 0;
+  width: max(100%, 176px);
+  max-height: 272px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px;
+  border-radius: var(--radius);
+  border: 1px solid var(--home-border);
+  /* 实色白 + 柔和投影：首页卡片不用毛玻璃，弹层跟它保持一致。 */
+  background: #fff;
+  box-shadow: 0 18px 44px rgb(16 24 32 / .16);
+  display: grid;
+  gap: 2px;
+  transform-origin: top left;
+  /* 入场：淡入 + 轻微下落；出场沿同一条轨迹反向收回，中途再点触发器也能从当前值往回走。 */
+  opacity: 0;
+  transform: translateY(-6px) scale(.98);
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity var(--motion-quick) var(--ease),
+    transform var(--motion-fast) var(--ease),
+    visibility 0s linear var(--motion-fast);
+}
+.home-cat-picker.is-open .home-cat-menu {
+  opacity: 1;
+  transform: none;
+  visibility: visible;
+  pointer-events: auto;
+  transition:
+    opacity var(--motion-quick) var(--ease),
+    transform var(--motion-fast) var(--ease),
+    visibility 0s linear 0s;
+}
+.home-cat-menu::-webkit-scrollbar { width: 6px; }
+.home-cat-menu::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 18%, transparent);
+}
+.home-cat-option {
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  white-space: nowrap;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 9px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    background var(--motion-instant) var(--ease),
+    color var(--motion-instant) var(--ease);
+}
+.home-cat-option:hover { background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text); }
+.home-cat-option:focus-visible { outline: none; background: color-mix(in srgb, var(--text) 9%, transparent); color: var(--text); }
+.home-cat-option[aria-selected='true'] {
+  background: var(--accent-soft);
+  color: var(--text);
+  font-weight: 600;
+}
+.home-host .home .home-provider .home-collections .daily-card {
+  min-height: 124px;
+  gap: clamp(15px, 1.6vw, 28px);
+  padding: 9px 16px;
+}
+.home-host .home .ui-scroller {
+  grid-auto-columns: clamp(116px, 8.15vw, 160px);
+  gap: clamp(12px, 1.45vw, 24px);
+}
+.home-host .home .ui-tile-cover { aspect-ratio: 1.18; box-shadow: none; }
+.home-host .home .ui-tile-name {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  white-space: normal;
+  line-height: 1.35;
+}
+@media (max-width: 760px) {
+  .home-host .home .home-daily-row .daily-actions { flex-wrap: wrap; }
+}
+.home-host .home .home-daily-row .daily-title {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Let home cards scroll behind the fixed header while preserving their initial position. */
+.app:not(.is-mg-mode) .stage:has(> .home-host:not(.is-hidden) .ui-page.home) {
+  overflow: visible;
+}
+.app:not(.is-mg-mode) .stage > .home-host:has(.ui-page.home) {
+  top: calc(-1 * var(--topbar-total));
+}
+.app:not(.is-mg-mode) .stage > .home-host:not(.is-hidden) .ui-page.home::before {
+  content: '';
+  flex: 0 0 var(--topbar-total);
+  pointer-events: none;
+}
+
+.app:not(.is-mg-mode):has(.home-host:not(.is-hidden)) > .topbar:not(.is-peek) {
+  z-index: 30;
+}
+.app:not(.is-mg-mode,.is-search-open):has(.home-host:not(.is-hidden) .home-search-away) > .topbar .topbar-center {
+  opacity: 0;
+  transform: translateY(-14px);
+  pointer-events: none;
+  visibility: hidden;
+  transition: opacity var(--motion-quick) var(--ease), transform var(--motion-fast) var(--ease), visibility 0s var(--motion-fast);
+}
+.app:not(.is-mg-mode):has(.home-host:not(.is-hidden) .home-scrolled) > .topbar .topbar-left {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 所有内容页沿用首页那套顶栏隐退：滚过顶部收起品牌，向下滚再收起搜索框（向上滚立刻放回）。
+   类由 app.ts 的 installContentScrollState() 在 .stage 捕获阶段统一加减。 */
+.app:not(.is-mg-mode).is-content-scrolled > .topbar .topbar-left {
+  opacity: 0;
+  pointer-events: none;
+}
+.app:not(.is-mg-mode,.is-search-open).is-search-away > .topbar .topbar-center {
+  opacity: 0;
+  transform: translateY(-14px);
+  pointer-events: none;
+  visibility: hidden;
+  transition: opacity var(--motion-quick) var(--ease), transform var(--motion-fast) var(--ease), visibility 0s var(--motion-fast);
+}
+
+/* 内容页（墙面：全部歌曲 / 歌单 / 喜欢 / 本地库 / 探索 …）和首页一样能滚到窗口最顶：
+   滚动容器向上探过顶栏，多出来的那段用 padding 补回去，首屏位置不变；
+   滚起来内容就从顶栏下层穿过，而不是被压在顶栏下沿。 */
+.app:not(.is-mg-mode) .stage:has(> .wall:not(.is-hidden)) {
+  overflow: visible;
+}
+.app:not(.is-mg-mode) .stage > .wall:not(.is-hidden) {
+  top: calc(-1 * var(--topbar-total));
+  padding-top: calc(var(--topbar-total) + 4px);
+}
+/* 标题条不再吸顶：容器上探后内容能穿到窗口最上沿，吸顶会让标题停在 84px
+   被滚上来的卡片压住（维护者看到的「标题和控件错位向下」）。
+   改成随内容一起滚出去，回到顶部时自然复位，和首页的滚动手感一致。 */
+.app:not(.is-mg-mode) .stage > .wall:not(.is-hidden) .wall-head {
+  position: static;
+}
+
+/* 动态壁纸页同理：整页向上探过顶栏，工具栏跟内容一起滚（不吸顶，理由同上）。 */
+.app:not(.is-mg-mode) .stage:has(> .wallpaper-host:not(.is-hidden)) {
+  overflow: visible;
+}
+.app:not(.is-mg-mode) .stage > .wallpaper-host:not(.is-hidden) .wallpaper-page {
+  top: calc(-1 * var(--topbar-total));
+  padding-top: calc(var(--topbar-total) + 6px);
+}
+.app:not(.is-mg-mode) .stage > .wallpaper-host:not(.is-hidden) .wp-toolbar {
+  position: static;
+}
+
+/* 搜索激活（`openSearchDock()` 给 .app 加的 `is-search-open`）时把导航条收起来：
+   搜索弹层就铺在它右上方，导航条露着既抢视线，也常常接住本该落在弹层上的点击。
+   类挂在 .app 上，所以不分界面——首页、歌单、全部歌曲、壁纸页同一套。
+   淡出/淡入是同一条透明度轨迹的正反；中途关掉搜索，CSS 过渡会从当前值往回走，
+   不需要先收尾再重开（打断天然成立）。 */
+.rail.nav-dock {
+  transition:
+    opacity var(--motion-quick) var(--ease),
+    visibility 0s linear 0s;
+}
+/* pinned 是首页常驻（`.rail.nav-dock.is-pinned` 用 !important 强留），这里要盖过它，
+   所以把选择器写到同等以上强度——搜索一开，常驻也得让位。 */
+.app.is-search-open > .rail.nav-dock,
+.app.is-search-open > .rail.nav-dock.is-pinned {
+  opacity: 0 !important;
+  pointer-events: none !important;
+  visibility: hidden;
+  transition:
+    opacity var(--motion-quick) var(--ease),
+    visibility 0s linear var(--motion-quick);
+}

@@ -59,6 +59,37 @@ internal sealed class WallpaperRuntime : IDisposable
 
     public bool IsRunning => _slots.Count > 0;
 
+    /// <summary>
+    /// 让某一块屏的实际画面扫一道光（用户在「画布设置」里点这块屏时提示「就是这一块」）。
+    /// 找不到这块屏（还没挂上/键对不上）就静默返回 —— 这只是个提示，不该影响主流程。
+    /// </summary>
+    public void Sweep(string key)
+    {
+        if (_disposed || string.IsNullOrEmpty(key))
+        {
+            return;
+        }
+
+        if (!_ui.CheckAccess())
+        {
+            _ui.BeginInvoke(new Action(() => Sweep(key)));
+            return;
+        }
+
+        foreach (var slot in _slots)
+        {
+            if (!string.Equals(slot.Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            slot.Web.PostSweep();
+            return;
+        }
+
+        HostLog.Warn($"[wallpaper] monitor sweep {key} not found (slots={_slots.Count})");
+    }
+
     /// <summary>一轮启动结束（true = 至少挂上一块屏）。</summary>
     public event Action<bool>? SurfacesStarted;
 
@@ -106,23 +137,58 @@ internal sealed class WallpaperRuntime : IDisposable
         UpdateDesktopVideos(targets);
     }
 
+    /// <summary>上一轮启动失败的屏键。用于「别每帧重试同一块坏屏」，但屏集合真变了仍然重建。</summary>
+    private readonly HashSet<string> _failedKeys = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>本轮 Apply 的 payload 缓存：N 块屏只算 N 次，而不是 N(N+1) 次。</summary>
+    private Dictionary<string, WallpaperLayerPayload?>? _payloadCache;
+
     /// <summary>屏幕集合没变 → 原地换片；变了 → 返回 true 由调用方重建。</summary>
     private bool NeedsRebuild(IReadOnlyList<DesktopTarget> targets)
     {
-        if (_slots.Count != targets.Count)
+        if (targets.Count == 0)
         {
+            return _slots.Count > 0;
+        }
+
+        // 按屏键判断「屏集合变了没有」。不能用 Count/Index 对齐：
+        // 某块屏一次启动失败就会让 _slots 少一项，索引全错位 → 后面每次 Apply 都整层重建（全屏闪黑）。
+        var slotKeys = new HashSet<string>(_slots.Count, StringComparer.OrdinalIgnoreCase);
+        foreach (var slot in _slots)
+        {
+            slotKeys.Add(slot.Key);
+        }
+
+        foreach (var target in targets)
+        {
+            if (slotKeys.Contains(target.Key))
+            {
+                continue;
+            }
+
+            // 这块屏上次试过、失败了：不因为「它还没起来」就重建整个桌面层。
+            if (_failedKeys.Contains(target.Key))
+            {
+                continue;
+            }
+
             return true;
         }
 
-        for (var i = 0; i < targets.Count; i++)
+        // 反过来：目标里已经没有这块屏了（拔屏/改显示模式）→ 得重建把它收掉。
+        foreach (var slot in _slots)
         {
-            // Index 是 1 基；这里写成 i 会恒不成立，导致每次都被当成「换了屏」整层重建。
-            if (_slots[i].Index != i + 1)
+            var stillThere = false;
+            foreach (var target in targets)
             {
-                return true;
+                if (string.Equals(target.Key, slot.Key, StringComparison.OrdinalIgnoreCase))
+                {
+                    stillThere = true;
+                    break;
+                }
             }
 
-            if (!string.Equals(_slots[i].Key, targets[i].Key, StringComparison.OrdinalIgnoreCase))
+            if (!stillThere)
             {
                 return true;
             }
@@ -196,6 +262,7 @@ internal sealed class WallpaperRuntime : IDisposable
 
                 if (!attached)
                 {
+                    _failedKeys.Add(target.Key);
                     HostLog.Warn($"[wallpaper] desktop surface #{target.Index} not attached key={MonitorCatalog.Short(target.Key)}");
                     surface.Dispose();
                     continue;
@@ -211,6 +278,7 @@ internal sealed class WallpaperRuntime : IDisposable
                     AssetId = target.AssetId,
                 };
                 _slots.Add(slot);
+                _failedKeys.Remove(target.Key);
                 HostLog.Info(
                     $"[wallpaper] desktop surface #{slot.Index} ready key={MonitorCatalog.Short(target.Key)} " +
                     $"{target.Bounds.Width}x{target.Bounds.Height} at {target.Bounds.X},{target.Bounds.Y}");
@@ -219,11 +287,13 @@ internal sealed class WallpaperRuntime : IDisposable
             catch (Exception exception) when (IsOutOfMemory(exception))
             {
                 surface?.Dispose();
+                _failedKeys.Add(target.Key);
                 HostLog.Warn($"[wallpaper] desktop surface #{target.Index} abandoned: out of memory (0x8007000E)");
             }
             catch (Exception exception)
             {
                 surface?.Dispose();
+                _failedKeys.Add(target.Key);
                 HostLog.Warn($"[wallpaper] desktop surface #{target.Index} failed: {exception.Message}");
             }
         }
@@ -257,17 +327,17 @@ internal sealed class WallpaperRuntime : IDisposable
             return;
         }
 
-        var count = Math.Min(_slots.Count, targets.Count);
-        for (var i = 0; i < count; i++)
+        _payloadCache = BuildPayloadCache(targets);
+        try
         {
-            var slot = _slots[i];
-            // 1 基比较：写成 i 会恒为 -1，每次整层重建。
-            if (slot.Index != i + 1)
+        foreach (var slot in _slots)
+        {
+            var target = FindTarget(targets, slot.Key);
+            if (target is null)
             {
                 continue;
             }
 
-            var target = targets[i];
             if (!slot.Bounds.Equals(target.Bounds))
             {
                 slot.Bounds = target.Bounds;
@@ -287,6 +357,52 @@ internal sealed class WallpaperRuntime : IDisposable
 
             Push(slot, target);
         }
+        }
+        finally
+        {
+            _payloadCache = null;
+        }
+    }
+
+    /// <summary>按屏键找目标。`_targets` 每次刷新都重建一批 record，不能按下标配对。</summary>
+    private static DesktopTarget? FindTarget(IReadOnlyList<DesktopTarget> targets, string key)
+    {
+        foreach (var target in targets)
+        {
+            if (string.Equals(target.Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                return target;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>本轮所有屏的 payload 只算一遍（每份要读好几次 SQLite，全在 UI 线程）。</summary>
+    private Dictionary<string, WallpaperLayerPayload?> BuildPayloadCache(IReadOnlyList<DesktopTarget> targets)
+    {
+        var map = new Dictionary<string, WallpaperLayerPayload?>(targets.Count, StringComparer.OrdinalIgnoreCase);
+        foreach (var target in targets)
+        {
+            if (map.ContainsKey(target.Key))
+            {
+                continue;
+            }
+
+            map[target.Key] = _payloadFactory(target);
+        }
+
+        return map;
+    }
+
+    private WallpaperLayerPayload? PayloadOf(DesktopTarget target)
+    {
+        if (_payloadCache is { } cache && cache.TryGetValue(target.Key, out var cached))
+        {
+            return cached;
+        }
+
+        return _payloadFactory(target);
     }
 
     /// <summary>把所有表面的当前状态重推一遍（选项变化、页面刚就绪时用）。</summary>
@@ -303,14 +419,23 @@ internal sealed class WallpaperRuntime : IDisposable
             return;
         }
 
-        for (var i = 0; i < _slots.Count && i < _targets.Count; i++)
+        _payloadCache = BuildPayloadCache(_targets);
+        try
         {
-            if (_slots[i].Index != i + 1)
+            foreach (var slot in _slots)
             {
-                continue;
-            }
+                var target = FindTarget(_targets, slot.Key);
+                if (target is null)
+                {
+                    continue;
+                }
 
-            Push(_slots[i], _targets[i]);
+                Push(slot, target);
+            }
+        }
+        finally
+        {
+            _payloadCache = null;
         }
     }
 
@@ -331,10 +456,53 @@ internal sealed class WallpaperRuntime : IDisposable
             return;
         }
 
-        var payload = _payloadFactory(target);
+        var payload = PayloadOf(target);
+
+        // 同一张壁纸铺在多块屏上时只让一块屏出声：三路音轨同时播会叠成回声，也白烧三份解码。
+        // 想各屏各放声音，就是各屏选不同的壁纸（每块屏还能单独调音量）。
+        if (payload is { AudioEnabled: true } && !IsFirstAudibleTarget(target))
+        {
+            payload = payload with { AudioEnabled = false };
+        }
+
         var online = _onlineSource?.Invoke();
         var baseUrl = online is { } endpoint ? $"http://127.0.0.1:{endpoint.Port}" : null;
         slot.Web.PostState(WallpaperStateJson.Build(payload, null, baseUrl, online?.Token));
+    }
+
+    /// <summary>同一张素材最先出现在哪块屏（屏序按 targets 顺序，即系统枚举顺序）。</summary>
+    private DesktopTarget? FirstTargetForAsset(long assetId)
+    {
+        foreach (var target in _targets)
+        {
+            if (target.AssetId == assetId)
+            {
+                return target;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 这块屏是不是「同素材里第一块真正会出声的」。
+    /// 只看第一块不够：用户可能把第一块屏的音量拉到 0（或者它是静音覆盖），
+    /// 那时声音应该落到下一块同素材的屏上，而不是整个素材都哑掉。
+    /// </summary>
+    private bool IsFirstAudibleTarget(DesktopTarget self)
+    {
+        if (PayloadOf(self) is not { AudioEnabled: true }) return false;
+
+        foreach (var target in _targets)
+        {
+            // 按屏键比，不按引用比：_targets 每次刷新都会重建一批 record，
+            // 用 ReferenceEquals 会一个都匹配不上，于是每块屏都当自己是「第一块」→ 多路同时出声。
+            if (string.Equals(target.Key, self.Key, StringComparison.OrdinalIgnoreCase)) return true;
+            if (target.AssetId != self.AssetId) continue;
+            if (PayloadOf(target) is { AudioEnabled: true }) return false;
+        }
+
+        return true;
     }
 
     private void StopSurfaces()

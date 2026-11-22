@@ -33,18 +33,18 @@ internal sealed class InstallerForm : Form
         ToggleShortcut = 8,
     }
 
-    // ---- 配色：跟主程序浅色主题一致（bg #f3f1ea / ink #1b1d23 / accent #a9803f） ----
-    private static readonly Color BgTop = Color.FromArgb(0xF8, 0xF4, 0xEB);
-    private static readonly Color BgBottom = Color.FromArgb(0xEC, 0xE6, 0xD8);
+    // ---- 配色：跟主程序浅色主题一致（bg #ffffff / ink #1b1d23 / accent #a9803f） ----
+    private static readonly Color BgTop = Color.White;
+    private static readonly Color BgBottom = Color.White;
     private static readonly Color Ink = Color.FromArgb(0x1B, 0x1D, 0x23);
     private static readonly Color InkSoft = Color.FromArgb(0x44, 0x49, 0x53);
     private static readonly Color Muted = Color.FromArgb(0x86, 0x7E, 0x6E);
     private static readonly Color Accent = Color.FromArgb(0xA9, 0x80, 0x3F);
     private static readonly Color AccentLight = Color.FromArgb(0xC9, 0xA2, 0x65);
     private static readonly Color AccentSoft = Color.FromArgb(0xF0, 0xE4, 0xCD);
-    private static readonly Color Card = Color.FromArgb(0xFF, 0xFD, 0xF8);
+    private static readonly Color Card = Color.White;
     private static readonly Color CardBorder = Color.FromArgb(0xE3, 0xDA, 0xC8);
-    private static readonly Color FieldBg = Color.FromArgb(0xFA, 0xF6, 0xED);
+    private static readonly Color FieldBg = Color.White;
     private static readonly Color FieldBorder = Color.FromArgb(0xDE, 0xD3, 0xBF);
     private static readonly Color Line = Color.FromArgb(0xE1, 0xD8, 0xC5);
     private static readonly Color Danger = Color.FromArgb(0xB2, 0x50, 0x3B);

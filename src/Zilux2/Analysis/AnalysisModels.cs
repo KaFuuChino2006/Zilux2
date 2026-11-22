@@ -108,6 +108,61 @@ internal sealed class BeatAnalysisPayload
     public AnalysisSectionPayload[] Sections { get; set; } = Array.Empty<AnalysisSectionPayload>();
 
     public string[] Warnings { get; set; } = Array.Empty<string>();
+
+    /// <summary>p1-0：分乐器活动度曲线（免分轨，纯频段/谱平坦度派生）。</summary>
+    public ActivityPayload Activity { get; set; } = new();
+
+    /// <summary>p1-0：调性时间线窗口中心（ms），与 <see cref="KeyTimeline"/> 等长。</summary>
+    public double[] KeyTimelineMs { get; set; } = Array.Empty<double>();
+
+    /// <summary>p1-0：逐窗 Camelot 编码（识别不出为空串）；用于过渡中调性变化的判断。</summary>
+    public string[] KeyTimeline { get; set; } = Array.Empty<string>();
+
+    /// <summary>p1-0：可循环单元候选（自相似段对），供结构桥接挑选重复乐句。</summary>
+    public LoopUnitPayload[] LoopUnits { get; set; } = Array.Empty<LoopUnitPayload>();
+
+    /// <summary>
+    /// p1-1：逐小节 chroma 起点（ms），与 <see cref="BarChroma"/> 的每 12 个数一组一一对应。
+    /// 用途：跨曲的旋律相似度（A 尾段 vs B 入口哪一句最像），不涉及任何源分离。
+    /// </summary>
+    public double[] BarChromaMs { get; set; } = Array.Empty<double>();
+
+    /// <summary>
+    /// p1-1：逐小节 12 音级 chroma 拼平（每小节已归一到单位长度，取 3 位小数）。
+    /// 归一化后余弦相似度 = 点积，前端可直接比较两段旋律的"音级分布形状"。
+    /// </summary>
+    public double[] BarChroma { get; set; } = Array.Empty<double>();
+}
+
+/// <summary>p1-0：三路活动度曲线，等长、按 <see cref="HopMs"/> 采样，0~1。</summary>
+internal sealed class ActivityPayload
+{
+    public double HopMs { get; set; } = 250;
+
+    /// <summary>人声活动度：300–3500 Hz 能量 ×(1−谱平坦度)² × 齿音存在度。</summary>
+    public double[] Vocal { get; set; } = Array.Empty<double>();
+
+    /// <summary>鼓活动度：40–200 Hz 谱通量（打击瞬态密度）。</summary>
+    public double[] Drum { get; set; } = Array.Empty<double>();
+
+    /// <summary>低频活动度：<160 Hz 能量占比。</summary>
+    public double[] Bass { get; set; } = Array.Empty<double>();
+}
+
+/// <summary>p1-0：一个可循环单元（前半与后半自相似）。</summary>
+internal sealed class LoopUnitPayload
+{
+    public double StartMs { get; set; }
+
+    public double EndMs { get; set; }
+
+    public int Bars { get; set; }
+
+    /// <summary>0~1，越高越适合当循环单元。</summary>
+    public double Score { get; set; }
+
+    /// <summary>repeat（前半≈后半）/ tail（尾段可平铺）。</summary>
+    public string Kind { get; set; } = "repeat";
 }
 
 internal sealed class AnalysisSectionPayload

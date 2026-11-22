@@ -38,7 +38,13 @@ internal static class SmtcArtwork
         }
         catch (Exception exception)
         {
-            HostLog.Warn($"[smtc] cover read failed: {exception.GetType().Name}: {exception.Message}");
+            // 启动/退出阶段本地封面代理还没监听（或已关闭）时的 connection refused 是预期情况，
+            // 每首歌刷一条 WARN 只会淹掉真正的故障。
+            var expected = exception is HttpRequestException
+                && exception.Message.Contains("127.0.0.1", StringComparison.Ordinal);
+            var line = $"[smtc] cover read failed: {exception.GetType().Name}: {exception.Message}";
+            if (expected) HostLog.Info(line);
+            else HostLog.Warn(line);
             return null;
         }
     }
@@ -184,24 +190,54 @@ internal static class SmtcArtwork
                 return false;
             }
 
-            var path = source;
-            if (!path.Contains("token=", StringComparison.Ordinal))
-            {
-                path += (path.Contains('?') ? "&" : "?") + "token=" + endpoint.Token;
-            }
-
-            url = $"http://127.0.0.1:{endpoint.Port}{path}";
+            url = $"http://127.0.0.1:{endpoint.Port}{WithCurrentToken(source, endpoint.Token)}";
             return true;
         }
 
         if (Uri.TryCreate(source, UriKind.Absolute, out var uri) &&
             (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
         {
+            // 上一次运行生成的回环封面地址：端口是当时随机挑的，页面把队列存进 localStorage
+            // 后这些地址会跨重启活下来，指向一个已经没人监听的端口（日志里
+            // 「由于目标计算机积极拒绝 (127.0.0.1:58123)」）。页面侧已会重绑，这里再兜一层，
+            // 这样即使加载的是旧缓存页面，系统媒体浮层也不会一直拿不到封面。
+            if (IsLoopbackCover(uri) && App.Online?.Endpoint is { } current)
+            {
+                var query = WithCurrentToken(uri.PathAndQuery, current.Token);
+                url = $"http://127.0.0.1:{current.Port}{query}";
+                return true;
+            }
+
             url = source;
             return true;
         }
 
         return false;
+    }
+
+    private static bool IsLoopbackCover(Uri uri)
+    {
+        if (!uri.IsLoopback) return false;
+        return uri.AbsolutePath.EndsWith("/api/cover", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>把查询串里的 token 换成当前这一场的（没有就补上），其余参数保持原样。</summary>
+    private static string WithCurrentToken(string pathAndQuery, string token)
+    {
+        var question = pathAndQuery.IndexOf('?');
+        var path = question < 0 ? pathAndQuery : pathAndQuery[..question];
+        var query = question < 0 ? string.Empty : pathAndQuery[(question + 1)..];
+        var kept = query
+            .Split('&', StringSplitOptions.RemoveEmptyEntries)
+            .Where(pair =>
+            {
+                var equals = pair.IndexOf('=');
+                var key = equals < 0 ? pair : pair[..equals];
+                return !key.Equals("token", StringComparison.OrdinalIgnoreCase);
+            })
+            .ToList();
+        kept.Add("token=" + Uri.EscapeDataString(token));
+        return path + "?" + string.Join('&', kept);
     }
 
     private static async Task<RandomAccessStreamReference> CreateReferenceAsync(byte[] bytes)

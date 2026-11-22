@@ -13,9 +13,9 @@ namespace Zilux2.Analysis;
 /// tracks can be consumed at their real beat positions. Runs on the caller's thread (the
 /// analysis service keeps it off the UI).
 /// </summary>
-internal static class BeatAnalyzer
+internal static partial class BeatAnalyzer
 {
-    internal const string AnalyzerVersion = "p0-15-tail-anchor";
+    internal const string AnalyzerVersion = "p1-3-keyviterbi";
 
     private const int WindowSize = 1024;
     private const int HopSize = 512;
@@ -91,7 +91,8 @@ internal static class BeatAnalyzer
         var midEnergy = new float[frameCount];
         var highEnergy = new float[frameCount];
         ComputeOnsets(samples, frameCount, sampleRate, flux, lowFlux, midFlux, highFlux,
-            lowEnergy, midEnergy, highEnergy, out var chromaFrames);
+            lowEnergy, midEnergy, highEnergy, out var chromaFrames,
+            out var vocalEnergy, out var vocalFlatness, out var sibilanceEnergy);
 
         var onset = NormalizeOnsets(flux);
         var lowOnset = NormalizeOnsets(lowFlux);
@@ -225,6 +226,18 @@ internal static class BeatAnalyzer
         payload.LoudnessLufs = Math.Round(lufs, 1);
         payload.PeakDb = Math.Round(peakDb, 1);
         payload.Sections = sections;
+        // p1-0：三路活动度 + 调性时间线 + 可循环单元。全部由本函数已经算好的频段能量 /
+        // 谱通量 / 谱平坦度 / 逐小节 chroma 派生，不做任何源分离。
+        payload.Activity = BuildActivity(
+            lowEnergy, midEnergy, highEnergy, lowFlux, vocalEnergy, vocalFlatness, sibilanceEnergy,
+            frameCount, fps);
+        var (keyTimelineMs, keyTimeline) = BuildKeyTimeline(barChroma, downbeats, durationMs);
+        payload.KeyTimelineMs = keyTimelineMs;
+        payload.KeyTimeline = keyTimeline;
+        payload.LoopUnits = BuildLoopUnits(barChroma, barFeatures, downbeats, durationMs);
+        var (barChromaMs, barChromaFlat) = FlattenBarChroma(barChroma, downbeats, durationMs);
+        payload.BarChromaMs = barChromaMs;
+        payload.BarChroma = barChromaFlat;
         payload.Warnings = warnings.Distinct(StringComparer.Ordinal).ToArray();
         return payload;
     }
@@ -385,9 +398,15 @@ internal static class BeatAnalyzer
         float[] lowEnergy,
         float[] midEnergy,
         float[] highEnergy,
-        out float[] chromaFrames)
+        out float[] chromaFrames,
+        out float[] vocalEnergy,
+        out float[] vocalFlatness,
+        out float[] sibilanceEnergy)
     {
         chromaFrames = new float[frameCount * ChromaBins];
+        vocalEnergy = new float[frameCount];
+        vocalFlatness = new float[frameCount];
+        sibilanceEnergy = new float[frameCount];
         var real = new float[WindowSize];
         var imag = new float[WindowSize];
         var magnitudes = new float[WindowSize / 2 + 1];
@@ -419,6 +438,10 @@ internal static class BeatAnalyzer
             double low = 0;
             double mid = 0;
             double high = 0;
+            double vocalBandEnergy = 0;
+            double vocalBandLog = 0;
+            double sibilance = 0;
+            var vocalBandBins = 0;
             var chromaOffset = frame * ChromaBins;
             for (var bin = 1; bin <= WindowSize / 2; bin++)
             {
@@ -471,6 +494,20 @@ internal static class BeatAnalyzer
                     high += magnitude;
                 }
 
+                // p1-0：人声线索。300–3500 Hz 的能量只是必要条件，真正区分人声与
+                // 乐器的是「谐波性」——用谱平坦度（几何均值/算术均值）当代理：
+                // 稳态人声/乐器平坦度低，噪声/镲片/失真平坦度高。
+                if (frequency >= 300 && frequency < 3500)
+                {
+                    vocalBandEnergy += magnitude;
+                    vocalBandLog += Math.Log(magnitude + 1e-9);
+                    vocalBandBins++;
+                }
+                else if (frequency >= 4000 && frequency < 8000)
+                {
+                    sibilance += magnitude;
+                }
+
                 var pitch = pitchBins[bin];
                 if (pitch >= 0)
                 {
@@ -486,6 +523,16 @@ internal static class BeatAnalyzer
             lowEnergy[frame] = (float)low;
             midEnergy[frame] = (float)mid;
             highEnergy[frame] = (float)high;
+            vocalEnergy[frame] = (float)vocalBandEnergy;
+            sibilanceEnergy[frame] = (float)sibilance;
+            if (vocalBandBins > 0 && vocalBandEnergy > 1e-9)
+            {
+                var arithmetic = vocalBandEnergy / vocalBandBins;
+                var geometric = Math.Exp(vocalBandLog / vocalBandBins);
+                // 平坦度 0（纯谐波）…1（白噪声）
+                var flatness = Math.Clamp(geometric / (arithmetic + 1e-12), 0, 1);
+                vocalFlatness[frame] = (float)flatness;
+            }
         }
     }
 

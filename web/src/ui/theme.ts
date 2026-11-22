@@ -28,13 +28,24 @@ const TYPE_TOKENS: Record<string, string> = {
   '--radius-m': '14px',
   '--radius-l': '20px',
   '--radius-pill': '999px',
-  '--ease': 'cubic-bezier(0.22, 0.68, 0.24, 1)',
-  '--dur-fast': '160ms',
-  '--dur-mid': '260ms',
-  '--dur-slow': '420ms',
-  /* 统一展开/收起动效：搜索药丸、播放条、面板弹出都引用这一组 */
-  '--dur-pop': '600ms',
-  '--ease-pop': 'cubic-bezier(0.22, 1.28, 0.36, 1)',
+  /* 统一运动令牌（数值与 src/ui/motion.ts 的 MOTION 一致，只在这里改）。 */
+  '--motion-instant': '140ms',
+  '--motion-quick': '200ms',
+  '--motion-fast': '260ms',
+  '--motion-base': '420ms',
+  '--motion-slow': '620ms',
+  '--motion-ease': 'cubic-bezier(.16, .84, .24, 1)',
+  '--motion-rise-in': '14px',
+  '--motion-rise-out': '10px',
+  '--motion-stagger': '18ms',
+  /* 旧令牌全部指向运动令牌：全站只有一处真源。 */
+  '--ease': 'var(--motion-ease)',
+  '--dur-fast': 'var(--motion-fast)',
+  '--dur-mid': 'var(--motion-base)',
+  '--dur-slow': 'var(--motion-slow)',
+  /* 展开/收起（搜索药丸、播放条、面板弹出）：慢档 + 轻微回弹。 */
+  '--dur-pop': 'var(--motion-slow)',
+  '--ease-pop': 'cubic-bezier(.22, 1.16, .36, 1)',
 };
 
 const DARK: Theme = {
@@ -83,8 +94,8 @@ const LIGHT: Theme = {
   label: '浅色',
   tokens: {
     ...TYPE_TOKENS,
-    '--bg': '#f3f1ea',
-    '--bg-soft': '#eae7de',
+    '--bg': '#ffffff',
+    '--bg-soft': '#ffffff',
     '--surface': 'rgba(255, 255, 255, 0.82)',
     '--surface-strong': 'rgba(255, 255, 255, 0.96)',
     '--surface-hover': 'rgba(255, 255, 255, 0.98)',
@@ -103,11 +114,11 @@ const LIGHT: Theme = {
     '--text-soft': '#3c4149',
     '--shadow': '0 18px 44px rgba(60, 48, 28, 0.16)',
     '--danger': '#d64545',
-    '--ink-rgb': '250 249 246',
+    '--ink-rgb': '255 255 255',
     '--overlay-rgb': '24 26 32',
     '--shadow-1': '0 10px 26px rgba(40, 33, 20, 0.12)',
     '--shadow-2': '0 24px 60px rgba(40, 33, 20, 0.18)',
-    '--scrim': 'rgba(240, 237, 229, 0.72)',
+    '--scrim': 'rgba(255, 255, 255, 0.72)',
     /* 歌词页（浅色）：浅底上必须用深字，否则「白字压白底」看不清 */
     '--lyric-dim': 'rgb(24 26 32 / 0.62)',
     '--lyric-near': 'rgb(24 26 32 / 0.8)',
@@ -121,8 +132,14 @@ const LIGHT: Theme = {
 
 export const THEMES: Record<ThemeName, Theme> = { dark: DARK, light: LIGHT };
 
-// 目前版本先固定浅色（白色）界面；等做主题切换 UI 时再恢复读 localStorage。
+/** 读回上次选的主题；没有记录或值非法时回落到浅色（当前默认皮肤）。 */
 function readTheme(): ThemeName {
+  try {
+    const saved = localStorage.getItem(THEME_KEY);
+    if (saved === 'dark' || saved === 'light') return saved;
+  } catch {
+    /* localStorage 不可用：用默认值，不抛。 */
+  }
   return 'light';
 }
 
@@ -242,17 +259,17 @@ export function applyAccentColor(hex: string): void {
     return;
   }
   const light = currentTheme() === 'light';
-  const baseBg = parseHexRgb(theme.tokens['--bg'] ?? '#f3f1ea') ?? [243, 241, 234];
-  const baseBgSoft = parseHexRgb(theme.tokens['--bg-soft'] ?? '#eae7de') ?? [234, 231, 222];
+  const baseBg = parseHexRgb(theme.tokens['--bg'] ?? '#ffffff') ?? [255, 255, 255];
+  const baseBgSoft = parseHexRgb(theme.tokens['--bg-soft'] ?? '#ffffff') ?? [255, 255, 255];
   const basePanel = parseHexRgb(theme.tokens['--panel-solid'] ?? '#ffffff') ?? [255, 255, 255];
   const strong = light ? mixRgb(rgb, [255, 255, 255], 0.18) : mixRgb(rgb, [0, 0, 0], 0.18);
   root.style.setProperty('--accent', rgbToHex(rgb));
   root.style.setProperty('--accent-strong', rgbToHex(strong));
   root.style.setProperty('--accent-soft', `rgba(${Math.round(rgb[0])}, ${Math.round(rgb[1])}, ${Math.round(rgb[2])}, 0.18)`);
   root.style.setProperty('--accent-contrast', rgbLuma(rgb) > 0.62 ? '#1b1d23' : '#fffaf0');
-  root.style.setProperty('--bg', rgbToHex(mixRgb(baseBg, rgb, light ? 0.028 : 0.12)));
-  root.style.setProperty('--bg-soft', rgbToHex(mixRgb(baseBgSoft, rgb, light ? 0.034 : 0.14)));
-  root.style.setProperty('--panel-solid', rgbToHex(mixRgb(basePanel, rgb, light ? 0.016 : 0.1)));
+  root.style.setProperty('--bg', rgbToHex(mixRgb(baseBg, rgb, light ? 0 : 0.12)));
+  root.style.setProperty('--bg-soft', rgbToHex(mixRgb(baseBgSoft, rgb, light ? 0 : 0.14)));
+  root.style.setProperty('--panel-solid', rgbToHex(mixRgb(basePanel, rgb, light ? 0 : 0.1)));
 }
 
 /* -------------------------------------------------------------------------- */

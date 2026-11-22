@@ -191,10 +191,10 @@ const STYLE_CSS = `
 .zl-vinyl-scene{position:absolute;inset:0;overflow:hidden;isolation:isolate;background:var(--vs-bg-bottom,#090807);font-family:var(--vs-font,${FONT_STACK});}
 .zvs-canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
 .zvs-words{position:absolute;inset:0;pointer-events:none;z-index:2}
-.zvs-line{position:absolute;top:0;left:0;width:100%;text-align:center;white-space:normal;opacity:0;scale:.94;will-change:transform,opacity,scale;transform-origin:50% 50%;transition:opacity .5s ease,transform .55s cubic-bezier(.22,1,.36,1),scale .55s cubic-bezier(.22,1,.36,1),font-size .55s cubic-bezier(.22,1,.36,1)}
+.zvs-line{position:absolute;top:0;left:0;width:100%;text-align:center;white-space:normal;opacity:0;will-change:opacity;transition:opacity .5s ease,font-size .55s cubic-bezier(.22,1,.36,1)}
 .zvs-line.is-visible{opacity:var(--vs-unsung-op,.34)}
 .zvs-line.is-sung{opacity:var(--vs-sung-op,.86)}
-.zvs-line.is-focus{opacity:var(--vs-active-op,1);scale:1}
+.zvs-line.is-focus{opacity:var(--vs-active-op,1)}
 .zvs-char[data-lang="zh"]{font-family:var(--lyric-font-zh,var(--vs-font,${FONT_STACK}))}
 .zvs-char[data-lang="ja"]{font-family:var(--lyric-font-ja,var(--vs-font,${FONT_STACK}))}
 .zvs-char[data-lang="ko"]{font-family:var(--lyric-font-ko,var(--vs-font,${FONT_STACK}))}

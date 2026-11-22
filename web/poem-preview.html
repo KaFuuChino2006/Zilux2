@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>长镜流诗 · 动效验证</title>
+<style>
+html,body{margin:0;height:100%;background:#080e19;color:#fff;font-family:system-ui}
+#stage{position:fixed;inset:0}canvas{display:block;width:100%;height:100%}
+footer{position:fixed;bottom:20px;left:6%;right:6%;display:flex;gap:16px;align-items:center}
+button{font:inherit;color:inherit;background:#ffffff18;border:0;border-radius:12px;padding:10px;cursor:pointer}
+input{flex:1;min-width:0}span{font-variant-numeric:tabular-nums}
+</style>
+<div id="stage"></div>
+<footer><button id="play">暂停</button><input id="seek" aria-label="播放进度" type="range" min="0" max="35000" value="0"><span id="time"></span></footer>
+<script type="module">
+import { createPoemScene } from '/src/ui/poemScene.ts';
+const texts=['让晚风轻轻穿过你的发梢','把未说完的话，交给下一道光','We drift into the quiet of the night','每一个瞬间都缓缓流向你','在这片无边无际的星光里寻找属于我们的回声','风起','云涌','然后世界慢慢安静'];
+const times=[3000,7400,11800,16200,20600,26400,26900,27900];
+const song={trackKey:'poem-preview',title:'长镜流诗',artist:'ZILUX · 让每一句，流向下一道光',album:'',durationMs:35000,lyricOffsetMs:0,
+lines:texts.map((text,i)=>({text,translation:i===2?'我们漂流进静谧的夜色':'',timeMs:times[i],durationMs:(times[i+1]??34000)-times[i],
+words:Array.from(text).map((text,j,chars)=>({text,startMs:times[i]+j*((times[i+1]??34000)-times[i]-100)/chars.length,endMs:times[i]+(j+1)*((times[i+1]??34000)-times[i]-100)/chars.length}))}))};
+const scene=createPoemScene();document.querySelector('#stage').append(scene.root);scene.setSong(song);
+let time=7000,playing=true,previous=performance.now();
+const seek=document.querySelector('#seek'),button=document.querySelector('#play');
+button.onclick=()=>{playing=!playing;button.textContent=playing?'暂停':'播放'};
+seek.oninput=()=>{time=Number(seek.value)};
+window.poemPreview={scene,song,seek(ms){time=ms;playing=false;button.textContent='播放';scene.update(time)},setSong(input){scene.setSong(input)}};
+function frame(now){if(playing)time=(time+now-previous)%35000;previous=now;scene.update(time);seek.value=String(time);document.querySelector('#time').textContent=`${(time/1000).toFixed(1)}s`;requestAnimationFrame(frame)}
+requestAnimationFrame(frame);
+</script>
+</html>

@@ -13,6 +13,7 @@ import type { WallpaperLayerState } from '../core/bridge';
 import { onWallpaperLayer } from '../core/bridge';
 import { onlineEndpoint } from '../online/client';
 import { onBeat, startBeatClock } from '../core/beatClock';
+import { getSettings } from '../core/settings';
 import { pageImmersiveEnabled, pageWallpaperAllowed } from '../wallpaper/client';
 
 const ROOT_ID = 'wallpaper-root';
@@ -63,7 +64,10 @@ export class WallpaperLayer {
   };
   private beatPulse = 0;
   private beatTimer = 0;
-  /** 壁纸层淡出/淡入的收尾定时器（见 setHidden）。 */
+  /** 「这一页暂时不显示壁纸」时保留媒体的宽限期，超时才真正销毁（见 park）。 */
+  private parkTimer = 0;
+  /** park 之后延迟暂停解码的定时器（两秒内切回来就不用重启解码器）。 */
+  private parkPauseTimer = 0;
   private hideTimer = 0;
   /** 淡入前等第一帧的兜底定时器（见 setHidden）。 */
   private revealTimer = 0;
@@ -86,6 +90,9 @@ export class WallpaperLayer {
 
     startBeatClock();
     onBeat((event) => {
+      // 「界面辉光」关掉时不再做节拍脉冲：整层与界面跟着鼓点缩放，在亮色壁纸上
+      // 就是一片来回明暗的光晕，看着像「固定闪烁的辉光」。
+      if (!getSettings().appearance.glow) return;
       const amount = (this.lastLayer?.beatStrength ?? 50) / 100;
       if (amount <= 0) return;
       // 开方放大弱拍，否则 strength 0.1 的拍子在 1% 幅度下根本看不出来。
@@ -189,7 +196,14 @@ export class WallpaperLayer {
   }
 
   private syncVisibility(): void {
-    const want = this.lastLayer ? !layerVisible(this.lastLayer) : true;
+    // 三种情况都该藏：
+    // 1) 没有可见图层（关掉了 / 这一页不允许壁纸）；
+    // 2) 全屏挂起 —— 前台有全屏应用，先淡出露出系统桌面壁纸；
+    // 3) 当前媒体还没解出第一帧（见 setHidden 的等帧逻辑，这里只是兜底）。
+    const layer = this.lastLayer;
+    const want = !layer
+      ? true
+      : !layerVisible(layer) || layer.suspended === true;
     // 不能只信缓存：启动早期 refreshVisibility() 会先把 root 藏起来，
     // 之后第一次推可见层时若缓存仍写 false，就会「以为已经显示」而不撤 is-hidden，
     // 结果三块屏里只有碰巧没被藏起来的那块有画面。
@@ -206,6 +220,24 @@ export class WallpaperLayer {
     }
 
     this.lastLayer = layer;
+    // 总开关（或软件内画布开关）关了：连 <video> 一起收掉，别让它继续在后台解码 ——
+    // 桌面层每块屏一路 4K，只藏不销毁的话关掉开关 CPU 也不会掉。这里的 paused=false
+    // 才是「关了」；paused=true 只是用户暂停，位置要保住。
+    if (!layerVisible(layer)) {
+      if (layer.visible === false && !layer.paused) {
+        this.clear();
+        return;
+      }
+      // 只是「这一页暂时不该显示壁纸」（比如常规页切到「关闭/随歌曲封面」，或歌词页没开沉浸壁纸）：
+      // 不要把 4K <video> 销毁掉。销毁后切回「动态壁纸」要重新拉流 + 等首帧，
+      // 观感就是「按钮按了没反应 / 要等好几秒」，正是用户反馈的那个卡顿。
+      this.park();
+      return;
+    }
+    window.clearTimeout(this.parkTimer);
+    this.parkTimer = 0;
+    window.clearTimeout(this.parkPauseTimer);
+    this.parkPauseTimer = 0;
     // TEMP-EMERGENCY（2026-11-18 04:5x）：软件内背景层建媒体会让主窗口卡成黑屏，先停用，
     // 保证主界面可用；桌面层各屏页面与歌词页走的是另外的页面，不受这一条影响。
     if (suspendInAppLayer()) {
@@ -601,12 +633,41 @@ export class WallpaperLayer {
     }
   }
 
+  /**
+   * 只隐藏不解码：这一页不该显示壁纸时把媒体暂停并淡出，但保留元素与缓冲。
+   * 30 秒内没有被重新用上再真正销毁 —— 既让「切走再切回」是瞬时的，
+   * 又不会让一张 4K 壁纸在后台无限期占着解码器。
+   */
+  private park(): void {
+    this.setHidden(true);
+    // 先藏着、晚一点再停解码：来来回回切「关闭 ⇄ 动态壁纸」时最常见的就是两秒内又切回来，
+    // 那时候暂停再恢复 4K 流要等解码器重启（体感一两秒）。藏满 2 秒还没回来才真暂停。
+    window.clearTimeout(this.parkPauseTimer);
+    this.parkPauseTimer = window.setTimeout(() => {
+      this.parkPauseTimer = 0;
+      if (this.root.classList.contains('is-hidden') && this.current instanceof HTMLVideoElement && !this.current.paused) {
+        this.current.pause();
+      }
+    }, 2000);
+    window.clearTimeout(this.parkTimer);
+    this.parkTimer = window.setTimeout(() => {
+      this.parkTimer = 0;
+      if (this.root.classList.contains('is-hidden')) this.clear();
+    }, 30_000);
+  }
+
   /** 停掉这一层（清媒体、隐藏 DOM），可再被 start/apply 唤醒。 */
   clear(): void {
+    window.clearTimeout(this.parkTimer);
+    this.parkTimer = 0;
+    window.clearTimeout(this.parkPauseTimer);
+    this.parkPauseTimer = 0;
     if (this.currentFrame) disposeFrame(this.currentFrame);
     this.current = null;
     this.currentFrame = null;
     this.currentKey = '';
+    // 没有图层了：清掉引用，后续 refreshVisibility / syncVisibility 一律按「该隐藏」处理。
+    this.lastLayer = null;
     // 停层是直接收掉，不做淡出：媒体已经销毁，留着只会是一块黑。
     window.clearTimeout(this.hideTimer);
     this.root.classList.remove('is-fading');
@@ -632,11 +693,15 @@ function clampCrop(value: number | undefined): number {
 }
 
 /**
- * 画面变换：镜像 / 旋转 / 画布平移 / 缩放 / 模糊。
+ * 画面变换：镜像 / 旋转 / 画面位置 / 缩放 / 模糊。
  *
  * 只作用在内层 media 上 —— 外层的 frame 归转场用，两者写同一个 transform 会互相覆盖。
  * 旋转 90/270 后宽高比翻过来，cover 会留边，所以按画布比例补一个缩放。
- * 四个「左/上/右/下」滑杆是移动画布（translate），不是切边：左就是往左推。
+ *
+ * 四个「左/上/右/下」滑杆调的是**画面在画框里的位置**，不是挪画布：
+ * 早先用 translate 挪元素，结果只是把整块画布推走、边缘漏出背板，被裁掉的内容依旧看不见。
+ * 现在改成 `object-position`（0–100%），配合 cover 就是「在已经铺满的画里看哪一块」，
+ * 任何时候都不漏底；要看到完整的整张画面，把「缩放」调到 1 以下即可。
  */
 function applyPictureTransform(
   media: HTMLVideoElement | HTMLImageElement,
@@ -653,19 +718,21 @@ function applyPictureTransform(
   const panRight = clampCrop(layer.cropRight);
   const panBottom = clampCrop(layer.cropBottom);
 
-  // 0–45 的读数换算成画面尺寸的百分比位移（±22.5%），方向与滑杆一致。
-  const shiftX = (panLeft - panRight) * 0.5;
-  const shiftY = (panTop - panBottom) * 0.5;
-  if (Math.abs(shiftX) > 0.01 || Math.abs(shiftY) > 0.01) {
-    parts.push(`translate(${shiftX.toFixed(2)}%, ${shiftY.toFixed(2)}%)`);
-  }
+  // 0–45 的读数映射到 object-position 的 0–100%（50% 居中）：
+  // 「左」调大 = 想看画面左边 = 位置往 0% 走，所以是减。
+  const posX = 50 - (panLeft - panRight) * (50 / 45);
+  const posY = 50 - (panTop - panBottom) * (50 / 45);
+  media.style.objectPosition =
+    Math.abs(posX - 50) < 0.05 && Math.abs(posY - 50) < 0.05
+      ? ''
+      : `${posX.toFixed(2)}% ${posY.toFixed(2)}%`;
   media.style.clipPath = '';
 
   if (rotate) parts.push(`rotate(${rotate}deg)`);
 
-  // 缩放（1–3）：和裁剪补偿、旋转补偿相乘，三者叠在一起才不会互相覆盖。
-  const zoom = Math.min(3, Math.max(1, layer.pictureZoom ?? 1));
-  if (zoom > 1.001) parts.push(`scale(${zoom.toFixed(3)})`);
+  // 缩放（0.5–3）：小于 1 是缩小、能看到完整画面（留一点背板），大于 1 是放大。
+  const zoom = Math.min(3, Math.max(0.5, layer.pictureZoom ?? 1));
+  if (Math.abs(zoom - 1) > 0.001) parts.push(`scale(${zoom.toFixed(3)})`);
 
   // 模糊只作用在画面本身（用户 2026-11-17 要求的「画面模糊」），
   // 背板模糊是 layer.blur，两者互不影响。

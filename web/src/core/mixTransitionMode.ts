@@ -13,40 +13,73 @@
  */
 
 /**
- * 三档（WBS v2 T5-1）：
- * - standard：老路径，整轨等功率交叉，永不换手；
- * - advanced：尽量换手；置信度不足时降级为「只换 bass+drums」；
- * - advancedSafe：只有置信度足够（tempoGate 判 full）才换手，否则直接回落标准。
+ * 四档：
+ * - standard：老路径，整轨等功率交叉，冻结不动（默认值）；
+ * - automixV2：进阶混音 v2 —— 低频换手 + 分段等功率 + 双向扫频，零分轨，只在图模式下生效；
+ * - advanced：分轨换手（旧实验路径，播放期跑分轨，已判死刑，仅留作对照）；
+ * - advancedSafe：旧实验路径的稳妥档。
+ *
+ * 注意 v2 与 advanced 是**两条互斥的实现**：v2 走 `web/src/audio/automixV2Graph.ts`
+ * 自己的分频链，不碰分轨、不碰标准路径的节点；切回 standard 就是完全回到旧行为。
  */
-export type MixTransitionMode = 'standard' | 'advanced' | 'advancedSafe';
+export type MixTransitionMode = 'standard' | 'automixV2' | 'advanced' | 'advancedSafe';
 
 /** 与壁纸的 `transitionMode` 区分开，别复用。 */
 export const MIX_TRANSITION_KEY = 'mixTransitionMode';
 
 export const MIX_TRANSITION_LABELS: Record<MixTransitionMode, string> = {
   standard: '标准（整轨等功率）',
-  advanced: '进阶（分轨换手）',
-  advancedSafe: '进阶·稳妥（置信度不足就回落标准）',
+  automixV2: '进阶混音（智能选点）',
+  advanced: '进阶（分轨换手·已停用）',
+  advancedSafe: '进阶·稳妥（分轨换手·已停用）',
 };
 
 export const MIX_TRANSITION_HINTS: Record<MixTransitionMode, string> = {
-  standard: '保持现在的等功率交叉，不做分轨换手。',
-  advanced: '按小节逐轨交换鼓/低音/旋律/人声；置信度不足时只换低音与鼓。首次切歌要先算分轨，会等几秒。',
-  advancedSafe: '只有拍点/调性都足够可信时才换手，否则当场回落标准，宁可不换也不乱换。',
+  standard: '保持现在的整轨等功率交叉，一分钱不加，行为与旧版完全一致。',
+  automixV2:
+    '按两首歌的重拍、鼓点、低音活动和人声位置选择接歌点，速度相近时自动对拍。',
+  advanced: '旧的四轨分轨换手，播放期要跑分离、会变调发糊，已停用；保留只为对照。',
+  advancedSafe: '旧分轨路线的稳妥档，同样已停用。',
 };
 
+/**
+ * 切换循环用的顺序：保持旧三档不动（`toggleMixTransitionMode` 与老测试依赖它）。
+ * UI 下拉另用 `MIX_TRANSITION_UI_ORDER`，把 v2 排进去。
+ */
 export const MIX_TRANSITION_ORDER: readonly MixTransitionMode[] = ['standard', 'advanced', 'advancedSafe'];
 
-const VALID: readonly MixTransitionMode[] = MIX_TRANSITION_ORDER;
+/** UI 下拉顺序：v2 紧跟标准档，因为它是标准档的「升级版」而不是旧分轨路。 */
+export const MIX_TRANSITION_UI_ORDER: readonly MixTransitionMode[] = [
+  'standard',
+  'automixV2',
+  'advanced',
+  'advancedSafe',
+];
+
+const VALID: readonly MixTransitionMode[] = MIX_TRANSITION_UI_ORDER;
 
 export function isMixTransitionMode(value: unknown): value is MixTransitionMode {
   return typeof value === 'string' && (VALID as readonly string[]).includes(value);
 }
 
-/** 读当前模式；任何异常/非法值都返回 standard。 */
+/**
+ * 读当前模式；任何异常/非法值都返回 standard。
+ *
+ * 默认仍是 standard：没手动切过的用户，行为与旧版逐样本一致。
+ * `automixV2` 是显式选择才生效的独立路径（用户要求「两种独立过渡」）。
+ */
 export function readMixTransitionMode(): MixTransitionMode {
-  // 实验特性已停用：恒定返回标准，保证过渡只有冻结的整轨等功率这一条路。
-  return 'standard';
+  try {
+    const raw = localStorage.getItem(MIX_TRANSITION_KEY);
+    return isMixTransitionMode(raw) ? raw : 'standard';
+  } catch {
+    return 'standard';
+  }
+}
+
+/** 是否是进阶混音 v2（低频换手路径）。 */
+export function isAutomixV2(mode: MixTransitionMode): boolean {
+  return mode === 'automixV2';
 }
 
 /** 写模式；返回最终生效值（写失败也不抛）。 */
@@ -66,7 +99,7 @@ export function toggleMixTransitionMode(): MixTransitionMode {
   return writeMixTransitionMode(MIX_TRANSITION_ORDER[(index + 1) % MIX_TRANSITION_ORDER.length]);
 }
 
-/** 是否要尝试换手（两档「进阶」都算）。 */
+/** 是否要尝试分轨换手（只算旧的两档实验路径；v2 零分轨，永远不走这里）。 */
 export function wantsStemSwap(mode: MixTransitionMode): boolean {
   return mode === 'advanced' || mode === 'advancedSafe';
 }

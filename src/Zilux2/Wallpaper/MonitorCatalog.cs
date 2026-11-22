@@ -19,7 +19,7 @@ internal static class MonitorCatalog
     public const int FpsHigh = 60;
     public const int DefaultFps = FpsHigh;
 
-    private const string FpsKey = "fps";
+    internal const string FpsKey = "fps";
     private const string DevicePrefix = @"\\.\";
 
     /// <summary>canvases.monitor_id 用的稳定键。</summary>

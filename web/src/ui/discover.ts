@@ -61,6 +61,8 @@ export interface DiscoverHandlers {
   openSheet(title: string, build: (body: HTMLDivElement) => void): void;
   /** 按关键词搜索（播客点击后由 app 切到搜索墙）。 */
   search(query: string): void;
+  /** 内容落定后回调：app 用它发逐块入场（每块自己挑款、自己随机时间）。 */
+  onRendered?(): void;
 }
 
 type DiscoverTab = 'charts' | 'playlists' | 'radio' | 'podcasts' | 'collections';
@@ -143,9 +145,9 @@ export class DiscoverView {
   }
 
   /** 从 rail 进入「发现」：回到根视图。 */
-  async show(): Promise<void> {
-    this.state = { kind: 'root' };
-    this.stack = [];
+  async show(initial?: ViewState): Promise<void> {
+    this.state = initial ?? { kind: 'root' };
+    this.stack = initial ? [{ kind: 'root' }] : [];
     await this.render();
   }
 
@@ -171,6 +173,7 @@ export class DiscoverView {
         if (seq !== this.seq) return;
         holder.textContent = '';
         holder.append(content);
+        this.handlers.onRendered?.();
       } catch (err) {
         if (seq !== this.seq) return;
         holder.textContent = '';
@@ -194,6 +197,7 @@ export class DiscoverView {
       if (seq !== this.seq) return;
       body.textContent = '';
       body.append(content);
+      this.handlers.onRendered?.();
     } catch (err) {
       if (seq !== this.seq) return;
       body.textContent = '';

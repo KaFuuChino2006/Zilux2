@@ -9,7 +9,7 @@
         WindowStartupLocation="CenterScreen"
         WindowStyle="None"
         ResizeMode="CanResize"
-        Background="#F3F1EA"
+        Background="#FFFFFF"
         UseLayoutRounding="True"
         SnapsToDevicePixels="True">
 
@@ -21,7 +21,7 @@
                             UseAeroCaptionButtons="False" />
     </shell:WindowChrome.WindowChrome>
 
-    <Grid x:Name="RootGrid" Background="#F3F1EA">
+    <Grid x:Name="RootGrid" Background="#FFFFFF">
         <!-- Full-bleed page: WebView2 is a child HWND, so an inset WPF strip would show up as a
              6px theme-colored frame around the whole window. Edge/corner resizing is instead
              handled by a host-injected pointerdown listener in the page (5px edges / 12px
@@ -32,7 +32,7 @@
         <!-- 启动遮罩：窗口一出现就是纯色，等 WebView2 首帧后再淡出，避免黑底或桌面闪一下。
              遮罩里就是启动画面本体（标题/副标题/底部进度条），文案取自 设置 → 启动；
              原来这里只是一块纯色，设置里的「启动动画 / 启动标题 / 启动副标题」完全没生效。 -->
-        <Grid x:Name="StartupVeil" Background="#F3F1EA" IsHitTestVisible="False">
+        <Grid x:Name="StartupVeil" Background="#FFFFFF" IsHitTestVisible="False">
             <StackPanel x:Name="SplashStack"
                         HorizontalAlignment="Center" VerticalAlignment="Center"
                         Opacity="0">

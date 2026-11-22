@@ -2,6 +2,7 @@ using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Zilux2.Storage;
 
 namespace Zilux2.Online.Kugou;
 
@@ -234,9 +235,7 @@ internal sealed class KugouDevice
         {
             Directory.CreateDirectory(HostFolders.Root);
             var json = JsonSerializer.Serialize(new DeviceDocument { Guid = Guid, Mid = Mid, Dfid = Dfid });
-            var temp = path + ".tmp";
-            File.WriteAllText(temp, json, new UTF8Encoding(false));
-            File.Move(temp, path, overwrite: true);
+            AtomicFile.WriteAllText(path, json, new UTF8Encoding(false));
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {

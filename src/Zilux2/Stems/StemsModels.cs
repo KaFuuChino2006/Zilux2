@@ -89,6 +89,9 @@ internal sealed class StemsOutcome
 
     public long DurationMs { get; init; }
 
+    /// <summary>四轨残差归位后的重建误差（dBFS）；2 轨或旧缓存为 NaN。</summary>
+    public double ReconErrorDbfs { get; set; } = double.NaN;
+
     internal static StemsOutcome Ready(StemsRequest request, long frames, bool cached, long elapsedMs, long durationMs) =>
         new()
         {
@@ -165,6 +168,10 @@ internal static class StemsJson
                     writer.WriteNumber("window", outcome.Window);
                     writer.WriteNumber("windowSec", outcome.WindowSec);
                     writer.WriteNumber("frames", outcome.Frames);
+                    if (!double.IsNaN(outcome.ReconErrorDbfs))
+                    {
+                        writer.WriteNumber("reconErrorDbfs", Math.Round(outcome.ReconErrorDbfs, 2));
+                    }
                     writer.WriteBoolean("cached", outcome.Cached);
                     writer.WriteNumber("ms", outcome.ElapsedMs);
                     break;
@@ -245,6 +252,12 @@ internal sealed class StemsMeta
     public int Stems { get; init; } = 2;
 
     /// <summary>
+    /// 残差归位后的浮点四轨重建误差（dBFS，越小越好）。归位之后「四轨之和 == 原音」
+    /// 仅受浮点舍入影响；旧缓存未标明测量阶段时为 NaN。
+    /// </summary>
+    public double ReconErrorDbfs { get; init; } = double.NaN;
+
+    /// <summary>
     /// 源文件身份（T2-7）：落盘时本地源文件的字节数与修改时间（UTC）。
     /// 同名文件被重导出/替换后 trackKey 不变，读缓存必须靠这两个值判断是否已过期。
     /// 在线曲目是临时下载文件、没有稳定身份，保持 0 / null；旧 meta 缺这两个键，读侧按未命中重算。
@@ -296,6 +309,9 @@ internal static class StemsMetaJson
                 SegmentMs = (int)ReadInt64(root, "segmentMs"),
                 // 旧版 meta 没有 stems 键：ReadInt64 返回 0，这里按 2 处理（T2-4 的读侧容错）。
                 Stems = ReadInt64(root, "stems") >= 4 ? 4 : 2,
+                ReconErrorDbfs = root.TryGetProperty("reconStage", out var stage) && stage.ValueKind == JsonValueKind.String && stage.GetString() == "folded" && root.TryGetProperty("reconErrorDbfs", out var recon) && recon.ValueKind == JsonValueKind.Number
+                    ? recon.GetDouble()
+                    : double.NaN,
                 // 旧 meta 没有这两个键：bytes=0 / 时间=null，读侧据此判未命中并重算一次（T2-7）。
                 SourceBytes = ReadInt64(root, "sourceBytes"),
                 SourceModifiedUtc = DateTime.TryParse(
@@ -325,7 +341,6 @@ internal static class StemsMetaJson
 
     internal static void Write(string path, StemsMeta meta)
     {
-        var temp = path + ".tmp";
         var buffer = new ArrayBufferWriter<byte>(256);
         using (var writer = new Utf8JsonWriter(buffer, Options))
         {
@@ -336,6 +351,12 @@ internal static class StemsMetaJson
             writer.WriteNumber("durationMs", meta.DurationMs);
             writer.WriteNumber("segmentMs", meta.SegmentMs);
             writer.WriteNumber("stems", meta.Stems);
+            if (!double.IsNaN(meta.ReconErrorDbfs))
+            {
+                writer.WriteString("reconStage", "folded");
+                writer.WriteNumber("reconErrorDbfs", Math.Round(meta.ReconErrorDbfs, 2));
+            }
+
             writer.WriteString("modelSha256", meta.ModelSha256);
             writer.WriteString("createdUtc", meta.CreatedUtc.ToString("O", CultureInfo.InvariantCulture));
             // 源文件身份：读缓存时与磁盘上的 FileInfo 比对，不一致就重算（T2-7）。
@@ -349,8 +370,7 @@ internal static class StemsMetaJson
             writer.WriteEndObject();
         }
 
-        File.WriteAllBytes(temp, buffer.WrittenSpan.ToArray());
-        File.Move(temp, path, overwrite: true);
+        Zilux2.Storage.AtomicFile.WriteAllBytes(path, buffer.WrittenSpan.ToArray());
     }
 
     private static string ReadString(JsonElement element, string name) =>

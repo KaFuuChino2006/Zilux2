@@ -13,7 +13,7 @@
   border: 1px solid var(--line);
   border-radius: var(--radius-l);
   box-shadow: 0 28px 80px rgba(0, 0, 0, 0.38);
-  animation: sheet-center-in 0.26s var(--ease, ease);
+  animation: sheet-center-in var(--motion-fast) var(--ease, ease);
 }
 
 .sheet.is-center .sheet-body {
@@ -38,7 +38,7 @@
   gap: 10px;
   align-items: end;
   padding: 12px 4px 4px;
-  transition: opacity 0.2s ease;
+  transition: opacity var(--motion-quick) ease;
 }
 
 .eq-bands.is-disabled {
@@ -160,7 +160,7 @@
   background: var(--panel-strong, #fff);
   box-shadow: 0 2px 8px rgba(0, 0, 0, .16);
   transform: translateY(6px);
-  transition: transform .34s cubic-bezier(.34, 1.56, .64, 1), height .3s cubic-bezier(.34, 1.56, .64, 1);
+  transition: transform var(--motion-fast) cubic-bezier(.34, 1.56, .64, 1), height var(--motion-fast) cubic-bezier(.34, 1.56, .64, 1);
   pointer-events: none;
   z-index: 0;
 }
@@ -175,7 +175,7 @@
   font-size: 13px;
   color: var(--text-soft);
   background: transparent;
-  transition: color .18s var(--ease);
+  transition: color var(--motion-quick) var(--ease);
 }
 
 .settings-nav-btn:hover {
@@ -234,7 +234,7 @@
   border-radius: 8px;
   background: var(--panel-strong, #fff);
   box-shadow: 0 2px 8px rgba(0, 0, 0, .18);
-  transition: transform .22s var(--ease);
+  transition: transform var(--motion-quick) var(--ease);
 }
 
 .pill-switch.is-on .pill-switch-thumb {
@@ -249,7 +249,7 @@
   padding: 0 10px;
   font-size: 12px;
   color: var(--muted);
-  transition: color .18s var(--ease);
+  transition: color var(--motion-quick) var(--ease);
 }
 
 .pill-switch-btn.is-on {
@@ -330,7 +330,7 @@
 }
 
 .seg-thumb.is-pop {
-  animation: seg-thumb-pop .42s cubic-bezier(.34, 1.56, .64, 1);
+  animation: seg-thumb-pop var(--motion-base) cubic-bezier(.34, 1.56, .64, 1);
 }
 
 @keyframes seg-thumb-pop {
@@ -364,7 +364,7 @@
 /* 快捷设置 tab / 音质滑块的滑块同样走弹簧缓动（原 --ease-pop 未定义，无动画） */
 .quick-tabs .quick-thumb,
 .quick-seg-slider .quick-thumb {
-  transition: transform .34s cubic-bezier(.34, 1.56, .64, 1), width .34s cubic-bezier(.34, 1.56, .64, 1), left .34s cubic-bezier(.34, 1.56, .64, 1);
+  transition: transform var(--motion-fast) cubic-bezier(.34, 1.56, .64, 1), width var(--motion-fast) cubic-bezier(.34, 1.56, .64, 1), left var(--motion-fast) cubic-bezier(.34, 1.56, .64, 1);
 }
 
 /* ---- 统一胶囊形状：所有选中滑块 / 轨道都用「圆角带点方形」的造型 + 同一白底阴影 ---- */
@@ -418,7 +418,7 @@
   padding: 34px 28px;
   background: rgb(var(--ink-rgb) / 0.22);
   backdrop-filter: blur(16px) saturate(1.15);
-  animation: sheet-fade-in 0.2s var(--ease, ease);
+  animation: sheet-fade-in var(--motion-quick) var(--ease, ease);
 }
 
 .sd-modal-panel {
@@ -431,7 +431,7 @@
   border: 1px solid var(--line);
   border-radius: var(--radius-l);
   box-shadow: 0 28px 80px rgba(0, 0, 0, 0.38);
-  animation: sheet-center-in 0.28s var(--ease, ease);
+  animation: sheet-center-in var(--motion-fast) var(--ease, ease);
 }
 
 .sd-modal-head {
@@ -506,10 +506,10 @@
 
 /* 歌曲信息整页详情：关闭时淡出 + 面板轻微下移，不再整块瞬删 */
 .sd-modal.is-closing {
-  animation: sheet-fade-out 0.16s var(--ease, ease) both;
+  animation: sheet-fade-out var(--motion-instant) var(--ease, ease) both;
 }
 .sd-modal.is-closing .sd-modal-panel {
-  animation: sd-panel-out 0.16s var(--ease, ease) both;
+  animation: sd-panel-out var(--motion-instant) var(--ease, ease) both;
 }
 @keyframes sd-panel-out {
   from { opacity: 1; transform: none; }
@@ -518,7 +518,7 @@
 
 /* 设置页切 pane：nav 滑块有动画，内容也补一个淡入上浮 */
 .settings-pane:not([hidden]) {
-  animation: settings-pane-in 0.26s var(--ease, ease) both;
+  animation: settings-pane-in var(--motion-fast) var(--ease, ease) both;
 }
 @keyframes settings-pane-in {
   from { opacity: 0; translate: 0 8px; }
@@ -552,7 +552,7 @@
   text-align: left;
   color: var(--text);
   background: transparent;
-  transition: background 0.16s var(--ease, ease);
+  transition: background var(--motion-instant) var(--ease, ease);
 }
 
 .autoplay-playlist:hover {

@@ -77,10 +77,9 @@
   border-radius: var(--radius-pill, 999px);
   background: rgb(var(--overlay-rgb) / 0.05);
   overflow: hidden;
-  transition:
-    border-color var(--dur-fast, 0.16s) var(--ease),
-    background var(--dur-fast, 0.16s) var(--ease),
-    transform var(--dur-fast, 0.16s) var(--ease);
+  transition: border-color var(--dur-fast, var(--motion-instant)) var(--ease),
+    background var(--dur-fast, var(--motion-instant)) var(--ease),
+    transform var(--dur-fast, var(--motion-instant)) var(--ease);
 }
 
 .sh-item:hover {
@@ -102,7 +101,7 @@
   font-size: 12.5px;
   line-height: 1;
   cursor: pointer;
-  transition: color var(--dur-fast, 0.16s) var(--ease);
+  transition: color var(--dur-fast, var(--motion-instant)) var(--ease);
 }
 
 .sh-pick:hover {
@@ -140,9 +139,8 @@
   background: transparent;
   color: var(--muted);
   cursor: pointer;
-  transition:
-    color var(--dur-fast, 0.16s) var(--ease),
-    background var(--dur-fast, 0.16s) var(--ease);
+  transition: color var(--dur-fast, var(--motion-instant)) var(--ease),
+    background var(--dur-fast, var(--motion-instant)) var(--ease);
 }
 
 .sh-remove:hover {
@@ -167,9 +165,8 @@
   font-family: inherit;
   font-size: 11.5px;
   cursor: pointer;
-  transition:
-    color var(--dur-fast, 0.16s) var(--ease),
-    background var(--dur-fast, 0.16s) var(--ease);
+  transition: color var(--dur-fast, var(--motion-instant)) var(--ease),
+    background var(--dur-fast, var(--motion-instant)) var(--ease);
 }
 
 .sh-clear:hover {
@@ -226,9 +223,8 @@
   font-family: inherit;
   font-size: 12.5px;
   outline: none;
-  transition:
-    border-color var(--dur-fast, 0.16s) var(--ease),
-    background var(--dur-fast, 0.16s) var(--ease);
+  transition: border-color var(--dur-fast, var(--motion-instant)) var(--ease),
+    background var(--dur-fast, var(--motion-instant)) var(--ease);
 }
 
 .eqp-input::placeholder {
@@ -256,9 +252,8 @@
   border: 1px solid transparent;
   border-radius: 10px;
   background: rgb(var(--overlay-rgb) / 0.04);
-  transition:
-    border-color var(--dur-fast, 0.16s) var(--ease),
-    background var(--dur-fast, 0.16s) var(--ease);
+  transition: border-color var(--dur-fast, var(--motion-instant)) var(--ease),
+    background var(--dur-fast, var(--motion-instant)) var(--ease);
 }
 
 .eqp-chip-wrap:hover {
@@ -298,9 +293,8 @@
   font-family: inherit;
   font-size: 11px;
   cursor: pointer;
-  transition:
-    color var(--dur-fast, 0.16s) var(--ease),
-    background var(--dur-fast, 0.16s) var(--ease);
+  transition: color var(--dur-fast, var(--motion-instant)) var(--ease),
+    background var(--dur-fast, var(--motion-instant)) var(--ease);
 }
 
 .eqp-icon-btn:hover {
@@ -362,7 +356,7 @@
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   color: var(--muted);
-  transition: color var(--dur-fast, 0.16s) var(--ease);
+  transition: color var(--dur-fast, var(--motion-instant)) var(--ease);
 }
 
 .st-status::before {
@@ -557,5 +551,5 @@
   to { opacity: 1; scale: 1; }
 }
 .st-cancel-btn:not([hidden]) {
-  animation: st-btn-in 0.18s ease both;
+  animation: st-btn-in var(--motion-quick) ease both;
 }

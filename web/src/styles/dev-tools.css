@@ -100,3 +100,447 @@
   outline: 1px dashed rgb(84 170 255 / 0.5);
   outline-offset: -1px;
 }
+
+/* ---------------- 混音实时浮层（开发者选项） ---------------- */
+
+.mixhud {
+  position: fixed;
+  top: 76px;
+  right: 16px;
+  z-index: 320;
+  width: 352px;
+  min-width: 300px;
+  min-height: 240px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 96px);
+  overflow: auto;
+  /* 右下角可拖动改变大小（尺寸存在 localStorage，见 mixHud.ts） */
+  resize: both;
+  padding: 10px 12px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel-raised) 92%, transparent);
+  box-shadow: var(--shadow-1);
+  backdrop-filter: blur(20px);
+  font-family: var(--font-num);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-soft);
+  user-select: none;
+}
+
+.mixhud[hidden] { display: none; }
+.mixhud.is-dragging { cursor: grabbing; }
+
+.mixhud-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  cursor: grab;
+  touch-action: none;
+}
+
+.mixhud-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.mixhud-phase.is-fading + .mixhud-btn,
+.mixhud-header:has(.mixhud-phase.is-fading) .mixhud-dot {
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+}
+
+.mixhud-title {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.mixhud-phase {
+  margin-left: auto;
+  font-size: 10px;
+  letter-spacing: .02em;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.mixhud-phase.is-fading { color: var(--accent-strong, var(--accent)); }
+
+.mixhud-btn {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.mixhud-btn:hover { color: var(--text); border-color: var(--accent); }
+
+.mixhud-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.mixhud-progress-track {
+  position: relative;
+  flex: 1;
+  height: 5px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--line) 70%, transparent);
+  overflow: hidden;
+}
+
+.mixhud-progress-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-strong, var(--accent)));
+  transition: width var(--motion-instant) linear;
+}
+
+.mixhud-progress-text {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.mixhud-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px 10px;
+}
+
+.mixhud-kv {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.mixhud-kv-key {
+  flex: none;
+  color: var(--muted);
+}
+
+.mixhud-kv-value {
+  flex: 1;
+  min-width: 0;
+  text-align: right;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mixhud-kv-value.is-bad { color: var(--danger); }
+
+.mixhud-sep {
+  height: 1px;
+  margin: 8px 0;
+  background: var(--line);
+}
+
+.mixhud-deck { margin-bottom: 8px; }
+
+.mixhud-deck-title {
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mixhud-deck-meta,
+.mixhud-deck-pos,
+.mixhud-deck-chain,
+.mixhud-deck-rate {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.mixhud-deck-chain { white-space: normal; word-break: break-word; }
+
+.mixhud-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 14px;
+}
+
+.mixhud-bar-label {
+  flex: none;
+  width: 60px;
+  color: var(--muted);
+}
+
+.mixhud-bar-track {
+  position: relative;
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--line) 70%, transparent);
+  overflow: hidden;
+}
+
+.mixhud-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width var(--motion-instant) linear;
+}
+
+.mixhud-bar-value {
+  flex: none;
+  width: 34px;
+  text-align: right;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.mixhud-quality {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px 10px;
+}
+
+.mixhud-reasons,
+.mixhud-note {
+  margin-top: 6px;
+  color: var(--muted);
+  white-space: normal;
+  word-break: break-word;
+}
+
+.mixhud-note { color: var(--text-soft); }
+
+/* ---- 频率削减（浮层里的可控块） ---- */
+
+.mixhud-eq-title {
+  margin-bottom: 4px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.mixhud-eq-row {
+  margin-bottom: 6px;
+  padding: 5px 6px 4px;
+  border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  border-radius: 8px;
+}
+
+.mixhud-eq-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 3px;
+}
+
+.mixhud-eq-check {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  accent-color: var(--accent);
+}
+
+.mixhud-eq-name {
+  flex: none;
+  width: 30px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.mixhud-eq-type {
+  flex: none;
+  height: 18px;
+  padding: 0 2px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--text-soft);
+  font-family: inherit;
+  font-size: 10px;
+}
+
+.mixhud-eq-line {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 15px;
+}
+
+.mixhud-eq-tag {
+  flex: none;
+  width: 14px;
+  color: var(--muted);
+}
+
+.mixhud-eq-range {
+  flex: 1;
+  height: 12px;
+  accent-color: var(--accent);
+}
+
+.mixhud-eq-range.is-narrow { flex: 0 0 68px; }
+
+.mixhud-eq-range:disabled { opacity: .38; }
+
+.mixhud-eq-val {
+  flex: none;
+  min-width: 48px;
+  text-align: right;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.mixhud-eq-val.is-bad { color: var(--accent-strong, var(--accent)); }
+
+.mixhud-btn.is-small {
+  height: 18px;
+  padding: 0 6px;
+  font-size: 10px;
+}
+
+.mixhud-eq-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.mixhud-eq-note {
+  flex: 1;
+  min-width: 0;
+  height: 18px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 10px;
+}
+
+.mixhud-eq-count {
+  flex: none;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.mixhud-eq-last {
+  margin-top: 4px;
+  color: var(--muted);
+  white-space: normal;
+  word-break: break-word;
+  font-size: 10px;
+}
+
+
+/* 频率区间工具：预设/独听按钮与三行端点滑块 */
+.mixhud-eq-head .mixhud-btn.is-small { flex: 0 0 auto; }
+.mixhud-btn.is-on { background: rgba(120, 200, 255, 0.28); border-color: rgba(120, 200, 255, 0.55); }
+.mixhud-eq-val { min-width: 62px; text-align: right; }
+.mixhud-eq-line .mixhud-eq-range.is-narrow { max-width: 78px; }
+
+/* 分轨试听：标签要放得下「人声/鼓/贝斯/其他」，按钮不许换行挤压 */
+.mixhud-stem {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 4px;
+}
+.mixhud-stem-line {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) 58px 44px;
+  align-items: center;
+  gap: 6px;
+  height: 18px;
+}
+.mixhud-stem-tag {
+  color: var(--muted);
+  white-space: nowrap;
+  font-size: 10px;
+}
+.mixhud-stem-line .mixhud-eq-range {
+  width: 100%;
+  min-width: 0;
+  height: 12px;
+  accent-color: var(--accent);
+}
+.mixhud-stem-line .mixhud-eq-val {
+  min-width: 0;
+  white-space: nowrap;
+  text-align: right;
+  font-size: 10px;
+}
+.mixhud-stem-line .mixhud-btn {
+  width: 44px;
+  padding: 0;
+  white-space: nowrap;
+}
+.mixhud-stem-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+.mixhud-stem-toggle {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.mixhud-stem-status {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--muted);
+  font-size: 10px;
+}
+.mixhud-stem-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  flex-wrap: nowrap;
+}
+.mixhud-stem-actions .mixhud-btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.mixhud-stem-actions .mixhud-eq-note {
+  flex: 1 1 60px;
+  min-width: 0;
+}
+
+.mixhud-stem-bypass {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 11px;
+  opacity: 0.85;
+  white-space: nowrap;
+}
+.mixhud-stem-check {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent, #6ea8fe);
+}
+
+.app.is-mini .mixhud { display: none; }

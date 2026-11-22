@@ -1,0 +1,138 @@
+/* 新版悬浮导航条的一次性引导（首次使用 / 本版更新后第一次启动）。
+   挂在 .app 里做 fixed 定位，贴着导航条下方；空间不够翻到上方。 */
+
+.nav-guide {
+  position: fixed;
+  z-index: 240;
+  width: min(324px, calc(100vw - 32px));
+  padding: 15px 16px 12px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: var(--surface-strong);
+  box-shadow: 0 20px 52px rgb(var(--ink-rgb) / .26);
+  color: var(--text);
+  -webkit-app-region: no-drag;
+  animation: nav-guide-in var(--motion-base) var(--ease) both;
+}
+
+/* 只想让指针点得到卡片本体，别挡住它覆盖的页面区域。 */
+.nav-guide-arrow {
+  position: absolute;
+  top: -6px;
+  width: 12px;
+  height: 12px;
+  border-top-left-radius: 3px;
+  border-left: 1px solid var(--line);
+  border-top: 1px solid var(--line);
+  background: var(--surface-strong);
+  transform: rotate(45deg);
+}
+
+.nav-guide.is-above .nav-guide-arrow {
+  top: auto;
+  bottom: -6px;
+  border-top: 0;
+  border-left: 0;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  border-radius: 0 0 3px 0;
+  transform: rotate(45deg);
+}
+
+.nav-guide-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: .01em;
+}
+
+.nav-guide-sub {
+  margin: 5px 0 11px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.nav-guide-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+
+.nav-guide-item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 9px;
+  align-items: start;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-soft);
+}
+
+.nav-guide-num {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  white-space: nowrap;
+}
+
+.nav-guide-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 13px;
+}
+
+.nav-guide-ok {
+  min-width: 84px;
+  height: 32px;
+  font-size: 12.5px;
+}
+
+/* 出场：和入场同一条轨迹倒着走（下移 + 微缩 + 淡出），时长按收尾节奏。 */
+.nav-guide.is-out {
+  animation: nav-guide-out 220ms var(--ease) both;
+}
+
+@keyframes nav-guide-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes nav-guide-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(8px) scale(.985);
+  }
+}
+
+/* 引导期间导航条必须露着：它可能刚好回到闲置态被收起（is-dock-muted），
+   引导正指着那一块，收走就成了指空气。特异性要压过 is-dock-muted 的 !important 组合。 */
+.app .rail.nav-dock.is-guide-hold {
+  opacity: 1 !important;
+  clip-path: none !important;
+  pointer-events: auto !important;
+  visibility: visible;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nav-guide,
+  .nav-guide.is-out {
+    animation: none;
+  }
+}

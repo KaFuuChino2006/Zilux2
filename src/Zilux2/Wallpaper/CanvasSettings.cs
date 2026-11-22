@@ -34,7 +34,7 @@ internal readonly record struct CanvasOverrides(
         Clamp(transform.CropTop, 0, 45),
         Clamp(transform.CropRight, 0, 45),
         Clamp(transform.CropBottom, 0, 45),
-        Clamp(transform.Zoom <= 0 ? 1 : transform.Zoom, 1, 3),
+        Clamp(transform.Zoom <= 0 ? 1 : transform.Zoom, 0.5, 3),
         Clamp(transform.Blur, 0, 24));
 
     public static int NormalizeRotation(int rotation)
@@ -60,6 +60,8 @@ internal static class CanvasSettings
     public const string CropBottomKey = "cropBottom";
     public const string ZoomKey = "zoom";
     public const string BlurKey = "blur";
+    /// <summary>这块屏的音量覆盖（0–100）。跟 fps 一样属于屏，不进「素材记忆」。</summary>
+    public const string VolumeKey = "volume";
 
     /// <summary>画布自己的值；没有覆盖的键回落到素材 Transform。</summary>
     public static CanvasOverrides Read(string? filterJson, WallpaperTransform fallback) =>
@@ -90,7 +92,7 @@ internal static class CanvasSettings
             cropTop is { } ct ? CanvasOverrides.Clamp(ct, 0, 45) : result.CropTop,
             cropRight is { } cr ? CanvasOverrides.Clamp(cr, 0, 45) : result.CropRight,
             cropBottom is { } cb ? CanvasOverrides.Clamp(cb, 0, 45) : result.CropBottom,
-            zoom is { } z ? CanvasOverrides.Clamp(z, 1, 3) : result.Zoom,
+            zoom is { } z ? CanvasOverrides.Clamp(z, 0.5, 3) : result.Zoom,
             blur is { } b ? CanvasOverrides.Clamp(b, 0, 24) : result.Blur);
     }
 
@@ -109,8 +111,35 @@ internal static class CanvasSettings
         ApplyDouble(root, CropTopKey, patch, value => CanvasOverrides.Clamp(value, 0, 45));
         ApplyDouble(root, CropRightKey, patch, value => CanvasOverrides.Clamp(value, 0, 45));
         ApplyDouble(root, CropBottomKey, patch, value => CanvasOverrides.Clamp(value, 0, 45));
-        ApplyDouble(root, ZoomKey, patch, value => CanvasOverrides.Clamp(value, 1, 3));
+        ApplyDouble(root, ZoomKey, patch, value => CanvasOverrides.Clamp(value, 0.5, 3));
         ApplyDouble(root, BlurKey, patch, value => CanvasOverrides.Clamp(value, 0, 24));
+        ApplyInt(root, VolumeKey, patch, value => (int)CanvasOverrides.Clamp(value, 0, 100));
+
+        return root.Count == 0 ? null : root.ToJsonString();
+    }
+
+    /// <summary>读这块屏自己的音量覆盖；没设过返回 null（表示跟全局音量走）。</summary>
+    public static int? ReadVolume(string? filterJson)
+    {
+        var root = Parse(filterJson);
+        if (root is null || !root.TryGetPropertyValue(VolumeKey, out var node) || node is null) return null;
+        return node is JsonValue value && value.TryGetValue<int>(out var volume)
+            ? (int)CanvasOverrides.Clamp(volume, 0, 100)
+            : null;
+    }
+
+    /// <summary>
+    /// 只留画面参数：去掉 fps 这类跟屏绑定的键，用于「这张素材自己记住的一套」。
+    /// 全空返回 null（等于没覆盖）。
+    /// </summary>
+    public static string? OnlyPicture(string? filterJson)
+    {
+        var root = Parse(filterJson);
+        if (root is null) return null;
+        foreach (var key in root.Select(pair => pair.Key).ToArray())
+        {
+            if (key is MonitorCatalog.FpsKey or VolumeKey) root.Remove(key);
+        }
 
         return root.Count == 0 ? null : root.ToJsonString();
     }

@@ -29,3 +29,19 @@ export function transitionMatchDb(a: BeatAnalysis, b: BeatAnalysis, aStart: numb
   }
   return correction;
 }
+
+/** Keep the contiguous audible lead-in immediately before the first lyric. */
+export function audibleIntroStart(track: BeatAnalysis, head: number, lyric: number): number {
+  const times = track.loudnessTimesMs ?? [], levels = track.momentaryLufs ?? [];
+  const reference = regionLoudness(track, lyric, lyric+3000);
+  if (reference === null || times.length !== levels.length) return head;
+  const threshold = Math.max(-52,reference-14);
+  let quietEnd = 0;
+  for (let i = times.length-1; i >= 0 && times[i] >= head; i--) {
+    if (times[i] >= lyric) continue;
+    if (levels[i] >= threshold) { quietEnd = 0; continue; }
+    if (!quietEnd) quietEnd = times[i];
+    if (quietEnd-times[i] >= 600) return Math.min(lyric,quietEnd+100);
+  }
+  return head;
+}

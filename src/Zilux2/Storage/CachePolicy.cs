@@ -223,9 +223,8 @@ internal static class CachePolicy
 
             var root = ReadObject(path) ?? new JsonObject();
             mutate(root);
-            var temp = path + ".tmp";
-            File.WriteAllText(temp, root.ToJsonString());
-            File.Move(temp, path, true);
+            // 固定 ".tmp" 会让「设置页改预算」与「分轨剪枝」两条并发路径互踩，改用 GUID 临时名。
+            AtomicFile.WriteAllText(path, root.ToJsonString());
             // 下一次读取必须重新解析：刚刚只改了一个键，内存里的其它字段（比如
             // maxStemCacheMb）可能还停在写之前的旧值，不能拿新 mtime 冒充「已同步」。
             _stamp = DateTime.MinValue;

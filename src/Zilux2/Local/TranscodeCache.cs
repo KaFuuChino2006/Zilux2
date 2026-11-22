@@ -88,6 +88,25 @@ internal static class TranscodeCache
                 return;
             }
 
+            // 崩溃/断电会在缓存目录里留下转码临时文件（`.tmp`）。它们不计入预算，
+            // 却也永远不会被删 —— 一次 DSD 失败就是上百 MB 永久占用。这里顺手清掉一天以上的。
+            var staleCutoff = DateTime.UtcNow - TimeSpan.FromDays(1);
+            foreach (var temp in Directory.EnumerateFiles(directory, "*.tmp"))
+            {
+                try
+                {
+                    var info = new FileInfo(temp);
+                    if (info.LastWriteTimeUtc < staleCutoff)
+                    {
+                        info.Delete();
+                    }
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    // 正在写的临时文件删不掉，下次再说。
+                }
+            }
+
             var files = new List<FileInfo>();
             long total = 0;
             foreach (var path in Directory.EnumerateFiles(directory, "*.wav"))

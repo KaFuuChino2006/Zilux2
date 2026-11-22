@@ -64,7 +64,7 @@
   font-size: 13px;
   font-family: inherit;
   outline: none;
-  transition: border-color .16s var(--ease), background .16s var(--ease);
+  transition: border-color var(--motion-instant) var(--ease), background var(--motion-instant) var(--ease);
 }
 
 .tag-input::placeholder {
@@ -123,7 +123,7 @@
   text-align: left;
   font-family: inherit;
   cursor: pointer;
-  transition: background .18s var(--ease), border-color .18s var(--ease), transform .18s var(--ease);
+  transition: background var(--motion-quick) var(--ease), border-color var(--motion-quick) var(--ease), transform var(--motion-quick) var(--ease);
 }
 
 .local-playlist-card:hover {
@@ -238,7 +238,7 @@
   border-radius: 999px;
   background: var(--accent);
   box-shadow: 0 0 12px var(--accent);
-  animation: local-drop-in .22s cubic-bezier(.22, 1.28, .36, 1);
+  animation: local-drop-in var(--motion-quick) cubic-bezier(.22, 1.28, .36, 1);
 }
 
 @keyframes local-drop-in {
@@ -263,7 +263,7 @@
 .local-like-btn .local-like-icon {
   display: inline-flex;
   color: var(--muted);
-  transition: color .18s var(--ease), transform .22s cubic-bezier(.22, 1.28, .36, 1);
+  transition: color var(--motion-quick) var(--ease), transform var(--motion-quick) cubic-bezier(.22, 1.28, .36, 1);
 }
 
 .local-like-btn:hover .local-like-icon {

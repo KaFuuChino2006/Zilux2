@@ -56,7 +56,8 @@ internal static class Mvmp3Cache
         {
             Directory.CreateDirectory(Dir);
             var json = JsonSerializer.Serialize(new { title = title ?? string.Empty, artist = artist ?? string.Empty });
-            File.WriteAllText(MetaPathFor(id), json);
+            // 原子写：meta 只影响显示名，但半截 JSON 会让整条缓存被读侧判为坏文件。
+            Zilux2.Storage.AtomicFile.WriteAllText(MetaPathFor(id), json);
         }
         catch
         {
@@ -128,13 +129,37 @@ internal static class Mvmp3Cache
 
     private static string PartPathFor(string id) => Path.Combine(Dir, id + ".part");
 
+    /// <summary>命中缓存时刷新 LastWriteTimeUtc 的最小间隔（避免每个请求都写文件元数据）。</summary>
+    private static readonly TimeSpan TouchInterval = TimeSpan.FromMinutes(10);
+
     /// <summary>缓存文件存在且大小合理时返回 true（页面播放优先读它）。</summary>
     public static bool TryGet(string id, out string path)
     {
         path = PathFor(id);
         try
         {
-            return File.Exists(path) && new FileInfo(path).Length >= MinValidBytes;
+            var info = new FileInfo(path);
+            if (!info.Exists || info.Length < MinValidBytes)
+            {
+                return false;
+            }
+
+            // TrimCache 按 LastWriteTimeUtc 淘汰，但命中从来不更新它 —— 结果是
+            // 「正在反复播放的热文件」时间戳一直是最旧的，先被删；冷文件反而常驻。
+            // 这里命中就 touch（10 分钟内不重复写，避免每次请求都改元数据）。
+            if (DateTime.UtcNow - info.LastWriteTimeUtc > TouchInterval)
+            {
+                try
+                {
+                    File.SetLastWriteTimeUtc(path, DateTime.UtcNow);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    // 时间戳改不了不影响播放，只是这一轮淘汰顺序退化成下载时间。
+                }
+            }
+
+            return true;
         }
         catch
         {
@@ -386,8 +411,17 @@ internal static class Mvmp3Cache
                 return (0, 0);
             }
 
-            foreach (var file in Directory.EnumerateFiles(Dir, "*.mp3"))
+            // 不能只数 *.mp3：正在下载的 `.part` 也占磁盘，漏掉它们会出现
+            // 「设置页显示 0 B，资源管理器里几百 MB」的观感 bug。
+            foreach (var file in Directory.EnumerateFiles(Dir))
             {
+                var name = Path.GetFileName(file);
+                if (!name.EndsWith(".mp3", StringComparison.OrdinalIgnoreCase) &&
+                    !name.EndsWith(".part", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
                 count += 1;
                 bytes += new FileInfo(file).Length;
             }
@@ -400,11 +434,17 @@ internal static class Mvmp3Cache
         return (count, bytes);
     }
 
+    /// <summary>回收目录保留时长：超过就真删。清一次缓存复制一份全量（单曲 200 MB / 总量 1 GB），
+    /// 不清回收站等于「每清一次多占一份磁盘」。</summary>
+    private static readonly TimeSpan TrashRetention = TimeSpan.FromDays(7);
+
     public static void Clear()
     {
         var trash = string.Empty;
         try
         {
+            PurgeTrash(null);
+
             if (!Directory.Exists(Dir))
             {
                 return;
@@ -436,11 +476,52 @@ internal static class Mvmp3Cache
                 }
             }
 
+            // 保留本次的回收目录（可恢复），清掉超过保留期的旧目录。
+            PurgeTrash(trash);
             HostLog.Info($"[mvmp3] cache cleared (trash={trash})");
         }
         catch (Exception exception)
         {
             HostLog.Warn($"[mvmp3] cache clear failed: {exception.GetType().Name}");
+        }
+    }
+
+    private static void PurgeTrash(string? keep)
+    {
+        try
+        {
+            var root = Path.Combine(HostFolders.Root, "mvmp3-cache-trash");
+            if (!Directory.Exists(root))
+            {
+                return;
+            }
+
+            var cutoff = DateTime.UtcNow - TrashRetention;
+            foreach (var directory in Directory.EnumerateDirectories(root))
+            {
+                if (keep is not null && string.Equals(directory, keep, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    if (Directory.GetLastWriteTimeUtc(directory) > cutoff)
+                    {
+                        continue;
+                    }
+
+                    Directory.Delete(directory, recursive: true);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    HostLog.Warn($"[mvmp3] trash purge failed {Path.GetFileName(directory)}: {exception.Message}");
+                }
+            }
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[mvmp3] trash scan failed: {exception.GetType().Name}");
         }
     }
 }

@@ -432,7 +432,14 @@ export function lyricSourceText(): string {
     return `${base} · 翻译取自 ${info.translationFromOther}`;
   }
   if (info.translationKept) return `${base} · 保留当前平台带翻译的歌词`;
-  if (info.lines) return `${base} · 逐字 ${info.label}`;
+  if (info.lines) {
+    // base 已经写了「平台 · 格式 · 匹配 N%」；info.label 同样是「平台 · 逐字（QRC）」，
+    // 直接拼上去会变成「QQ 音乐 · 逐字（QRC）· 匹配 100% · 逐字 QQ 音乐 · 逐字（QRC）」，
+    // 在封面下方那一行里既重复又被省略号切掉。同平台就不再罗列一遍。
+    const label = info.label ?? '';
+    const platform = label.split(' · ')[0]?.trim() ?? '';
+    return platform && base.startsWith(`${platform} ·`) ? base : `${base} · 逐字 ${label}`;
+  }
   if (info.belowThreshold) return `${base} · 低于阈值 ${percent(lyricMatchMinScore())}%，未替换`;
   return `${base} · 其它平台无逐字（只有整行）`;
 }
@@ -460,6 +467,7 @@ export function setLyricMatchMinScore(value: number): void {
 
 /** 后台匹配逐字歌词：命中就替换 lastDoc 并通知界面，未命中只更新匹配度。 */
 function startLyricMatch(track: OnlineTrack, base: LyricDoc): void {
+  const gen = ++lyricGeneration;
   lyricMatchInfo = null;
   if (manualLyricLabel) {
     // 用户手动选了歌词来源：以手动选择为准，不再后台替换。
@@ -481,14 +489,14 @@ function startLyricMatch(track: OnlineTrack, base: LyricDoc): void {
     if (baseHasTranslation) return;
     void matchTranslation(track, base.lines)
       .then((result) => {
-        if (lastDoc?.trackKey !== base.trackKey) return;
+        if (gen !== lyricGeneration || lastDoc?.trackKey !== base.trackKey) return;
         lyricMatchDone = true;
         lyricMatchInfo = result;
         if (result) updateCurrentLyricLine();
         notifyMatch();
       })
       .catch(() => {
-        if (lastDoc?.trackKey !== base.trackKey) return;
+        if (gen !== lyricGeneration || lastDoc?.trackKey !== base.trackKey) return;
         lyricMatchDone = true;
         lyricMatchInfo = null;
         notifyMatch();
@@ -497,7 +505,7 @@ function startLyricMatch(track: OnlineTrack, base: LyricDoc): void {
   }
   void matchWordLyrics(track, base.lines)
     .then((result) => {
-      if (lastDoc?.trackKey !== base.trackKey) return;
+      if (gen !== lyricGeneration || lastDoc?.trackKey !== base.trackKey) return;
       if (result?.lines || baseHasTranslation) {
         lyricMatchDone = true;
         lyricMatchInfo = result;
@@ -512,7 +520,7 @@ function startLyricMatch(track: OnlineTrack, base: LyricDoc): void {
       // 没匹配到逐字（本地 LRC / 在线整行歌词同理）：再向其它平台借一份翻译贴到现有歌词上
       void matchTranslation(track, base.lines)
         .then((translated) => {
-          if (lastDoc?.trackKey !== base.trackKey) return;
+          if (gen !== lyricGeneration || lastDoc?.trackKey !== base.trackKey) return;
           lyricMatchDone = true;
           lyricMatchInfo = translated ?? result;
           if (translated && lastDoc) {
@@ -522,20 +530,27 @@ function startLyricMatch(track: OnlineTrack, base: LyricDoc): void {
           notifyMatch();
         })
         .catch(() => {
-          if (lastDoc?.trackKey !== base.trackKey) return;
+          if (gen !== lyricGeneration || lastDoc?.trackKey !== base.trackKey) return;
           lyricMatchDone = true;
           lyricMatchInfo = result;
           notifyMatch();
         });
     })
     .catch(() => {
-      if (lastDoc?.trackKey !== base.trackKey) return;
+      if (gen !== lyricGeneration || lastDoc?.trackKey !== base.trackKey) return;
       lyricMatchDone = true;
       lyricMatchInfo = null;
       notifyMatch();
     });
 }
 let lastDoc: LyricDoc | null = null;
+
+/**
+ * 歌词代际：每次开始匹配/手动选源/清空都 +1。异步回调落地前必须比对它，
+ * 否则「匹配途中手动选了来源」会被后台结果覆盖（界面回到自动匹配内容，
+ * 但 `manualLyricLabel` 还显示手动）。
+ */
+let lyricGeneration = 0;
 
 /** 当前窗口已解析好的歌词文档（背景歌词发布器用它判断同一首是否从「无歌词」变成「有歌词」）。 */
 export function currentLyricDoc(): LyricDoc | null {
@@ -698,8 +713,37 @@ function splitEvenly(text: string, start: number, end: number): LyricWord[] {
   }));
 }
 
+/**
+ * 重复时间戳（间奏里同一时刻挂两行、或时间轴被工具压平）会让 `activeIndexOf` 只停在最后那一行，
+ * 前面那行永远没有高亮窗口，时长也算成 0。这里做一次单调化：时间戳至少 +1 ms 递增，
+ * 时长按下一行（修好后的）起点推算，最小 200 ms。
+ */
+function normalizeLineTimes(lines: LyricLine[]): LyricLine[] {
+  if (lines.length === 0) return lines;
+  for (let i = 1; i < lines.length; i += 1) {
+    const prev = lines[i - 1];
+    const line = lines[i];
+    if (!prev || !line) continue;
+    if (line.timeMs <= prev.timeMs) {
+      lines[i] = { ...line, timeMs: prev.timeMs + 1 };
+    }
+  }
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const next = lines[i + 1];
+    if (!line) continue;
+    const span = (next ? next.timeMs : line.timeMs + 4200) - line.timeMs;
+    if (!(line.durationMs > 0) || span > 0) {
+      lines[i] = { ...line, durationMs: Math.max(200, span) };
+    }
+  }
+
+  return lines;
+}
+
 function toDocLines(parsed: SourceLine[]): LyricLine[] {
-  return parsed.map((line, index) => {
+  const built = parsed.map((line, index) => {
     const next = parsed[index + 1];
     const start = line.timeMs;
     const end = next ? next.timeMs : start + 4200;
@@ -716,12 +760,13 @@ function toDocLines(parsed: SourceLine[]): LyricLine[] {
     if (words.length === 0) words = splitEvenly(line.text, start, end);
     return {
       timeMs: start,
-      durationMs: Math.max(0, end - start),
+      durationMs: Math.max(200, end - start),
       text: line.text,
       translation: line.translation ?? '',
       words,
     };
   });
+  return normalizeLineTimes(built);
 }
 
 interface PlatformLyric {
@@ -988,6 +1033,7 @@ export async function applyManualLyric(
   id: string,
   label: string,
 ): Promise<boolean> {
+  lyricGeneration += 1;
   try {
     const lyric = await fetchLyric(source, id, manualAmll ? { amll: true } : undefined);
     const built = docFromLyric(track, lyric, `${label} · 手动选择 · `);
@@ -1013,6 +1059,7 @@ export async function applyManualLyric(
 
 /** 恢复自动匹配（清掉本曲目的手动选择）。 */
 export function clearManualLyric(track: OnlineTrack): void {
+  lyricGeneration += 1;
   const key = trackKeyOf(track);
   const map = readManual();
   if (map[key]) {
@@ -1060,10 +1107,11 @@ function activeIndexOf(lines: LyricLine[], positionMs: number): number {
  * rise = 冲到峰值用时，total = 整段动画用时，overshoot = 越过最大字号的幅度（0.32 = 多放大 32%）。
  * 曲线形状固定为「ease-out 冲上去 → 单调回落」，只回弹一次，不来回震荡。
  */
+// total 已对齐运动档位：soft=base(420)、bounce=slow(620)；wild 是用户可选的极端档，刻意更长。
 const GROW_PROFILES: Record<LyricGrowMode, { rise: number; total: number; overshoot: number }> = {
   off: { rise: 0, total: 0, overshoot: 0 },
-  soft: { rise: 130, total: 360, overshoot: 0.58 },
-  bounce: { rise: 150, total: 510, overshoot: 1.10 },
+  soft: { rise: 130, total: 420, overshoot: 0.58 },
+  bounce: { rise: 150, total: 620, overshoot: 1.10 },
   wild: { rise: 160, total: 780, overshoot: 1.85 },
 };
 
@@ -1072,6 +1120,14 @@ const GROW_PROFILES: Record<LyricGrowMode, { rise: number; total: number; oversh
  * 起句先快速冲到 1+overshoot，再平滑回落、稳住。
  * 用真实时间（performance.now）而不是播放进度驱动，避免进度按 40ms 跳变导致动画一顿一顿。
  */
+/** 毫秒 → 歌词行首显示用的 m:ss。 */
+function clockText(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const m = Math.floor(total / 60);
+  const sec = total % 60;
+  return `${m}:${sec.toString().padStart(2, '0')}`;
+}
+
 function growAt(elapsedMs: number): number {
   const profile = GROW_PROFILES[lyricGrow];
   const { rise: RISE_MS, total: TOTAL_MS, overshoot: OVERSHOOT } = profile;
@@ -1300,6 +1356,18 @@ export class LyricsView {
   private activeIndex = -1;
   /** 当前行放大动画的起点时间（performance.now），换行时重置。 */
   private growStartAt = 0;
+  /** 上一次真正写进 --grow 的量化值（避免每帧重写导致字形重采样）。 */
+  private lastGrowWritten = -1;
+  /** 每行的基准字号/行高（未放大时量一次）。放大改用 font-size，必须知道基准值。 */
+  private lineBaseMetrics = new WeakMap<HTMLElement, { size: number; lineHeight: number }>();
+  /** 钉成布局根时记下这一行占几行文本，版面变化后按它重钉高度。 */
+  private growRows = new WeakMap<HTMLElement, number>();
+  /** 最近一次写进字号的曲线值：版面变化重算时照着它复原，不然当前行会瞬间缩回基准字号。 */
+  private lastGrowApplied = 1;
+  /** 「苹果」样式：逐字按时间刷亮（写 --kf），别的模式不写。 */
+  /** 「苹果」样式是独立界面：自己一套 DOM、弹簧滚动与逐字刷亮，不碰默认歌词的样式与设置。 */
+  /** 背景歌词窗是否已经落过一次居中偏移（第一次要硬落位，不能滑）。 */
+  private bgOffsetSnapped = false;
   private rafId = 0;
   private disposed = false;
   private loadToken = 0;
@@ -1369,6 +1437,7 @@ export class LyricsView {
       this.refreshCoverResolution();
       this.measureLines();
       this.syncProgress(true);
+      this.recapEmphasis();
     }, 180);
   };
 
@@ -1446,7 +1515,7 @@ export class LyricsView {
     window.addEventListener('resize', this.onWindowResize);
     this.domLayoutObserver = new ResizeObserver(() => {
       if (this.disposed || this.covered || this.browsing()) return;
-      requestAnimationFrame(() => { if (!this.disposed && !this.covered) { this.measureLines(); this.syncProgress(true); } });
+      requestAnimationFrame(() => { if (!this.disposed && !this.covered) { this.measureLines(); this.syncProgress(true); this.recapEmphasis(); } });
     });
     this.domLayoutObserver.observe(this.linesEl);
     this.domLayoutObserver.observe(this.rightEl);
@@ -1454,8 +1523,11 @@ export class LyricsView {
       const before = this.lyricsSizeApplied;
       this.applyLyricsSizeSetting();
       // 字号变了：行高缓存已作废，暂停时也立刻按新字号重新居中一次。
-      if (before !== this.lyricsSizeApplied) this.syncProgress(true);
+      if (before !== this.lyricsSizeApplied) { this.syncProgress(true); this.recapEmphasis(); }
     });
+
+    // 字体换上去以后字宽会变（同一句可能从两行变一行），落定后再校一次放大余量。
+    void document.fonts?.ready.then(() => this.recapEmphasis());
 
     // 「封面在左」：软件内歌词页和桌面背景歌词保持一致，共用 bgLyricsCover 里的样式选择。
     this.applyCoverStyle();
@@ -1634,19 +1706,135 @@ export class LyricsView {
   }
 
   /**
+   * 版面变了（窗口尺寸 / 歌词列宽度 / 字号字体）就重算当前行的放大余量。
+   * 换行时会算一次，但歌词页是在进页动画里量出来的：那一帧列宽可能还没定，
+   * 只算一次会让首句带着旧的（偏大的）余量放大，右侧同样会被切掉。
+   */
+  private recapEmphasis(): void {
+    if (this.disposed || this.covered || this.activeIndex < 0) return;
+    const el = this.lineEls[this.activeIndex];
+    // 版面变了（窗口最大化 / 字号档位 / 字体加载完成）时基准字号也会变：
+    // 缓存不清就会一直拿旧基准算放大——最大化后 CSS 把行字号提到 76px，
+    // 这里还按 29px 放大，当前行反而比周围的普通行小一圈。
+    //
+    // 这里**只换基准再重钉**，不 resetGrowStyle：拆掉布局根会让这一行当场重排、
+    // 还会把 ResizeObserver 再叫一次（observer 就挂在 .lyrics-lines 上），
+    // 一拆一钉之间画面会抖，窗口态下看起来就像「动画坏了」。
+    const before = this.baseMetricsOf(el);
+    this.lineBaseMetrics.delete(el);
+    this.growRows.delete(el);
+    const next = this.baseMetricsOf(el);
+    this.applyLineEmphasisCap(this.activeIndex);
+    this.pinGrowBox(el);
+    if (before.size !== next.size || before.lineHeight !== next.lineHeight) {
+      this.applyGrowFrame(el, this.lastGrowApplied);
+    }
+  }
+
+  /**
    * 当前行的放大只向右扩展；长句已经贴到歌词列右缘时，按剩余空间收小放大倍数，
    * 避免最后几个字被 .lyrics-right 的 overflow 裁掉。
    * 结果写进 --line-emph（0~0.207），CSS 用 scale(1 + var(--line-emph) * var(--grow))。
+   *
+   * 这一条必须在**每次换行**时都算一次（`syncProgress` 里 changed 分支 + 尺寸/字号变化时重算）：
+   * 只靠 CSS 的默认 0.207，长句起句放大后会冲出歌词列，右侧被硬切——用户看到的就是
+   * 「歌词右边被切掉」。
    */
+  /**
+   * 取这一行的基准字号与行高（放大前量一次，之后一直用）。
+   * 量的时候要先摘掉自己写过的行内字号，否则量到的是「已经放大过」的值。
+   */
+  private baseMetricsOf(el: HTMLElement): { size: number; lineHeight: number } {
+    const cached = this.lineBaseMetrics.get(el);
+    if (cached) return cached;
+    const prevSize = el.style.getPropertyValue('font-size');
+    const prevSizePrio = el.style.getPropertyPriority('font-size');
+    const prevLh = el.style.getPropertyValue('line-height');
+    const prevLhPrio = el.style.getPropertyPriority('line-height');
+    el.style.removeProperty('font-size');
+    el.style.removeProperty('line-height');
+    const computed = getComputedStyle(el);
+    const size = Number.parseFloat(computed.fontSize) || 29;
+    const lineHeight = Number.parseFloat(computed.lineHeight) || size * 1.46;
+    if (prevSize) el.style.setProperty('font-size', prevSize, prevSizePrio);
+    if (prevLh) el.style.setProperty('line-height', prevLh, prevLhPrio);
+    const metrics = { size, lineHeight };
+    this.lineBaseMetrics.set(el, metrics);
+    return metrics;
+  }
+
+  /**
+   * 把放大写进字号：`基准字号 × (1 + 余量 × 曲线值)`，行高钉死在基准行高上。
+   * 行高不动 → 字号变大也不会把下面几行顶下去；字号由浏览器按设备像素重新排版，
+   * 所以放大全程都是清晰的（transform 缩放会整段模糊）。
+   * 用 important 写行内声明：字号在各版面档位里被 CSS 用 !important 定死过，
+   * 只有行内 important 能压过它们。
+   */
+  private applyGrowFrame(el: HTMLElement | undefined, grow: number): void {
+    if (!el) return;
+    this.lastGrowApplied = grow;
+    const emphText = el.style.getPropertyValue('--line-emph');
+    const emph = Number.parseFloat(emphText);
+    const { size } = this.baseMetricsOf(el);
+    const factor = 1 + (Number.isFinite(emph) ? emph : 0) * grow;
+    el.style.setProperty('font-size', `${(size * factor).toFixed(2)}px`, 'important');
+  }
+
+  /**
+   * 把当前行钉成一个独立的布局根：固定宽高 + `contain: layout`。
+   *
+   * 为什么必须这么做：放大改成改字号之后，每一次字号变化都会让这一行重新排版；
+   * 如果它和整列歌词（几十行）共用一个格式化上下文，浏览器每帧要把整列的
+   * max-content / 行盒重算一遍——实测单帧从 5.8ms 涨到 10.7ms，起句那一下就是「卡」。
+   * 钉成独立布局根后，字号变化的影响被关在这一行里，实测回落到与静止时一样（5.2ms），
+   * 曲线可以按原来的弹性重放而不掉帧。
+   */
+  private pinGrowBox(el: HTMLElement | undefined): void {
+    if (!el) return;
+    const { lineHeight } = this.baseMetricsOf(el);
+    // 已经在钉着的时候，行数用「现有钉死高度 ÷ 新行高」换算：
+    // 直接按 rect.height 算的话，rect 高度里带着旧行高，换版面时行数会算错（钉成 1 行 → 折行被裁）。
+    const pinned = Number.parseFloat(el.style.getPropertyValue('height'));
+    const rows = Number.isFinite(pinned) && pinned > 0
+      ? Math.max(1, Math.round(pinned / Math.max(1, lineHeight)))
+      : Math.max(1, Math.round(el.getBoundingClientRect().height / Math.max(1, lineHeight)));
+    this.growRows.set(el, rows);
+    el.style.setProperty('line-height', `${lineHeight.toFixed(2)}px`, 'important');
+    // 宽度必须钉成「整列可用宽」，不能钉成这一行此刻的文字宽：
+    // 行是 width:max-content，钉成文字宽之后再放大字号，字就挤不下、会折到下一行，
+    // 看着就是「弹的时候文字自己在挪位置」。钉满整列宽后字号只向右长，不换行。
+    el.style.setProperty('width', '100%', 'important');
+    el.style.setProperty('height', `${(lineHeight * rows).toFixed(2)}px`, 'important');
+    el.style.setProperty('contain', 'layout', 'important');
+  }
+
+  /** 版面变了（窗口缩放 / 字体变化）时重钉一次布局根，宽度与行数跟着版面走。 */
+  /** 还原这一行被放大后的行内字号，并解除布局根（宽度交还给版面）。 */
+  private resetGrowStyle(el: HTMLElement | undefined): void {
+    if (!el) return;
+    el.style.removeProperty('font-size');
+    el.style.removeProperty('line-height');
+    el.style.removeProperty('width');
+    el.style.removeProperty('height');
+    el.style.removeProperty('contain');
+  }
+
   private applyLineEmphasisCap(index: number): void {
     const el = this.lineEls[index];
     if (!el) return;
     const chars = this.charEls[index] ?? [];
     if (chars.length === 0) {
-      el.style.removeProperty('--line-emph');
+      // 没量到字宽时不放大：宁可少一点强调，也不能让长句冲出歌词列被 overflow 裁掉。
+      el.style.setProperty('--line-emph', '0');
       return;
     }
     const rightRect = this.rightEl.getBoundingClientRect();
+    // 量余量必须在「基准字号」下量：这一行可能正处在放大中途（甚至是被
+    // ResizeObserver 触发的重算），带着放大后的字号量出来的字宽偏大，
+    // 余量被算小 → 放大忽大忽小，看起来就是「弹一下又缩回去」。
+    const inlineSize = el.style.getPropertyValue('font-size');
+    const inlinePrio = el.style.getPropertyPriority('font-size');
+    if (inlineSize) el.style.removeProperty('font-size');
     const lineRect = el.getBoundingClientRect();
     const transform = getComputedStyle(el).transform;
     let scale = 1;
@@ -1662,24 +1850,26 @@ export class LyricsView {
       const rect = span.getBoundingClientRect();
       if (rect.right > textRight) textRight = rect.right;
     }
+    if (inlineSize) el.style.setProperty('font-size', inlineSize, inlinePrio);
     // 还原成未放大的版面宽度：transform-origin 在行首，左缘不随缩放移动。
     const baseWidth = (textRight - lineRect.left) / scale;
     // 右缘以歌词列的内容盒为准（.lyrics-lines 的 padding-right 不算可用空间），
     // 再扣掉 active 行固定的 8px 右移与 4px 安全余量；之前直接用列外框，
     // 长句会多算 16px 余量，放大后最后几个字仍被 overflow 裁掉。
-    const parent = el.parentElement;
-    let contentRight = rightRect.right;
-    if (parent) {
-      const parentRect = parent.getBoundingClientRect();
-      const paddingRight = Number.parseFloat(getComputedStyle(parent).paddingRight) || 0;
-      contentRight = parentRect.right - paddingRight;
-    }
+    // 可用右缘 = 歌词列（.lyrics-right）的内边距盒：列本身留了一段右侧余量给「起句放大」，
+    // 放大只能长到 padding 边界为止，越过就会被 overflow 裁掉。
+    const colPadRight = Number.parseFloat(getComputedStyle(this.rightEl).paddingRight) || 0;
+    const contentRight = rightRect.right - colPadRight - 2;
     const room = contentRight - lineRect.left - 12;
     // 放大曲线会先冲过 1（wild 档峰值 2.85），按峰值反推每行的最大放大余量，
     // 否则长句在起句瞬间仍会越过右缘被裁掉。
     const peakGrow = 1 + (GROW_PROFILES[lyricGrow]?.overshoot ?? 0);
-    const maxScale = baseWidth > 8 ? room / baseWidth : 1.207;
-    const emph = Math.max(0, Math.min(0.207, (maxScale - 1) / Math.max(1, peakGrow)));
+    const maxScale = baseWidth > 8 ? room / baseWidth : 1.34;
+    // 0.34 是观感上限（≈ 原来 scale 1.34 的强调力度）；长句由 room 压小。
+    const raw = (maxScale - 1) / Math.max(1, peakGrow);
+    // 长句也不能完全没有弹性：留 3.2% 的底线（约 1px），量出来确实没空间时才归零。
+    const floor = baseWidth > 8 && room > baseWidth ? 0.032 : 0;
+    const emph = Math.max(floor, Math.min(0.34, raw));
     const next = emph.toFixed(4);
     if (el.style.getPropertyValue('--line-emph') !== next) {
       el.style.setProperty('--line-emph', next);
@@ -2431,7 +2621,12 @@ export class LyricsView {
       tokens.forEach((token, index) => {
         const gap = index > 0 && token.spaceBefore;
         const lang = lyricLangOf(token.text);
-        const span = h('span', { class: gap ? 'lyric-char has-gap' : 'lyric-char', text: token.text, 'data-lang': lang || undefined });
+        const span = h('span', {
+          class: gap ? 'lyric-char has-gap' : 'lyric-char',
+          text: token.text,
+          'data-lang': lang || undefined,
+          'data-c': token.text,
+        });
         const hash = scatterHash(line.text, index);
         // 一次写完整条 style：setProperty 连写 5 次会让每个字触发 5 次样式失效，
         // 452 个字就是 2000+ 次；合并成一条字符串只走一次解析。
@@ -2446,6 +2641,9 @@ export class LyricsView {
         lineEl.append(span);
       });
       if (tokens.length === 0) lineEl.textContent = line.text || ' ';
+      // 手动滚轮浏览歌词时，行首会显示这句的播放时间（见 .lyrics-view.is-manual）。
+      // 放在行内绝对定位，跟着行一起滚，不需要额外同步位移。
+      lineEl.append(h('span', { class: 'lyric-time', text: clockText(line.timeMs) }));
       if (line.translation) {
         const transEl = h('span', { class: 'lyric-trans' });
         for (const run of splitLangRuns(line.translation)) {
@@ -2504,6 +2702,8 @@ export class LyricsView {
       if (changed) this.lumiereText?.pulse();
       if (changed && prev >= 0) {
         this.lineEls[prev]?.classList.remove('is-active', 'is-near');
+        // 上一行被放大过：把行内字号还原，否则它会永远停在放大后的字号上。
+        this.resetGrowStyle(this.lineEls[prev]);
         // 上一行唱完后必须清掉逐字状态，否则最后一个字的 is-hot 会一直亮着
         this.charEls[prev]?.forEach((span) => span.classList.remove('is-sung', 'is-hot'));
       }
@@ -2513,12 +2713,22 @@ export class LyricsView {
       this.lineEls.forEach((el, index) => {
         el.classList.toggle('is-active', index === nextIndex);
         el.classList.toggle('is-near', index === nextIndex - 1 || index === nextIndex + 1);
+        // 离当前行的行数：CSS 靠它做「越远越模糊」（默认歌词的景深）。
+        el.style.setProperty('--d', String(Math.abs(index - nextIndex)));
       });
       this.applyFade();
+      // 换行即重算放大余量：这一行的字宽是新的，默认 0.207 很可能让它冲出右缘被裁。
+      this.applyLineEmphasisCap(nextIndex);
       const activeEl = this.lineEls[nextIndex];
       if (activeEl) {
         activeEl.style.setProperty('--p', '0');
-        if (changed) activeEl.style.setProperty('--grow', '0');
+        // 起句从基准字号重新长：先还原上一轮放大过的行内字号，把这一行钉成布局根，
+        // 再按曲线第一帧写一次。钉根必须在写字号之前（这时量的才是自然版面宽度）。
+        if (changed) {
+          this.resetGrowStyle(activeEl);
+          this.pinGrowBox(activeEl);
+          this.applyGrowFrame(activeEl, 0);
+        }
         // .lyrics-lines 自身就是 offsetParent（position:absolute），行内偏移来自渲染后缓存；
         // 缓存缺失（例如刚切字号还没重测）才回落实读。
         const metric = this.metricOf(nextIndex, activeEl);
@@ -2557,7 +2767,16 @@ export class LyricsView {
       // 计时用真实时间，跟播放进度的 40ms 跳变解耦，动起来是顺的。
       // 播放已结束时直接落到 1，避免停在收尾的缩放中间帧上。
       const grow = ended ? 1 : growAt(performance.now() - this.growStartAt);
-      activeEl.style.setProperty('--grow', grow.toFixed(4));
+      // 抖动根因：growAt 是弹簧，尾部会以 1e-3 量级一直微调，而 --grow 每帧都写进
+      // transform 的 scale —— 整行文字就按「分数像素」的比例反复重采样，看起来是
+      // 持续的字形抖动（弹出结束后仍然抖）。这里做量化：变化小于 0.004 就不重写，
+      // 让缩放尽早定死在一个值上；重启起句时 growStartAt 会重置，不影响动画本身。
+      const quantized = Math.round(grow * 250) / 250;
+      if (quantized !== this.lastGrowWritten) {
+        // 放大只改字号：transform/scale 会把文字画进缩放表面，起句途中和落定之后都发虚。
+        this.applyGrowFrame(activeEl, quantized);
+        this.lastGrowWritten = quantized;
+      }
       if (ended) activeEl.style.setProperty('--p', '1');
       if (this.bgMode === 'gradient') this.paintGradientFlow(performance.now());
     }
@@ -2577,6 +2796,7 @@ export class LyricsView {
         span.classList.toggle('is-sung', value >= 1);
         span.classList.toggle('is-hot', value === 2);
       }
+      // 苹果样式是独立界面，逐字由它自己的 ::before 遮罩画，这里不需要再写 --kf。
       this.charStateLine = this.activeIndex;
       this.charStateCache = nextStates;
     } else if (activeLine) {
@@ -2594,9 +2814,11 @@ export class LyricsView {
     }
   }
 
-  /** 普通 LRC 行的合成逐字状态（charTiming 样式专用）；切到别的样式时把残留状态清掉。 */
-
-  /** 普通 LRC 行的合成逐字状态（charTiming 样式专用）；切到别的样式时把残留状态清掉。 */
+  /**
+   * 苹果样式的逐字刷亮：每字写一个 --kf（0–100），CSS 用水平渐变遮罩把「亮层」裁到该位置，
+   * 于是正在唱的字由左到右被刷亮，唱过的保持全亮、没唱的留在暗层。
+   * 只写一行、只写变化的字，量化到 0.5 避免每帧重排。
+   */
   private syncPlainCharStates(line: LyricLine, lyricPos: number): void {
     const spans = this.charEls[this.activeIndex] ?? [];
     if (spans.length === 0) return;
@@ -2620,7 +2842,13 @@ export class LyricsView {
     // 档位变了峰值也变了，先按新曲线重算放大余量再重播。
     this.applyLineEmphasisCap(this.activeIndex);
     this.growStartAt = performance.now();
-    this.lineEls[this.activeIndex]?.style.setProperty('--grow', '0');
+    this.lastGrowWritten = -1;
+    this.lineBaseMetrics = new WeakMap();
+    this.growRows = new WeakMap();
+    const el = this.lineEls[this.activeIndex];
+    this.resetGrowStyle(el);
+    this.pinGrowBox(el);
+    this.applyGrowFrame(el, 0);
   }
 
   /** 画布接管后是否已经把 DOM 歌词整棵停渲染（延迟到淡出结束，避免切换时闪一下）。 */
@@ -2867,8 +3095,18 @@ export class LyricsView {
   }
 
   private applyOffset(animate: boolean): void {
-    this.linesEl.style.transition = animate ? '' : 'none';
-    this.linesEl.style.transform = `translateY(${this.autoOffset + this.manualShift}px)`;
+    // 桌面歌词窗刚打开时，首帧的行高与居中偏移是「边量边算」出来的：
+    // 这一步若带着过渡，整块歌词会从上一帧的位置滑到新位置，看起来就是「闪现位移」。
+    // 所以背景场景的第一趟偏移直接落位，之后的行切换照常滑动。
+    const snap = animate && !this.bgOffsetSnapped && this.root.classList.contains('is-background-lyrics');
+    this.linesEl.style.transition = animate && !snap ? '' : 'none';
+    // 取整到整数像素：autoOffset 是量出来的居中线，常带小数（实测 -1.17px 这种）。
+    // 整块文字落在分数像素上，字形每一帧都按不同的子像素相位采样，看起来就是
+    // 「边缘发虚 / 轻微游移」；播放结束后偏移再变一点点，就是那 1px 的跳动。
+    // 行高量出来本来就是整数，取整不会改变版面，只去掉子像素漂移。
+    const offset = Math.round(this.autoOffset + this.manualShift);
+    this.linesEl.style.transform = `translateY(${offset}px)`;
+    if (animate) this.bgOffsetSnapped = true;
   }
 
   private onWheel(event: WheelEvent): void {
@@ -2878,6 +3116,7 @@ export class LyricsView {
     this.manualTarget -= step;
     this.clampManual();
     this.manualUntil = performance.now() + 3200;
+    this.root.classList.add('is-manual');
     window.clearTimeout(this.manualTimer);
     this.manualTimer = window.setTimeout(() => this.resumeAuto(), 3200);
     this.startManualLoop();
@@ -2928,6 +3167,7 @@ export class LyricsView {
     this.manualShift = 0;
     this.manualTarget = 0;
     this.manualUntil = 0;
+    this.root.classList.remove('is-manual');
     this.applyOffset(true);
   }
 

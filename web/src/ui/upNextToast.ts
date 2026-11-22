@@ -1,4 +1,5 @@
 import { onlineArtwork } from '../online/artwork';
+import { MOTION, play } from './motion';
 import type { OnlineTrack } from '../online/types';
 import { h } from './dom';
 import { getTransitionTarget, type PlayerState } from './player';
@@ -122,6 +123,22 @@ export function createUpNextToast(onSkip: () => void): UpNextToastHandle {
     visible = nextVisible;
     element.classList.toggle('is-visible', nextVisible);
     element.setAttribute('aria-hidden', nextVisible ? 'false' : 'true');
+    // 浮层带 translate(-50%) 定位，通用 enter/leave 会对不齐：这里给自带关键帧，
+    // 但打断语义仍由 motion.play 的 running 记账保证（同一元素只留一条）。
+    const base = ' translateX(-50%)';
+    void play(
+      element,
+      nextVisible
+        ? [
+            { opacity: 0, transform: `translate3d(0, -14px, 0) scale(.985)${base}` },
+            { opacity: 1, transform: `translate3d(0, 0, 0) scale(1)${base}` },
+          ]
+        : [
+            { opacity: 1, transform: `translate3d(0, 0, 0) scale(1)${base}` },
+            { opacity: 0, transform: `translate3d(0, -10px, 0) scale(.99)${base}` },
+          ],
+      { duration: nextVisible ? MOTION.fast : MOTION.fast, clear: false },
+    );
   };
 
   /** 在同一个框内淡出→换内容→淡入，避免两个独立框并列。 */

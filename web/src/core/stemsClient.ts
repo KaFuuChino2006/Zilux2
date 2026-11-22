@@ -29,6 +29,8 @@ export interface StemsPrepareResponse {
   message?: string;
   downloadUrl?: string;
   sha256?: string;
+  /** 四轨残差归位前的重建误差（dBFS）；2 轨请求与旧缓存没有这个字段。 */
+  reconErrorDbfs?: number;
 }
 
 /** 可取的轨：2 轨模式是 vocals/instrumental；4 轨模式另有 drums/bass/other。 */

@@ -80,6 +80,37 @@ export interface BeatAnalysis {
   cueInMs?: number;
   /** 推荐混音出点（ms，p0-11 起）：这一首从这里让位（尾奏起点，对齐 8 小节乐句）；未识别为 0 / 缺失。 */
   cueOutMs?: number;
+  /** p1-0：三路活动度曲线（250ms 一档，0~1）。缺失（旧宿主/旧缓存）时消费方按"无曲线"降级。 */
+  activity?: ActivityCurves;
+  /** p1-0：调性时间线窗口中心（ms），与 `keyTimeline` 等长。 */
+  keyTimelineMs?: number[];
+  /** p1-0：逐窗 Camelot 编码；空串表示该窗没有明确调性。 */
+  keyTimeline?: string[];
+  /** p1-0：可循环单元候选（前半≈后半的自相似段），供结构桥接挑重复乐句。 */
+  loopUnits?: LoopUnit[];
+  /** p1-1：逐小节 chroma 起点（ms），与 `barChroma` 每 12 个数一组一一对应。 */
+  barChromaMs?: number[];
+  /** p1-1：逐小节 12 音级 chroma 拼平（每小节已归一到单位长度），用于跨曲旋律相似度。 */
+  barChroma?: number[];
+}
+
+/** p1-0：三路活动度曲线，等长、按 `hopMs` 采样。 */
+export interface ActivityCurves {
+  hopMs: number;
+  vocal: number[];
+  drum: number[];
+  bass: number[];
+}
+
+/** p1-0：一个可循环单元。 */
+export interface LoopUnit {
+  startMs: number;
+  endMs: number;
+  bars: number;
+  /** 0~1，越高越适合当循环单元。 */
+  score: number;
+  /** repeat（前半≈后半）/ tail（尾段可平铺）。 */
+  kind: string;
 }
 
 /** 契约 §2.1 成功响应。 */
@@ -141,6 +172,14 @@ interface AnalysisResponse {
 const cache = new Map<string, AnalysisResult>();
 const inflight = new Map<string, Promise<AnalysisResult>>();
 
+/**
+ * 负结果缓存：`cacheOnly=1` 且宿主没有分析结果时返回 `ok:false`，
+ * 页面每次渲染都会重打一次 `/api/analysis`（host.log 实测 404 ×238、每轮 60–180 ms）。
+ * 「没分析过」在会话内不会变（除非真的触发了分析），所以按 track key 记住失败即可，
+ * 分析成功后由 `cache.set` 覆盖、`force` 分析会主动清掉。
+ */
+const missing = new Set<string>();
+
 /** 缓存键：本地按 rel（同文件多个 CUE 分轨共享一份分析），在线按 source:id。 */
 export function analysisKey(track: OnlineTrack): string {
   if (track.source === 'local') return `local:${relOf(track) ?? track.id}`;
@@ -168,6 +207,7 @@ export async function peekAnalysis(track: OnlineTrack): Promise<AnalysisResult |
   const key = analysisKey(track);
   const hit = cache.get(key);
   if (hit) return hit;
+  if (missing.has(key)) return null;
   const running = inflight.get(key);
   if (running) {
     try {
@@ -189,11 +229,16 @@ export async function peekAnalysis(track: OnlineTrack): Promise<AnalysisResult |
   }
   try {
     const raw = await api<AnalysisResponse>('/api/analysis', params, 8000);
-    if (!raw || raw.ok !== true) return null;
+    if (!raw || raw.ok !== true) {
+      missing.add(key);
+      return null;
+    }
     const result = normalizeResult(raw, track);
+    missing.delete(key);
     cache.set(key, result);
     return result;
   } catch {
+    // 网络/超时不记负结果：宿主可能只是忙，稍后重试仍应有机会。
     return null;
   }
 }
@@ -207,6 +252,7 @@ export async function analyzeTrack(track: OnlineTrack, options: { force?: boolea
   const running = inflight.get(key);
   if (running) return running;
 
+  if (options.force) missing.delete(key);
   const params: Record<string, string> = {};
   if (track.source === 'local') {
     const rel = relOf(track);
@@ -226,6 +272,7 @@ export async function analyzeTrack(track: OnlineTrack, options: { force?: boolea
         throw new AnalysisError(raw?.code ?? 'internal-error', raw?.message ?? '节拍分析失败');
       }
       const result = normalizeResult(raw, track);
+      missing.delete(key);
       cache.set(key, result);
       return result;
     },
@@ -265,7 +312,9 @@ function normalizeResult(raw: AnalysisResponse, track: OnlineTrack): AnalysisRes
     beatIntervalMs,
     firstBeatMs,
     firstDownbeatMs: num(source.firstDownbeatMs, firstBeatMs),
-    downbeats: numbers(source.downbeats),
+    // 强拍必须升序去重：下游 pickBridgeUnit / 贴拍搜索都假定升序（并且会提前 break），
+    // 宿主给乱序时桥接单元会静默丢失、贴拍会吸到错的那一下。
+    downbeats: normalizeTimes(numbers(source.downbeats)),
     phraseStartsMs: numbers(source.phraseStartsMs),
     barCount: num(source.barCount, 0),
     sections: Array.isArray(source.sections)
@@ -317,6 +366,74 @@ function normalizeResult(raw: AnalysisResponse, track: OnlineTrack): AnalysisRes
     analysis.loudnessTimesMs = times;
     analysis.momentaryLufs = levels;
   }
+  // p1-0：活动度曲线 / 调性时间线 / 可循环单元。宿主没给就保持 undefined。
+  if (source.activity && typeof source.activity === 'object') {
+    const raw = source.activity as Partial<ActivityCurves>;
+    const hopMs = typeof raw.hopMs === 'number' && raw.hopMs > 0 ? raw.hopMs : 250;
+    const clean = (curve: unknown): number[] | null => {
+      if (!Array.isArray(curve) || curve.length === 0) return null;
+      const out: number[] = [];
+      for (const value of curve) {
+        if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+        out.push(clamp01(value));
+      }
+      return out;
+    };
+    const vocal = clean(raw.vocal), drum = clean(raw.drum), bass = clean(raw.bass);
+    if (vocal && drum && bass && vocal.length === drum.length && drum.length === bass.length) {
+      analysis.activity = { hopMs, vocal, drum, bass };
+    }
+  }
+  if (Array.isArray(source.keyTimelineMs) && Array.isArray(source.keyTimeline)
+    && source.keyTimelineMs.length === source.keyTimeline.length && source.keyTimelineMs.length > 0) {
+    const times: number[] = [], keys: string[] = [];
+    for (let i = 0; i < source.keyTimelineMs.length; i++) {
+      const time = source.keyTimelineMs[i], key = source.keyTimeline[i];
+      if (typeof time === 'number' && Number.isFinite(time) && time >= 0
+        && (times.length === 0 || time > times[times.length - 1]) && typeof key === 'string') {
+        times.push(time); keys.push(key);
+      }
+    }
+    if (times.length > 0) { analysis.keyTimelineMs = times; analysis.keyTimeline = keys; }
+  }
+  if (Array.isArray(source.loopUnits)) {
+    const units: LoopUnit[] = [];
+    for (const raw of source.loopUnits) {
+      if (!raw || typeof raw !== 'object') continue;
+      const unit = raw as Partial<LoopUnit>;
+      if (typeof unit.startMs !== 'number' || typeof unit.endMs !== 'number') continue;
+      if (!(unit.endMs > unit.startMs) || unit.startMs < 0) continue;
+      units.push({
+        startMs: unit.startMs,
+        endMs: unit.endMs,
+        bars: typeof unit.bars === 'number' && unit.bars > 0 ? unit.bars : 4,
+        score: typeof unit.score === 'number' ? clamp01(unit.score) : 0.5,
+        kind: typeof unit.kind === 'string' && unit.kind ? unit.kind : 'repeat',
+      });
+    }
+    units.sort((a, b) => b.score - a.score);
+    if (units.length > 0) analysis.loopUnits = units.slice(0, 8);
+  }
+  // p1-1：逐小节 chroma（旋律相似度）。每 12 个数一组，缺一组就整体丢弃。
+  if (Array.isArray(source.barChromaMs) && Array.isArray(source.barChroma)
+    && source.barChroma.length === source.barChromaMs.length * 12
+    && source.barChromaMs.length > 0) {
+    const times: number[] = [];
+    const flat: number[] = [];
+    let ok = true;
+    for (let bar = 0; bar < source.barChromaMs.length && ok; bar += 1) {
+      const time = source.barChromaMs[bar];
+      if (typeof time !== 'number' || !Number.isFinite(time) || time < 0) { ok = false; break; }
+      if (times.length > 0 && time <= times[times.length - 1]) { ok = false; break; }
+      times.push(time);
+      for (let bin = 0; bin < 12; bin += 1) {
+        const value = source.barChroma[bar * 12 + bin];
+        if (typeof value !== 'number' || !Number.isFinite(value)) { ok = false; break; }
+        flat.push(value < 0 ? 0 : value > 1 ? 1 : value);
+      }
+    }
+    if (ok && times.length > 0) { analysis.barChromaMs = times; analysis.barChroma = flat; }
+  }
   // p0-11：结构 cue（混音入点/出点）。缺失时保持 undefined，过渡计划回退旧逻辑。
   if (typeof source.cueInMs === 'number' && Number.isFinite(source.cueInMs) && source.cueInMs > 0) {
     analysis.cueInMs = source.cueInMs;
@@ -365,6 +482,17 @@ function clamp01(value: number): number {
 function numbers(value: unknown): number[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is number => typeof item === 'number' && Number.isFinite(item));
+}
+
+/** 时间点数组的规范化：过滤非法、去掉负数、升序排列、几乎重合的合并。 */
+function normalizeTimes(value: number[]): number[] {
+  const out: number[] = [];
+  for (const item of value) {
+    if (!Number.isFinite(item) || item < 0) continue;
+    if (out.length > 0 && item - out[out.length - 1] < 1) continue;
+    out.push(item);
+  }
+  return out.sort((a, b) => a - b);
 }
 
 function strings(value: unknown): string[] {

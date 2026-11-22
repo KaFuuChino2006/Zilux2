@@ -16,6 +16,18 @@ export type MiniSize = 'compact' | 'standard' | 'wide';
 export type DesktopLyricsWeight = 'normal' | 'semibold' | 'bold';
 /** 桌面歌词样式：classic=原生三行；fan=悬浮扇形。 */
 export type DesktopLyricsStyle = 'classic' | 'fan';
+/**
+ * 界面模板：standard=现有完整界面；fx=新界面样板（首版只保留底部播放条）。
+ *
+ * 两套模板共用同一个 App 实例与全部播放逻辑，切换只改 .app 上的 is-fx 类，
+ * 因此切换不会中断播放/过渡，回到标准界面也是同一份状态。
+ */
+export type UiTemplate = 'standard' | 'fx';
+export const UI_TEMPLATES: readonly UiTemplate[] = ['standard', 'fx'];
+export const UI_TEMPLATE_LABELS: ReadonlyArray<readonly [UiTemplate, string]> = [
+  ['standard', '标准界面'],
+  ['fx', 'FX 界面'],
+];
 export const MINI_SIZES: readonly MiniSize[] = ['compact', 'standard', 'wide'];
 export const MINI_SIZE_LABELS: ReadonlyArray<readonly [MiniSize, string]> = [
   ['compact', '小'],
@@ -354,6 +366,8 @@ export interface Settings {
     backgroundLyrics: boolean;
     /** 「系统输出轮换」快捷键参与轮换的设备（端点 ID；空数组 = 全部活动设备）。 */
     systemOutputRotation: string[];
+    /** 界面模板：standard=现有完整界面（默认）；fx=新界面样板，只保留底部播放条。 */
+    uiTemplate: UiTemplate;
   };
   appearance: {
     theme: Theme;
@@ -442,7 +456,7 @@ export type SettingsPatch = {
 
 export const DEFAULT_SETTINGS: Settings = {
   version: 1,
-  general: { splash: true, splashTitle: 'ZILUX2', splashSubtitle: '新一代创意播放器', startMaximized: false, autoLaunch: false, autoStartHidden: true, watchLocalFolder: true, mediaSession: true, desktopLyrics: false, desktopLyricsLocked: false, desktopLyricsFontSize: 40, desktopLyricsWeight: 'normal', desktopLyricsBackdropOpacity: 40, desktopLyricsTopmost: true, desktopLyricsStyle: 'classic', desktopLyricsFanLines: 9, desktopLyricsFanWidth: 240, backgroundLyrics: false, systemOutputRotation: [] },
+  general: { splash: true, splashTitle: 'ZILUX2', splashSubtitle: '新一代创意播放器', startMaximized: false, autoLaunch: false, autoStartHidden: true, watchLocalFolder: true, mediaSession: true, desktopLyrics: false, desktopLyricsLocked: false, desktopLyricsFontSize: 40, desktopLyricsWeight: 'normal', desktopLyricsBackdropOpacity: 40, desktopLyricsTopmost: true, desktopLyricsStyle: 'classic', desktopLyricsFanLines: 9, desktopLyricsFanWidth: 240, backgroundLyrics: false, systemOutputRotation: [], uiTemplate: 'standard' },
   appearance: {
     theme: 'frost',
     reduceMotion: false,
@@ -651,6 +665,7 @@ export function normalizeSettings(raw: unknown): Settings {
       desktopLyricsFanWidth: asClampedInt(general.desktopLyricsFanWidth, 180, 360, DEFAULT_SETTINGS.general.desktopLyricsFanWidth),
       backgroundLyrics: asBool(general.backgroundLyrics, DEFAULT_SETTINGS.general.backgroundLyrics),
       systemOutputRotation: asDeviceIdList(general.systemOutputRotation),
+      uiTemplate: asEnum(general.uiTemplate, UI_TEMPLATES, DEFAULT_SETTINGS.general.uiTemplate),
     },
     appearance: {
       theme: asEnum(appearance.theme, THEMES, DEFAULT_SETTINGS.appearance.theme),

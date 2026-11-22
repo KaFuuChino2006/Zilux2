@@ -24,6 +24,7 @@ internal static class DsfTranscoder
     {
         wavPath = string.Empty;
         error = string.Empty;
+        string? temp = null;
         try
         {
             var info = new FileInfo(dsfPath);
@@ -43,15 +44,20 @@ internal static class DsfTranscoder
                 return true;
             }
 
-            var temp = wavPath + ".tmp";
+            // 同 AlacTranscoder：固定 ".tmp" 在并发转码时会互踩，缓存里会留下残缺 WAV。
+            temp = wavPath + "." + Guid.NewGuid().ToString("N")[..8] + ".tmp";
             var stopwatch = Stopwatch.StartNew();
             ConvertToWav(dsfPath, temp, out var sourceRate, out var channels, out var samples);
-            if (File.Exists(wavPath))
+            if (File.Exists(wavPath) && new FileInfo(wavPath).Length > 44)
             {
-                File.Delete(wavPath);
+                TryDeleteTemp(temp);
+                temp = null;
+                stopwatch.Stop();
+                return true;
             }
 
-            File.Move(temp, wavPath);
+            File.Move(temp, wavPath, overwrite: true);
+            temp = null;
             stopwatch.Stop();
             TranscodeCache.Prune(cacheDir);
             HostLog.Info($"[dsf] converted {Path.GetFileName(dsfPath)} → {Path.GetFileName(wavPath)} "
@@ -60,8 +66,15 @@ internal static class DsfTranscoder
         }
         catch (Exception exception)
         {
+            // 失败路径必须自清临时 WAV（DSD 一首能到上百 MB），否则缓存目录只增不减。
+            if (temp is not null)
+            {
+                TryDeleteTemp(temp);
+            }
+
             HostLog.Warn($"[dsf] convert failed {dsfPath}: {exception.GetType().Name}: {exception.Message}");
             error = exception.Message;
+            wavPath = string.Empty;
             return false;
         }
     }
@@ -165,15 +178,27 @@ internal static class DsfTranscoder
         var remaining = dataBytes;
         long written = 0;
 
-        while (remaining >= block.Length)
+        // DSD 静音位型 0x69（01101001）：均值恰好 0，补在文件尾部不会产生咔哒。
+        const byte DsdSilence = 0x69;
+        while (remaining > 0)
         {
-            var got = reader.Read(block, 0, block.Length);
-            if (got < block.Length)
+            var want = (int)Math.Min(block.Length, remaining);
+            var got = reader.Read(block, 0, want);
+            if (got <= 0)
             {
                 break;
             }
 
-            remaining -= block.Length;
+            // 文件被截断（下载中断、磁盘满）时最后一块往往不足一整块。
+            // 原来 `while (remaining >= block.Length)` 直接丢掉这段尾巴，
+            // 时长按整块算 → 末尾少几十毫秒且与容器时长不符；
+            // 现在按剩余字节读，缺的部分补静音位型，时长完整、结尾干净。
+            if (got < block.Length)
+            {
+                Array.Fill(block, DsdSilence, got, block.Length - got);
+            }
+
+            remaining -= got;
             var buffer = new byte[samplesPerBlock * channels * 2];
             for (var channel = 0; channel < channels; channel += 1)
             {
@@ -201,6 +226,12 @@ internal static class DsfTranscoder
 
             output.Write(buffer, 0, buffer.Length);
             written += samplesPerBlock;
+
+            if (got < block.Length)
+            {
+                HostLog.Warn($"[dsf] short tail {Path.GetFileName(dsfPath)}: last block {got}/{block.Length} bytes, padded with silence");
+                break;
+            }
         }
 
         output.Flush();
@@ -234,5 +265,20 @@ internal static class DsfTranscoder
     {
         var bytes = BitConverter.GetBytes(value);
         stream.Write(bytes, 0, bytes.Length);
+    }
+
+    private static void TryDeleteTemp(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            HostLog.Warn($"[dsf] temp cleanup failed {Path.GetFileName(path)}: {exception.Message}");
+        }
     }
 }

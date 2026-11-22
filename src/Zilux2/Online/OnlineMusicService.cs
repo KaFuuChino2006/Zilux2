@@ -196,7 +196,7 @@ internal sealed class OnlineMusicService : IDisposable
         }
     }
 
-    // 登录状态检测（第四十六轮）：启动 20s 后首检，之后每 5 分钟一次。
+    // 登录状态检测（第四十六轮）：启动 8s 后首检，之后每 90 秒一次（掉登录要尽快提示）。
     // 只问已登录的平台；网络异常保留账号（unknown），平台明确拒绝才清号并提醒。
     private void StartAccountVerification()
     {
@@ -216,7 +216,7 @@ internal sealed class OnlineMusicService : IDisposable
     {
         try
         {
-            await Task.Delay(TimeSpan.FromSeconds(20), cancellationToken).ConfigureAwait(false);
+            await Task.Delay(TimeSpan.FromSeconds(8), cancellationToken).ConfigureAwait(false);
             while (!cancellationToken.IsCancellationRequested)
             {
                 try
@@ -240,7 +240,7 @@ internal sealed class OnlineMusicService : IDisposable
                     OnlineHttp.Warn($"[account] verify failed: {OnlineHttp.Describe(exception)}");
                 }
 
-                await Task.Delay(TimeSpan.FromMinutes(5), cancellationToken).ConfigureAwait(false);
+                await Task.Delay(TimeSpan.FromSeconds(90), cancellationToken).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException)

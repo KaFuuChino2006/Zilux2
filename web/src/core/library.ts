@@ -194,14 +194,31 @@ async function request<T>(
   }
 }
 
-/** 回环封面 URL 补 token（宿主 /api/* 都要求 ?token=；绝对 URL 由宿主拼出时可能漏掉）。 */
-function withLoopbackToken(url: string): string {
+/**
+ * 回环封面 URL 校正：补 token，并把**上一次运行**的端口/token 换成这一场的。
+ *
+ * 宿主每次启动都随机挑回环端口（`FindFreeLoopbackPort`），而队列/歌单里的封面 URL
+ * 会被存进 localStorage 跨重启──旧 URL 指向一个已经没人监听的端口。以前这里只
+ * 「有 token 就直接返回」，于是那些 URL 原样活下来：页面缩略图全空、系统媒体浮层
+ * （SMTC）也拿不到封面，日志里是 `127.0.0.1:58123 connection refused`。
+ */
+export function withLoopbackToken(url: string): string {
   const info = onlineInfo();
   if (!info) return url;
-  if (!/^http:\/\/127\.0\.0\.1(:\d+)?\//.test(url)) return url;
-  if (/(?:[?&])token=[^&]/.test(url)) return url;
-  const joiner = url.includes('?') ? '&' : '?';
-  return `${url}${joiner}token=${info.token}`;
+  const match = /^http:\/\/127\.0\.0\.1(?::(\d+))?\//.exec(url);
+  if (!match) return url;
+  const port = match[1] ? Number(match[1]) : 80;
+  let out = url;
+  if (port !== info.port) {
+    out = out.replace(/^http:\/\/127\.0\.0\.1(?::\d+)?\//, `http://127.0.0.1:${info.port}/`);
+  }
+  const token = encodeURIComponent(info.token);
+  if (/(?:[?&])token=[^&]*/.test(out)) {
+    out = out.replace(/([?&])token=[^&]*/g, `$1token=${token}`);
+  } else {
+    out += (out.includes('?') ? '&' : '?') + `token=${token}`;
+  }
+  return out;
 }
 
 /** 封面兜底：宿主可能返回 /api/cover 相对路径或未带 token 的回环 URL，这里统一补全。 */

@@ -1,0 +1,1748 @@
+/**
+ * 界面模板（设置 → 通用 → 界面 → 界面模板）
+ *
+ * standard = 现有完整外壳；fx = 新界面样板，只保留底部播放条。
+ * 模板只切 .app 上的 is-fx 类，播放条与全部播放逻辑共用一份实例，
+ * 所以两套界面来回切换不会打断正在播放的歌，也不会重载音频。
+ *
+ * 约定：FX 样板新增的内容一律写在 .app.is-fx 下，别去改标准界面的规则，
+ * 这样「切回标准」永远是原样，不需要额外的回滚代码。
+ */
+
+/* ---------------- FX 样板：只留底部播放条 ---------------- */
+
+.app.is-fx > .topbar,
+.app.is-fx > .top-peek,
+.app.is-fx > .topbar-peekbar,
+.app.is-fx > .main,
+.app.is-fx > .app-bg {
+  display: none;
+}
+
+/* 舞台里那些常驻浮件（壁纸快捷按钮等）跟着主区一起收掉。 */
+.app.is-fx .wall-shortcuts {
+  display: none;
+}
+
+/* 顶栏与主区都收起来了，网格只剩一整行（播放条是 fixed，不占格子）。
+   舞台底色：浅色主题用纯白（维护者 2026-11-21 指定「米色改纯白」），
+   深色主题仍用 --bg，免得暗色下炸出一整块白。
+   两条都带 :not(.is-wallpaper-layer)：开着动态壁纸时 .app 必须保持透明，
+   否则会把壁纸整块盖掉（而且这里的优先级高于 .is-wallpaper-layer 那条）。 */
+.app.is-fx {
+  grid-template-rows: 1fr;
+}
+
+html:not(.is-wallpaper-layer) .app.is-fx {
+  background: #fff;
+}
+
+html[data-theme='dark']:not(.is-wallpaper-layer) .app.is-fx {
+  background: var(--bg);
+}
+
+/* 白底上播放条的白色表面会失去边界：给一层极淡的叠色 + 发丝边，读成一张浮起来的卡。
+   待播提示（up-next toast）与快捷条同理，只补边不动填充。 */
+html:not(.is-wallpaper-layer) .app.is-fx .playerbar {
+  background: rgb(var(--overlay-rgb) / 0.05);
+  border-color: rgb(var(--overlay-rgb) / 0.12);
+}
+
+html:not(.is-wallpaper-layer) .app.is-fx .upnext-toast,
+html:not(.is-wallpaper-layer) .app.is-fx .pb-quick {
+  border-color: rgb(var(--overlay-rgb) / 0.12);
+}
+
+/* 空舞台上没有内容可衬托，播放条用更实的表面 + 更清楚的边，两套主题都成立。 */
+.app.is-fx .playerbar {
+  background: var(--surface-strong);
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow-2);
+}
+
+/* FX 内容舞台：左上角是第一个菜单（齿轮 + 选择器），其余留给后续内容。
+   舞台本身不吃点击（整窗仍可拖动），只有胶囊接事件。 */
+.fx-stage {
+  display: none;
+}
+
+.app.is-fx .fx-stage {
+  position: absolute;
+  inset: 0;
+  display: block;
+  pointer-events: none;
+}
+
+/* ---------------- FX 第一个内容视图：今日推荐 ---------------- */
+
+/* 占右侧 3/4（左侧 25% 留给左上角胶囊），四宫格一宫一字。
+   底部让出播放条，字不会被压在条下面。 */
+/* 四个字紧凑地贴在右上那块区域（维护者画的红框）：锚右上、两列自适应、无间隙。 */
+.fx-daily {
+  z-index: 1;
+  position: absolute;
+  right: clamp(16px, 3.2vw, 64px);
+  top: clamp(12px, 3vh, 44px);
+  display: grid;
+  grid-template-columns: auto auto;
+  grid-auto-rows: auto;
+  gap: 0;
+  place-items: center;
+  pointer-events: none;
+  transition: opacity 0.26s var(--ease);
+}
+
+.fx-daily.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+}
+
+/* 字号跟窗口走。四个字贴着靠，靠的是「列宽由字自身决定 + gap:0」，不是靠负行高：
+   行高收到 1、字距 0 时，汉字墨迹之间正好只剩一条发丝缝（再收就会笔画互压、糊成一团）。
+   「艺术字」的粗硬感 = 黑体 + 900 字重 + 一圈同色描边（-webkit-text-stroke）：
+   描边把每一笔都等量加粗，横竖都更实，看着像海报字而不是普通加粗。
+   注意：不要写 will-change —— 固定合成层在 WebView2 + DWM 上会整层拍不到（装机版实测）。 */
+.fx-daily-cell {
+  display: block;
+  font-size: clamp(48px, min(9.4vw, 15.2vh), 190px);
+  line-height: 1;
+  font-weight: 900;
+  color: var(--text);
+  -webkit-text-stroke: 0.018em currentColor;
+  paint-order: stroke fill;
+  letter-spacing: 0;
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* 深色主题下大字用亮色，白底时是近黑，靠 --text 自动切。 */
+html.is-wallpaper-layer .app.is-fx .fx-daily-cell {
+  text-shadow: 0 8px 32px rgb(0 0 0 / 0.28);
+}
+
+.fx-dock {
+  position: absolute;
+  /* 参考 1600×960 下落在 (120,128)：避开左上角的窗角与拖动热区，
+     小窗时按 vw/vh 收缩但留 24px 底线。 */
+  top: clamp(24px, 13.5vh, 128px);
+  left: clamp(24px, 7.5vw, 120px);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border-radius: var(--radius-pill);
+  /* FX 底下可能是任意壁纸（cork、照片、纯色），所以底子不能太薄：
+     12% 叠色 + 22px 模糊足够把文字压稳，又不至于变成一块灰板。 */
+  background: rgb(var(--overlay-rgb) / 0.12);
+  border: 1px solid rgb(var(--overlay-rgb) / 0.14);
+  backdrop-filter: blur(22px) saturate(1.1);
+  -webkit-backdrop-filter: blur(22px) saturate(1.1);
+  box-shadow: 0 10px 26px rgb(0 0 0 / 0.1);
+  pointer-events: auto;
+}
+
+/* 齿轮是胶囊的左端，不参与选择器：它不是 tab，也没有选中态。 */
+.fx-gear {
+  width: 30px;
+  height: 28px;
+  flex: 0 0 auto;
+  border-radius: var(--radius-pill);
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  transition: background 0.16s var(--ease), color 0.16s var(--ease);
+}
+
+.fx-gear:hover,
+.fx-gear:focus-visible {
+  background: rgb(var(--overlay-rgb) / 0.1);
+  color: var(--text);
+}
+
+.fx-dock-divider {
+  flex: 0 0 auto;
+  width: 1px;
+  height: 14px;
+  margin: 0 2px;
+  background: rgb(var(--overlay-rgb) / 0.12);
+}
+
+.fx-nav {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* 滑动滑块：宽度与位移都由 JS 实测写入（见 moveFxNavThumb）。 */
+.fx-nav-thumb {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 28px;
+  width: 0;
+  border-radius: var(--radius-pill);
+  background: rgb(var(--overlay-rgb) / 0.16);
+  box-shadow: inset 0 0 0 1px rgb(var(--overlay-rgb) / 0.08);
+  pointer-events: none;
+  transition:
+    transform 0.26s var(--ease),
+    width 0.26s var(--ease),
+    background 0.2s var(--ease);
+}
+
+.fx-nav-item {
+  position: relative;
+  z-index: 1;
+  height: 28px;
+  padding: 0 13px;
+  border-radius: var(--radius-pill);
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: var(--muted);
+  white-space: nowrap;
+  transition: color 0.18s var(--ease);
+}
+
+.fx-nav-item:hover {
+  color: var(--text-soft);
+}
+
+.fx-nav-item.is-on {
+  color: var(--text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fx-nav-thumb {
+    transition: none;
+  }
+}
+
+/* ---------------- 设置里的入口行 ---------------- */
+
+.set-row-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 30px;
+  padding: 0 6px 0 12px;
+  border-radius: 9px;
+  font-size: 13px;
+  color: var(--text-soft);
+  background: rgb(var(--overlay-rgb) / 0.06);
+  transition: background 0.16s var(--ease), color 0.16s var(--ease);
+}
+
+.set-row-value:hover {
+  background: rgb(var(--overlay-rgb) / 0.12);
+  color: var(--text);
+}
+
+.set-row-value-chevron {
+  font-size: 16px;
+  line-height: 1;
+  color: var(--muted);
+}
+
+/* ---------------- 下钻切换页 ---------------- */
+
+/* 直接作为 .settings-content 的子块：打开时藏起各分类面板，切走时反过来，
+   不叠绝对定位的浮层，滚动条与键盘焦点都不会跑出这一页。 */
+.settings-subpage {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.settings-subpage[hidden] {
+  display: none;
+}
+
+.settings-subpage:not([hidden]) {
+  animation: settings-subpane-in 0.2s var(--ease) both;
+}
+
+.settings-subpage-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.settings-subpage-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+  height: 28px;
+  padding: 0 10px 0 5px;
+  border-radius: 9px;
+  font-size: 12px;
+  color: var(--muted);
+  background: rgb(var(--overlay-rgb) / 0.06);
+  transition: background 0.16s var(--ease), color 0.16s var(--ease);
+}
+
+.settings-subpage-back:hover {
+  background: rgb(var(--overlay-rgb) / 0.12);
+  color: var(--text);
+}
+
+.settings-subpage-back-glyph {
+  font-size: 16px;
+  line-height: 1;
+}
+
+.settings-subpage-titles {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.settings-subpage-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.settings-subpage-hint {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+/* ---------------- 模板卡片 ---------------- */
+
+.ui-tpl-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 14px;
+}
+
+.ui-tpl-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  text-align: left;
+  border-radius: 16px;
+  border: 1px solid rgb(var(--overlay-rgb) / 0.1);
+  background: rgb(var(--overlay-rgb) / 0.04);
+  transition: border-color 0.18s var(--ease), background 0.18s var(--ease), transform 0.18s var(--ease);
+}
+
+.ui-tpl-card:hover {
+  background: rgb(var(--overlay-rgb) / 0.07);
+  transform: translateY(-1px);
+}
+
+.ui-tpl-card.is-on {
+  border-color: var(--accent);
+  background: rgb(var(--accent-rgb, 217 192 141) / 0.1);
+}
+
+/* 缩略示意图：只用色块画结构，不引图片，浅色/深色令牌共用一套。 */
+.ui-tpl-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  height: 104px;
+  padding: 8px;
+  border-radius: 10px;
+  background: rgb(var(--overlay-rgb) / 0.05);
+  overflow: hidden;
+}
+
+.ui-tpl-mock-top {
+  height: 9px;
+  border-radius: 4px;
+  background: rgb(var(--overlay-rgb) / 0.14);
+}
+
+.ui-tpl-mock-body {
+  flex: 1;
+  display: flex;
+  gap: 6px;
+  min-height: 0;
+}
+
+.ui-tpl-mock-rail {
+  width: 20px;
+  border-radius: 5px;
+  background: rgb(var(--overlay-rgb) / 0.12);
+}
+
+.ui-tpl-mock-stage {
+  flex: 1;
+  border-radius: 6px;
+  background: rgb(var(--overlay-rgb) / 0.08);
+}
+
+/* 标准界面：顶栏 + 左分类栏 + 内容区 + 播放条，四块都在（比 FX 稍重，一眼看出「内容满」）。 */
+.ui-tpl-preview.is-standard .ui-tpl-mock-top {
+  background: rgb(var(--overlay-rgb) / 0.16);
+}
+
+.ui-tpl-preview.is-standard .ui-tpl-mock-stage {
+  background: rgb(var(--overlay-rgb) / 0.1);
+}
+
+/* FX：内容区空着（虚线只表示「这里是空的」，不是可拖放区）。 */
+.ui-tpl-preview.is-fx .ui-tpl-mock-stage.is-empty {
+  background: transparent;
+  border: 1px dashed rgb(var(--overlay-rgb) / 0.14);
+}
+
+.ui-tpl-mock-bar {
+  height: 15px;
+  border-radius: 999px;
+  background: rgb(var(--overlay-rgb) / 0.18);
+}
+
+.ui-tpl-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ui-tpl-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.ui-tpl-desc {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.ui-tpl-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  background: rgb(var(--overlay-rgb) / 0.12);
+  opacity: 0;
+  transition: opacity 0.18s var(--ease);
+}
+
+.ui-tpl-card.is-on .ui-tpl-badge {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-subpage:not([hidden]) {
+    animation: none;
+  }
+
+  .ui-tpl-card {
+    transition: none;
+  }
+
+  .ui-tpl-card:hover {
+    transform: none;
+  }
+}
+
+/* ================= 今日推荐内容视图：顶部封面渐变 + 下方独立卡片网格 ================= */
+
+/* 封面带高度：一块变量，封面与网格分界都用它，改一处两边跟着走。 */
+.fx-daily-view {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  --fx-cover-h: clamp(180px, 34vh, 420px);
+  /* 网格上沿压在「推荐」下半截上（维护者：默认盖过推荐两个字的一半）。 */
+  --fx-cards-overlap: clamp(56px, 8vh, 96px);
+  --fx-cards-gap: clamp(6px, 0.7vw, 10px);
+  pointer-events: none;
+  transition: opacity 0.26s var(--ease);
+}
+
+.fx-daily-view.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+}
+
+/* 顶部整块「封面 → 白色」渐变：顶部就是页面底色，往下慢慢让出封面。
+   浅色用白、深色用 --bg，两边都读成「封面从虚无里长出来」。 */
+.fx-cover {
+  position: absolute;
+  left: 0;
+  right: 0;
+  /* 往上探到窗口最顶：整页挂在 .stage 里，.stage 上方还有一条 --topbar-h 的顶栏，
+     用负 top 把带子顶到窗口沿，height 同步加回来 → 底边位置不变，网格不受影响。 */
+  top: calc(-1 * var(--topbar-total));
+  height: calc(var(--fx-cover-h) + var(--topbar-total));
+  overflow: hidden;
+  /* 下缘再淡出一次，封面就不会被网格线切成生硬的方块边。 */
+  -webkit-mask-image: linear-gradient(to bottom, #000 58%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 58%, transparent 100%);
+}
+
+.fx-cover-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transform: scale(1.04);
+  transition: opacity var(--motion-slow) var(--motion-ease), transform 6s linear;
+}
+
+.fx-cover-img.is-on {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.fx-cover-wash {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to bottom,
+    var(--fx-wash, #fff) 0%,
+    rgb(var(--fx-veil, 255 255 255) / 0.86) 14%,
+    rgb(var(--fx-veil, 255 255 255) / 0.42) 38%,
+    rgb(var(--fx-veil, 255 255 255) / 0.1) 66%,
+    rgb(var(--fx-veil, 255 255 255) / 0) 100%
+  );
+}
+
+html[data-theme='dark'] .app.is-fx {
+  --fx-wash: var(--bg);
+  --fx-veil: 8 9 12;
+}
+
+/* 下方正方形网格：每张卡都是独立内容物，卡与卡之间没有共享节点，
+   后面做排斥移动 / 自动排布时直接逐个摆 .fx-card 即可。 */
+.fx-cards {
+  position: absolute;
+  /* 维护者：网格只占右侧三列，左边四列留白做后续内容。 */
+  left: var(--fx-cards-left, 50%);
+  right: 0;
+  bottom: 96px;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  /* 关键：不写这两行，grid 会把 auto 行按容器高度均分（align-content 默认 normal≈stretch），
+     卡片只有 40px 高、彼此叠在一起 —— 装机版实测过。 */
+  align-content: start;
+  grid-auto-rows: max-content;
+  gap: var(--fx-cards-gap);
+  padding: 10px clamp(16px, 2vw, 30px) 24px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  pointer-events: auto;
+}
+
+.fx-card {
+  position: relative;
+  aspect-ratio: 1;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  /* 维护者：卡片也是直角。 */
+  border-radius: 0;
+  overflow: hidden;
+  background: rgb(var(--overlay-rgb) / 0.06);
+  cursor: pointer;
+  isolation: isolate;
+  transition: transform 0.22s var(--ease), box-shadow 0.22s var(--ease);
+}
+
+.fx-card:hover {
+  transform: translateY(-3px);
+}
+
+.fx-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.fx-card-cover {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.fx-card-meta {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 28px 10px 9px;
+  background: linear-gradient(to top, rgb(0 0 0 / 0.72), rgb(0 0 0 / 0));
+  color: #fff;
+  text-align: left;
+}
+
+.fx-card-name,
+.fx-card-artist {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.fx-card-name {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.fx-card-artist {
+  font-size: 11px;
+  opacity: 0.78;
+}
+
+.fx-card.is-on {
+  box-shadow: 0 0 0 2px var(--accent), 0 14px 30px rgb(var(--overlay-rgb) / 0.16);
+}
+
+.fx-cards-hint {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(var(--fx-cover-h) + 28px);
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.fx-cards-hint.is-hidden {
+  display: none;
+}
+
+/* 胶囊要浮在封面带上，否则会被封面图盖住。 */
+.app.is-fx .fx-dock {
+  z-index: 3;
+}
+
+/* 内容往上翻：封面带以顶边为轴往上收（scaleY），同时渐隐；
+   四个字往右侧滑出避让。--fx-collapse 由脚本按 scrollTop 写。 */
+.fx-cover {
+  transform-origin: top center;
+  transform: scaleY(calc(1 - var(--fx-collapse, 0) * 0.92));
+  opacity: calc(1 - var(--fx-collapse, 0) * 1.15);
+  transition: opacity 0.08s linear;
+}
+.fx-daily {
+  transform: translate3d(calc(var(--fx-collapse, 0) * 46vw), 0, 0);
+  opacity: calc(1 - var(--fx-collapse, 0) * 1.25);
+}
+/* 网格跟着封面带的收起来上移，滚到底就贴顶。 */
+.fx-cards {
+  top: calc((var(--fx-cover-h) - var(--fx-cards-overlap)) * (1 - var(--fx-collapse, 0)));
+}
+
+/* 左侧区块：上面是大封面（歌单第一首），下面是一条纯色条，条上写歌名 / 作者 / 时长。
+   条在封面外面，不叠在封面上。整块 pointer-events:none，只有封面本身可点。 */
+.fx-hero-shell {
+  position: absolute;
+  left: clamp(24px, 3.4vw, 64px);
+  top: calc(var(--fx-cover-h) - var(--fx-cards-overlap) + clamp(8px, 1.6vh, 24px));
+  z-index: 1;
+  /* 给下面的纯色条留出位置，别让条顶到播放条上。 */
+  width: min(42vw, 56vh);
+  pointer-events: none;
+}
+
+.fx-hero-cover {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1;
+  padding: 0;
+  border: 0;
+  margin: 0;
+  /* 维护者：全部直角，不加圆角。 */
+  border-radius: 0;
+  overflow: hidden;
+  background: rgb(var(--overlay-rgb) / 0.06);
+  cursor: pointer;
+  pointer-events: auto;
+  box-shadow: 0 18px 46px rgb(0 0 0 / 0.12);
+  transition: transform 0.24s var(--ease), box-shadow 0.24s var(--ease);
+}
+.fx-hero-cover.is-hidden { display: none; }
+/* 大封面悬停不做上浮/位移（维护者要求），只保留光标反馈。 */
+.fx-hero-cover:hover { transform: none; }
+.fx-hero-cover.is-on { box-shadow: 0 0 0 2px var(--accent), 0 18px 46px rgb(0 0 0 / 0.16); }
+/* 纯色条：宽一个指甲盖高，长度顶到封面右侧往回一点；入场用蒙版从无到有切入，
+   同时前 8 帧亮灭 4 次（和四字同节奏），条上的文字各自随机字形再落到真名。 */
+.fx-hero-bar {
+  /* 条是压在封面上的（遮挡关系）：绝对定位贴在封面底边，往下探出一点点。 */
+  position: absolute;
+  /* 左侧往外探出一点，右侧仍留空档。 */
+  left: calc(clamp(10px, 1vw, 16px) * -1);
+  bottom: 0;
+  transform: translateY(30%);
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: clamp(8px, 1vw, 14px);
+  width: calc(100% + clamp(10px, 1vw, 16px) - 18px);
+  height: clamp(28px, 2.3vw, 36px);
+  padding: 0 clamp(10px, 1vw, 14px);
+  border-radius: 0;
+  background: var(--accent);
+  color: #17130d;
+  font-size: clamp(11.5px, 0.86vw, 13px);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 100%);
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: left center;
+  -webkit-mask-size: 0% 100%;
+  mask-image: linear-gradient(90deg, #000 0%, #000 100%);
+  mask-repeat: no-repeat;
+  mask-position: left center;
+  mask-size: 0% 100%;
+}
+.fx-hero-bar.is-animating {
+  animation:
+    fx-hero-bar-blink 133ms linear both,
+    fx-hero-bar-reveal 620ms cubic-bezier(.22, .86, .24, 1) both;
+}
+.fx-hero-bar-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fx-hero-bar-artist {
+  opacity: 0.72;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fx-hero-bar-time {
+  margin-left: auto;
+  opacity: 0.8;
+}
+.fx-hero-bar > span {
+  display: inline-block;
+  animation: fx-hero-bar-text-in 620ms cubic-bezier(.22, .86, .24, 1) both;
+}
+.fx-hero-bar-artist { animation-delay: 60ms; }
+.fx-hero-bar-time { animation-delay: 120ms; }
+
+/* 与「今日推荐」四字同节奏：133ms 内亮灭 4 次。 */
+@keyframes fx-hero-bar-blink {
+  0%    { opacity: 0; }
+  12.5% { opacity: 1; }
+  25%   { opacity: 0; }
+  37.5% { opacity: 1; }
+  50%   { opacity: 0; }
+  62.5% { opacity: 1; }
+  75%   { opacity: 0; }
+  87.5% { opacity: 1; }
+  100%  { opacity: 1; }
+}
+@keyframes fx-hero-bar-reveal {
+  from { -webkit-mask-size: 0% 100%; mask-size: 0% 100%; }
+  to   { -webkit-mask-size: 100% 100%; mask-size: 100% 100%; }
+}
+/* 文字从右侧滑入（与四字的「从右侧划入」一致）。 */
+@keyframes fx-hero-bar-text-in {
+  from { transform: translate3d(14px, 0, 0); opacity: 0; }
+  to   { transform: translate3d(0, 0, 0); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fx-hero-bar.is-animating,
+  .fx-hero-bar > span { animation: none; }
+  .fx-hero-bar { -webkit-mask-size: 100% 100%; mask-size: 100% 100%; }
+}
+
+
+/* 大封面的两层：换歌时新层用「墨水扩散」蒙版盖上来（渐变过渡，不是硬切）。 */
+.fx-hero-cover-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transform-origin: center;
+  transition: opacity 0.5s cubic-bezier(.4, 0, .2, 1), transform 0.5s cubic-bezier(.4, 0, .2, 1), filter 0.5s cubic-bezier(.4, 0, .2, 1);
+}
+.fx-hero-cover-img.is-on { opacity: 1; }
+.fx-hero-cover-img.is-bloom {
+  /* 换封面：新层从略大 + 模糊收进来，旧层缩小 + 模糊淡出（普通放大缩小模糊过渡）。 */
+  z-index: 2;
+  animation: fx-hero-zoom var(--motion-slow) var(--motion-ease) both;
+}
+
+.fx-hero-cover-img.is-out {
+  transform: scale(0.94);
+  filter: blur(7px);
+  opacity: 0;
+  /* 旧层退场也走统一档位，别再单独写 0.5s。 */
+  transition: opacity var(--motion-fast) var(--motion-ease), transform var(--motion-fast) var(--motion-ease), filter var(--motion-fast) var(--motion-ease);
+}
+
+@keyframes fx-hero-zoom {
+  from {
+    transform: scale(1.18) translateY(10px);
+    filter: blur(14px);
+    opacity: 0;
+  }
+  55% {
+    opacity: 1;
+  }
+  to {
+    transform: scale(1) translateY(0);
+    filter: none;
+    opacity: 1;
+  }
+}
+
+/* 从别的页面切回今日推荐：左侧大封面从左侧划入。 */
+.fx-hero-shell.is-entering {
+  animation: fx-hero-enter 620ms cubic-bezier(.16, .84, .24, 1) both;
+}
+
+@keyframes fx-hero-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(-46%, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+/* 切入今日推荐时右侧卡片：按 --fx-card-delay 逐个「叶片翻转」进场。 */
+.fx-card.is-entering {
+  animation: fx-card-leaf var(--motion-base) var(--motion-ease) both;
+  animation-delay: var(--fx-card-delay, 0ms);
+}
+
+@keyframes fx-card-leaf {
+  from {
+    opacity: 0;
+    transform: perspective(720px) rotateY(-58deg) translateX(14px);
+  }
+  55% { opacity: 1; }
+  to {
+    opacity: 1;
+    transform: perspective(720px) rotateY(0deg) translateX(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fx-hero-shell.is-entering,
+  .fx-card.is-entering { animation: none; }
+}
+
+/* 封面右侧那条竖向纯色框：顶边跟封面齐平，一直落到窗口最底。
+   里面是「白 → 界面色」的竖向渐变，歌名用反向渐变做字色（竖排）。 */
+.fx-name-rail {
+  position: absolute;
+  left: calc(clamp(24px, 3.4vw, 64px) + min(42vw, 56vh));
+  right: calc(100% - var(--fx-cards-left, 50%));
+  top: calc(var(--fx-cover-h) - var(--fx-cards-overlap) + clamp(8px, 1.6vh, 24px));
+  /* 不再沉底：高度与封面一致，底边与封面底边齐平。 */
+  height: min(42vw, 56vh);
+  /* 层级低于大封面：出现时看起来是从封面底下推出来的。 */
+  z-index: 0;
+  display: flex;
+  /* 文字上下居中 + 左右居中；超出部分两端一起裁掉。 */
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background: linear-gradient(135deg, #fff 0%, var(--accent) 100%);
+}
+
+.fx-name-rail-track {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 歌名比条还长时靠上排：停住能看到开头，末尾超出被裁掉。 */
+.fx-name-rail.is-tall { align-items: flex-start; }
+
+/* 走字只走一次：整段文字从下方上来，停到居中的位置就结束（不循环、不重复）。 */
+.fx-name-rail.is-rolling .fx-name-rail-text {
+  /* 末段缓入停住，不是硬刹。 */
+  animation: fx-rail-roll var(--rail-dur, 4s) var(--motion-ease) 1 both;
+}
+
+@keyframes fx-rail-roll {
+  from { transform: translateY(var(--rail-start, 100%)); }
+  to   { transform: translateY(0); }
+}
+
+/* 换歌：旧名字往后滑出去，中途闪两下渐隐。
+   动画挂在 .fx-name-rail-track（普通块）上：文字本身是 background-clip:text，
+   在它身上做 transform 位移不生效，看起来会「没有动画」。 */
+.fx-name-rail.is-leaving .fx-name-rail-track {
+  animation: fx-rail-out 260ms cubic-bezier(.42, 0, 1, 1) both;
+}
+
+@keyframes fx-rail-out {
+  0%   { opacity: 1;   transform: translateY(0); }
+  28%  { opacity: 0.16; }
+  42%  { opacity: 1; }
+  58%  { opacity: 0.2; }
+  100% { opacity: 0;   transform: translateY(-34px); }
+}
+
+/* 新名字：从下往上滑进条内（条的 overflow 会裁掉还没进来的部分），中途闪两下后停住。 */
+.fx-name-rail.is-arriving .fx-name-rail-track {
+  animation: fx-rail-in var(--motion-base) var(--motion-ease) both;
+}
+
+@keyframes fx-rail-in {
+  0%   { opacity: 0;    transform: translateY(120px); }
+  26%  { opacity: 0.22; }
+  42%  { opacity: 1; }
+  58%  { opacity: 0.35; }
+  76%  { opacity: 1; }
+  100% { opacity: 1;    transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fx-name-rail-text.is-leaving,
+  .fx-name-rail-text.is-arriving { animation: none; }
+}
+
+.fx-name-rail-text {
+  /* 竖排 + 整体旋转 90°：不做任何缩放变形，从歌名第一个字往下排。 */
+  writing-mode: vertical-rl;
+  text-orientation: sideways;
+  font-size: var(--rail-size, 96px);
+  font-weight: 900;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+  background: linear-gradient(315deg, #fff 0%, var(--accent) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fx-name-rail.is-rolling .fx-name-rail-text { animation: none; }
+}
+
+html[data-theme='dark'] .fx-name-rail {
+  background: linear-gradient(135deg, rgb(255 255 255 / 0.08) 0%, var(--accent) 100%);
+}
+
+/* 竖条的出现动画：贴着封面那一侧往右推开（看起来像从封面底下弹出来）。 */
+.fx-name-rail.is-enter {
+  animation: fx-rail-reveal var(--motion-slow) var(--motion-ease) both;
+}
+
+@keyframes fx-rail-reveal {
+  from { clip-path: inset(0 100% 0 0); }
+  to   { clip-path: inset(0 0 0 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fx-name-rail.is-enter { animation: none; }
+}
+
+/* 右侧网格的滚动条：细、无轨道、随主题走，悬停才明显一点。 */
+.fx-cards {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--overlay-rgb) / 0.22) transparent;
+}
+
+.fx-cards::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.fx-cards::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.fx-cards::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: var(--radius-pill);
+  background: rgb(var(--overlay-rgb) / 0.2);
+  background-clip: padding-box;
+}
+
+.fx-cards::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--overlay-rgb) / 0.34);
+  background-clip: padding-box;
+}
+
+.fx-cards::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ---------- 3 秒无操作：卡片翻转渐隐 → 横条列表 ---------- */
+.fx-cards.is-flipping .fx-card {
+  animation: fx-card-flip-out var(--motion-base) var(--motion-ease) both;
+  animation-delay: var(--fx-flip-delay, 0ms);
+}
+
+@keyframes fx-card-flip-out {
+  from {
+    transform: perspective(900px) rotateY(0deg) scale(1);
+    opacity: 1;
+  }
+  to {
+    transform: perspective(900px) rotateY(-84deg) scale(0.94);
+    opacity: 0;
+  }
+}
+
+/* 横条列表：一行一首歌，左缩略图 + 右文字，直角、透明底。 */
+.fx-cards.is-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-right: 8px;
+  scrollbar-width: thin;
+}
+
+.fx-cards.is-list .fx-card {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  height: 52px;
+  aspect-ratio: auto;
+  padding: 0 6px;
+  background: transparent;
+  border-radius: 0;
+  overflow: visible;
+  /* 逐条弹出：延时由 TS 写进 --fx-row-delay（第 i 条 = i * 34ms）。 */
+  animation: fx-row-in var(--motion-fast) var(--motion-ease) both;
+  animation-delay: var(--fx-row-delay, 0ms);
+}
+
+.fx-cards.is-list .fx-card:hover {
+  background: rgb(var(--overlay-rgb) / 0.08);
+  transform: none;
+}
+
+.fx-cards.is-list .fx-card-cover {
+  position: static;
+  width: 44px;
+  height: 44px;
+  object-fit: cover;
+}
+
+.fx-cards.is-list .fx-card-meta {
+  position: static;
+  padding: 0;
+  background: none;
+  color: var(--text);
+  min-width: 0;
+}
+
+.fx-cards.is-list .fx-card-artist {
+  color: var(--muted);
+}
+
+@keyframes fx-row-in {
+  from { opacity: 0; transform: translateX(-14px) scaleY(0.86); }
+  60%  { opacity: 1; }
+  to   { opacity: 1; transform: translateX(0) scaleY(1); }
+}
+
+/* 滚动：按速度上下挤压，松手弹簧回位（不动卡片内部，整层一起压）。 */
+.fx-cards {
+  transform-origin: var(--fx-squash-origin, top center);
+  transition: transform 520ms cubic-bezier(.16, .84, .24, 1);
+  will-change: auto;
+}
+
+.fx-cards.is-scrolling {
+  /* 注意：这里必须同时声明 --fx-fade 的过渡，否则滚动开始时它会被这条 transition 覆盖掉，
+     表现为「渐隐出现」硬切、只有退出时有动画。 */
+  transition: transform 90ms linear, --fx-fade 320ms cubic-bezier(.22, .86, .24, 1);
+  transform: scaleY(calc(1 - var(--fx-squash, 0)));
+}
+
+/* 两端渐隐：靠 --fx-fade 这个可动画的长度变量控制「渐隐带」宽度。
+   静止时 0%（等于没有蒙版、全清晰），滚动时涨到 12%，用 transition 平滑进出。 */
+@property --fx-fade {
+  syntax: '<percentage>';
+  inherits: false;
+  initial-value: 0%;
+}
+
+.fx-cards {
+  --fx-fade: 0%;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--fx-fade),
+    #000 calc(100% - var(--fx-fade)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--fx-fade),
+    #000 calc(100% - var(--fx-fade)),
+    transparent 100%
+  );
+  transition: --fx-fade 320ms cubic-bezier(.22, .86, .24, 1);
+}
+
+.fx-cards.is-scrolling {
+  --fx-fade: 12%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fx-cards.is-scrolling { transform: none; }
+}
+
+/* 离开今日推荐：所有东西按进来时的路线原样退回去（620ms，和 FX_LEAVE_MS 对齐）。 */
+.fx-daily-view.is-leaving .fx-hero-shell {
+  animation: fx-hero-leave 480ms cubic-bezier(.4, 0, .2, 1) both;
+}
+
+@keyframes fx-hero-leave {
+  from { opacity: 1; transform: translate3d(0, 0, 0); }
+  to   { opacity: 0; transform: translate3d(-40%, 0, 0); }
+}
+
+.fx-daily-view.is-leaving .fx-name-rail {
+  animation: fx-rail-leave 440ms cubic-bezier(.4, 0, .2, 1) both;
+}
+
+@keyframes fx-rail-leave {
+  from { clip-path: inset(0 0 0 0); }
+  to   { clip-path: inset(0 100% 0 0); }
+}
+
+.fx-daily-view.is-leaving .fx-cover {
+  animation: fx-cover-leave 560ms ease both;
+}
+
+@keyframes fx-cover-leave {
+  from { opacity: 1; transform: scaleY(1); }
+  to   { opacity: 0; transform: scaleY(0.04); }
+}
+
+.fx-daily-view.is-leaving .fx-cards .fx-card {
+  animation: fx-card-leave var(--motion-fast) var(--motion-ease) both;
+  animation-delay: var(--fx-card-out-delay, 0ms);
+}
+
+@keyframes fx-card-leave {
+  from { opacity: 1; transform: none; }
+  to   { opacity: 0; transform: perspective(720px) rotateY(-58deg) translateX(14px); }
+}
+
+/* 横条列表里退出不能翻牌：它是横向条，退场就顺着进来的方向滑回去。 */
+.fx-cards.is-list .fx-card.is-leaving {
+  animation-name: fx-row-leave;
+}
+
+@keyframes fx-row-leave {
+  from { opacity: 1; transform: none; }
+  to   { opacity: 0; transform: translateX(-18px); }
+}
+
+.fx-daily-view.is-leaving .fx-daily .fx-daily-cell {
+  animation: fx-word-leave 420ms cubic-bezier(.4, 0, .2, 1) both;
+}
+
+@keyframes fx-word-leave {
+  from { opacity: 1; transform: none; }
+  to   { opacity: 0; transform: translate3d(0, -32%, 0); }
+}
+
+/* 进今日推荐时封面带的入场：和退场的「向上收起」互为反向——从顶边展开、渐显。 */
+.fx-daily-view.is-entering .fx-cover {
+  animation: fx-cover-enter var(--motion-slow) var(--motion-ease) both;
+  transform-origin: top center;
+}
+
+@keyframes fx-cover-enter {
+  from { opacity: 0; transform: scaleY(0.08); }
+  to   { opacity: 1; transform: scaleY(1); }
+}
+
+.fx-daily-view.is-entering .fx-cover-wash {
+  animation: fx-wash-enter 720ms ease both;
+}
+
+@keyframes fx-wash-enter {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* 横条列表里点一下的高亮：亮起 180ms、停住、3.2s 后自己淡回去。 */
+.fx-cards.is-list .fx-card.is-flash {
+  background: rgb(var(--overlay-rgb) / 0.1);
+  animation: fx-row-flash 3200ms cubic-bezier(.22, .86, .24, 1) both;
+}
+
+@keyframes fx-row-flash {
+  0%   { background-color: rgb(var(--overlay-rgb) / 0); }
+  6%   { background-color: rgb(var(--overlay-rgb) / 0.14); }
+  88%  { background-color: rgb(var(--overlay-rgb) / 0.1); }
+  100% { background-color: rgb(var(--overlay-rgb) / 0); }
+}
+
+/* 高亮那几秒过去之后，正在播放的这一行要留一个「就是它」的标记，
+   否则几秒后和没点过一模一样。左侧一条主色竖线 + 歌名变色，常驻。 */
+.fx-cards.is-list .fx-card.is-on {
+  background: rgb(var(--overlay-rgb) / 0.05);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.fx-cards.is-list .fx-card.is-on .fx-card-name {
+  color: var(--accent);
+}
+
+/* ===== FX 首页：一条通高的斜色条 + 条内菜单 ===== */
+
+.fx-home {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  transition: opacity 260ms var(--ease);
+}
+
+.fx-home.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+}
+
+/* 通高的斜色条：整条从右侧划到左侧落位。收起时是主题色的淡底，
+   里面不需要圆角、不需要阴影（参考图就是一块平色）。 */
+.fx-home-band {
+  position: absolute;
+  top: -6%;
+  bottom: -6%;
+  left: clamp(56px, 8vw, 140px);
+  width: clamp(160px, 17vw, 280px);
+  /* 固定白 → 主题色的渐变：上端纯白，往下走到主题色。 */
+  background: linear-gradient(180deg, #fff 0%, var(--accent) 100%);
+  transform: skewX(6deg);
+  transform-origin: left center;
+}
+
+.fx-home.is-entering .fx-home-band {
+  animation: fx-home-band-in 620ms cubic-bezier(.16, .84, .24, 1) both;
+}
+
+.fx-home.is-leaving .fx-home-band {
+  animation: fx-home-band-out 460ms cubic-bezier(.5, 0, .75, .2) both;
+}
+
+@keyframes fx-home-band-in {
+  from { transform: skewX(6deg) translate3d(150%, 0, 0); opacity: 0; }
+  to   { transform: skewX(6deg) translate3d(0, 0, 0); opacity: 1; }
+}
+
+@keyframes fx-home-band-out {
+  from { transform: skewX(6deg) translate3d(0, 0, 0); opacity: 1; }
+  to   { transform: skewX(6deg) translate3d(150%, 0, 0); opacity: 0; }
+}
+
+/* 菜单：竖排，压在色条上，跟着条一起斜。 */
+.fx-home-list {
+  position: absolute;
+  top: 50%;
+  left: calc(clamp(56px, 8vw, 140px) + clamp(160px, 17vw, 280px) * 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: clamp(8px, 1.4vh, 18px);
+  /* 整排文字按色条的角度整体旋转（不是把字拉斜）。 */
+  transform: translate(-50%, -50%) rotate(-6deg);
+  pointer-events: auto;
+}
+
+.fx-home-item {
+  position: relative;
+  padding: clamp(6px, 0.9vh, 12px) clamp(14px, 1.6vw, 28px);
+  border: 0;
+  background: transparent;
+  text-align: center;
+  cursor: pointer;
+  transition: background 220ms var(--ease);
+}
+
+/* 悬停 / 选中：该行铺实一点的主题色（仍然不是参考图的蓝）。 */
+.fx-home-item::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  /* 选中/悬停那一行：在主题色上用一层叠加色拉出层次（浅色压深、深色提亮）。 */
+  background: rgb(var(--overlay-rgb) / 0.18);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 380ms cubic-bezier(.16, .84, .24, 1);
+}
+
+.fx-home-item:hover::before,
+.fx-home-item:focus-visible::before,
+.fx-home-item.is-on::before {
+  transform: scaleX(1);
+}
+
+.fx-home-text {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  gap: 0.04em;
+  font-size: clamp(24px, 3.1vh, 40px);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.fx-home-char {
+  display: inline-block;
+}
+
+.fx-home.is-entering .fx-home-char {
+  animation: fx-home-char-in 360ms cubic-bezier(.16, .84, .24, 1) both;
+  animation-delay: var(--fx-home-char-delay, 0ms);
+}
+
+@keyframes fx-home-char-in {
+  from { opacity: 0; transform: translate3d(0, 0.44em, 0) scale(0.86); }
+  60%  { opacity: 1; }
+  to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fx-home.is-entering .fx-home-band,
+  .fx-home.is-leaving .fx-home-band,
+  .fx-home.is-entering .fx-home-char {
+    animation: none;
+  }
+}
+
+/* 首页右上方的「今日推荐」入口：圆角正方形，里面的文字随鼠标做视差。 */
+.fx-home-tile {
+  --fx-parallax-x: 0;
+  --fx-parallax-y: 0;
+  position: absolute;
+  left: calc(clamp(56px, 8vw, 140px) + clamp(160px, 17vw, 280px) + clamp(28px, 3.4vw, 64px));
+  top: clamp(120px, 18vh, 220px);
+  width: clamp(220px, 24vw, 360px);
+  aspect-ratio: 1;
+  padding: 0;
+  border: 0;
+  border-radius: clamp(18px, 2vw, 30px);
+  background: transparent;
+  cursor: pointer;
+  pointer-events: auto;
+  perspective: 900px;
+}
+
+.fx-home-tile-panel {
+  perspective: 900px;
+  /* 注意：这里不能写 overflow: hidden —— 一写它就会把 preserve-3d 压平，
+     文字和封面之间的 translateZ 视差立刻消失（裁切交给外层 .fx-home-tile）。 */
+  transform-style: preserve-3d;
+  transform: rotateX(calc(var(--fx-parallax-y, 0) * -15deg))
+    rotateY(calc(var(--fx-parallax-x, 0) * 15deg));
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border-radius: inherit;
+  background: rgb(var(--overlay-rgb) / 0.06);
+  box-shadow: inset 0 0 0 1px rgb(var(--overlay-rgb) / 0.12);
+  transition: background 240ms var(--ease), box-shadow 240ms var(--ease);
+}
+
+.fx-home-tile:hover .fx-home-tile-panel {
+  transition: transform 220ms var(--ease), background 240ms var(--ease), box-shadow 240ms var(--ease);
+  background: rgb(var(--overlay-rgb) / 0.1);
+  box-shadow: inset 0 0 0 1px rgb(var(--overlay-rgb) / 0.18);
+}
+
+/* 三层文字：后景大字、中景、前景标题，位移幅度按层递减，看起来就有纵深。
+   角度也跟着鼠标走：整块面板轻微 rotateX / rotateY。 */
+.fx-home-tile-panel > span {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  transform-style: preserve-3d;
+}
+
+.fx-home-tile-text {
+  /* 不是靠一摞假侧壁撑出来的「厚」，而是整块牌面在真 3D 空间里倾，
+     文字自己抬到 translateZ 上（见下方），和封面之间有真实视差。 */
+  background: linear-gradient(180deg, rgb(var(--overlay-rgb) / 0.98) 0%, color-mix(in srgb, var(--accent) 72%, #34322c) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 10px 20px rgb(0 0 0 / 0.26));
+  transform: translateZ(34px);
+  transition: transform 200ms var(--ease);
+}
+
+.fx-home.is-entering .fx-home-tile {
+  animation: fx-home-tile-in 560ms cubic-bezier(.16, .84, .24, 1) 180ms both;
+}
+
+.fx-home.is-leaving .fx-home-tile {
+  animation: fx-home-tile-out 380ms cubic-bezier(.5, 0, .75, .2) both;
+}
+
+@keyframes fx-home-tile-in {
+  from { opacity: 0; transform: translate3d(0, 24px, 0) scale(0.94); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+}
+
+@keyframes fx-home-tile-out {
+  from { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+  to   { opacity: 0; transform: translate3d(0, 18px, 0) scale(0.96); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fx-home.is-entering .fx-home-tile,
+  .fx-home.is-leaving .fx-home-tile {
+    animation: none;
+  }
+}
+
+/* 方卡上的播放键：悬停才浮现（键盘聚焦同效），点它直接播今日推荐。 */
+.fx-home-tile-play {
+  position: absolute;
+  right: clamp(14px, 1.4vw, 20px);
+  bottom: clamp(14px, 1.4vw, 20px);
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  width: clamp(40px, 3.4vw, 52px);
+  height: clamp(40px, 3.4vw, 52px);
+  border-radius: var(--radius-pill);
+  color: #fff;
+  background: rgb(var(--overlay-rgb) / 0.22);
+  border: 1px solid rgb(var(--overlay-rgb) / 0.32);
+  backdrop-filter: blur(18px) saturate(1.1);
+  box-shadow: 0 10px 26px rgb(0 0 0 / 0.24);
+  opacity: 0;
+  transform: translateY(6px) scale(0.92);
+  transition: opacity 220ms var(--ease), transform 260ms var(--ease), background 200ms;
+}
+
+.fx-home-tile:hover .fx-home-tile-play,
+.fx-home-tile:focus-visible .fx-home-tile-play,
+.fx-home-tile-play:focus-visible {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.fx-home-tile-play:hover {
+  background: rgb(var(--overlay-rgb) / 0.34);
+}
+
+/* 方卡封面：播放中的歌属于今日推荐时铺满整块，文字让位。 */
+.fx-home-tile-cover {
+  position: absolute;
+  inset: 0;
+  transform: translateZ(-6px);
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+  opacity: 0;
+  transform: scale(1.04);
+  transition: opacity 420ms var(--ease), transform 620ms var(--ease);
+  pointer-events: none;
+}
+
+.fx-home-tile-cover.is-on {
+  opacity: 1;
+  transform: scale(1);
+}
+
+/* 播放中：封面铺满整块，标题缩成左下角的小标签，并有一小段进场动画。
+   这条必须放最后：它的 position / font-size 要盖掉前面居中的那套规则。 */
+.fx-home-tile.has-cover .fx-home-tile-text {
+  position: absolute;
+  /* 前面那套规则给 span 写了 inset:0，这里必须把它解开，否则又铺满整块。 */
+  inset: auto;
+  left: clamp(13px, 1.3vw, 19px);
+  bottom: clamp(11px, 1.1vw, 17px);
+  width: auto;
+  height: auto;
+  z-index: 3;
+  margin: 0;
+  font-size: clamp(13px, 1.05vw, 17px);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #fff;
+  background: none;
+  -webkit-background-clip: border-box;
+  background-clip: border-box;
+  text-shadow: 0 2px 14px rgb(0 0 0 / 0.6);
+  filter: none;
+  transform: none;
+  animation: fx-home-label-in 520ms cubic-bezier(.16, .84, .24, 1) 120ms both;
+}
+
+@keyframes fx-home-label-in {
+  0%   { opacity: 0; transform: translate3d(-10px, 8px, 0); filter: blur(6px); letter-spacing: 0.22em; }
+  60%  { opacity: 1; letter-spacing: 0.08em; }
+  100% { opacity: 1; transform: translate3d(0, 0, 0); filter: blur(0); letter-spacing: 0.05em; }
+}
+
+/* 首页的十字构图：竖条（skewX(6deg)，边线偏离垂直 6°）+ 横条。
+   横条不再用 clip-path 硬切斜边，而是整块 rotate(-6deg)：
+   这样它的长边正好与竖条的边线成 90°，量出来才是垂直关系。
+   位置下移到菜单下方一点，不贴窗口顶边。 */
+.fx-home-cross {
+  position: absolute;
+  /* 右端必须顶到窗口右边：left 0 + width 100%。 */
+  left: 0;
+  /* 以右端为轴：旋转后是左端往下沉，右端不动，整体就不会贴到窗口顶。 */
+  top: clamp(112px, 14vh, 182px);
+  width: 100%;
+  height: clamp(84px, 10.5vh, 142px);
+  pointer-events: none;
+  /* 取主题色拉白成浅色块：和竖条同族，但在白底上看得见。 */
+  background: color-mix(in srgb, var(--accent) 58%, #fff);
+  transform: rotate(-6deg);
+  transform-origin: right center;
+}
+
+.fx-home.is-entering .fx-home-cross {
+  animation: fx-home-cross-in 560ms cubic-bezier(.16, .84, .24, 1) 40ms both;
+}
+
+.fx-home.is-leaving .fx-home-cross {
+  animation: fx-home-cross-out 260ms cubic-bezier(.4, 0, .7, .2) both;
+}
+
+@keyframes fx-home-cross-in {
+  from { opacity: 0; transform: rotate(-6deg) translate3d(-26%, 0, 0); }
+  to   { opacity: 1; transform: rotate(-6deg); }
+}
+
+@keyframes fx-home-cross-out {
+  from { opacity: 1; transform: rotate(-6deg); }
+  to   { opacity: 0; transform: rotate(-6deg) translate3d(-18%, 0, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fx-home.is-entering .fx-home-cross,
+  .fx-home.is-leaving .fx-home-cross { animation: none; }
+}
+/* 标准界面里的「今日推荐」整页：就是一个自己占满 stage 的容器，
+   里面复用原来 FX 的那套视图（.fx-daily-view 自己绝对定位铺满）。 */
+.daily-view {
+  position: absolute;
+  inset: 0;
+  /* 封面带要越过 .stage 上沿顶到窗口顶，这里不能裁。 */
+  overflow: visible;
+}
+
+.daily-view.is-hidden {
+  display: none;
+}
+
+/* 今日推荐 / 私人雷达整页：封面带要越过顶栏一直顶到窗口最上沿，
+   所以这一层视图激活时放行 .main 与 .stage 的 overflow 裁剪。 */
+.app.is-flow-view > .main,
+.app.is-flow-view .stage {
+  overflow: visible;
+}
+
+/* 封面上的歌词（点播后出现）：白色辉光 + 上下行被挤小。
+   文字只改 font-size / opacity / color，不缩放、不加 filter —— 见 §9.6 的清晰度规矩。 */
+.fx-hero-lyrics {
+  --fx-hero-glow: 0 0 12px rgb(255 255 255 / 0.95), 0 0 34px rgb(255 255 255 / 0.5), 0 2px 12px rgb(0 0 0 / 0.55);
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  /* 正在唱的那句垂直居中、横向偏左（不顶到边，也不正中间）。 */
+  align-items: flex-start;
+  justify-content: center;
+  /* 三句之间拉开距离：中间那句最大，上下两句靠挤压感让位。 */
+  /* 三句装在一个滑动栈里（换句时整摞上移一格），超出封面的部分裁掉。
+     左边距从 12% 收到 7%：歌词整体往左靠，别在封面中间飘着。 */
+  overflow: hidden;
+  padding: 0 13% 0 7%;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--motion-base) var(--ease);
+}
+.fx-hero-cover.is-lyrics .fx-hero-lyrics { opacity: 1; }
+/* 左侧压一层横向阴影：白字压得住，封面还看得见（不再整片糊一层黑）。 */
+.fx-hero-cover.is-lyrics::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: linear-gradient(96deg, rgb(6 6 10 / 0.36) 0%, rgb(6 6 10 / 0.20) 46%, transparent 85%);
+  pointer-events: none;
+}
+/* 歌名/歌手钉在左上角，但留出边距（不贴边）。 */
+.fx-hero-lyric-head {
+  position: absolute;
+  top: 7.5%;
+  left: 8%;
+  right: 12%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.18em;
+  text-align: left;
+}
+.fx-hero-lyric-name {
+  font-size: clamp(13px, 1vw, 18px);
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  color: #fff;
+  text-shadow: none;
+  overflow-wrap: anywhere;
+}
+.fx-hero-lyric-artist {
+  font-size: clamp(10px, 0.76vw, 13px);
+  font-weight: 600;
+  color: rgb(255 255 255 / 0.72);
+  text-shadow: none;
+  overflow-wrap: anywhere;
+}
+.fx-hero-lyric-stack {
+  /* 三句的容器：上一句 / 正在唱 / 下一句，从上到下排。 */
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 38px;
+  width: 100%;
+}
+.fx-hero-lyric {
+  transform: translate3d(0, 0, 0) scale(1);
+  will-change: transform, opacity;
+  /* 字号由 coverLyrics 按倍率写行内 px，直接落位（不做 CSS 字号过渡）：
+     滚动的位移与缩放由 FLIP 的 transform 在合成层完成，逐帧改字号会触发布局。 */
+  font-size: clamp(16px, 1.25vw, 30px);
+  line-height: 1.26;
+  font-weight: 700;
+  letter-spacing: 0.005em;
+  /* 非当前行的颜色要「退下去」：之前用 0.95 白 + 0.52 透明度，
+     在亮封面上仍然像被点亮的白字；这里把基色压到 0.62 并去掉外发光，
+     只有 .is-active 才拿到纯白与白色辉光。 */
+  color: rgb(228 228 236 / 0.5);
+  text-align: left;
+  text-shadow: none;
+  /* 颜色/发光的变化一律走过渡：入场时灰 → 白、离场时白 → 灰，
+     否则那一帧是硬切（看起来像「啪」一下换色，而不是渐亮 / 渐暗）。 */
+  transition:
+    color 320ms var(--ease);
+  overflow-wrap: anywhere;
+  /* 允许折行：超过长度上限的句子不再硬压字号，改成换行排下去（见 coverLyrics 的 planSize）。 */
+  white-space: normal;
+  max-width: 100%;
+  /* ::before 覆层按左上角对齐；FLIP 的缩放以左上为原点，字不会往左右漂。 */
+  position: relative;
+  transform-origin: left center;
+  transition:
+    color 320ms var(--ease);
+}
+/* 分界点：被 ::before 的 clip-path 消费，20Hz 写一次 + 140ms 线性过渡。 */
+@property --fx-lyric-fill {
+  syntax: '<percentage>';
+  /* 必须 inherits: true —— 分界点写在 .fx-hero-lyric 上，::before 覆层要读它；
+     inherits:false 时伪元素拿到的是自己的 initial-value(0%)，覆层永远不揭开。 */
+  inherits: true;
+  initial-value: 0%;
+}
+.fx-hero-lyric.is-active {
+  font-weight: 800;
+  color: #fff;
+  text-shadow: none;
+}
+.fx-hero-lyric-row {
+  display: block;
+  position: relative;
+  width: max-content;
+  white-space: nowrap;
+}
+.fx-hero-lyric-backdrop {
+  position: absolute;
+  pointer-events: none;
+  backdrop-filter: blur(4px);
+  mask-image: linear-gradient(to right, transparent, black 14px, black calc(100% - 14px), transparent),
+    linear-gradient(to bottom, transparent, black 7px, black calc(100% - 7px), transparent);
+  mask-composite: intersect;
+  opacity: 0;
+  transition: opacity 620ms ease, top 800ms cubic-bezier(.23,.52,.22,1),
+    width 800ms cubic-bezier(.23,.52,.22,1), height 800ms cubic-bezier(.23,.52,.22,1);
+}
+.fx-hero-lyric-backdrop.is-current { opacity: 1; }
+.fx-hero-lyric-row, .fx-hero-lyric-trans {
+  filter: blur(0);
+  transition: filter 800ms cubic-bezier(.23,.52,.22,1);
+}
+.fx-hero-lyric.is-retired > .fx-hero-lyric-row,
+.fx-hero-lyric.is-retired > .fx-hero-lyric-trans { filter: blur(1.4px); }
+@media (prefers-reduced-motion: reduce) {
+  .fx-hero-lyric-backdrop, .fx-hero-lyric-row, .fx-hero-lyric-trans { transition: none; }
+}
+.fx-hero-lyric-glow {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  filter: drop-shadow(0 0 4px white) drop-shadow(0 0 10px rgb(255 255 255 / 0.75));
+  opacity: 0;
+  transition: opacity 320ms var(--ease);
+}
+.fx-hero-lyric.is-active:not(.is-past) .fx-hero-lyric-glow {
+  opacity: 1;
+}
+.fx-hero-lyric-glow::before {
+  content: attr(data-text);
+  display: block;
+  color: #fff;
+  text-shadow: none;
+  mask-image: linear-gradient(90deg, black calc(var(--fx-lyric-fill) - 4%), transparent var(--fx-lyric-fill));
+}
+.fx-hero-lyric.is-past {
+  /* 收尾这 320ms 里它已经站到「上一句」的位置了：必须放开 nowrap，
+     否则在 .is-active 还挂着的时候，长句会按 nowrap 溢出、右端被裁掉。 */
+  white-space: normal;
+  color: rgb(228 228 236 / 0.5);
+  font-weight: 700;
+  text-shadow: none;
+  transition:
+    color 320ms var(--ease);
+}
+
+.fx-hero-lyric-trans {
+  /* 译文绝对定位挂在行下面：它出现/消失不能再把这一行顶高——
+     行高一变，整摞三句就会跟着挪一下，看起来像卡了一帧。 */
+  position: absolute;
+  left: 0;
+  top: calc(100% + 0.12em);
+  font-size: 0.44em;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: rgb(255 255 255 / 0.78);
+  white-space: nowrap;
+}

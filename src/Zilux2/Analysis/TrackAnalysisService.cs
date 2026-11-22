@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -397,10 +397,10 @@ internal sealed class TrackAnalysisService : IDisposable
         {
             Directory.CreateDirectory(JsonCacheDirectory);
             var path = Path.Combine(JsonCacheDirectory, HashFileName(cacheKey) + ".json");
-            var temp = path + ".tmp";
             var json = JsonSerializer.Serialize(response, AnalysisJsonContext.Default.AnalysisSuccessResponse);
-            File.WriteAllText(temp, json, Encoding.UTF8);
-            File.Move(temp, path, overwrite: true);
+            // 必须写「无 BOM」的 UTF-8：`Encoding.UTF8` 会带 EF BB BF 头，
+            // 浏览器端 `JSON.parse` / 任何按字节解析的消费方会直接抛错（实测 web 端缓存读不了）。
+            Zilux2.Storage.AtomicFile.WriteAllText(path, json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         }
         catch (Exception exception)
         {

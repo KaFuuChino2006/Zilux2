@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Text;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -374,11 +375,21 @@ internal sealed class DownloadService : IDisposable
 
     public DownloadListResponse Snapshot()
     {
-        var jobs = _jobs.Values
+        // 先放「还在动」的任务，再用最近的补满 30 条：
+        // 旧实现直接 Take(30) 按开始时间排序，任务超过 30 条时最早那条正在跑的任务会从列表消失，
+        // 页面既看不到进度也点不到取消（_jobs 本身没有上限）。
+        var all = _jobs.Values.ToList();
+        var active = all
+            .Where(item => item.State is "running" or "paused" or "queued")
             .OrderByDescending(item => item.StartedAt)
-            .Take(30)
             .ToList();
-        return new DownloadListResponse { Directory = Directory, Jobs = jobs };
+        var recent = all
+            .Where(item => item.State is not ("running" or "paused" or "queued"))
+            .OrderByDescending(item => item.StartedAt)
+            .Take(Math.Max(0, 30 - active.Count))
+            .ToList();
+        active.AddRange(recent);
+        return new DownloadListResponse { Directory = Directory, Jobs = active };
     }
 
     /// <summary>按任务 id 找已完成的文件路径；只有 id 为空时才取最近完成的一条。</summary>
@@ -592,7 +603,9 @@ internal sealed class DownloadService : IDisposable
         var extension = GuessExtension(resolution.Url, resolution.Format);
         var fileName = BuildFileName(job, quality, extension, directory);
         var targetPath = ResolveTargetPath(directory, fileName, job);
-        var partPath = targetPath + ".part";
+        // .part 名字必须带音质：同一首歌「无损」「320k」同时下载时，旧实现两者都用
+        // `{target}.part` + FileShare.None —— 第二个任务必然抛 IOException（英文原文直接冒到 UI）。
+        var partPath = targetPath + "." + PartTag(quality) + ".part";
         control.ActivePartPath = partPath;
         job.FileName = System.IO.Path.GetFileName(targetPath);
 
@@ -968,10 +981,50 @@ internal sealed class DownloadService : IDisposable
     /// D-04：目标已存在时避让为「name (2).ext」。只有模板显式使用 {id} 且文件名里确实带着本任务 id 时，
     /// 才认为这是同一首歌的重复下载，允许覆盖；其余情况一律另起名字，避免不同歌曲互相覆盖。
     /// </summary>
+    /// <summary>.part 文件名里的音质标记：只保留字母数字，空则用 q。</summary>
+    private static string PartTag(string quality)
+    {
+        var buffer = new StringBuilder();
+        foreach (var ch in quality)
+        {
+            if (char.IsLetterOrDigit(ch))
+            {
+                buffer.Append(char.ToLowerInvariant(ch));
+            }
+        }
+
+        return buffer.Length == 0 ? "q" : buffer.ToString();
+    }
+
+    /// <summary>目标文件是否已被「正在下载」占位（存在 `{target}.{quality}.part`）。</summary>
+    private static bool HasPendingPart(string directory, string candidate)
+    {
+        var name = Path.GetFileName(candidate);
+        try
+        {
+            foreach (var file in System.IO.Directory.EnumerateFiles(directory))
+            {
+                var existing = Path.GetFileName(file);
+                if (existing.Length > name.Length &&
+                    existing.StartsWith(name, StringComparison.OrdinalIgnoreCase) &&
+                    existing.EndsWith(".part", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // 枚举失败当作没占位：宁可多一个「 (2)」也不让下载直接失败。
+        }
+
+        return false;
+    }
+
     private string ResolveTargetPath(string directory, string fileName, DownloadJob job)
     {
         var target = Path.Combine(directory, fileName);
-        if (!File.Exists(target))
+        if (!File.Exists(target) && !HasPendingPart(directory, target))
         {
             return target;
         }
@@ -997,6 +1050,11 @@ internal sealed class DownloadService : IDisposable
             var baseStem = stem.Length > budget ? stem[..budget].TrimEnd('.', ' ') : stem;
             var candidateStem = SanitizeStem(baseStem + suffix);
             var candidate = Path.Combine(directory, candidateStem + extension);
+            if (!File.Exists(candidate) && !HasPendingPart(directory, candidate))
+            {
+                return candidate;
+            }
+
             // File.Exists 在 Windows 上大小写不敏感；这里再比较一次长度以便超长时继续收缩。
             if (candidate.Length <= MaxPathLength && !File.Exists(candidate))
             {

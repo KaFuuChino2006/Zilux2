@@ -156,11 +156,56 @@ function ensureToastHost(): HTMLElement {
   return toastHost;
 }
 
-/** 顶部短提示（2.6s 自动消失）。 */
-export function toast(message: string, kind: 'info' | 'error' = 'info'): void {
+/** 顶部短提示（2.6s 自动消失）。带 action 时变成「可点按钮 + 可关闭」的提示，
+ *  15s 自动收起（鼠标停在上面时暂停计时），点按钮先执行动作再移除自身。 */
+export function toast(
+  message: string,
+  kind: 'info' | 'error' = 'info',
+  action?: { label: string; run: () => void },
+  options?: { className?: string },
+): void {
   const host = ensureToastHost();
-  const node = h('div', { class: kind === 'error' ? 'toast is-error' : 'toast', text: message });
+  const node = h(
+    'div',
+    {
+      class: [kind === 'error' ? 'toast is-error' : 'toast', options?.className ?? ''].filter(Boolean).join(' '),
+      text: action ? undefined : message,
+    },
+  );
+  const dismiss = (): void => {
+    if (!node.isConnected) return;
+    node.classList.add('is-leaving');
+    window.setTimeout(() => node.remove(), 220);
+  };
+
+  if (action) {
+    node.classList.add('is-actionable');
+    const button = h('button', { class: 'toast-action', type: 'button', text: action.label });
+    button.addEventListener('click', () => {
+      // 动作本身可能抛错（比如登录接口未就绪），但提示必须收起来，否则会一直挡着。
+      try {
+        action.run();
+      } finally {
+        dismiss();
+      }
+    });
+    const close = h('button', { class: 'toast-close', type: 'button', 'aria-label': '关闭' });
+    close.textContent = '×';
+    close.addEventListener('click', dismiss);
+    node.append(h('span', { class: 'toast-text', text: message }), button, close);
+
+    let timer = window.setTimeout(dismiss, 15000);
+    const pause = (): void => window.clearTimeout(timer);
+    const resume = (): void => {
+      pause();
+      timer = window.setTimeout(dismiss, 6000);
+    };
+    node.addEventListener('pointerenter', pause);
+    node.addEventListener('pointerleave', resume);
+  }
+
   host.append(node);
+  if (action) return;
   window.setTimeout(() => {
     node.style.opacity = '0';
     node.style.transform = 'translateY(6px)';

@@ -5,9 +5,10 @@
  */
 
 import { host } from '../core/bridge';
+import { BlockEntrance } from './blockEntrance';
 import { h, icon, toast } from './dom';
 import { createSelectControl } from './selectControl';
-import { applyAsset, attachDesktop, cleanStorage, coverUrl, deleteAsset, detachDesktop, fetchAsset, fetchCanvasSettings, fetchLibrary, fetchMonitors, fetchOptions, fetchState, fetchStorage, fetchTags, fmtDuration, fmtResolution, fmtSize, isWallpaperReady, KIND_LABELS, localizeAsset, mediaUrl, nextWallpaper, patchAsset, pauseCanvas, saveCanvasSettings, saveMonitor, scanLibrary, SOURCE_LABELS, type CanvasKind, type CanvasPicture, type LibraryQuery, type LibrarySort, type WallpaperAsset, type WallpaperMonitor, type WallpaperOptions, type WallpaperState, type WallpaperTag } from '../wallpaper/client';
+import { applyAsset, attachDesktop, cleanStorage, coverUrl, deleteAsset, detachDesktop, fetchAsset, fetchCanvasSettings, fetchLibrary, fetchMonitors, fetchOptions, fetchState, fetchStorage, fetchTags, fmtDuration, fmtResolution, fmtSize, isWallpaperReady, KIND_LABELS, localizeAsset, mediaUrl, nextWallpaper, patchAsset, pauseCanvas, saveCanvasSettings, saveMonitor, scanLibrary, SOURCE_LABELS, sweepMonitor, type CanvasKind, type CanvasPicture, type LibraryQuery, type LibrarySort, type WallpaperAsset, type WallpaperMonitor, type WallpaperOptions, type WallpaperState, type WallpaperTag } from '../wallpaper/client';
 
 const PAGE_SIZE = 120;
 
@@ -32,8 +33,66 @@ function fpsChoices(maxFps: number): number[] {
   return list;
 }
 
-const RESOLUTION_FILTERS = [
-  { id: '', label: '全部清晰度' },
+/**
+ * 按 Screen.AllScreens 的真实坐标画等比示意图：外框 = 虚拟桌面包围盒，
+ * 每块屏按 x/y/w/h 落到百分比位置，点一下切换选中的屏。
+ * 抽屉的「屏幕」卡和画布设置弹层共用同一套（见 buildScreenMap 的 options）。
+ */
+function buildScreenMap(
+  monitors: WallpaperMonitor[],
+  selectedKey: string | null,
+  onSelect: (monitor: WallpaperMonitor) => void,
+  options: { globalAssetId?: number | null; scaleText?: string | null; className?: string } = {},
+): HTMLElement {
+  const minX = Math.min(...monitors.map((monitor) => monitor.x));
+  const minY = Math.min(...monitors.map((monitor) => monitor.y));
+  const maxX = Math.max(...monitors.map((monitor) => monitor.x + monitor.w));
+  const maxY = Math.max(...monitors.map((monitor) => monitor.y + monitor.h));
+  const spanX = Math.max(1, maxX - minX);
+  const spanY = Math.max(1, maxY - minY);
+
+  const map = h('div', {
+    class: `wp-monitor-map${options.className ? ` ${options.className}` : ''}`,
+    style: `aspect-ratio:${spanX} / ${spanY};`,
+  });
+  for (const monitor of monitors) {
+    const cover = monitor.assetId ?? (monitor.follow ? options.globalAssetId ?? null : null);
+    const node = h('button', {
+      class: `wp-monitor-node${monitor.key === selectedKey ? ' is-on' : ''}`,
+      type: 'button',
+      title: `${monitor.key} · ${monitor.w}×${monitor.h}${monitor.follow ? ' · 跟随全局' : ''}`,
+      style: `left:${(((monitor.x - minX) / spanX) * 100).toFixed(3)}%;top:${(((monitor.y - minY) / spanY) * 100).toFixed(3)}%;width:${((monitor.w / spanX) * 100).toFixed(3)}%;height:${((monitor.h / spanY) * 100).toFixed(3)}%;`,
+    });
+    if (cover) {
+      const img = h('img', { alt: '' }) as HTMLImageElement;
+      img.src = coverUrl(cover);
+      node.append(img);
+    } else {
+      node.append(h('span', { class: 'wp-monitor-empty', text: '空' }));
+    }
+    node.append(h('span', { class: 'wp-monitor-num', text: String(monitor.index) }));
+    if (monitor.primary) node.append(h('span', { class: 'wp-monitor-star', text: '主' }));
+    if (monitor.follow) node.append(h('span', { class: 'wp-monitor-flag', text: '跟随' }));
+    // 选中的那块屏：画面自上而下扫过一道炫彩光，扫完就散（重绘即重放，所以换屏会再提示一次）
+    if (monitor.key === selectedKey) node.append(h('span', { class: 'wp-monitor-sweep' }));
+    node.addEventListener('click', () => onSelect(monitor));
+    map.append(node);
+  }
+
+  const children: HTMLElement[] = [map];
+  if (options.scaleText !== null) {
+    children.push(
+      h('div', {
+        class: 'wp-muted wp-monitor-scale',
+        text: options.scaleText ?? `虚拟桌面 ${spanX}×${spanY} · 点一块屏来设置`,
+      }),
+    );
+  }
+
+  return h('div', { class: 'wp-monitor-stage-wrap' }, ...children);
+}
+
+const RESOLUTION_FILTERS = [  { id: '', label: '全部清晰度' },
   { id: '4k', label: '4K' },
   { id: '1080', label: '1080p' },
   { id: '720', label: '720p' },
@@ -55,7 +114,7 @@ const SIZE_FILTERS = [
 
 /**
  * 抽屉预览的即时变换：和 wallpaperLayer 的 applyPictureTransform 同一套算法
- * （画布平移 + 旋转宽高比补偿 + 缩放 + 模糊），
+ * （画面位置 object-position + 旋转宽高比补偿 + 缩放 + 模糊），
  * 这样拖滑杆看到的效果和真正铺上去的一致。
  */
 function applyPreviewTransform(
@@ -73,12 +132,13 @@ function applyPreviewTransform(
   const parts: string[] = [];
   if (t.mirrorH) parts.push('scaleX(-1)');
   if (t.mirrorV) parts.push('scaleY(-1)');
-  // 四个滑杆是「移动画布」：左就是往左推，右就是往右推，单位是画面尺寸的百分比。
-  const shiftX = (panLeft - panRight) * 0.5;
-  const shiftY = (panTop - panBottom) * 0.5;
-  if (Math.abs(shiftX) > 0.01 || Math.abs(shiftY) > 0.01) {
-    parts.push(`translate(${shiftX.toFixed(2)}%, ${shiftY.toFixed(2)}%)`);
-  }
+  // 四个滑杆改的是「画面在画框里的位置」（object-position 0–100%），不是挪画布。
+  const posX = 50 - (panLeft - panRight) * (50 / 45);
+  const posY = 50 - (panTop - panBottom) * (50 / 45);
+  element.style.objectPosition =
+    Math.abs(posX - 50) < 0.05 && Math.abs(posY - 50) < 0.05
+      ? ''
+      : `${posX.toFixed(2)}% ${posY.toFixed(2)}%`;
   element.style.clipPath = '';
   const rotate = (((t.rotation ?? 0) % 360) + 360) % 360;
   if (rotate) parts.push(`rotate(${rotate}deg)`);
@@ -88,8 +148,8 @@ function applyPreviewTransform(
     const ratio = Math.max(w / hgt, hgt / w);
     if (Number.isFinite(ratio) && ratio > 1) parts.push(`scale(${ratio.toFixed(3)})`);
   }
-  const zoom = Math.min(3, Math.max(1, t.zoom ?? 1));
-  if (zoom > 1.001) parts.push(`scale(${zoom.toFixed(3)})`);
+  const zoom = Math.min(3, Math.max(0.5, t.zoom ?? 1));
+  if (Math.abs(zoom - 1) > 0.001) parts.push(`scale(${zoom.toFixed(3)})`);
   element.style.transform = parts.join(' ');
   const blur = Math.min(24, Math.max(0, t.blur ?? 0));
   element.style.filter = blur > 0.05 ? `blur(${blur.toFixed(1)}px)` : '';
@@ -97,6 +157,8 @@ function applyPreviewTransform(
 
 export class WallpaperView {
   readonly root: HTMLDivElement;
+  /** 逐块入场：工具条 / 当前壁纸 / 每张素材卡各自出发。 */
+  private readonly entrance: BlockEntrance;
 
   private readonly toolbar: HTMLDivElement;
   private readonly currentRow: HTMLDivElement;
@@ -143,6 +205,24 @@ export class WallpaperView {
       this.footer,
     );
     this.root.classList.add(`is-${this.density}`);
+    this.entrance = new BlockEntrance(this.root, {
+      items: '.wp-card, .wp-current, .wp-toolbar-row, .wp-drawer-section',
+      heads: '.wp-toolbar-row',
+    });
+  }
+
+  /** 页面刚亮出来：收掉可能在跑的出场，再重发一遍逐块入场。 */
+  reveal(): void {
+    this.entrance.reveal();
+  }
+
+  /** 离开页面：各块沿自己入场那款的反向轨迹收回去。 */
+  leave(): Promise<void> {
+    return this.entrance.leave();
+  }
+
+  dispose(): void {
+    this.entrance.dispose();
   }
 
   /** 每次进入页面调用：只在第一次真正拉数据，之后靠 refresh 增量刷新。 */
@@ -170,6 +250,7 @@ export class WallpaperView {
     await this.loadState();
     this.renderCurrent();
     this.renderGrid();
+    if (this.entrance.isVisible()) this.entrance.play();
   }
 
   /* ------------------------------------------------------------------ 数据 */
@@ -184,6 +265,8 @@ export class WallpaperView {
       this.renderError(err);
     } finally {
       this.loading = false;
+      // 数据落定 = 逐块入场；页面没露着就不播（切回来时 reveal() 会补）。
+      if (this.entrance.isVisible()) this.entrance.play();
     }
   }
 
@@ -445,7 +528,7 @@ export class WallpaperView {
   }
 
   /**
-   * 画布自己的设置：模糊 / 平移缩放（移动画布 + 缩放）/ 镜像旋转 / 帧率。
+   * 画布自己的设置：模糊 / 画面位置与大小 / 镜像旋转 / 帧率。
    *
    * 这些值存在画布行（canvases.filter_json）里，桌面层按屏各存一份，
    * 所以调这块屏不会带动别的屏；素材本身不再带画面参数，右栏只负责选图。
@@ -492,7 +575,7 @@ export class WallpaperView {
 
     const previewImg = h('img', { class: 'wp-canvas-preview-img', alt: '' }) as HTMLImageElement;
     const preview = h('div', { class: 'wp-canvas-preview' }, previewImg);
-    const screensRow = h('div', { class: 'wp-seg-row wp-canvas-screens' });
+    const screensBox = h('div', { class: 'wp-canvas-screens' });
     const controls = h('div', { class: 'wp-canvas-controls' });
     const note = h('div', { class: 'wp-muted wp-canvas-note' });
 
@@ -500,7 +583,9 @@ export class WallpaperView {
     const flush = (): void => {
       window.clearTimeout(timer);
       timer = 0;
-      void saveCanvasSettings(kind, activeKey, { ...picture, fps })
+      // `fps` 初值是 0（要等 load() 回填）。首帧交互早于 load 时若把 0 发上去，
+      // 服务端 `Normalize` 会把 0 一律夹成 30 并落库 —— 144Hz 屏在「什么都没改」的情况下被降帧。
+      void saveCanvasSettings(kind, activeKey, fps > 0 ? { ...picture, fps } : { ...picture })
         .then((snapshot) => {
           picture = { ...snapshot.picture };
           fps = snapshot.fps;
@@ -584,7 +669,7 @@ export class WallpaperView {
       }
 
       const cropGroup = h('div', { class: 'wp-adj-group' });
-      cropGroup.append(h('div', { class: 'wp-adj-title', text: '移动画布' }));
+      cropGroup.append(h('div', { class: 'wp-adj-title', text: '画面位置' }));
       const crops: Array<[string, 'cropLeft' | 'cropTop' | 'cropRight' | 'cropBottom']> = [
         ['左', 'cropLeft'],
         ['上', 'cropTop'],
@@ -600,9 +685,9 @@ export class WallpaperView {
       }
 
       const pictureGroup = h('div', { class: 'wp-adj-group' });
-      pictureGroup.append(h('div', { class: 'wp-adj-title', text: '画面' }));
+      pictureGroup.append(h('div', { class: 'wp-adj-title', text: '画面大小' }));
       pictureGroup.append(
-        slider('缩放', 1, 3, 0.01, Number(picture.zoom ?? 1), (value) => `${value.toFixed(2)}×`, (value) => {
+        slider('缩放', 0.5, 3, 0.01, Number(picture.zoom ?? 1), (value) => `${value.toFixed(2)}×`, (value) => {
           picture.zoom = value;
         }),
         slider('模糊', 0, 24, 0.5, Number(picture.blur ?? 0), (value) => `${value.toFixed(1)}px`, (value) => {
@@ -627,33 +712,40 @@ export class WallpaperView {
         fpsRow.append(fpsSelect.root);
       }
 
-      // 帧率放前面：窗口高度有限时它不会被挤出可视区（移动画布那四条滑杆可以滚）。
+      // 帧率放前面：窗口高度有限时它不会被挤出可视区（画面位置那四条滑杆可以滚）。
       controls.append(flipRow, rotateRow, ...(isDesktop ? [fpsRow] : []), cropGroup, pictureGroup);
 
       applyPreviewTransform(previewImg, picture);
     };
 
     const paintScreens = (): void => {
-      screensRow.replaceChildren();
-      if (!isDesktop) return;
-      for (const monitor of monitors) {
-        const on = monitor.key === activeKey;
-        const chip = h('button', {
-          class: `wp-btn wp-btn-sm${on ? ' wp-btn-primary' : ''}`,
-          type: 'button',
-          text: `屏幕 ${monitor.index}${monitor.primary ? ' · 主' : ''}`,
-        });
-        chip.addEventListener('click', () => {
-          if (monitor.key === activeKey) return;
-          flush();
-          activeKey = monitor.key;
-          this.monitorSelected = monitor.key;
-      this.refreshApplyTarget();
-          paintScreens();
-          void load();
-        });
-        screensRow.append(chip);
-      }
+      screensBox.replaceChildren();
+      if (!isDesktop || monitors.length === 0) return;
+      const selected = monitors.find((monitor) => monitor.key === activeKey) ?? null;
+      screensBox.append(
+        buildScreenMap(
+          monitors,
+          activeKey,
+          (monitor) => {
+            // 先扫光：即使点的是当前这块屏，也要给「就是这一块」的反馈。
+            this.flashScreen(monitor.key);
+            if (monitor.key === activeKey) return;
+            flush();
+            activeKey = monitor.key;
+            this.monitorSelected = monitor.key;
+            this.refreshApplyTarget();
+            paintScreens();
+            void load();
+          },
+          {
+            globalAssetId: this.state?.desktop?.assetId ?? null,
+            scaleText: selected
+              ? `屏幕 ${selected.index}${selected.primary ? ' · 主' : ''} · ${selected.w}×${selected.h}`
+              : null,
+            className: 'wp-monitor-map-sm',
+          },
+        ),
+      );
     };
 
     const load = async (): Promise<void> => {
@@ -686,7 +778,7 @@ export class WallpaperView {
       h(
         'div',
         { class: 'wp-canvas-body' },
-        isDesktop ? screensRow : null,
+        isDesktop ? screensBox : null,
         preview,
         controls,
         note,
@@ -1001,7 +1093,7 @@ export class WallpaperView {
       'div',
       { class: 'wp-drawer-section wp-monitor-section' },
       h('div', { class: 'wp-label', text: '屏幕' }),
-      h('div', { class: 'wp-muted wp-monitor-hint', text: '按 Windows 的实际排布点一块屏，再决定它用哪张；跟随全局 = 跟「应用到桌面层」那张走。' }),
+      h('div', { class: 'wp-muted wp-monitor-hint', text: '按 Windows 的实际排布点一块屏，再决定它用哪张；跟随全局 = 跟「应用到桌面层」那张走。画面变换跟着壁纸走：换到别的屏、下次再用这张会自动带回来。' }),
       stage,
     );
     this.monitorHost = stage;
@@ -1041,52 +1133,20 @@ export class WallpaperView {
   }
 
   /**
-   * 按 Screen.AllScreens 的真实坐标画等比示意图：外框 = 虚拟桌面包围盒，
-   * 每块屏按 x/y/w/h 落到百分比位置，点一下切换选中的屏。
+   * 抽屉里的屏幕示意图：真实坐标排布 + 每块屏当前壁纸的封面。
    */
   private buildMonitorMap(): HTMLElement {
-    const monitors = this.monitors;
-    const minX = Math.min(...monitors.map((monitor) => monitor.x));
-    const minY = Math.min(...monitors.map((monitor) => monitor.y));
-    const maxX = Math.max(...monitors.map((monitor) => monitor.x + monitor.w));
-    const maxY = Math.max(...monitors.map((monitor) => monitor.y + monitor.h));
-    const spanX = Math.max(1, maxX - minX);
-    const spanY = Math.max(1, maxY - minY);
-    const globalAsset = this.state?.desktop?.assetId ?? null;
+    return buildScreenMap(this.monitors, this.monitorSelected, (monitor) => {
+      this.monitorSelected = monitor.key;
+      this.renderMonitors();
+      this.refreshApplyTarget();
+      this.flashScreen(monitor.key);
+    }, { globalAssetId: this.state?.desktop?.assetId ?? null });
+  }
 
-    const map = h('div', { class: 'wp-monitor-map', style: `aspect-ratio:${spanX} / ${spanY};` });
-    for (const monitor of monitors) {
-      const cover = monitor.assetId ?? (monitor.follow ? globalAsset : null);
-      const node = h('button', {
-        class: `wp-monitor-node${monitor.key === this.monitorSelected ? ' is-on' : ''}`,
-        type: 'button',
-        title: `${monitor.key} · ${monitor.w}×${monitor.h}${monitor.follow ? ' · 跟随全局' : ''}`,
-        style: `left:${(((monitor.x - minX) / spanX) * 100).toFixed(3)}%;top:${(((monitor.y - minY) / spanY) * 100).toFixed(3)}%;width:${((monitor.w / spanX) * 100).toFixed(3)}%;height:${((monitor.h / spanY) * 100).toFixed(3)}%;`,
-      });
-      if (cover) {
-        const img = h('img', { alt: '' }) as HTMLImageElement;
-        img.src = coverUrl(cover);
-        node.append(img);
-      } else {
-        node.append(h('span', { class: 'wp-monitor-empty', text: '空' }));
-      }
-      node.append(h('span', { class: 'wp-monitor-num', text: String(monitor.index) }));
-      if (monitor.primary) node.append(h('span', { class: 'wp-monitor-star', text: '主' }));
-      if (monitor.follow) node.append(h('span', { class: 'wp-monitor-flag', text: '跟随' }));
-      node.addEventListener('click', () => {
-        this.monitorSelected = monitor.key;
-        this.renderMonitors();
-        this.refreshApplyTarget();
-      });
-      map.append(node);
-    }
-
-    return h(
-      'div',
-      { class: 'wp-monitor-stage-wrap' },
-      map,
-      h('div', { class: 'wp-muted wp-monitor-scale', text: `虚拟桌面 ${spanX}×${spanY} · 点一块屏来设置` }),
-    );
+  /** 让选中的那块真屏扫一道光；只是提示，失败静默。 */
+  private flashScreen(key: string): void {
+    void sweepMonitor(key).catch(() => undefined);
   }
 
   private buildMonitorDetail(monitor: WallpaperMonitor, asset: WallpaperAsset): HTMLElement {

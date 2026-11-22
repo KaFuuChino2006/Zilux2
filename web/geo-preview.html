@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Geo 拼合预览</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #05040a; overflow: hidden; }
+      #stage { position: fixed; inset: 0; }
+    </style>
+  </head>
+  <body>
+    <div id="stage"></div>
+    <script type="module">
+      import { createGeoScene } from '/src/ui/geoScene.ts';
+      import { DEFAULT_GEO_SETTINGS } from '/src/ui/geoSettings.ts';
+
+      const params = new URLSearchParams(location.search);
+      const fixedT = params.has('t') ? Number(params.get('t')) : null;
+
+      const lines = [
+        { timeMs: 4000, text: '把夜色折成半透明', tr: 'fold the night into half light', words: ['把', '夜', '色', '折', '成', '半', '透', '明'] },
+        { timeMs: 7600, text: '让颜色慢慢游过来', tr: 'let the colors drift in', words: ['让', '颜', '色', '慢', '慢', '游', '过', '来'] },
+        { timeMs: 11200, text: '像水里的光没有边', tr: 'like light in water, edgeless', words: ['像', '水', '里', '的', '光', '没', '有', '边'] },
+        { timeMs: 14800, text: '一层一层 落在你眼睛', tr: 'layer by layer, into your eyes', words: ['一', '层', '一', '层', '落', '在', '你', '眼', '睛'] },
+        { timeMs: 18800, text: '不要说停', tr: "don't say stop", words: ['不', '要', '说', '停'] },
+        { timeMs: 21400, text: '凝彩还在流动', tr: 'the prism still flows', words: ['凝', '彩', '还', '在', '流', '动'] },
+      ];
+
+      function toLyric(line) {
+        const chars = Array.from(line.text);
+        const start = line.timeMs;
+        const end = start + 3000;
+        const step = (end - start - 500) / Math.max(1, chars.length);
+        const words = chars.map((ch, i) => ({
+          text: ch,
+          startMs: start + i * step,
+          endMs: start + (i + 1) * step,
+          spaceBefore: false,
+        }));
+        return { timeMs: start, durationMs: 3600, text: line.text, translation: line.tr, words };
+      }
+
+      const song = {
+        trackKey: 'geo-preview',
+        title: '凝彩',
+        artist: 'ZILUX2',
+        album: 'preview',
+        durationMs: 26000,
+        lines: lines.map(toLyric),
+      };
+
+      const stage = document.getElementById('stage');
+      const scene = createGeoScene({
+        style: DEFAULT_GEO_SETTINGS,
+        onPainted: () => {},
+      });
+      stage.appendChild(scene.root);
+      scene.setSong(song);
+      scene.resize();
+
+      window.__scene = scene;
+      window.__song = song;
+
+      const paintAt = (t) => {
+        scene.update(Math.max(0, t - 80), true, 0.55);
+        scene.update(t, true, 0.6);
+      };
+
+      if (fixedT != null) {
+        document.fonts.ready.then(() => {
+          paintAt(fixedT);
+          document.documentElement.dataset.ready = '1';
+        });
+      } else {
+        let start = performance.now();
+        const loop = (now) => {
+          scene.update((now - start) % 26000, true, 0.6);
+          requestAnimationFrame(loop);
+        };
+        requestAnimationFrame(loop);
+      }
+    </script>
+  </body>
+</html>

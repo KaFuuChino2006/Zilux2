@@ -19,10 +19,9 @@
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: rgb(var(--overlay-rgb) / 0.04);
-  transition:
-    border-color 0.2s var(--ease),
-    background 0.2s var(--ease),
-    box-shadow 0.2s var(--ease);
+  transition: border-color var(--motion-quick) var(--ease),
+    background var(--motion-quick) var(--ease),
+    box-shadow var(--motion-quick) var(--ease);
 }
 
 .shortcut-row:hover {
@@ -58,7 +57,7 @@
   color: var(--muted);
   font-size: 11px;
   line-height: 1.45;
-  transition: color 0.2s var(--ease);
+  transition: color var(--motion-quick) var(--ease);
 }
 
 .shortcut-status[data-kind='ok'] {

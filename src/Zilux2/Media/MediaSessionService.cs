@@ -46,6 +46,8 @@ internal sealed class MediaSessionService : IDisposable
     private bool _unavailableLogged;
     private CancellationTokenSource? _coverCts;
     private string? _coverSource;
+    private string? _lastStateSignature;
+    private long _lastStateLoggedTicks;
 
     // 「当前媒体会话」跟随：媒体键接管（MediaKeyHookService）只在 Zilux2 是当前会话时吞键，
     // 这样别的程序（QQ 音乐等）在放歌时媒体键仍然归它们，贴近系统原生行为。
@@ -463,9 +465,19 @@ internal sealed class MediaSessionService : IDisposable
                 RequestCoverLocked(state.CoverUrl);
             }
 
-            HostLog.Info(
-                $"[smtc] state title=\"{ClipForLog(state.Title)}\" playing={state.Playing.ToString().ToLowerInvariant()} " +
-                $"positionMs={(long)Math.Round(state.PositionMs)} durationMs={(long)Math.Round(state.DurationMs)}");
+            // 页面每 ~220 ms 推一次状态，全量打点 30 分钟就是 6000 多行，真正的故障被埋掉。
+            // 只在「歌换了 / 播放态变了」时写一条；位置靠每 10 s 一次的心跳交代。
+            var signature = $"{state.Title}|{state.Playing}|{(long)Math.Round(state.DurationMs)}";
+            var now = Environment.TickCount64;
+            if (!string.Equals(signature, _lastStateSignature, StringComparison.Ordinal) ||
+                now - _lastStateLoggedTicks >= 10_000)
+            {
+                _lastStateSignature = signature;
+                _lastStateLoggedTicks = now;
+                HostLog.Info(
+                    $"[smtc] state title=\"{ClipForLog(state.Title)}\" playing={state.Playing.ToString().ToLowerInvariant()} " +
+                    $"positionMs={(long)Math.Round(state.PositionMs)} durationMs={(long)Math.Round(state.DurationMs)}");
+            }
         }
         catch (Exception exception)
         {

@@ -216,7 +216,7 @@ async function main(): Promise<void> {
   installBackgroundLyricsPublisher();
   restoreLastPlayback();
   host.ready();
-  host.setChromeColor('#f3f1ea');
+  host.setChromeColor('#ffffff');
 
   const splashTitle = settings.general.splashTitle.trim() || 'ZILUX2';
   const splashSubtitle = settings.general.splashSubtitle.trim();

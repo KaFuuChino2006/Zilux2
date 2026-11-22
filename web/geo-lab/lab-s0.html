@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Geo Lab — S0 (pre-rewrite)</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #05040a; overflow: hidden; }
+      #stage { position: fixed; inset: 0; }
+    </style>
+  </head>
+  <body>
+    <div id="stage"></div>
+    <script type="module">
+      // Frame-lab harness. Same lyric data / timeline / paint order as web/geo-preview.html, but
+      // the scene module is a STATIC import (no dynamic import -> Vite does not inject
+      // /@vite/client imports into this script, so blocking the HMR client cannot break the page,
+      // and blocking it stops mid-run reloads while the live tree is being edited).
+      import { createGeoScene } from '/geo-lab/geoScene.S0.ts';
+      import { DEFAULT_GEO_SETTINGS } from '/src/ui/geoSettings.ts';
+
+      const params = new URLSearchParams(location.search);
+      const fixedT = params.has('t') ? Number(params.get('t')) : null;
+      const mod = 's0';
+
+      const lines = [
+        { timeMs: 4000, text: '把夜色折成半透明', tr: 'fold the night into half light' },
+        { timeMs: 7600, text: '让颜色慢慢游过来', tr: 'let the colors drift in' },
+        { timeMs: 11200, text: '像水里的光没有边', tr: 'like light in water, edgeless' },
+        { timeMs: 14800, text: '一层一层 落在你眼睛', tr: 'layer by layer, into your eyes' },
+        { timeMs: 18800, text: '不要说停', tr: "don't say stop" },
+        { timeMs: 21400, text: '凝彩还在流动', tr: 'the prism still flows' },
+      ];
+
+      function toLyric(line) {
+        const chars = Array.from(line.text);
+        const start = line.timeMs;
+        const end = start + 3000;
+        const step = (end - start - 500) / Math.max(1, chars.length);
+        const words = chars.map((ch, i) => ({
+          text: ch,
+          startMs: start + i * step,
+          endMs: start + (i + 1) * step,
+          spaceBefore: false,
+        }));
+        return { timeMs: start, durationMs: 3600, text: line.text, translation: line.tr, words };
+      }
+
+      const song = {
+        trackKey: 'geo-preview',
+        title: '凝彩',
+        artist: 'ZILUX2',
+        album: 'preview',
+        durationMs: 26000,
+        lines: lines.map(toLyric),
+      };
+
+      const stage = document.getElementById('stage');
+      const scene = createGeoScene({ style: DEFAULT_GEO_SETTINGS, onPainted: () => {} });
+      stage.appendChild(scene.root);
+      scene.setSong(song);
+      scene.resize();
+
+      window.__scene = scene;
+      window.__song = song;
+      window.__labMeta = { mod, href: location.href };
+
+      const paintAt = (t) => {
+        scene.update(Math.max(0, t - 80), true, 0.55);
+        scene.update(t, true, 0.6);
+      };
+
+      if (fixedT != null) {
+        // frozen-time mode: no rAF loop, so the probe's own stepping is the only renderer
+        document.fonts.ready.then(() => {
+          paintAt(fixedT);
+          document.documentElement.dataset.ready = '1';
+        });
+      } else {
+        const start = performance.now();
+        const loop = (now) => {
+          scene.update((now - start) % 26000, true, 0.6);
+          requestAnimationFrame(loop);
+        };
+        requestAnimationFrame(loop);
+      }
+    </script>
+  </body>
+</html>

@@ -1,4 +1,4 @@
-using System.Text.Json.Serialization;
+﻿using System.Text.Json.Serialization;
 
 namespace Zilux2.Online;
 
@@ -84,7 +84,7 @@ internal static class MusicSourceCatalog
             Accent = "#ff5a5f",
             LoginMode = "code",
             LoginHint = "在网易云 App 扫码后确认登录",
-            FeedKinds = ["recent", "daily", "radar"],
+            FeedKinds = ["recent", "daily", "radar", "roam", "similar"],
             SupportsWordLyrics = true,
             SupportsLikedWrite = true,
             HasDaily30 = false,
@@ -103,7 +103,7 @@ internal static class MusicSourceCatalog
             Accent = "#31c27c",
             LoginMode = "image",
             LoginHint = "打开手机 QQ 扫一扫，用 QQ 账号登录",
-            FeedKinds = ["recent", "daily"],
+            FeedKinds = ["recent", "daily", "guess", "million", "newsong"],
             SupportsWordLyrics = true,
             SupportsLikedWrite = true,
             HasDaily30 = true,

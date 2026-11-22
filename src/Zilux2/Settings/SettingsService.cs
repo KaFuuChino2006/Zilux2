@@ -3,6 +3,7 @@ using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Zilux2.Storage;
 
 namespace Zilux2.Settings;
 
@@ -489,11 +490,18 @@ internal sealed class SettingsService : IDisposable
                 return;
             }
 
+            // 先拍一张「打补丁前」的快照，补完再拍一张：Read* 助手只要看到键就 keys.Add，
+            // 即使值是非法类型（回落 fallback）也照样算「改过」——那会触发一次无意义的保存
+            // 与 GeneralChanged 广播，前端收到后重拉设置，看起来就是「改完自己弹回去了」。
+            // 用前后快照把「值真的变了」的键留下，非法值/同值补丁自然被过滤掉。
+            var beforeNode = JsonSerializer.SerializeToNode(_state, SettingsJsonContext.Default.SettingsModel)?.AsObject();
             var keys = ApplyKnownValues(patch, _state);
+            var afterNode = JsonSerializer.SerializeToNode(_state, SettingsJsonContext.Default.SettingsModel)?.AsObject();
+            keys = KeepChangedKeys(keys, beforeNode, afterNode);
 
             if (keys.Count == 0)
             {
-                HostLog.Warn("[settings] patch ignored (no known keys)");
+                HostLog.Info("[settings] patch no-op (values unchanged or invalid)");
                 return;
             }
 
@@ -702,16 +710,10 @@ internal sealed class SettingsService : IDisposable
             }
 
             // Contract section 1: temp file + replace so a crash never leaves half-written JSON.
-            var tempPath = _path + ".tmp";
-            File.WriteAllText(tempPath, document.ToJsonString(FileJsonOptions), Utf8NoBom);
-            if (File.Exists(_path))
-            {
-                File.Replace(tempPath, _path, destinationBackupFileName: null);
-            }
-            else
-            {
-                File.Move(tempPath, _path);
-            }
+            // 临时文件名必须唯一（AtomicFile 用 GUID）：固定 ".tmp" 在两个实例（或一个实例 +
+            // 手动导出）同时写时会互踩临时文件，File.Replace 抛「另一个程序正在使用此文件」，
+            // 外层 catch 吞掉后表现为「设置没保存」，且没有日志。
+            AtomicFile.WriteAllText(_path, document.ToJsonString(FileJsonOptions), Utf8NoBom);
 
             _dirty = false;
             _saveFailures = 0;
@@ -768,7 +770,8 @@ internal sealed class SettingsService : IDisposable
             or "mediaSession" or "desktopLyrics" or "desktopLyricsLocked" or "desktopLyricsFontSize" or "desktopLyricsTopmost"
             or "desktopLyricsWeight" or "desktopLyricsBackdropOpacity" or "backgroundLyrics"
             or "desktopLyricsLeft" or "desktopLyricsTop" or "systemOutputRotation"
-            or "desktopLyricsStyle" or "desktopLyricsFanLines" or "desktopLyricsFanWidth",
+            or "desktopLyricsStyle" or "desktopLyricsFanLines" or "desktopLyricsFanWidth"
+            or "uiTemplate",
         "appearance" => name is "theme" or "reduceMotion" or "glow" or "lyricsSize"
             or "windowAnimation" or "playerBarExpanded" or "miniSize" or "miniAlwaysOnTop",
         "playback" => name is "defaultSource" or "searchLimit" or "volume" or "audioReactive" or "quality"
@@ -844,13 +847,24 @@ internal sealed class SettingsService : IDisposable
                 return defaults;
             }
 
-            if (!root.TryGetProperty("version", out var versionElement) ||
-                versionElement.ValueKind != JsonValueKind.Number ||
-                !versionElement.TryGetInt32(out var version) ||
-                version != CurrentVersion)
+            // 版本判定只拒绝「来自未来」的文件：
+            //  · 缺 version / 非数字 → 视为 v1（老版本或手改过），按 v1 读取；
+            //  · version <= CurrentVersion → 正常读取（ApplyKnownValues 会忽略不认识的键并补默认值）；
+            //  · version >  CurrentVersion → 新版本写的文件，本版本读不了语义，备份后回落默认值。
+            // 老实现是「只要 version != 1 就整份重置并改名 .corrupt」——那会在 CurrentVersion
+            // 提到 2 的那天把所有人的设置清空一次。
+            var version = CurrentVersion;
+            if (root.TryGetProperty("version", out var versionElement) &&
+                versionElement.ValueKind == JsonValueKind.Number &&
+                versionElement.TryGetInt32(out var fileVersion))
             {
-                HostLog.Warn($"[settings] load failed path={_path} err=unrecognized version");
-                BackupCorruptFile("unrecognized version");
+                version = fileVersion;
+            }
+
+            if (version > CurrentVersion)
+            {
+                HostLog.Warn($"[settings] load: file version={version} newer than {CurrentVersion}, backing up and using defaults");
+                BackupCorruptFile("version newer than app");
                 return defaults;
             }
 
@@ -866,6 +880,44 @@ internal sealed class SettingsService : IDisposable
     // values also keep the current value (contract sections 1 and 2) - never throws.
     // Used both for loading a full document and for partial patches, so each fallback must be
     // the current state value instead of a hard-coded default.
+    /// <summary>只保留「补丁前后取值真的不同」的键（按点分路径解析）。</summary>
+    private static List<string> KeepChangedKeys(List<string> keys, JsonObject? before, JsonObject? after)
+    {
+        if (before is null || after is null)
+        {
+            return keys;
+        }
+
+        var changed = new List<string>(keys.Count);
+        foreach (var key in keys)
+        {
+            var oldValue = ResolveKey(before, key);
+            var newValue = ResolveKey(after, key);
+            if (oldValue is not null && newValue is not null && JsonNode.DeepEquals(oldValue, newValue))
+            {
+                continue;
+            }
+
+            changed.Add(key);
+        }
+
+        return changed;
+    }
+
+    private static JsonNode? ResolveKey(JsonObject root, string key)
+    {
+        JsonNode? node = root;
+        foreach (var part in key.Split('.'))
+        {
+            if (node is not JsonObject current || !current.TryGetPropertyValue(part, out node))
+            {
+                return null;
+            }
+        }
+
+        return node;
+    }
+
     private static List<string> ApplyKnownValues(JsonElement document, SettingsModel state)
     {
         var keys = new List<string>();
@@ -918,6 +970,9 @@ internal sealed class SettingsService : IDisposable
             state.General.DesktopLyricsFanWidth = ReadIntInRange(
                 general, "desktopLyricsFanWidth", 180, 360,
                 state.General.DesktopLyricsFanWidth, "general.desktopLyricsFanWidth", keys);
+            state.General.UiTemplate = ReadEnum(
+                general, "uiTemplate", GeneralSettings.UiTemplates,
+                state.General.UiTemplate, "general.uiTemplate", keys);
         }
 
         if (TryGetObject(document, "appearance", out var appearance))
@@ -1502,7 +1557,18 @@ internal sealed class SettingsService : IDisposable
 
         try
         {
-            return Path.GetFullPath(text);
+            var full = Path.GetFullPath(text);
+
+            // 只判「是不是绝对路径」不够：填 `Z:\Music`（没有 Z: 盘）也能存进设置，
+            // 直到真去下载才抛英文 IOException（目录不存在）。这里顺手确认根存在。
+            var root = Path.GetPathRoot(full);
+            if (string.IsNullOrEmpty(root) || !Directory.Exists(root))
+            {
+                HostLog.Warn($"[settings] invalid key={key} reason=root-missing fallback={fallback} value={text}");
+                return fallback;
+            }
+
+            return full;
         }
         catch (Exception)
         {
@@ -1814,6 +1880,7 @@ internal sealed class SettingsService : IDisposable
     {
         try
         {
+            // 只清理旧版本留下的固定名临时文件（AtomicFile 自己的 GUID 临时文件失败时会自清）。
             var tempPath = _path + ".tmp";
             if (File.Exists(tempPath))
             {

@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text.Json;
+using Zilux2.Storage;
 
 namespace Zilux2.Online.Library;
 
@@ -79,20 +80,11 @@ internal sealed class RecentPlayStore
 
     private void SaveLocked()
     {
-        var temp = _path + ".tmp";
         try
         {
             // D-12：落盘前剥掉封面代理 URL 里的回环 token，避免更新通道之外的临时凭据长期留在磁盘上。
             var serializable = _tracks.Select(StripCoverToken).ToList();
-            File.WriteAllText(temp, JsonSerializer.Serialize(serializable));
-            if (File.Exists(_path))
-            {
-                File.Replace(temp, _path, null);
-            }
-            else
-            {
-                File.Move(temp, _path);
-            }
+            AtomicFile.WriteAllText(_path, JsonSerializer.Serialize(serializable));
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -100,17 +92,24 @@ internal sealed class RecentPlayStore
         }
         finally
         {
-            try
+            // AtomicFile 失败时会自己清理 GUID 临时文件；只留旧版本可能残留的固定名文件。
+            TryDeleteLegacyTemp();
+        }
+    }
+
+    private void TryDeleteLegacyTemp()
+    {
+        try
+        {
+            var legacy = _path + ".tmp";
+            if (File.Exists(legacy))
             {
-                if (File.Exists(temp))
-                {
-                    File.Delete(temp);
-                }
+                File.Delete(legacy);
             }
-            catch
-            {
-                // 残留 .tmp 不影响下次启动；下次成功写入会覆盖。
-            }
+        }
+        catch
+        {
+            // 残留 .tmp 不影响下次启动；下次成功写入会覆盖。
         }
     }
 

@@ -399,7 +399,9 @@ internal sealed class QqLibraryProvider
         return tracks.Select(track => byId.TryGetValue(track.Id, out var enriched) ? enriched : track).ToList();
     }
 
-    // 发现面板：每日推荐 = musicu Dissinfo(dirid=202)；QQ 没有开放的最近播放接口。
+    // 发现面板：每日推荐 = Dissinfo(dirid=202)；猜你喜欢 = radioProxy.get_radio_track(id=99)；
+    // 百万收藏 / 新歌推荐 = 官方按账号生成的算法歌单（uniform_get_Dissinfo + disstid，必须带登录凭据）。
+    // QQ 没有开放的最近播放接口。
     internal async Task<List<OnlineTrack>> GetFeedAsync(string kind, int limit, CancellationToken cancellationToken)
     {
         if (_accounts?.IsLoggedIn(Name) != true)
@@ -407,12 +409,58 @@ internal sealed class QqLibraryProvider
             throw new OnlineUpstreamException("该音源尚未登录，请先登录", 401);
         }
 
-        if (!string.Equals(kind, "daily", StringComparison.Ordinal))
-        {
-            throw new OnlineUpstreamException("QQ 音乐不支持最近播放（平台未开放接口），可以先看每日推荐", 501);
-        }
-
         limit = Math.Clamp(limit, 1, 200);
+        switch (kind)
+        {
+            case "daily":
+                return await ReadSongListAsync(
+                    new JsonObject
+                    {
+                        ["dirid"] = 202,
+                        ["optype"] = 3,
+                        ["tag"] = 1,
+                        ["userinfo"] = 0,
+                        ["pic_dpi"] = 300,
+                    },
+                    "daily",
+                    limit,
+                    cancellationToken).ConfigureAwait(false);
+            case "million":
+                return await ReadSongListAsync(OfficialSongListParam(211111), "million", limit, cancellationToken)
+                    .ConfigureAwait(false);
+            case "newsong":
+                return await ReadSongListAsync(OfficialSongListParam(211207), "newsong", limit, cancellationToken)
+                    .ConfigureAwait(false);
+            case "guess":
+                return await ReadGuessAsync(limit, cancellationToken).ConfigureAwait(false);
+            default:
+                throw new OnlineUpstreamException("QQ 音乐不支持最近播放（平台未开放接口），可以先看每日推荐", 501);
+        }
+    }
+
+    /// <summary>
+    /// 官方算法歌单的参数：百万收藏 211111、新歌推荐 211207（2026-10 实测的稳定 disstid）。
+    /// 匿名 CGI 对它们只回 code=10，必须带登录凭据走 uniform_get_Dissinfo；
+    /// 算法歌单忽略 song_num，每次回整张 50 首，所以读一页就够。
+    /// </summary>
+    private static JsonObject OfficialSongListParam(int disstid) => new()
+    {
+        ["disstid"] = disstid,
+        ["userinfo"] = 1,
+        ["tag"] = 1,
+        ["orderlist"] = 1,
+        ["song_begin"] = 0,
+        ["song_num"] = 50,
+        ["onlysonglist"] = 0,
+        ["enc_host_uin"] = string.Empty,
+    };
+
+    private async Task<List<OnlineTrack>> ReadSongListAsync(
+        JsonObject param,
+        string kind,
+        int limit,
+        CancellationToken cancellationToken)
+    {
         var uin = _accounts?.GetUserId(Name) ?? "0";
         var body = new JsonObject
         {
@@ -421,26 +469,79 @@ internal sealed class QqLibraryProvider
             {
                 ["module"] = "music.srfDissInfo.aiDissInfo",
                 ["method"] = "uniform_get_Dissinfo",
-                ["param"] = new JsonObject
-                {
-                    ["dirid"] = 202,
-                    ["optype"] = 3,
-                    ["tag"] = 1,
-                    ["userinfo"] = 0,
-                    ["pic_dpi"] = 300,
-                },
+                ["param"] = param,
             },
         };
 
-        var root = await PostMusicuAsync(body, "qq/library feed daily", cancellationToken).ConfigureAwait(false);
+        var root = await PostMusicuAsync(body, $"qq/library feed {kind}", cancellationToken).ConfigureAwait(false);
         var data = ReadRequestData(root);
+        return CollectSongs(data, "songlist", kind, limit);
+    }
+
+    /// <summary>
+    /// 猜你喜欢（私人 FM 的推荐台）：radioProxy 的 get_radio_track，id=99 就是这个台；
+    /// 上游一批最多 5 首（num 传大也只取上限），所以多取几批凑够一屏，靠 id 去重。
+    /// </summary>
+    private async Task<List<OnlineTrack>> ReadGuessAsync(int limit, CancellationToken cancellationToken)
+    {
+        var uin = _accounts?.GetUserId(Name) ?? "0";
+        var tracks = new List<OnlineTrack>();
+        const int batches = 4;
+        for (var round = 0; round < batches && tracks.Count < limit; round++)
+        {
+            var body = new JsonObject
+            {
+                ["comm"] = BuildComm(uin),
+                ["req_1"] = new JsonObject
+                {
+                    ["module"] = "music.radioProxy.MbTrackRadioSvr",
+                    ["method"] = "get_radio_track",
+                    ["param"] = new JsonObject
+                    {
+                        ["id"] = 99,
+                        ["firstplay"] = 1,
+                        ["num"] = Math.Clamp(limit - tracks.Count, 1, 15),
+                    },
+                },
+            };
+
+            var root = await PostMusicuAsync(body, "qq/library feed guess", cancellationToken).ConfigureAwait(false);
+            var data = ReadRequestData(root);
+            var batch = CollectSongs(data, "tracks", "guess", limit);
+            var before = tracks.Count;
+            foreach (var track in batch)
+            {
+                if (tracks.Count >= limit)
+                {
+                    break;
+                }
+
+                if (!tracks.Exists(existing => existing.Id == track.Id))
+                {
+                    tracks.Add(track);
+                }
+            }
+
+            // 这一批没带来任何新歌（推荐台见底）就停，别空转请求。
+            if (tracks.Count == before)
+            {
+                break;
+            }
+        }
+
+        HostLog.Info($"[library] qq feed kind=guess count={tracks.Count}");
+        return tracks;
+    }
+
+    private List<OnlineTrack> CollectSongs(JsonElement? data, string arrayName, string kind, int limit)
+    {
         var tracks = new List<OnlineTrack>();
         if (data is { } feedData
             && feedData.ValueKind == JsonValueKind.Object
-            && feedData.TryGetProperty("songlist", out var songlist)
-            && songlist.ValueKind == JsonValueKind.Array)
+            && feedData.TryGetProperty(arrayName, out var list)
+            && list.ValueKind == JsonValueKind.Array)
         {
-            foreach (var song in songlist.EnumerateArray())
+            foreach (var song in list.EnumerateArray())
             {
                 if (tracks.Count >= limit)
                 {
@@ -455,7 +556,7 @@ internal sealed class QqLibraryProvider
             }
         }
 
-        HostLog.Info($"[library] qq feed kind=daily count={tracks.Count}");
+        HostLog.Info($"[library] qq feed kind={kind} count={tracks.Count}");
         return tracks;
     }
 

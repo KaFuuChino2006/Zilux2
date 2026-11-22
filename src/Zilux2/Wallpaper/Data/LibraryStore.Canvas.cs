@@ -68,6 +68,47 @@ internal sealed partial class LibraryStore
         });
     }
 
+    /* ---------------------------------------------------------------- 素材自己的画面参数 */
+
+    /// <summary>取某张素材记住的画面参数 JSON（没有就返回 null）。</summary>
+    public string? GetAssetCanvasSettings(long assetId)
+    {
+        return _db.Read(connection =>
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT json FROM asset_canvas_settings WHERE asset_id=$id LIMIT 1;";
+            command.Parameters.AddWithValue("$id", assetId);
+            var value = command.ExecuteScalar();
+            return value is null or DBNull ? null : (string)value;
+        });
+    }
+
+    /// <summary>记住某张素材的画面参数；json 为空表示清掉（回到素材自身 Transform）。</summary>
+    public void SaveAssetCanvasSettings(long assetId, string? json)
+    {
+        _db.Write(connection =>
+        {
+            using var command = connection.CreateCommand();
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                command.CommandText = "DELETE FROM asset_canvas_settings WHERE asset_id=$id;";
+                command.Parameters.AddWithValue("$id", assetId);
+                command.ExecuteNonQuery();
+                return;
+            }
+
+            command.CommandText = """
+                INSERT INTO asset_canvas_settings(asset_id, json, updated_at)
+                VALUES($id, $json, $updated)
+                ON CONFLICT(asset_id) DO UPDATE SET json=excluded.json, updated_at=excluded.updated_at;
+                """;
+            command.Parameters.AddWithValue("$id", assetId);
+            command.Parameters.AddWithValue("$json", json);
+            command.Parameters.AddWithValue("$updated", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            command.ExecuteNonQuery();
+        });
+    }
+
     /* ---------------------------------------------------------------- 序列 */
 
     public List<WallpaperSequence> ListSequences()

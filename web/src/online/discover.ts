@@ -13,7 +13,7 @@
  *   - 封面统一走 discoverCover() 补 token / 相对路径。
  */
 
-import { OnlineError, onlineInfo } from './client';
+import { OnlineError, isMockOnline, mockDiscoverApi, onlineInfo } from './client';
 import type { OnlineTrack } from './types';
 
 /* ------------------------------------------------------------------ */
@@ -183,6 +183,12 @@ async function request(
   for (const [key, value] of Object.entries(params)) {
     if (value === undefined || value === '') continue;
     query.set(key, String(value));
+  }
+  // 演示模式（?mock=1）没有宿主回环端口：题材/歌单这两条走本地假数据，
+  // 否则首页「风格分类」在本地验收时只会显示「推荐暂时无法加载」，看不到下拉本身。
+  if (isMockOnline()) {
+    const mocked = mockDiscoverApi(path, Object.fromEntries(query));
+    if (mocked) return mocked;
   }
   query.set('token', info.token);
   const url = `http://127.0.0.1:${info.port}${path}?${query.toString()}`;

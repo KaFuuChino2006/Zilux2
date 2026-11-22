@@ -89,18 +89,30 @@ internal sealed class AudioFeatureService : IDisposable
 
         _disposed = true;
         _stopRequested = true;
+        var joined = true;
         try
         {
-            _thread?.Join(2000);
+            joined = _thread?.Join(2000) ?? true;
         }
         catch (Exception exception)
         {
+            joined = false;
             HostLog.Error("[audio] thread join failed", exception);
         }
 
-        _thread = null;
-        StopCapture("service disposed");
-        _sink = null;
+        // 线程没退出（采集端卡在 Read）时**不能**在这里 Stop/Dispose capture：
+        // 采集线程会继续用已释放的对象，变成一串 ObjectDisposedException；
+        // 交给它自己按 `_stopRequested` 收尾，`_sink` 也必须留到那时。
+        if (joined)
+        {
+            _thread = null;
+            StopCapture("service disposed");
+            _sink = null;
+        }
+        else
+        {
+            HostLog.Warn("[audio] capture thread still running at dispose; leaving capture to the thread");
+        }
         HostLog.Info($"[audio] disposed frames={_frameCount}");
     }
 

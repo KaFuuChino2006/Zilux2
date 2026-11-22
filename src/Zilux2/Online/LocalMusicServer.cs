@@ -30,14 +30,36 @@ internal sealed partial class LocalMusicServer : IDisposable
 {
     private static readonly TimeSpan SearchTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan LyricTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// AMLL TTML DB 只是逐字兜底（GitHub 裸文件，偶发很慢）。它必须有自己的小预算：
+    /// 原来和平台请求共用一个 10 s CTS，AMLL 挂住会把**已经拿到的平台 LRC 一起丢掉**，
+    /// 结果是「平台明明有词，这首歌却永远没歌词」。超预算就当没兜底，返回平台那份。
+    /// </summary>
+    private static readonly TimeSpan AmllTimeout = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan ResolveTimeout = TimeSpan.FromSeconds(8);
     private static readonly TimeSpan StreamConnectTimeout = TimeSpan.FromSeconds(15);
+
+    /// <summary>
+    /// 单次读取的停滞上限。上游把连接挂着不给字节时，<c>ReadAsync</c> 会永远不返回，
+    /// 这一条 HTTP 处理线程就永久占着（连 `_shutdown` 都没法把它叫醒），表现为
+    /// 「这首歌卡住之后整个流的队列都僵了」。20 s 是「比最慢的正常分片还宽松、
+    /// 又能在一首歌的长度内自愈」的折中；写完就 Dispose 上游，底层的读也随之作废。
+    /// </summary>
+    private static readonly TimeSpan StreamStallTimeout = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan CoverTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan AccountQrTimeout = TimeSpan.FromSeconds(15);
     // 登录状态检测（第四十六轮）：一次 verify 最多问两个平台各一个接口，留足上游抖动余量。
     private static readonly TimeSpan AccountVerifyTimeout = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan CoverCacheLifetime = TimeSpan.FromHours(1);
     private const int CoverCacheLimit = 200;
+
+    // 封面按字节预算淘汰，不是只按条数：单张原图实测 5.2 MB、2.8 MB，
+    // 200 条 × 5 MB = 1 GB 常驻内存（老实现只有条数上限，长会话必涨）。
+    private const long CoverCacheBudgetBytes = 64L * 1024 * 1024;
+
+    // 超过这个尺寸的封面不进缓存（照样发给页面，只是不留在内存里）。
+    private const long CoverCacheMaxEntryBytes = 8L * 1024 * 1024;
     private const int StreamBufferSize = 32 * 1024;
     private const int MaxAccountImportBodyBytes = 16 * 1024;
 
@@ -129,8 +151,9 @@ internal sealed partial class LocalMusicServer : IDisposable
             _listener = listener;
             _acceptLoop = Task.Run(() => AcceptLoopAsync(listener));
             OnlineHttp.Info($"listening on 127.0.0.1:{port} sources={string.Join(",", _sources)}");
-            // 调试期把 token 写一行日志，省去每次从页面 performance 里猜（旧页面会带上一实例的 token）。
-            OnlineHttp.Info($"online token={_token}");
+            // 只记指纹：token 是 /api/ 的全部权限，写进明文日志等于把它交给了任何能读日志的进程。
+            // 排查时需要的是「这一次和页面上那一串是不是同一个」，前 8 位足够。
+            OnlineHttp.Info($"online token fp={_token[..Math.Min(8, _token.Length)]}… len={_token.Length}");
             return port;
         }
 
@@ -353,10 +376,15 @@ internal sealed partial class LocalMusicServer : IDisposable
             // 页面关闭/切换时客户端会先断开；此时响应可能已提交，再写 500 只会产生
             // "response has been submitted" 噪音（WebView2 刷新时每个封面请求都会触发）。
             var message = $"request aborted {method} {path}: {exception.GetType().Name}";
-            if (path.StartsWith("/api/wallpaper/v2/media/", StringComparison.OrdinalIgnoreCase))
+            // 客户端主动断开不是服务端故障：
+            //  · `/api/wallpaper/v2/media/*` —— 视频流缓冲够了就断，loop 再发 range，每轮一条；
+            //  · `/api/cover*` —— 列表滚动/页面刷新时旧请求被丢弃，一次刷新能来好几条；
+            //  · `HttpListenerException` —— 写响应时对端已关闭，多半就是页面走了。
+            var clientGone = exception is HttpListenerException
+                || path.StartsWith("/api/wallpaper/v2/media/", StringComparison.OrdinalIgnoreCase)
+                || path.StartsWith("/api/cover", StringComparison.OrdinalIgnoreCase);
+            if (clientGone)
             {
-                // 视频流被浏览器主动断开是常态（缓冲够了就断，loop 再重新 range 请求），
-                // 每个循环周期都会来一条，按 WARN 记会把日志刷满、掩盖真正的故障。
                 OnlineHttp.Info(message);
             }
             else
@@ -1811,29 +1839,31 @@ internal sealed partial class LocalMusicServer : IDisposable
             return WriteError(context, 400, "bad-request", "id 参数非法");
         }
 
+        // amll=1 强制只取 AMLL 的逐字轨，供歌词来源切换使用。解析要放在取缓存之前：
+        // 两种模式的返回内容不同（是否合并 AMLL 逐字轨），不能共用同一个缓存键。
+        var forceAmll = string.Equals(query["amll"], "1", StringComparison.Ordinal);
+        var cacheKey = $"{provider.Name}|{id}|{(forceAmll ? "amll" : "auto")}";
+
         try
         {
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token);
-            timeout.CancelAfter(LyricTimeout);
-            var lyric = await provider.GetLyricAsync(id, timeout.Token).ConfigureAwait(false);
-            // 平台没有逐字轨时，用 AMLL TTML DB 的 .yrc 兜底（同格式，前端可直接解析）。
-            // amll=1 强制只取 AMLL 的逐字轨，供歌词来源切换使用。
-            var forceAmll = string.Equals(context.Request.QueryString["amll"], "1", StringComparison.Ordinal);
-            if (forceAmll ||
-                (string.IsNullOrWhiteSpace(lyric.Yrc) &&
-                 string.IsNullOrWhiteSpace(lyric.QrcText) &&
-                 string.IsNullOrWhiteSpace(lyric.Qrc)))
+            // 单飞 + 30 分钟缓存：两个歌词窗口同时请求同一首只打一次上游；
+            // 重复播放同一首也不再吃 1–5 s 的网络延迟。
+            if (LyricCache.IsMissing(cacheKey))
             {
-                var amllYrc = await AmllLyrics.FetchYrcAsync(provider.Name, id, timeout.Token).ConfigureAwait(false);
-                if (!string.IsNullOrWhiteSpace(amllYrc))
-                {
-                    lyric = new LyricData { Lrc = lyric.Lrc, Translation = lyric.Translation, Yrc = amllYrc };
-                }
-                else if (forceAmll)
-                {
-                    return WriteError(context, 404, "lyric-missing", "AMLL TTML DB 里没有这首歌的逐字歌词");
-                }
+                OnlineHttp.Info($"api lyric negative-hit source={provider.Name} id={id}");
+                return WriteError(context, 404, "lyric-missing", "这首歌没有逐字歌词");
             }
+
+            var (task, cached) = LyricCache.GetOrAdd(cacheKey, () => ResolveLyricAsync(provider, id, forceAmll));
+            if (cached)
+            {
+                OnlineHttp.Info($"api lyric cache hit source={provider.Name} entries={LyricCache.Count}");
+            }
+
+            var lyric = await task
+                .WaitAsync(LyricTimeout + TimeSpan.FromSeconds(5), _shutdown.Token)
+                .ConfigureAwait(false);
+
             var response = new LyricResponse
             {
                 Source = provider.Name,
@@ -1851,10 +1881,79 @@ internal sealed partial class LocalMusicServer : IDisposable
             WriteJson(context, 200, JsonSerializer.Serialize(response, OnlineJsonContext.Default.LyricResponse));
             return 200;
         }
+        catch (LyricUnavailableException)
+        {
+            // 「这首歌在 AMLL 库里确实没有」是确定结论：写负缓存（10 min），
+            // 否则每次切到这首都要重新打一遍 GitHub。
+            LyricCache.MarkMissing(cacheKey);
+            return WriteError(context, 404, "lyric-missing", "AMLL TTML DB 里没有这首歌的逐字歌词");
+        }
+        catch (OperationCanceledException) when (!_shutdown.IsCancellationRequested)
+        {
+            // 上游超时：不能把「超时」缓存成「没歌词」，下次点开要能重试。
+            LyricCache.Forget(cacheKey);
+            OnlineHttp.Warn($"api lyric timeout source={provider.Name} id={id}");
+            return WriteError(context, 504, "upstream-timeout", "歌词获取超时，请稍后重试");
+        }
         catch (Exception exception) when (exception is not OperationCanceledException || !_shutdown.IsCancellationRequested)
         {
+            LyricCache.Forget(cacheKey);
             OnlineHttp.Error($"api lyric failed source={provider.Name} id={id}", exception);
             return WriteError(context, 502, "upstream-failed", "歌词获取失败，请稍后重试");
+        }
+    }
+
+    /// <summary>平台没有逐字轨 → 用 AMLL TTML DB 的 .yrc 兜底（同格式，前端可直接解析）。</summary>
+    private async Task<LyricData> ResolveLyricAsync(IOnlineMusicProvider provider, string id, bool forceAmll)
+    {
+        // 共享任务的生命周期只跟进程（_shutdown）绑定，不跟某一个请求绑定：
+        // 否则第一个请求断开（切歌/关面板）会把第二个等待者一起取消。
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token);
+        timeout.CancelAfter(LyricTimeout);
+
+        var lyric = await provider.GetLyricAsync(id, timeout.Token).ConfigureAwait(false);
+        if (!forceAmll &&
+            (string.IsNullOrWhiteSpace(lyric.Yrc) &&
+             string.IsNullOrWhiteSpace(lyric.QrcText) &&
+             string.IsNullOrWhiteSpace(lyric.Qrc)))
+        {
+            var amllYrc = await TryFetchAmllAsync(provider.Name, id, timeout.Token).ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(amllYrc))
+            {
+                lyric = new LyricData { Lrc = lyric.Lrc, Translation = lyric.Translation, Yrc = amllYrc };
+            }
+
+            return lyric;
+        }
+
+        if (!forceAmll)
+        {
+            return lyric;
+        }
+
+        // 强制 AMLL：平台那份逐字轨不用，只认 AMLL 的结果（这里超时就是真失败，不回退）。
+        var forced = await AmllLyrics.FetchYrcAsync(provider.Name, id, timeout.Token).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(forced))
+        {
+            throw new LyricUnavailableException();
+        }
+
+        return new LyricData { Lrc = lyric.Lrc, Translation = lyric.Translation, Yrc = forced };
+    }
+
+    /// <summary>带着独立小预算去问 AMLL；超时/取消都当「没有逐字兜底」，不抛给调用方。</summary>
+    private static async Task<string> TryFetchAmllAsync(string providerName, string id, CancellationToken outer)
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(outer);
+        budget.CancelAfter(AmllTimeout);
+        try
+        {
+            return await AmllLyrics.FetchYrcAsync(providerName, id, budget.Token).ConfigureAwait(false) ?? string.Empty;
+        }
+        catch (OperationCanceledException) when (!outer.IsCancellationRequested)
+        {
+            OnlineHttp.Info($"api lyric amll timeout source={providerName} id={id} budget={AmllTimeout.TotalSeconds:0.#}s");
+            return string.Empty;
         }
     }
 
@@ -1901,29 +2000,66 @@ internal sealed partial class LocalMusicServer : IDisposable
             long start = 0;
             long end = length - 1;
             var partial = false;
+            var response416 = false;
             var range = context.Request.Headers["Range"];
             if (!string.IsNullOrEmpty(range) && range.StartsWith("bytes=", StringComparison.OrdinalIgnoreCase))
             {
                 var spec = range[6..].Split(',')[0].Trim();
                 var dash = spec.IndexOf('-');
+                var satisfiable = false;
                 if (dash >= 0)
                 {
                     var startText = spec[..dash].Trim();
                     var endText = spec[(dash + 1)..].Trim();
-                    if (startText.Length == 0 && long.TryParse(endText, out var suffix))
+                    if (startText.Length == 0)
                     {
-                        start = Math.Max(0, length - suffix);
+                        // "bytes=-N"：末尾 N 字节。N<=0 或 N>length 都不是可满足的请求，
+                        // 以前会走 suffix=0 → start=length → 越界读，最后 500。
+                        if (long.TryParse(endText, out var suffix) && suffix > 0 && length > 0)
+                        {
+                            start = Math.Max(0, length - suffix);
+                            satisfiable = true;
+                        }
                     }
                     else if (long.TryParse(startText, out var parsedStart))
                     {
-                        start = Math.Clamp(parsedStart, 0, Math.Max(0, length - 1));
-                    }
+                        if (parsedStart < 0 || (length > 0 && parsedStart >= length))
+                        {
+                            // 起点越过文件末尾：必须是 416，否则播放器会当成「读到了空数据」。
+                            response416 = true;
+                        }
+                        else
+                        {
+                            start = parsedStart;
+                            end = length - 1;
+                            if (endText.Length > 0 && long.TryParse(endText, out var parsedEnd))
+                            {
+                                if (parsedEnd < parsedStart)
+                                {
+                                    response416 = true;
+                                }
+                                else
+                                {
+                                    end = Math.Min(parsedEnd, length - 1);
+                                }
+                            }
 
-                    if (endText.Length > 0 && long.TryParse(endText, out var parsedEnd))
-                    {
-                        end = Math.Clamp(parsedEnd, start, Math.Max(0, length - 1));
+                            satisfiable = !response416;
+                        }
                     }
+                }
 
+                if (response416)
+                {
+                    context.Response.StatusCode = 416;
+                    context.Response.Headers["Content-Range"] = $"bytes */{length}";
+                    context.Response.ContentLength64 = 0;
+                    await context.Response.OutputStream.FlushAsync(_shutdown.Token).ConfigureAwait(false);
+                    return 416;
+                }
+
+                if (satisfiable)
+                {
                     partial = true;
                 }
             }
@@ -2142,9 +2278,23 @@ internal sealed partial class LocalMusicServer : IDisposable
                 var output = response.OutputStream;
                 while (true)
                 {
-                    var read = await bodyStream
-                        .ReadAsync(buffer.AsMemory(0, StreamBufferSize), _shutdown.Token)
-                        .ConfigureAwait(false);
+                    int read;
+                    try
+                    {
+                        // ValueTask<int> 上没有 WaitAsync 扩展，先 AsTask 再挂超时。
+                        read = await bodyStream
+                            .ReadAsync(buffer.AsMemory(0, StreamBufferSize), _shutdown.Token)
+                            .AsTask()
+                            .WaitAsync(StreamStallTimeout, _shutdown.Token)
+                            .ConfigureAwait(false);
+                    }
+                    catch (TimeoutException)
+                    {
+                        OnlineHttp.Warn(
+                            $"stream stalled source={source} id={id} after {bytesCopied}B " +
+                            $"（上游 {StreamStallTimeout.TotalSeconds:0}s 无字节，主动断开让播放器重试）");
+                        return upstreamStatus;
+                    }
                     if (read <= 0)
                     {
                         break;
@@ -2163,8 +2313,11 @@ internal sealed partial class LocalMusicServer : IDisposable
             }
             catch (Exception exception) when (exception is IOException or HttpListenerException or ObjectDisposedException or OperationCanceledException)
             {
-                // The page aborted the audio element: normal during seek/close, not an error.
-                OnlineHttp.Warn($"stream aborted source={source} id={id} after {bytesCopied}B: {exception.GetType().Name}");
+                // 播放器主动断开（拖动进度条、切歌、分析器取够样本就停）都是正常行为；
+                // 只有"一个字节都没写出去"才可能是上游真出问题，那种才值得 Warn。
+                var message = $"stream aborted source={source} id={id} after {bytesCopied}B: {exception.GetType().Name}";
+                if (bytesCopied > 0) OnlineHttp.Info(message);
+                else OnlineHttp.Warn(message);
                 return upstreamStatus;
             }
             finally
@@ -2404,9 +2557,27 @@ internal sealed partial class LocalMusicServer : IDisposable
             }
         }
 
+        // 相似歌曲要基准歌：优先用前台传的 songId，没有就拿本机最近播放的前几首（上游一次只回 5 首，
+        // 多给几个种子才能凑满一页；逗号分隔，宿主侧会逐个取再去重）。
+        string? seedId = null;
+        if (string.Equals(kind, "similar", StringComparison.OrdinalIgnoreCase))
+        {
+            seedId = (query["songId"] ?? string.Empty).Trim();
+            if (seedId.Length == 0)
+            {
+                var seeds = _recent
+                    .List(source, 3)
+                    .Select(item => item.Id)
+                    .Where(id => !string.IsNullOrWhiteSpace(id))
+                    .Distinct(StringComparer.Ordinal)
+                    .ToArray();
+                seedId = seeds.Length > 0 ? string.Join(',', seeds) : null;
+            }
+        }
+
         try
         {
-            var feed = await library.GetFeedAsync(source, kind, limit, token).ConfigureAwait(false);
+            var feed = await library.GetFeedAsync(source, kind, limit, token, seedId).ConfigureAwait(false);
             var tracks = feed.Tracks
                 .Select(track => track with { Cover = BuildCoverUrl(track.Source, track.CoverKey) })
                 .ToList();
@@ -2464,8 +2635,9 @@ internal sealed partial class LocalMusicServer : IDisposable
                 }
                 catch (Exception exception)
                 {
-                    // QQ 没有开放最近播放接口，缺一个平台不影响整体
-                    OnlineHttp.Warn($"recent merged skipped source={source}: {OnlineHttp.Describe(exception)}");
+                    // QQ 没有开放「最近播放」接口，这是平台能力缺口，每次启动都会命中一条。
+                    // 写成 WARN 只会让人以为哪里坏了——真故障在 /api/recent 的 status 里能看出来。
+                    OnlineHttp.Info($"recent merged skipped source={source}: {OnlineHttp.Describe(exception)}");
                 }
             }
         }
@@ -2778,6 +2950,7 @@ internal sealed partial class LocalMusicServer : IDisposable
 
         if (_coverCache.TryGetValue(cacheKey, out var cached) && cached.ExpiresAt > DateTimeOffset.UtcNow)
         {
+            cached.LastAccessUtc = DateTimeOffset.UtcNow;
             WriteBinary(context, 200, cached.Bytes, cached.ContentType);
             OnlineHttp.Info($"GET cover source={source} cache-hit {cached.Bytes.Length}B");
             return 200;
@@ -2803,7 +2976,8 @@ internal sealed partial class LocalMusicServer : IDisposable
             catch (Exception writeException) when (writeException is IOException or HttpListenerException or ObjectDisposedException or InvalidOperationException)
             {
                 // 封面已取到并缓存，但页面在响应写一半时断开：不升级为 500，也不影响缓存。
-                OnlineHttp.Warn($"GET cover client gone source={source}: {writeException.GetType().Name}");
+                // 页面切歌/关窗时主动断开是常态，不该进 WARN（每首歌都会刷一条）。
+                OnlineHttp.Info($"GET cover client gone source={source}: {writeException.GetType().Name}");
                 return 200;
             }
             OnlineHttp.Info($"GET cover source={source} ok {bytes.Length}B {upstream.TookMs}ms{(thumbnailWidth > 0 ? $" w={thumbnailWidth}" : string.Empty)}");
@@ -2813,7 +2987,14 @@ internal sealed partial class LocalMusicServer : IDisposable
         {
             return WriteError(context, 404, "not-found", "封面不存在");
         }
-        catch (Exception exception) when (exception is not OperationCanceledException || !_shutdown.IsCancellationRequested)
+        catch (OperationCanceledException) when (!_shutdown.IsCancellationRequested)
+        {
+            // 上游封面 CDN 偶发挂住：`CoverTimeout` 到点取消，页面拿 fallback 图即可。
+            // 这类超时每分钟可能几十条，记 INFO；真正的协议/解析错误才进 ERROR。
+            OnlineHttp.Info($"GET cover source={source} timeout {CoverTimeout.TotalSeconds:0.#}s");
+            return WriteError(context, 502, "upstream-failed", "封面获取超时，请稍后重试");
+        }
+        catch (Exception exception)
         {
             OnlineHttp.Error($"GET cover source={source} failed", exception);
             return WriteError(context, 502, "upstream-failed", "封面获取失败，请稍后重试");
@@ -3560,12 +3741,35 @@ internal sealed partial class LocalMusicServer : IDisposable
 
     private void StoreCover(string cacheKey, byte[] bytes, string contentType)
     {
-        if (_coverCache.Count >= CoverCacheLimit)
+        if (bytes.LongLength > CoverCacheMaxEntryBytes)
+        {
+            // 大图不缓存：留着它会把预算吃光，逼走一堆小图，反而更容易反复回源。
+            return;
+        }
+
+        if (_coverCache.Count >= CoverCacheLimit || CoverCacheBytes() + bytes.LongLength > CoverCacheBudgetBytes)
         {
             PruneCoverCache();
         }
 
+        if (_coverCache.Count >= CoverCacheLimit || CoverCacheBytes() + bytes.LongLength > CoverCacheBudgetBytes)
+        {
+            // 淘汰到预算内仍放不下（单图接近预算 / 全部条目刚被 touch），放弃缓存这次。
+            return;
+        }
+
         _coverCache[cacheKey] = new CoverCacheEntry(bytes, contentType, DateTimeOffset.UtcNow + CoverCacheLifetime);
+    }
+
+    private long CoverCacheBytes()
+    {
+        long total = 0;
+        foreach (var pair in _coverCache)
+        {
+            total += pair.Value.Bytes.LongLength;
+        }
+
+        return total;
     }
 
     private void PruneCoverCache()
@@ -3579,9 +3783,23 @@ internal sealed partial class LocalMusicServer : IDisposable
             }
         }
 
+        if (_coverCache.Count < CoverCacheLimit && CoverCacheBytes() <= CoverCacheBudgetBytes)
+        {
+            return;
+        }
+
+        // 按最后访问时间淘汰：老实现按字典枚举序砍，等于随机删，
+        // 正在滚动的列表封面可能刚存就被删掉，下一页又回源。
+        var order = new List<KeyValuePair<string, CoverCacheEntry>>(_coverCache.Count);
         foreach (var pair in _coverCache)
         {
-            if (_coverCache.Count < CoverCacheLimit)
+            order.Add(pair);
+        }
+
+        order.Sort((left, right) => left.Value.LastAccessUtc.CompareTo(right.Value.LastAccessUtc));
+        foreach (var pair in order)
+        {
+            if (_coverCache.Count < CoverCacheLimit && CoverCacheBytes() <= CoverCacheBudgetBytes)
             {
                 break;
             }
@@ -3978,6 +4196,7 @@ internal sealed partial class LocalMusicServer : IDisposable
         }
         else
         {
+            cached.LastAccessUtc = DateTimeOffset.UtcNow;
             bytes = cached.Bytes;
         }
 
@@ -4185,7 +4404,28 @@ internal sealed partial class LocalMusicServer : IDisposable
         return ToHex((r + m, g + m, b + m));
     }
 
-    private sealed record CoverCacheEntry(byte[] Bytes, string ContentType, DateTimeOffset ExpiresAt);
+    /// <summary>
+    /// 封面内存缓存条目。
+    /// 为什么不是 record：命中要更新 <see cref="LastAccessUtc"/>（LRU 依据），record 的 init 属性改不了。
+    /// </summary>
+    private sealed class CoverCacheEntry
+    {
+        public CoverCacheEntry(byte[] bytes, string contentType, DateTimeOffset expiresAt)
+        {
+            Bytes = bytes;
+            ContentType = contentType;
+            ExpiresAt = expiresAt;
+            LastAccessUtc = DateTimeOffset.UtcNow;
+        }
+
+        public byte[] Bytes { get; }
+
+        public string ContentType { get; }
+
+        public DateTimeOffset ExpiresAt { get; }
+
+        public DateTimeOffset LastAccessUtc { get; set; }
+    }
 }
 
 

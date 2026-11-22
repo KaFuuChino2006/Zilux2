@@ -11,7 +11,11 @@ namespace Zilux2.Wallpaper.Data;
 internal sealed class WallpaperDb : IDisposable
 {
     /// <summary>当前 schema 版本。改表就 +1 并在 Migrate 里补迁移。</summary>
-    private const int SchemaVersion = 1;
+    /// <remarks>
+    /// 2：新增 asset_canvas_settings（每张素材自己记住的画面参数）。
+    /// 版本号不涨的话 Migrate 会直接返回，老库永远补不上新表 —— 这条踩过。
+    /// </remarks>
+    private const int SchemaVersion = 2;
 
     private readonly SqliteConnection _connection;
     private readonly object _gate = new();
@@ -193,6 +197,14 @@ internal sealed class WallpaperDb : IDisposable
           updated_at    INTEGER
         );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_canvases_key ON canvases(kind, IFNULL(monitor_id, ''));
+
+        -- 每张素材自己记住的画面参数（镜像/旋转/移动/缩放/模糊）：
+        -- 换到别的屏、下次再用这张壁纸时自动带回来。fps 属于屏，不进这张表。
+        CREATE TABLE IF NOT EXISTS asset_canvas_settings (
+          asset_id   INTEGER PRIMARY KEY,
+          json       TEXT NOT NULL,
+          updated_at INTEGER
+        );
 
         CREATE TABLE IF NOT EXISTS presets (
           id           INTEGER PRIMARY KEY AUTOINCREMENT,

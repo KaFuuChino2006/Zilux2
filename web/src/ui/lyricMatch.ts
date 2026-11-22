@@ -411,7 +411,8 @@ async function runMatch(
   if (track.source === 'local') {
     // 本地歌曲没有平台歌词，可直接用线上平台任意逐字数据（走下面的通用流程）。
   }
-  const cacheKey = `${track.source}:${track.id}`;
+  // 阈值进键：用户调过 `zilux2.lyricMatchMin` 之后，同一个曲目要用新阈值重新判断。
+  const cacheKey = `${track.source}:${track.id}@${minScore}`;
   if (cache.has(cacheKey)) return cache.get(cacheKey) ?? null;
   // 同曲目 AMLL TTML DB：当前没有逐字轨时，优先用同平台 ID 的 AMLL 版本。
   if (track.source === 'netease' || track.source === 'qq') {
@@ -456,6 +457,9 @@ async function runMatch(
 
   let best: LyricMatchResult | null = null;
   let bestTranslation: { lines: TimedLine[]; label: string; meta: number } | null = null;
+  // 搜索接口整体失败（超时/限流）与「确实没有这首歌」必须区分：前者不能缓存成 null，
+  // 否则一次网络抖动会让这首曲目在**整个会话**里都认为「找不到歌词」。
+  let searchFailed = false;
 
   for (const source of targets) {
     let results: OnlineTrack[] = [];
@@ -463,6 +467,7 @@ async function runMatch(
       try {
         results = (await searchOnline(source, query, 8)).tracks;
       } catch {
+        searchFailed = true;
         results = [];
       }
       if (results.length > 0) break;
@@ -528,6 +533,7 @@ async function runMatch(
     }
   }
 
+  if (!best && searchFailed) return null;
   cache.set(cacheKey, best);
   return best;
 }

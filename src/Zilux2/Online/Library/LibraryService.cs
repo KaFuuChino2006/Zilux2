@@ -1,4 +1,4 @@
-using Zilux2.Online.Account;
+﻿using Zilux2.Online.Account;
 
 namespace Zilux2.Online.Library;
 
@@ -408,19 +408,39 @@ internal sealed class LibraryService : IDisposable
     }
 
     // 发现面板：最近播放 / 每日推荐 / 私人雷达。数据实时性强，不进歌单缓存。
-    public async Task<LibraryFeed> GetFeedAsync(string source, string kind, int limit, CancellationToken cancellationToken)
+    public async Task<LibraryFeed> GetFeedAsync(
+        string source,
+        string kind,
+        int limit,
+        CancellationToken cancellationToken,
+        string? seedId = null)
     {
         ThrowIfDisposed();
         source = NormalizeSource(source);
         kind = (kind ?? string.Empty).Trim().ToLowerInvariant();
-        if (kind is not ("recent" or "daily" or "radar"))
+        if (kind is not ("recent" or "daily" or "radar" or "guess" or "million" or "newsong" or "roam" or "similar"))
         {
-            throw new OnlineUpstreamException("kind 参数必须是 recent、daily 或 radar", 400);
+            throw new OnlineUpstreamException(
+                "kind 参数必须是 recent、daily、radar、roam、similar、guess、million 或 newsong",
+                400);
         }
 
-        if (kind == "radar" && source != AccountSources.Netease)
+        if (kind is "radar" or "roam" or "similar" && source != AccountSources.Netease)
         {
-            throw new OnlineUpstreamException("私人雷达目前只支持网易云音乐", 400);
+            throw new OnlineUpstreamException("私人雷达 / 私人漫游 / 相似歌曲目前只支持网易云音乐", 400);
+        }
+
+        // 猜你喜欢 / 百万收藏 / 新歌推荐 是 QQ 音乐独有的取数路径（musicu 的私人 FM 与官方算法歌单）。
+        if (kind is "guess" or "million" or "newsong")
+        {
+            if (source != AccountSources.Qq)
+            {
+                throw new OnlineUpstreamException("猜你喜欢 / 百万收藏 / 新歌推荐 目前只支持 QQ 音乐", 400);
+            }
+
+            limit = limit <= 0 ? 60 : Math.Min(limit, 200);
+            var qqTracks = await _qq.GetFeedAsync(kind, limit, cancellationToken).ConfigureAwait(false);
+            return new LibraryFeed(source, kind, qqTracks);
         }
 
         limit = limit <= 0 ? 60 : Math.Min(limit, 200);
@@ -431,7 +451,9 @@ internal sealed class LibraryService : IDisposable
 
         var tracks = source switch
         {
-            AccountSources.Netease => await _netease.GetFeedAsync(kind, limit, cancellationToken).ConfigureAwait(false),
+            AccountSources.Netease => await _netease
+                .GetFeedAsync(kind, limit, seedId, cancellationToken)
+                .ConfigureAwait(false),
             AccountSources.Qq => await _qq.GetFeedAsync(kind, limit, cancellationToken).ConfigureAwait(false),
             AccountSources.Kugou when kind == "recent" => await _kugou.GetRecentAsync(limit, cancellationToken).ConfigureAwait(false),
             AccountSources.Kugou when kind == "daily" => await _kugou.GetDailyAsync(limit, cancellationToken).ConfigureAwait(false),

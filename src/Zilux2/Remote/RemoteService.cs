@@ -686,10 +686,46 @@ internal sealed class RemoteService : IDisposable
             uri.Port == endpoint.Port &&
             (uri.Host == "127.0.0.1" || uri.Host == "localhost"))
         {
-            return $"{BasePrefix}proxy?u={WebUtility.UrlEncode(raw)}";
+            // 遥控端点不校验令牌（见 HandleAsync 的注释），所以这份 JSON 同网段谁都能读。
+            // 一旦把带 `token=` 的宿主 API 地址透出去，读封面就升级成「拿到令牌、直打全部 /api/」。
+            // 令牌由 ProxyAsync 在服务端补上，手机侧只拿到可显示的画面。
+            return $"{BasePrefix}proxy?u={WebUtility.UrlEncode(StripToken(raw))}";
         }
 
         return raw;
+    }
+
+    /// <summary>去掉查询串里的 <c>token=</c>（大小写不敏感），其余参数原样保留。</summary>
+    private static string StripToken(string raw)
+    {
+        var q = raw.IndexOf('?');
+        if (q < 0)
+        {
+            return raw;
+        }
+
+        var head = raw[..q];
+        var kept = raw[(q + 1)..]
+            .Split('&')
+            .Where((part) => part.Length > 0 && !part.StartsWith("token=", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        return kept.Length == 0 ? head : head + "?" + string.Join('&', kept);
+    }
+
+    private static bool HasToken(Uri uri)
+    {
+        var query = uri.Query;
+        return query.Contains("token=", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static Uri WithToken(Uri uri, string token)
+    {
+        var builder = new UriBuilder(uri);
+        var query = builder.Query.TrimStart('?');
+        builder.Query = query.Length == 0
+            ? "token=" + WebUtility.UrlEncode(token)
+            : query + "&token=" + WebUtility.UrlEncode(token);
+        return builder.Uri;
     }
 
     /* ---------------------------------- state -------------------------- */
@@ -1418,7 +1454,9 @@ internal sealed class RemoteService : IDisposable
 
         try
         {
-            using var response = await Http.GetAsync(uri).ConfigureAwait(false);
+            // 客户端带过来的地址里已经没有令牌（ProxyUrl 剥过），这里在服务端补回来。
+            var target = HasToken(uri) ? uri : WithToken(uri, endpoint.Token);
+            using var response = await Http.GetAsync(target).ConfigureAwait(false);
             var bytes = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
             var contentType = response.Content.Headers.ContentType?.MediaType ?? "application/octet-stream";
             if (!response.IsSuccessStatusCode)
@@ -1446,7 +1484,12 @@ internal sealed class RemoteService : IDisposable
         }
 
         // 队列行只有标题/歌手，没有封面 URL；这里只做一次保险性替换。
-        return json.Replace($"http://127.0.0.1:{endpoint.Port}/", $"{BasePrefix}proxy?u=", StringComparison.Ordinal);
+        // 注意要整段替换成代理地址（并剥掉令牌），否则原样拼接会把 `&token=` 一起透出去。
+        return Regex.Replace(
+            json,
+            $@"http://127\.0\.0\.1:{endpoint.Port}/[^\s""'<>]+",
+            (match) => ProxyUrl(match.Value),
+            RegexOptions.IgnoreCase);
     }
 
     private static string Str(JsonElement root, string name) =>

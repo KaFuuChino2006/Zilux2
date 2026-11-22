@@ -379,6 +379,11 @@ export interface WallpaperLayerState {
    * 只有桌面层会带；缺省表示单屏，铺满整个画布。
    */
   screens?: Array<{ l: number; t: number; w: number; h: number }> | null;
+  /**
+   * 全屏挂起：前台有全屏应用时宿主置 true。页面要把整层淡出（露出系统桌面壁纸），
+   * 而不是只暂停 —— 暂停只停画面，仍是一块不透明的底。
+   */
+  suspended?: boolean;
   /** 画面变换（第 86 轮）：镜像 / 旋转 0·90·180·270 / 四边裁剪百分比 0–45。 */
   mirrorH?: boolean;
   mirrorV?: boolean;
@@ -400,6 +405,7 @@ export interface WallpaperLayerState {
 
 const wallpaperStateHandlers = new Set<(visible: boolean) => void>();
 const wallpaperLayerHandlers = new Set<(layer: WallpaperLayerState | null) => void>();
+const monitorSweepHandlers = new Set<() => void>();
 let wallpaperStateBound = false;
 let lastWallpaperVisible = false;
 let lastWallpaperLayer: WallpaperLayerState | null = null;
@@ -441,11 +447,33 @@ function bindWallpaperState(): void {
       visible?: unknown;
       layer?: WallpaperLayerState | null;
     };
+    if (data.type === 'host' && data.event === 'monitorSweep') {
+      monitorSweepHandlers.forEach((listener) => {
+        try {
+          listener();
+        } catch (err) {
+          console.warn('[bridge] monitorSweep handler failed', err);
+        }
+      });
+      return;
+    }
     if (data.type !== 'host' || data.event !== 'wallpaperState') return;
     const visible = typeof data.visible === 'boolean' ? data.visible : false;
     const layer = data.layer && typeof data.layer === 'object' ? data.layer : null;
     applyWallpaperState(visible, layer);
   });
+}
+
+/**
+ * 一次性提示：宿主让「这一块屏」的实际画面从上往下扫一道光
+ * （画布设置里点选屏幕时用来告诉你「就是这一块」）。不参与状态机。
+ */
+export function onMonitorSweep(handler: () => void): () => void {
+  bindWallpaperState();
+  monitorSweepHandlers.add(handler);
+  return () => {
+    monitorSweepHandlers.delete(handler);
+  };
 }
 
 /** 订阅壁纸渲染指令（立即回调一次当前值）。返回取消订阅函数。 */

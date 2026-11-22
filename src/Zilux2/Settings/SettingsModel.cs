@@ -124,6 +124,19 @@ internal sealed class GeneralSettings
     public int DesktopLyricsFanLines { get; set; } = 9;
 
     public int DesktopLyricsFanWidth { get; set; } = 240;
+
+    // 界面模板：standard=现有完整界面（默认）；fx=新界面样板，只保留底部播放条。
+    // 前端负责渲染，宿主只做持久化与白名单校验。追加在最后，旧 settings.json 顺序不变。
+    public const string UiTemplateStandard = "standard";
+    public const string UiTemplateFx = "fx";
+
+    internal static readonly string[] UiTemplates =
+    {
+        UiTemplateStandard,
+        UiTemplateFx,
+    };
+
+    public string UiTemplate { get; set; } = UiTemplateStandard;
 }
 
 internal sealed class AppearanceSettings

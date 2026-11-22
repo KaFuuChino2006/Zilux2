@@ -635,6 +635,92 @@
   opacity: 1;
 }
 
+/* 真屏扫光：和画布设置里那块屏缩略图上的扫光同一套「紫 → 青 → 粉」配色与走向，
+   但整屏上只扫一道、更慢、两头带淡入淡出 —— 屏幕上反复掠过太晃眼。
+   出现 .22s 渐显、结尾 .4s 渐隐，中间那道色带 1.7s 从上滑到下，全程只跑一次。 */
+.wp-screen-sweep-fx {
+  position: fixed;
+  inset: 0;
+  z-index: 2147482000;
+  pointer-events: none;
+  overflow: hidden;
+  opacity: 0;
+}
+
+.wp-screen-sweep-fx-run {
+  animation: wp-screen-sweep-fade 1.7s ease-in-out 1 both;
+}
+
+.wp-screen-sweep-fx-run::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  /* 只剩一道带子（0→100% 的透明收口），不再是三层色带一起走。 */
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(139, 92, 246, .34) 26%,
+    rgba(34, 211, 238, .46) 50%,
+    rgba(244, 114, 182, .34) 74%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  background-size: 100% 180%;
+  background-position: 50% -110%;
+  animation: wp-screen-sweep-move 1.7s cubic-bezier(.4, 0, .6, 1) 1 both;
+}
+
+@keyframes wp-screen-sweep-move {
+  from { background-position: 50% -110%; }
+  to { background-position: 50% 210%; }
+}
+
+/* 容器自己的淡入淡出：前 13% 渐显、后 26% 渐隐，中间保持。 */
+@keyframes wp-screen-sweep-fade {
+  0% { opacity: 0; }
+  13% { opacity: 1; }
+  74% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wp-screen-sweep-fx { display: none; }
+}
+
+/*
+ * 选中的那块屏：让「这块屏的画面」自上而下扫过一次炫彩光，而不是选择器自己描边。
+ * 扫光是个铺满节点的渐变层（screen 混合），靠 background-position 从上往下滚一遍就散场；
+ * 动画只跑一次（both 填充留透明终帧），换屏时节点重建会重新触发。
+ */
+.wp-monitor-sweep {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(139, 92, 246, .55) 20%,
+    rgba(34, 211, 238, .62) 40%,
+    rgba(244, 114, 182, .55) 60%,
+    rgba(255, 255, 255, 0) 80%
+  );
+  background-size: 100% 240%;
+  background-position: 50% -120%;
+  mix-blend-mode: screen;
+  animation: wp-screen-sweep .92s cubic-bezier(.33, 0, .67, 1) both;
+}
+
+@keyframes wp-screen-sweep {
+  from { background-position: 50% -120%; }
+  to { background-position: 50% 220%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wp-monitor-sweep {
+    animation: none;
+    opacity: 0;
+  }
+}
+
 .wp-monitor-num {
   position: absolute;
   left: 4px;
@@ -850,10 +936,18 @@ html.is-wallpaper-layer .app::after {
   z-index: 0;
 }
 
-html.is-wallpaper-layer .topbar,
+/* 注意：顶栏和内容层不能同为 1。
+   两者都是 1 时，DOM 里排在后面的 .main 画在上面，内容一滚上来就把顶栏（搜索框）
+   整片盖住 —— 表现就是「搜索框点不到、也不在最前面」（开着动态壁纸时必现）。
+   .main 留在 1（压在壁纸的压暗层之上），.topbar 保持全局的 30，永远高于内容。 */
 html.is-wallpaper-layer .main {
   position: relative;
   z-index: 1;
+}
+
+html.is-wallpaper-layer .topbar {
+  position: relative;
+  z-index: 30;
 }
 
 /* ------------------------------------------------------------------ 设置页 */
@@ -1029,6 +1123,27 @@ html.is-wallpaper-layer .main {
   gap: 10px;
   width: 240px;
   flex: none;
+}
+
+/* 每块屏的音量：一行一块屏，名字在左、滑块在右（跟设置页其它行对齐）。 */
+.wp-monitor-volumes {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.wp-monitor-vol-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.wp-monitor-vol-name {
+  font-size: 12.5px;
+  color: var(--text-2, #6b7280);
+  white-space: nowrap;
 }
 
 .wp-range {
@@ -1296,7 +1411,12 @@ html.is-wallpaper-layer body {
 /* 桌面壁纸场景（?scene=wallpaper）：整页只留壁纸层，不要 rail/播放条/滚动条 */
 html.is-wallpaper-scene,
 html.is-wallpaper-scene body {
-  background: #000;
+  /* 透明底：宿主 WebView2 的 DefaultBackgroundColor 也设成 Transparent，
+     两层都透明之后，页面首帧没出来时露的是系统桌面壁纸，而不是一块黑；
+     全屏挂起把 #wallpaper-root 淡到 0 时，也能真正退回桌面壁纸。
+     必须 !important：主题里的 `:root[data-theme=light] body{background:var(--bg)}`
+     特异性高过这条，否则透明底会被它顶回去。 */
+  background: transparent !important;
   margin: 0;
   overflow: hidden;
 }
@@ -1785,6 +1905,20 @@ html.is-wallpaper-scene .wp-overlay {
 .wp-canvas-screens {
   margin-top: 0;
   margin-bottom: 12px;
+  /* 给扫光留一点呼吸位，别贴着预览图 */
+  padding: 6px 0 2px;
+}
+
+/* 弹层里的示意图：固定高度，宽度按 aspect-ratio 自己算。 */
+.wp-canvas-screens .wp-monitor-map-sm {
+  width: auto;
+  height: 164px;
+  max-width: 100%;
+  margin-inline: auto;
+}
+
+.wp-canvas-screens .wp-monitor-scale {
+  text-align: center;
 }
 
 .wp-canvas-preview {

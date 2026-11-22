@@ -248,9 +248,13 @@ internal sealed class WebViewHost : IDisposable
     private const string EdgeResizeScript = """
 (() => {
     if (window.top !== window) return;
-    // 5px 边 / 12px 角是窗口缩放的抓取范围；页面满窗铺，热区只能由页面转发。
-    const EDGE = 5;
-    const CORNER = 12;
+    // 8px 边 / 18px 角是窗口缩放的抓取范围（原来是 5/12，太窄，贴着屏幕边拖很难抓中）；
+    // 页面满窗铺，热区只能由页面转发。
+    const EDGE = 8;
+    const CORNER = 18;
+    // 最外侧 2px 是「绝对边缘」：这里即使压着按钮也优先当窗口缩放，
+    // 因为没有任何控件该把可点区域铺到窗口最外沿 2px，而贴边的按钮常常就在 8px 内。
+    const HARD_EDGE = 2;
     const INTERACTIVE = 'button, a, input, textarea, select, [contenteditable="true"], [data-no-window-resize]';
 
     // 指针落在可滚动祖先的滚动条轨道上时不要当窗口缩放：右侧滚动条约 15px，
@@ -274,38 +278,57 @@ internal sealed class WebViewHost : IDisposable
         return false;
     };
 
-    window.addEventListener('pointerdown', (event) => {
-        if (event.button !== 0 || event.defaultPrevented) return;
+    const edgeAt = (x, y) => {
         const width = window.innerWidth;
         const height = window.innerHeight;
-        const x = event.clientX;
-        const y = event.clientY;
         const left = x <= EDGE;
         const right = x >= width - EDGE;
         const top = y <= EDGE;
         const bottom = y >= height - EDGE;
-        if (!(left || right || top || bottom)) return;
+        if (!(left || right || top || bottom)) return '';
+        if (left && y <= CORNER) return 'topleft';
+        if (right && y <= CORNER) return 'topright';
+        if (left && y >= height - CORNER) return 'bottomleft';
+        if (right && y >= height - CORNER) return 'bottomright';
+        if (left) return 'left';
+        if (right) return 'right';
+        if (top) return 'top';
+        return 'bottom';
+    };
+
+    const hardEdgeAt = (x, y) => x <= HARD_EDGE || x >= window.innerWidth - HARD_EDGE ||
+        y <= HARD_EDGE || y >= window.innerHeight - HARD_EDGE;
+
+    window.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0 || event.defaultPrevented) return;
+        const edge = edgeAt(event.clientX, event.clientY);
+        if (!edge) return;
 
         // 页面边缘的交互元素优先：按钮/链接/输入框贴着边时不能被抢成窗口缩放。
-        if (event.target instanceof Element && event.target.closest(INTERACTIVE)) {
-            return;
-        }
-        if (isOverScrollbar(event)) return;
+        // 但最外 2px 例外，否则贴边按钮会吃掉整条缩放热区。
+        const onInteractive = event.target instanceof Element && !!event.target.closest(INTERACTIVE);
+        if (onInteractive && !hardEdgeAt(event.clientX, event.clientY)) return;
+        if (!hardEdgeAt(event.clientX, event.clientY) && isOverScrollbar(event)) return;
 
-        let edge = '';
-        if (left && y <= CORNER) edge = 'topleft';
-        else if (right && y <= CORNER) edge = 'topright';
-        else if (left && y >= height - CORNER) edge = 'bottomleft';
-        else if (right && y >= height - CORNER) edge = 'bottomright';
-        else if (left) edge = 'left';
-        else if (right) edge = 'right';
-        else if (top) edge = 'top';
-        else if (bottom) edge = 'bottom';
-        if (!edge) return;
         event.preventDefault();
         event.stopPropagation();
         window.chrome.webview.postMessage({ v: 1, type: 'resize', edge });
     }, true);
+
+    // 光标提示：靠近边缘时换成缩放光标，用户能看出「这里可以拖」。
+    // 只在指针状态变化时写一次 style，避免每次移动都改 DOM。
+    let cursorEdge = '';
+    window.addEventListener('pointermove', (event) => {
+        const next = edgeAt(event.clientX, event.clientY);
+        if (next === cursorEdge) return;
+        cursorEdge = next;
+        const map = {
+            left: 'ew-resize', right: 'ew-resize', top: 'ns-resize', bottom: 'ns-resize',
+            topleft: 'nwse-resize', bottomright: 'nwse-resize',
+            topright: 'nesw-resize', bottomleft: 'nesw-resize',
+        };
+        document.documentElement.style.cursor = map[next] ?? '';
+    }, { passive: true });
 })();
 """;
 
@@ -373,7 +396,7 @@ internal sealed class WebViewHost : IDisposable
         {
             _webView.DefaultBackgroundColor = transparent
                 ? System.Drawing.Color.Transparent
-                : System.Drawing.Color.FromArgb(255, 243, 241, 234);
+                : System.Drawing.Color.FromArgb(255, 255, 255, 255);
         }
         catch (Exception exception) when (exception is InvalidOperationException or ObjectDisposedException)
         {
@@ -385,9 +408,9 @@ internal sealed class WebViewHost : IDisposable
     {
         try
         {
-            // 首帧前 WebView2 自涂的背景：跟窗口主题底色（#F3F1EA）一致，避免启动/恢复时
+            // 首帧前 WebView2 自涂的背景：跟窗口主题底色（#FFFFFF）一致，避免启动/恢复时
             // 闪一块浅灰或纯白。页面 ready 后会按自身主题接管。
-            _webView.DefaultBackgroundColor = System.Drawing.Color.FromArgb(255, 243, 241, 234);
+            _webView.DefaultBackgroundColor = System.Drawing.Color.FromArgb(255, 255, 255, 255);
 
             var userDataFolder = Path.Combine(HostFolders.Root, "WebView2");
             // 设置页「清理浏览器缓存」在运行期只能写标记，这里在环境创建前真正删掉。
@@ -421,11 +444,12 @@ internal sealed class WebViewHost : IDisposable
             _ = core.AddScriptToExecuteOnDocumentCreatedAsync(
                 "(function(){try{if(location.host!=='zilux-wp.local')return;window.alert=function(){};" +
                 "window.confirm=function(){return false;};window.prompt=function(){return null;};}catch(e){}})();");
-            core.ScriptDialogOpening += (_, dialogEvent) =>
-            {
-                HostLog.Info($"dialog suppressed kind={dialogEvent.Kind} uri={dialogEvent.Uri}");
-                dialogEvent.Accept();
-            };
+            // 这里**不能**订阅 ScriptDialogOpening 来「静默吞掉」对话框：
+            // `Accept()` 的语义是「代替用户回答」——prompt 直接返回 ResultText（默认空串）、
+            // confirm 直接返回 true，并且不会弹出任何原生框。订阅之后自家 UI 的
+            // `window.prompt`（改下载目录、粘贴 Cookie）就永远拿到空值，功能看起来「没反应」。
+            // 壁纸页由上面那段注入脚本在自己的文档里把 alert/confirm/prompt 换成空实现，
+            // 注入对同源 iframe 同样生效，所以不需要在宿主侧再拦一层。
             core.Settings.AreDefaultContextMenusEnabled = false;
             core.Settings.IsStatusBarEnabled = false;
             core.Settings.AreDevToolsEnabled = devMode;
@@ -443,6 +467,7 @@ internal sealed class WebViewHost : IDisposable
             core.NavigationCompleted += OnNavigationCompleted;
             core.NewWindowRequested += OnNewWindowRequested;
             core.PermissionRequested += OnPermissionRequested;
+            FlushPendingPosts();
 
             // 设置页的「打开 DevTools」入口（/api/host/devtools）。发布版平时关闭 DevTools，
             // 只有用户主动点击时才临时打开；回调线程在 HTTP 侧，宿主实现里切回 UI 线程。
@@ -1216,6 +1241,13 @@ internal sealed class WebViewHost : IDisposable
             HostLog.Error($"navigation failed: {source} status={e.WebErrorStatus}");
             return;
         }
+
+        // 页面刚导航完，脚本订阅 host.onMessage 可能还在下一拍：把最近一份状态重放一次，
+        // 这样刷新/渲染进程恢复后不会停在「没有在线源 / 设置是默认值」。
+        // 只做延迟重放：导航完成后立刻发的那一次，页面脚本几乎肯定还没订阅（等于白发一遍大 JSON，
+        // 本地曲库那种载荷一次就是几百条）。700 ms 覆盖正常启动，2 s 兜住慢启动。
+        _ = ReplayStatePostsAfterDelayAsync(700);
+        _ = ReplayStatePostsAfterDelayAsync(2_000);
 
         // Navigation does not imply that fonts, settings and the initial view are ready.
         // MainWindow keeps a bounded watchdog for broken pages.
@@ -2067,16 +2099,118 @@ internal sealed class WebViewHost : IDisposable
             var core = _webView.CoreWebView2;
             if (core is null)
             {
-                HostLog.Warn("webview2.post skipped: core not initialized");
+                // 启动早期（CoreWebView2 还没建好）推的消息以前直接丢掉：在线服务的端口/token、
+                // 本地曲库、设置快照都属于这一类，页面那边表现为「一直没有在线源 / 设置是默认值」。
+                // 现在按事件名留存最近一份，等核心可用后补发。
+                RememberPending(json);
                 return;
             }
 
             core.PostWebMessageAsJson(json);
+            RememberSent(json);
         }
         catch (Exception exception)
         {
             HostLog.Error("webview2.post failed", exception);
         }
+    }
+
+    // ---- 宿主推送的补发与重放 ----
+    // 两条丢消息的路径：
+    //   ① CoreWebView2 还没初始化 → 直接 drop（启动早期的 online/本地曲库/设置）；
+    //   ② 核心已就绪但页面脚本还没订阅 host.onMessage → WebView2 静默丢弃（刷新时同样）。
+    // 这里按「事件名」保留最近一份状态快照，核心可用时补发一次，页面每次导航完成后再重放一次。
+    private readonly object _postGate = new();
+    private readonly List<string> _pendingPosts = new();
+    private readonly Dictionary<string, string> _lastPostByEvent = new(StringComparer.Ordinal);
+    private const int PendingPostLimit = 64;
+    private const int ReplayPostLimit = 24;
+
+    private void RememberPending(string json)
+    {
+        var key = EventKeyOf(json);
+        lock (_postGate)
+        {
+            if (key is not null) _lastPostByEvent[key] = json;
+            _pendingPosts.Add(json);
+            while (_pendingPosts.Count > PendingPostLimit) _pendingPosts.RemoveAt(0);
+        }
+    }
+
+    private void RememberSent(string json)
+    {
+        var key = EventKeyOf(json);
+        if (key is null) return;
+        lock (_postGate) _lastPostByEvent[key] = json;
+    }
+
+    /// <summary>核心就绪后补发启动早期排队的状态快照（保持原顺序）。</summary>
+    private void FlushPendingPosts()
+    {
+        List<string> batch;
+        lock (_postGate)
+        {
+            if (_pendingPosts.Count == 0) return;
+            batch = new List<string>(_pendingPosts);
+            _pendingPosts.Clear();
+        }
+
+        var core = _webView.CoreWebView2;
+        if (core is null) return;
+        foreach (var json in batch)
+        {
+            try { core.PostWebMessageAsJson(json); }
+            catch (Exception exception) { HostLog.Warn($"webview2.post flush failed: {exception.GetType().Name}: {exception.Message}"); }
+        }
+
+        HostLog.Info($"webview2.post flushed {batch.Count} pending message(s)");
+    }
+
+    /// <summary>页面（重新）导航完成后重放最近一份状态：刷新/崩溃恢复后不会停在「没有在线源」。</summary>
+    private void ReplayStatePosts()
+    {
+        List<string> batch;
+        lock (_postGate)
+        {
+            batch = _lastPostByEvent.Values.ToList();
+            if (batch.Count > ReplayPostLimit) batch = batch.Skip(batch.Count - ReplayPostLimit).ToList();
+        }
+
+        var core = _webView.CoreWebView2;
+        if (core is null || batch.Count == 0) return;
+        foreach (var json in batch)
+        {
+            try { core.PostWebMessageAsJson(json); }
+            catch (Exception exception) { HostLog.Warn($"webview2.post replay failed: {exception.GetType().Name}: {exception.Message}"); }
+        }
+
+        HostLog.Info($"webview2.post replayed {batch.Count} state message(s) after navigation");
+    }
+
+    /// <summary>订阅时机不确定：导航完成后再等一拍重放一次，覆盖「脚本晚于 NavigationCompleted 才订阅」。</summary>
+    private async Task ReplayStatePostsAfterDelayAsync(int delayMs)
+    {
+        try
+        {
+            await Task.Delay(delayMs).ConfigureAwait(true);
+            if (_disposed) return;
+            ReplayStatePosts();
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"webview2.post delayed replay failed: {exception.GetType().Name}: {exception.Message}");
+        }
+    }
+
+    /// <summary>从 {v:1,type:"host",event:"xxx"} 里取事件名；取不到返回 null（这种消息不重放）。</summary>
+    private static string? EventKeyOf(string json)
+    {
+        const string marker = "\"event\":\"";
+        var at = json.IndexOf(marker, StringComparison.Ordinal);
+        if (at < 0) return null;
+        var start = at + marker.Length;
+        var end = json.IndexOf('"', start);
+        return end > start ? json[start..end] : null;
     }
 
     /// <summary>后台线程（更新服务）推消息用的入口：调度回 UI 线程再发送。</summary>

@@ -252,8 +252,81 @@ internal sealed partial class LocalMusicService
         ServeLocalFile(e, core, fullPath);
     }
 
-    /// <summary>按 Range 从磁盘分段读取（大文件不整块进内存）；DSF 先转成 WAV 缓存再当 WAV 提供。</summary>
+    /// <summary>
+    /// 本地文件响应入口。
+    ///
+    /// 关键：`WebResourceRequested` 回调跑在 UI 线程，而首次播放 DSF / ALAC 需要整首转码
+    /// （30 分钟 DSD 可达几十秒），几 GB 的大文件还要读盘 —— 直接在回调里做会让整窗
+    /// 「未响应」。所以这里先拿 deferral，把重活丢线程池，算完再回 UI 线程 `Respond` 并
+    /// `Complete()`。
+    /// </summary>
     private static void ServeLocalFile(CoreWebView2WebResourceRequestedEventArgs e, CoreWebView2 core, string fullPath)
+    {
+        // 这两个值必须在 UI 线程取：`e.Request` 是 COM 对象，跨线程访问会抛。
+        var rangeHeader = TryGetHeader(e.Request.Headers, "Range");
+        var deferral = e.GetDeferral();
+        var ui = SynchronizationContext.Current;
+
+        Task.Run(() =>
+        {
+            LocalResponse response;
+            try
+            {
+                response = BuildLocalResponse(fullPath, rangeHeader);
+            }
+            catch (Exception exception)
+            {
+                HostLog.Warn($"[local] serve crashed {Path.GetFileName(fullPath)}: {exception.Message}");
+                response = new LocalResponse(500, "Internal Server Error", "text/plain",
+                    System.Text.Encoding.UTF8.GetBytes("内部错误"), null);
+            }
+
+            void Deliver()
+            {
+                try
+                {
+                    Respond(e, core, response.Status, response.Reason, response.ContentType, response.Bytes, response.ContentRange);
+                }
+                catch (Exception exception)
+                {
+                    HostLog.Warn($"[local] respond failed {Path.GetFileName(fullPath)}: {exception.Message}");
+                }
+                finally
+                {
+                    try
+                    {
+                        deferral.Complete();
+                    }
+                    catch
+                    {
+                        /* 页面已销毁 */
+                    }
+                }
+            }
+
+            if (ui is not null)
+            {
+                try
+                {
+                    ui.Post(_ => Deliver(), null);
+                }
+                catch
+                {
+                    // 消息泵已经停了（关窗途中）：直接送达，保证 deferral 一定被 Complete。
+                    Deliver();
+                }
+            }
+            else
+            {
+                Deliver();
+            }
+        });
+    }
+
+    private readonly record struct LocalResponse(int Status, string Reason, string ContentType, byte[] Bytes, string? ContentRange);
+
+    /// <summary>线程池里执行：解析/转码/读盘，只返回结果，不碰 UI 对象。</summary>
+    private static LocalResponse BuildLocalResponse(string fullPath, string? rangeHeader)
     {
         var path = fullPath;
         var contentType = ContentTypeOf(fullPath);
@@ -262,8 +335,8 @@ internal sealed partial class LocalMusicService
             if (!DsfTranscoder.TryEnsureWav(fullPath, out var wavPath, out var error))
             {
                 HostLog.Warn($"[local] dsf transcode failed {Path.GetFileName(fullPath)}: {error}");
-                Respond(e, core, 415, "Unsupported Media Type", "text/plain", System.Text.Encoding.UTF8.GetBytes(error));
-                return;
+                return new LocalResponse(415, "Unsupported Media Type", "text/plain",
+                    System.Text.Encoding.UTF8.GetBytes(error), null);
             }
 
             path = wavPath;
@@ -276,8 +349,8 @@ internal sealed partial class LocalMusicService
             if (!AlacTranscoder.TryEnsureWav(fullPath, out var alacWavPath, out var alacError))
             {
                 HostLog.Warn($"[local] alac transcode failed {Path.GetFileName(fullPath)}: {alacError}");
-                Respond(e, core, 415, "Unsupported Media Type", "text/plain", System.Text.Encoding.UTF8.GetBytes(alacError));
-                return;
+                return new LocalResponse(415, "Unsupported Media Type", "text/plain",
+                    System.Text.Encoding.UTF8.GetBytes(alacError), null);
             }
 
             path = alacWavPath;
@@ -292,11 +365,9 @@ internal sealed partial class LocalMusicService
         catch (Exception exception)
         {
             HostLog.Warn($"[local] size failed {path}: {exception.Message}");
-            Respond(e, core, 500, "Internal Server Error", "text/plain", Array.Empty<byte>());
-            return;
+            return new LocalResponse(500, "Internal Server Error", "text/plain", Array.Empty<byte>(), null);
         }
 
-        var rangeHeader = TryGetHeader(e.Request.Headers, "Range");
         long start = 0;
         long end = total - 1;
         var partial = false;
@@ -336,29 +407,28 @@ internal sealed partial class LocalMusicService
 
         if (rangeRejected || end < start || total <= 0)
         {
-            Respond(e, core, 416, "Range Not Satisfiable", "text/plain", Array.Empty<byte>());
-            return;
+            return new LocalResponse(416, "Range Not Satisfiable", "text/plain", Array.Empty<byte>(), null);
         }
 
-        // D-21：WebView2 的响应 API 需要整段 byte[]，这里给单次响应设上限，避免一次请求把几个 GB 读进内存。
-        const long MaxServeBytes = 256L * 1024 * 1024;
+        // D-21 / P0-2：单次响应一律分片。原来 256 MB 一档意味着一次
+        // `new byte[跨度]` + `Respond` 再复制一份（峰值 ~512 MB），现在 8 MB 一档，
+        // 播放器要多少自己再来要 —— `<audio>` 会按 Content-Range 续。
+        const long MaxServeBytes = 8L * 1024 * 1024;
         if (end - start + 1 > MaxServeBytes)
         {
+            end = start + MaxServeBytes - 1;
             if (!partial)
             {
-                HostLog.Warn($"[local] file too large for bufferless response: {Path.GetFileName(path)} {total}B");
-                Respond(e, core, 416, "Range Not Satisfiable", "text/plain",
-                    System.Text.Encoding.UTF8.GetBytes("文件过大，请使用 Range 请求分段播放"));
-                return;
+                // 客户端没发 Range（少见，多为 fetch/预取）：仍按 206 + Content-Range 回一段，
+                // 让客户端知道还有后续；绝不整文件塞进内存。
+                partial = true;
             }
-
-            end = start + MaxServeBytes - 1;
         }
 
         byte[] bytes;
         try
         {
-            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 81920, FileOptions.SequentialScan);
             stream.Position = start;
             bytes = new byte[end - start + 1];
             var read = 0;
@@ -381,18 +451,14 @@ internal sealed partial class LocalMusicService
         catch (Exception exception)
         {
             HostLog.Warn($"[local] read failed {path}: {exception.Message}");
-            Respond(e, core, 500, "Internal Server Error", "text/plain", Array.Empty<byte>());
-            return;
+            return new LocalResponse(500, "Internal Server Error", "text/plain", Array.Empty<byte>(), null);
         }
 
-        HostLog.Info($"[local] serve {Path.GetFileName(path)} {bytes.Length}B range={rangeHeader ?? "-"} type={contentType}");
-        if (partial)
-        {
-            Respond(e, core, 206, "Partial Content", contentType, bytes, $"bytes {start}-{start + bytes.Length - 1}/{total}");
-            return;
-        }
-
-        Respond(e, core, 200, "OK", contentType, bytes);
+        HostLog.Debug($"[local] serve {Path.GetFileName(path)} {bytes.Length}B range={rangeHeader ?? "-"} type={contentType}");
+        var contentRange = partial ? $"bytes {start}-{start + bytes.Length - 1}/{total}" : null;
+        return partial
+            ? new LocalResponse(206, "Partial Content", contentType, bytes, contentRange)
+            : new LocalResponse(200, "OK", contentType, bytes, null);
     }
 
     /// <summary>响应内嵌封面请求：https://localmusic.local/__cover?rel=相对路径</summary>
@@ -1642,7 +1708,8 @@ internal sealed partial class LocalMusicService
         try
         {
             Directory.CreateDirectory(HostFolders.Root);
-            File.WriteAllLines(DownloadRootsStatePath, _downloadRoots);
+            // 原子写：这份文件决定「下载目录」这类设置，半截写入等于用户设置丢失。
+            Zilux2.Storage.AtomicFile.WriteLines(DownloadRootsStatePath, _downloadRoots);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {

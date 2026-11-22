@@ -75,6 +75,8 @@ internal static class WallpaperStateJson
                     pictureBlur = payload.PictureBlur,
                     // 上屏帧率上限（每屏一份）：0 = 不限，<60 时页面用 canvas 取帧。
                     fps = payload.Fps,
+                    // 全屏挂起：页面据此把整层淡出（不是暂停），退出全屏再淡回来。
+                    suspended = payload.Suspended,
                     overlayEnabled = payload.OverlayEnabled,
                     overlayTemplate = payload.OverlayTemplate,
                     // 多屏布局：每块屏相对虚拟屏的百分比矩形。桌面层才有；

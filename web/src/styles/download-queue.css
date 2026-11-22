@@ -216,7 +216,7 @@
 }
 
 .dlq-list.is-switch .dlq-row {
-  animation: dlq-switch-in 0.24s cubic-bezier(0.22, 0.82, 0.3, 1) both;
+  animation: dlq-switch-in var(--motion-fast) cubic-bezier(0.22, 0.82, 0.3, 1) both;
 }
 
 .dlq-list.is-switch .dlq-row:nth-child(2) {
@@ -248,7 +248,7 @@
 }
 
 .dlq-empty.is-switch {
-  animation: dlq-switch-in 0.22s cubic-bezier(0.22, 0.82, 0.3, 1) both;
+  animation: dlq-switch-in var(--motion-quick) cubic-bezier(0.22, 0.82, 0.3, 1) both;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -429,7 +429,7 @@
   height: 100%;
   border-radius: inherit;
   background: linear-gradient(90deg, var(--accent-strong, var(--accent)), var(--accent));
-  transition: width 0.3s linear;
+  transition: width var(--motion-fast) linear;
 }
 
 .dlq-row[data-state='running'] .dlq-fill.is-indeterminate {
@@ -567,7 +567,7 @@
   to { opacity: 1; translate: 0 0; }
 }
 .dlq-row.is-new {
-  animation: dlq-row-in 0.24s cubic-bezier(0.22, 0.82, 0.3, 1) both;
+  animation: dlq-row-in var(--motion-fast) cubic-bezier(0.22, 0.82, 0.3, 1) both;
 }
 @keyframes dlq-just-done {
   0% { box-shadow: 0 0 0 0 var(--accent-soft); border-color: var(--accent); }
@@ -577,8 +577,8 @@
   0%, 100% { border-color: var(--line); }
   30%, 70% { border-color: var(--danger); }
 }
-.dlq-row.is-just-done { animation: dlq-just-done 0.5s ease-out both; }
-.dlq-row.is-just-error { animation: dlq-just-error 0.5s ease-out both; }
+.dlq-row.is-just-done { animation: dlq-just-done var(--motion-slow) ease-out both; }
+.dlq-row.is-just-error { animation: dlq-just-error var(--motion-slow) ease-out both; }
 
 /* 面板收起：JS 先加 is-closing 再移除 is-open，给 160ms 退场动画留出显示期 */
 @keyframes dlq-out {
@@ -587,6 +587,6 @@
 }
 .dlq-panel.is-closing {
   display: flex;
-  animation: dlq-out 0.16s var(--ease) both;
+  animation: dlq-out var(--motion-instant) var(--ease) both;
   pointer-events: none;
 }
