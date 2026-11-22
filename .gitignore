@@ -121,3 +121,16 @@ driver/**/*.pdb
 driver/**/out/
 driver/src/control/package/*.sys
 driver/src/control/package/*.cat
+
+# 仅本地：与 AI 的协作说明、过程记录、交接/验收报告，不进仓库
+AGENTS.md
+docs/zilux2-ui-templates.md
+docs/zilux2-automix-v2.md
+docs/zilux2-mix-audit.md
+docs/agents/
+docs/wallpaper-v2-handover.md
+docs/zilux2-advanced-transition-progress.md
+docs/zilux2-advanced-transition-final-report.md
+docs/zilux2-advanced-transition-acceptance.md
+docs/verification-post-reboot-*.md
+docs/native-coverage-*.md

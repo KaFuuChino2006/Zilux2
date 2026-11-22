@@ -1,4 +1,4 @@
-﻿# Zilux2
+# Zilux2
 
 <p>
   <img alt="platform" src="https://img.shields.io/badge/platform-Windows%2010%20%2F%2011%20x64-0067c0?style=flat-square">
@@ -16,16 +16,6 @@ Zilux2 使用 **.NET 10 / WPF** 承载 **WebView2**，界面、动画与音频�
 - 下载与更新日志：[Releases](https://github.com/KaFuuChino2006/Zilux2/releases)
 
 ---
-
-## 关于本项目的开发方式
-
-> **本项目的宿主、前端、安装器、文档、自动化测试与发布流水线，均由 AI Agent（DeepSeek Harness）全程完成。**
-> 人类负责提出需求与试听验收，AI 负责设计、编码、真机验证、排障、文档与发版。
-
-这意味着：
-
-- 项目迭代速度快，但**难免存在动效异常、偶发 bug 或细节不完善之处，敬请谅解**。
-- 请勿将其视为商业级软件；在重要场景使用前请自行做好数据与系统备份。
 
 ## 功能特性
 
