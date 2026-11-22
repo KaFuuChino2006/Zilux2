@@ -15,8 +15,14 @@ import { h } from './dom';
  */
 
 export const NAV_DOCK_GUIDE_KEY = 'zilux2.navDockGuide';
-/** 引导文案版本：以后改说明再 +1，老用户会重新看到一次。 */
-export const NAV_DOCK_GUIDE_VERSION = 1;
+/**
+ * 引导文案版本：以后改说明再 +1，老用户会重新看到一次。
+ *
+ * v2：v1.2.0 正式发布前跑过一版临时构建（同一条引导、文案还没定稿），
+ * 那批机器上已经写了 `1`；正式版把版本提到 2，装过临时构建的人（包括维护者自己）
+ * 更新后才看得到这次定稿的说明。
+ */
+export const NAV_DOCK_GUIDE_VERSION = 2;
 
 const CLOSE_MS = 220;
 
@@ -124,7 +130,11 @@ export function showNavDockGuide(host: HTMLElement, dock: HTMLElement): Promise<
     event.stopPropagation();
     close();
   };
+  // 刚出现的一小会儿不响应外部点击：启动那两秒用户常在点界面或滚轮，
+  // 引导一冒头就被点掉，看起来就跟「根本没弹」一样。
+  const bornAt = performance.now();
   const onOutside = (event: PointerEvent): void => {
+    if (performance.now() - bornAt < 1200) return;
     const target = event.target as HTMLElement | null;
     // 点引导本身不关；点导航条也不关（用户可能想先试着按一下）。
     if (target?.closest('.nav-guide')) return;
