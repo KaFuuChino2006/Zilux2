@@ -1183,7 +1183,7 @@ export class App {
     window.addEventListener('zilux:stem-trim', onStemTrim);
     this.disposers.add(() => window.removeEventListener('zilux:stem-trim', onStemTrim));
     this.intervalIds.push(window.setInterval(() => this.warmAdvancedStems(), 12_000));
-    // 6 秒预热只跑一次，但卸载后不该再叫醒模型：句柄要能取消。（m08602）
+    // 6 秒预热只跑一次，但卸载后不该再叫醒模型：句柄要能取消。
     const warmTimer = window.setTimeout(() => this.warmAdvancedStems(), 6_000);
     this.disposers.add(() => window.clearTimeout(warmTimer));
   }
