@@ -5,7 +5,6 @@
   <img alt=".NET" src="https://img.shields.io/badge/.NET-10-512bd4?style=flat-square">
   <img alt="Vite" src="https://img.shields.io/badge/Vite-7-646cff?style=flat-square">
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.9-3178c6?style=flat-square">
-  <img alt="developed with AI" src="https://img.shields.io/badge/%E5%BC%80%E5%8F%91%E6%96%B9%E5%BC%8F-AI%20Agent-7c5cff?style=flat-square">
 </p>
 
 > **Zilux2** — 新一代创意播放器：把歌词、封面和节奏变成画面。
