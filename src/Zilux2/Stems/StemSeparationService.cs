@@ -98,6 +98,18 @@ internal sealed class StemSeparationService : IDisposable
     internal static bool ModelExists() => File.Exists(ResolveModelPath());
 
     /// <summary>
+    /// 给增强 stage（分轨活动度 / 后续生成式延长）读一段 44.1 kHz 立体声窗口。
+    /// 与分离管线共用同一套解码下混，避免两条链的参数漂移。
+    /// </summary>
+    internal static DecodedAudioWindow ReadAudioWindow(string audioPath, int window, int windowSec)
+    {
+        var decoded = StemsWindowReader.Read(audioPath, window, windowSec);
+        return new DecodedAudioWindow(decoded.Left, decoded.Right, decoded.Frames, decoded.DurationMs);
+    }
+
+    internal readonly record struct DecodedAudioWindow(float[] Left, float[] Right, int Frames, long DurationMs);
+
+    /// <summary>
     /// 计算第 <paramref name="request"/>.Window 个窗口；缓存命中直接 ready，
     /// 否则同步算完再返回（契约 §3.1）。同窗口并发会合并到同一个任务。
     /// </summary>

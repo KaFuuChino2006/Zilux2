@@ -35,6 +35,9 @@ internal sealed class AnalysisSuccessResponse
     public string Analyzer { get; set; } = BeatAnalyzer.AnalyzerVersion;
 
     public BeatAnalysisPayload Analysis { get; set; } = new();
+
+    /// <summary>可选增强 features：基础分析从不等待它；enrich=1 时随响应内联已就绪部分。</summary>
+    public AnalysisFeatures? Features { get; set; }
 }
 
 internal sealed class BeatAnalysisPayload
@@ -194,7 +197,8 @@ internal readonly record struct AnalysisRequest(
     string? Rel,
     string? Quality,
     bool Force,
-    bool CacheOnly = false);
+    bool CacheOnly = false,
+    bool Enrich = false);
 
 /// <summary>
 /// Result of one analysis attempt. <see cref="Code"/> is the contract error code when
@@ -224,6 +228,10 @@ internal sealed class AnalysisOutcome
 [JsonSourceGenerationOptions(WriteIndented = false, PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(AnalysisSuccessResponse))]
 [JsonSerializable(typeof(AnalysisErrorResponse))]
+[JsonSerializable(typeof(AnalysisFeaturesResponse))]
+[JsonSerializable(typeof(StemFeatureFile))]
+[JsonSerializable(typeof(StructureFeatureFile))]
+[JsonSerializable(typeof(StyleFeatureFile))]
 internal sealed partial class AnalysisJsonContext : JsonSerializerContext
 {
 }

@@ -6508,7 +6508,7 @@ html.is-pb-expanded .playerbar.is-hidden {
 .upnext-summary .upnext-transition{margin-top:1px;font-size:10px;line-height:1.3;color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px}
 .upnext-summary .upnext-transition.is-hidden{display:none}
 .upnext-summary .upnext-meta{display:flex;flex-direction:column;gap:1px;min-width:0}
-.upnext-summary:has(.upnext-transition: not(.is-hidden)){height:auto;min-height:44px;padding-top:5px;padding-bottom:5px}
+.upnext-summary:has(.upnext-transition:not(.is-hidden)){height:auto;min-height:44px;padding-top:5px;padding-bottom:5px}
 
 /* ===== 歌词页可读性（语义令牌）：深色主题浅字、浅色主题深字 ===== */
 .lyrics-view .lyric-line {
@@ -6910,12 +6910,18 @@ html.is-pb-expanded .playerbar.is-hidden {
   pointer-events: none;
   will-change: transform, opacity;
 }
-/* 落定（收尾）：动画结束后就停在「什么都不挂」的静态样子。
-   变体的最后一帧本来就是恒等 2D 变换，所以这里既不抄矩阵也不留 will-change ——
-   文字按设备像素重画，既不糊（不进离屏纹理）也不会跳（几何没有变化）。
-   历史教训：留层会糊、抄 3D 矩阵再撤会像素级位移，两个坑都别再踩。 */
+/* 落定（收尾）：几何回到「什么都不挂」的静态样子，**但层不撤**（只留 will-change，不写 transform，
+   免得压掉卡片自己的 hover 变换）。
+   为什么留层：撤层那一帧，整批元素会一起从「合成层栅格」换回「主线程栅格」——位置从分数吸附到
+   设备像素（实测各块 0.1~0.8px）、文字从灰阶 AA 换成 LCD 次像素，看起来就是整页「像素抖一下」。
+   2026-11-24 维护者原话：「动画进入完毕后会有位移的感觉，就是那种像素的变化一样」；
+   实测撤层那一帧整页 diff 88462 px（bbox 47..1552 × 140..936），留层则连续帧 diff = 0。
+   层跟着类一起在 resetMotion()（换页 / 重播 / 销毁）里撤掉，那时正在演离场或页面已经藏起来。
+   历史「留层会糊」的结论属于 3D / filter 时代（关键帧当时带 perspective / blur(0)，离屏表面按
+   动画期间比例栅格化后不再重画）；现在 §9 的变体全是纯 2D、末帧恒等，实测留层与撤层的静止帧
+   清晰度只差约 2%，肉眼不可见。 */
 .is-block-settled {
-  transform: none;
+  will-change: transform;
 }
 
 /* `motion.ts` 发的动画（换层、面板、弹层）落定同理。 */
@@ -9168,6 +9174,13 @@ html.is-pb-expanded .app:not(.is-mini):not(.is-mini-entering):not(.is-mini-exiti
   opacity: 0 !important;
   /* 裁剪框比本体大一圈，把 0 10px 26px 的投影也包进去，展开/收起时阴影才会跟着长出来。 */
   clip-path: inset(-30px 100% -48px -30px round 999px) !important;
+  pointer-events: none !important;
+}
+
+/* 歌词页是铺满整窗的覆盖层：导航条彻底不出现，连悬停也不许（维护者 2026-11-24）。
+   用 visibility 而不是 display，保留盒尺寸——出歌词页时 restPlace() 还要靠它量宽度居中。 */
+.rail.nav-dock.is-dock-suspended {
+  visibility: hidden !important;
   pointer-events: none !important;
 }
 

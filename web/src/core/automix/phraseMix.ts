@@ -58,6 +58,31 @@ function vocalOverlap(a: BeatAnalysis, b: BeatAnalysis, x: number, y: number,
   return n === 0 ? 0 : both / n;
 }
 
+
+/**
+ * 入点清晰度：B 在落点后一拍内是否「真的开唱」、而 A 在那时是否已经收声。
+ * 鼓型相似只能保证律动接得上；真正让人觉得「接住了」的是 B 的第一句清楚地进来，
+ * 而不是在 A 的拖音底下糊着开始。
+ */
+export function entryClarity(a: BeatAnalysis, b: BeatAnalysis, x: number, y: number, span: number, bar: number): number {
+  const va = a.activity?.vocal, vb = b.activity?.vocal;
+  const ha = a.activity?.hopMs ?? 0, hb = b.activity?.hopMs ?? 0;
+  if (!va || !vb || !(ha > 0 && hb > 0)) return 0;
+  const mean = (curve: number[], hop: number, from: number, to: number) => {
+    let sum = 0, n = 0;
+    for (let t = from; t < to; t += hop) {
+      const v = curve[Math.round(t / hop)];
+      if (Number.isFinite(v)) { sum += v; n += 1; }
+    }
+    return n ? sum / n : 0;
+  };
+  const before = mean(vb, hb, Math.max(0, y - bar * 0.5), y);
+  const after = mean(vb, hb, y + bar * 0.5, y + bar * 1.5);
+  const rise = Math.max(0, Math.min(1, (after - before) / 0.25));
+  const aTail = mean(va, ha, x + Math.max(0, span - bar), x + span);
+  return 0.35 * rise - 0.35 * Math.min(1, aTail);
+}
+
 export function matchDrumPhrase(a: BeatAnalysis, b: BeatAnalysis, end: number,
   earliest: number, head: number, lyric: number, limit: number, bar: number) {
   const left = a.activity, right = b.activity;
@@ -96,7 +121,9 @@ export function matchDrumPhrase(a: BeatAnalysis, b: BeatAnalysis, end: number,
     const harmony = harmonyCost(a,b,x,y);
     // 人声重叠直接扣分：两边同时唱 = 两条咬字互相盖住，比鼓型差一点更明显更糟。
     const overlap = vocalOverlap(a,b,x,y,span,1);
-    const similarity = drumSim - 0.45 * harmony - 1.2 * overlap - (lyric && y+span>lyric ? 0.035 : 0);
+    const clarity = entryClarity(a,b,x,y,span,bar);
+    const similarity = drumSim - 0.45 * harmony - 1.2 * overlap + clarity
+      - (lyric && y+span>lyric ? 0.035 : 0);
     if (similarity>=0.58 && (!best || similarity>best.similarity))
       best={x,y,span,rate:1,sync:false,similarity};
   }

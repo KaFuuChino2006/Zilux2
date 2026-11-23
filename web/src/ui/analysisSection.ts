@@ -15,7 +15,8 @@ import {
   updateMetronomeSettings,
   type MetronomeSettings,
 } from '../core/metronome';
-import { analyzeTrack, cachedAnalysis, type AnalysisResult } from '../online/analysis';
+import { analyzeTrack, cachedAnalysis, onAnalysisEnhanced, type AnalysisResult } from '../online/analysis';
+import { describeFeatureSource } from '../online/analysisFeatures';
 import { h, icon, toast, type Disposers } from './dom';
 import { onPlayer, playerState } from './player';
 
@@ -64,6 +65,7 @@ export function buildAnalysisSection(scope: Disposers | null): HTMLElement {
 
   let busy = false;
   let playerPaintKey = '';
+  let lastResult: AnalysisResult | null = null;
 
   /* ---------------------------- 状态区 ---------------------------- */
 
@@ -90,6 +92,7 @@ export function buildAnalysisSection(scope: Disposers | null): HTMLElement {
   }
 
   function showResult(result: AnalysisResult): void {
+    lastResult = result;
     const analysis = result.analysis;
     const rows: Array<[string, string]> = [
       ['BPM', analysis.bpm > 0 ? analysis.bpm.toFixed(1) : '—'],
@@ -119,12 +122,31 @@ export function buildAnalysisSection(scope: Disposers | null): HTMLElement {
     if (analysis.sections.length > 0) {
       chips.append(h('span', { class: 'analysis-chip', text: `段落 ${analysis.sections.length}` }));
     }
+    const sourceLabel = describeFeatureSource(analysis);
+    if (sourceLabel) {
+      chips.append(h('span', { class: 'analysis-chip analysis-chip-features', text: sourceLabel }));
+    }
+    const style = analysis.styleProfile;
+    if (style) {
+      const percent = Math.round(Math.max(0, Math.min(1, style.confidence)) * 100);
+      // 谱特征还没到时 primary 只是默认解释（多为 pop），别把它当结论展示。
+      const pending = !analysis.styleFeatures || style.confidence < 0.2;
+      chips.append(
+        h('span', {
+          class: 'analysis-chip',
+          text: pending
+            ? '风格 待补谱特征'
+            : `风格 ${style.primary}${style.mood !== 'neutral' ? ` · ${style.mood}` : ''} ${percent}%`,
+        }),
+      );
+    }
     chips.hidden = chips.childElementCount === 0;
     resultBox.hidden = false;
     setStatus(`已分析：${result.title || '当前歌曲'}`, 'ok', formatElapsed(result));
   }
 
   function clearResult(): void {
+    lastResult = null;
     resultBox.hidden = true;
     metrics.textContent = '';
     chips.textContent = '';
@@ -291,6 +313,14 @@ export function buildAnalysisSection(scope: Disposers | null): HTMLElement {
 
   scope?.add(onPlayer(() => paintPlayer()));
   scope?.add(onMetronomeChange(() => paintMetronome()));
+  scope?.add(
+    onAnalysisEnhanced((_track, result) => {
+      // 只重绘当前展示的那一份，避免后台补齐把用户正在看的结果换掉。
+      if (lastResult && result.analysis === lastResult.analysis) {
+        showResult(result);
+      }
+    }),
+  );
   paintPlayer();
   paintMetronome();
   setStatus('选择「分析当前歌曲」或「分析下一首」开始。', 'idle');

@@ -95,7 +95,7 @@ test('识别典型母带渐隐：起点、终点、降幅、最大提升', () =>
   assert.ok(Math.abs(info.fadeStartMs - 78_000) <= 300, `渐隐起点应≈78s，实为 ${info.fadeStartMs}`);
   assert.ok(info.fadeEndMs >= 89_000, `渐隐终点应贴结尾，实为 ${info.fadeEndMs}`);
   assert.ok(info.dropDb >= 15 && info.dropDb <= 22, `降幅应≈19–21dB，实为 ${info.dropDb}`);
-  assert.ok(info.maxLiftDb > 0 && info.maxLiftDb <= 12, `提升应在 (0,12]，实为 ${info.maxLiftDb}`);
+  assert.ok(info.maxLiftDb > 0 && info.maxLiftDb <= 15, `提升应在 (0,15]，实为 ${info.maxLiftDb}`);
   assert.equal(info.points.length >= 3, true, '补回曲线至少 3 个点');
 });
 
@@ -104,9 +104,9 @@ test('正常收尾（没有渐隐）返回 null', () => {
   assert.equal(tailFade.detectTailFade(flat), null);
 });
 
-test('降幅不足 6 dB 不算渐隐', () => {
-  // 10 秒只掉 5 dB：更像压缩器/淡出前奏，不值得抬回来
-  const shallow = analysis(90, (left) => (left <= 10 ? -9 - 5 * ((10 - left) / 10) : -9));
+test('降幅不足 5 dB 不算渐隐', () => {
+  // 10 秒只掉 3.5 dB：更像压缩器/淡出前奏，不值得抬回来
+  const shallow = analysis(90, (left) => (left <= 10 ? -9 - 3.5 * ((10 - left) / 10) : -9));
   assert.equal(tailFade.detectTailFade(shallow), null);
 });
 
@@ -142,17 +142,16 @@ test('母线很响时补回受 −1 LUFS 削波上限约束', () => {
   assert.ok(info.maxLiftDb >= 6.5, `也不该比封顶值小太多，实为 ${info.maxLiftDb}`);
 });
 
-test('普通母线：12 dB 上限先起作用，抬完仍远低于削波', () => {
+test('普通母线：15 dB 上限先起作用，抬完仍远低于削波', () => {
   const info = tailFade.detectTailFade(fading());
   assert.ok(info);
-  assert.ok(Math.abs(info.maxLiftDb - 12) < 0.2, `应被 12 dB 上限夹住，实为 ${info.maxLiftDb}`);
-  // 尾端 −28 抬 12 dB 到 −16，离 −1 还远：这条断言的目的是钉住「不许无限抬」
+  assert.ok(Math.abs(info.maxLiftDb - 15) < 0.2, `应被 15 dB 上限夹住，实为 ${info.maxLiftDb}`);
   assert.ok(info.endLufs + info.maxLiftDb <= -1, `抬完 ${(info.endLufs + info.maxLiftDb).toFixed(2)} LUFS 越线`);
 });
 
-test('参考电平很低时靠 12 dB 上限兜住', () => {
+test('参考电平很低时靠 15 dB 上限兜住', () => {
   const info = tailFade.detectTailFade(fading(12, -45, -55));
-  if (info) assert.ok(info.maxLiftDb <= 12.001, `实为 ${info.maxLiftDb}`);
+  if (info) assert.ok(info.maxLiftDb <= 15.001, `实为 ${info.maxLiftDb}`);
 });
 
 test('只看到 beforeMs 之前的数据', () => {
@@ -184,7 +183,9 @@ test('clipLift 裁到窗口并在两端补点', () => {
   ];
   const clipped = tailFade.clipLift(points, 500, 2500);
   assert.equal(clipped[0].ms, 500);
-  assert.ok(Math.abs(clipped[0].liftDb - 4) < 0.001, `起点应插值成 4，实为 ${clipped[0].liftDb}`);
+  assert.equal(clipped[0].liftDb, 0, '起点先给 0，250 ms 内爬升');
+  assert.equal(clipped[1].ms, 750);
+  assert.ok(Math.abs(clipped[1].liftDb - 4) < 0.001, `750 ms 处应为 4，实为 ${clipped[1].liftDb}`);
   assert.equal(clipped[clipped.length - 1].ms, 2500);
   assert.ok(Math.abs(clipped[clipped.length - 1].liftDb - 11) < 0.001);
 });
@@ -195,10 +196,12 @@ test('clipLift 窗口落在曲线之外时给恒定值', () => {
     { ms: 1000, liftDb: 9 },
   ];
   const after = tailFade.clipLift(points, 5000, 8000);
-  assert.equal(after[0].liftDb, 9);
+  assert.equal(after[0].liftDb, 0);
+  assert.equal(after[1].liftDb, 9);
   assert.equal(after[after.length - 1].liftDb, 9);
   const before = tailFade.clipLift(points, -3000, -1000);
-  assert.equal(before[0].liftDb, 5);
+  assert.equal(before[0].liftDb, 0);
+  assert.equal(before[1].liftDb, 5);
 });
 
 test('非法窗口返回空数组', () => {

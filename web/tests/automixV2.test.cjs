@@ -243,16 +243,35 @@ test('人声让位：A 是器乐时深度减半', () => {
   assert.ok(Math.min(...instA.map((e) => e.db)) >= -3.5);
 });
 
-test('18 秒前奏：前 14 秒保留 A，低频互补，换手完成才压 A 低通', () => {
+test('18 秒前奏：前 30% 保留 A，30–50% 只换低频，80% 后才动人声', () => {
   const plan = mod.buildV2Plan({ fadeMs: 18000, barMs: 2000, swapShare: 4/18, bEntry: true });
-  assert.ok(Math.abs(mod.sampleCurve(plan.b.high, 0) - 10 ** (-18/20)) < 0.00001);
-  for (let i = 0; i <= 200; i++) {
-    const p = i/200;
-    assert.ok(Math.abs(mod.sampleCurve(plan.a.low,p) + mod.sampleCurve(plan.b.low,p) - 1) < 0.00002);
-    if (p < plan.swapStartP - plan.step) assert.equal(mod.sampleCurve(plan.a.high,p),1);
-    if (p < plan.handoffP - plan.step) assert.equal(mod.sampleCurve(plan.a.sweepLp,p),20000);
-  }
-  assert.equal(mod.sampleCurve(plan.b.high,1),1);
+  // 进入过渡时 B 的未触发频段必须是绝对静音，不再有 −18 dB 的前奏垫音
+  assert.equal(mod.sampleCurve(plan.b.high, 0), 0);
+  assert.equal(mod.sampleCurve(plan.b.low, 0), 0);
+  assert.equal(mod.sampleCurve(plan.b.mid, 0.29), 0);
+  // 30% 之前：A 的低/中/高频都在原位
+  assert.equal(mod.sampleCurve(plan.a.low, 0.29), 1);
+  assert.equal(mod.sampleCurve(plan.a.mid, 0.29), 1);
+  assert.equal(mod.sampleCurve(plan.a.high, 0.29), 1);
+  // 50%：B 低频到 50–70%，A 低频只削到 55–65%
+  const bLow = mod.sampleCurve(plan.b.low, 0.5);
+  const aLow = mod.sampleCurve(plan.a.low, 0.5);
+  assert.ok(bLow >= 0.5 && bLow <= 0.7, `B 低频 ${bLow}`);
+  assert.ok(aLow >= 0.55 && aLow <= 0.65, `A 低频 ${aLow}`);
+  // 50%：B 中频约 20%，A 中频仍是 1
+  assert.ok(mod.sampleCurve(plan.b.mid, 0.56) < 0.01);
+  assert.equal(mod.sampleCurve(plan.a.mid, 0.56), 1);
+  assert.ok(mod.sampleCurve(plan.b.mid, 0.7) > 0.05);
+  // 80% 之后人声交换：A 中频开始收，B 中频抬过 0.5
+  // 交换放宽后 A 在 90% 仍留大半，窗口最末才归零
+  assert.ok(mod.sampleCurve(plan.a.mid, 0.9) > 0.6);
+  assert.ok(mod.sampleCurve(plan.a.mid, 0.98) < 0.3);
+  assert.ok(mod.sampleCurve(plan.b.mid, 0.9) > 0.4);
+  // 收尾全部回原水平：A 各层 0、B 各层 1
+  assert.equal(mod.sampleCurve(plan.a.low, 1), 0);
+  assert.equal(mod.sampleCurve(plan.b.low, 1), 1);
+  assert.equal(mod.sampleCurve(plan.b.mid, 1), 1);
+  assert.equal(mod.sampleCurve(plan.b.high, 1), 1);
 });
 
 test('Apple 配方可以改扫频目标：A 压到 200 Hz、B 从 5200 Hz 起', () => {
@@ -269,32 +288,120 @@ test('未给目标频率时保持 700 Hz / 12 kHz 的默认值', () => {
   assert.equal(mod.sampleCurve(plan.b.sweepHp, 0), 12000);
 });
 
-test('三层错开换手：中低先换、高频其次、低频最后（各层自己混自己的）', () => {
+test('30/50/80：低频先到 0.5、中频 50% 才以 0.2 进入、人声 80% 后才换', () => {
   const plan = mod.buildV2Plan({ fadeMs: 12000, barMs: 2000, swapShare: 0.3, rate: 1, bEntry: false });
-  // 每一层「B 达到 0.5」的位置
-  const cross = (curve) => {
-    for (let p = 0; p <= 1.0001; p += 0.01) {
-      if (mod.sampleCurve(curve, Math.min(1, p)) >= 0.5) return p;
-    }
-    return 1;
-  };
-  const mid = cross(plan.b.mid);
-  const high = cross(plan.b.high);
-  const low = cross(plan.b.low);
-  assert.ok(mid < high, `中低应先于高频换手（mid ${mid} / high ${high}）`);
-  assert.ok(high < low, `高频应先于低频换手（high ${high} / low ${low}）`);
-  // 三层的交接点是三个不同的时刻，不是同一瞬间
-  assert.ok(low - mid > 0.04, `三层交接至少拉开 4% 窗口（实际 ${(low - mid).toFixed(2)}）`);
+  const at = (curve, p) => mod.sampleCurve(curve, p);
+  // 低频：30% 起步、50% 到目标
+  assert.equal(at(plan.b.low, 0.29), 0);
+  assert.ok(at(plan.b.low, 0.5) >= 0.5 && at(plan.b.low, 0.5) <= 0.7);
+  // 中频：50% 之前是 0，56% 左右到 0.2，80% 之前一直 0.2
+  assert.ok(at(plan.b.mid, 0.45) < 0.01);
+  assert.ok(at(plan.b.low, 0.75) > 0.7 && at(plan.b.low, 0.75) < 0.9);
+  assert.ok(at(plan.b.mid, 0.56) < 0.01);
+  assert.ok(at(plan.b.mid, 0.78) > 0.15 && at(plan.b.mid, 0.78) < 0.6);
+  // 人声：80% 前 A 中频满、80% 后迅速收
+  assert.equal(at(plan.a.mid, 0.79), 1);
+  assert.ok(at(plan.a.mid, 0.9) > 0.6);
+  assert.ok(at(plan.a.mid, 0.98) < 0.3);
 });
 
-test('每层各自功率守恒：A² + B² = 1（中低/高频）', () => {
+test('换手完成时三层都落到 B：A 为 0、B 为 1，且中频不在 50% 抢先出现', () => {
   const plan = mod.buildV2Plan({ fadeMs: 12000, barMs: 2000, swapShare: 0.3, rate: 1, bEntry: false });
-  for (const p of [0.76, 0.8, 0.84, 0.88, 0.92]) {
-    for (const band of ['mid', 'high']) {
-      const a = mod.sampleCurve(plan.a[band], p);
-      const b = mod.sampleCurve(plan.b[band], p);
-      const sum = a * a + b * b;
-      assert.ok(Math.abs(sum - 1) < 0.08, `${band} 在 p=${p} 功率和 ${sum.toFixed(3)}`);
-    }
+  for (const p of [0.995, 1]) {
+    assert.ok(mod.sampleCurve(plan.a.mid, p) < 0.02);
+    assert.ok(mod.sampleCurve(plan.b.mid, p) > 0.98);
+    assert.ok(mod.sampleCurve(plan.b.low, p) > 0.98);
   }
+  // 50% 处中频不能是功率互补的 0.7：那是旧的「中频先换」口径
+  assert.ok(mod.sampleCurve(plan.b.mid, 0.5) < 0.3);
+});
+
+test('B 侧电平包络：B 比参考低 12 LU 时整窗抬到 +6 dB，同电平留 3 dB 余量', () => {
+  const times = Array.from({ length: 120 }, (_, i) => i * 250);
+  const analysis = (lufs) => ({
+    v: 1, bpm: 120, bpmConfidence: 0.9, meter: 4, beatIntervalMs: 500,
+    downbeats: [], beatsMs: [], sections: [], phraseStartsMs: [], loopUnits: [],
+    loudnessMethod: 'bs1770', loudnessTimesMs: times,
+    momentaryLufs: times.map(() => lufs),
+    activity: { hopMs: 250, vocal: times.map(() => 0.5), drum: times.map(() => 0.5), bass: times.map(() => 0.5) },
+  });
+  const quiet = mod2.planBTrimCurve({
+    a: analysis(-8), b: analysis(-20), fadeStartAMs: 0, fadeStartBMs: 0, fadeMs: 12000, tempoRate: 1,
+  });
+  assert.ok(quiet.length > 8, `curve=${quiet.length}`);
+  assert.ok(quiet.every((db) => db === 6), `应整窗 +6，实际 ${JSON.stringify(quiet)}`);
+
+  const matched = mod2.planBTrimCurve({
+    a: analysis(-8), b: analysis(-8), fadeStartAMs: 0, fadeStartBMs: 0, fadeMs: 12000, tempoRate: 1,
+  });
+  // 同电平留 3 dB 余量：B 在换手前一直坐在 A 下面，A 抽走时不会顶出一个上凸；
+  //   这是 5641 对审计里唯一能把 drift 与最差对同时压下去的档位。
+  assert.ok(matched.every((db) => db === -3), `同电平应留 3 dB 余量，实际 ${JSON.stringify(matched)}`);
+});
+
+test('B 侧电平包络进响度模型：同样的曲线，补过之后 drift 不高于不补', () => {
+  const levels = (from, to) => Array.from({ length: 49 }, (_, i) => from + ((to - from) * i) / 48);
+  const times = Array.from({ length: 49 }, (_, i) => i * 250);
+  const make = (arr) => ({
+    v: 1, bpm: 120, bpmConfidence: 0.9, meter: 4, beatIntervalMs: 500,
+    downbeats: [], beatsMs: [], sections: [], phraseStartsMs: [], loopUnits: [],
+    loudnessMethod: 'bs1770', loudnessTimesMs: times, momentaryLufs: arr,
+    activity: { hopMs: 250, vocal: arr.map(() => 0.5), drum: arr.map(() => 0.5), bass: arr.map(() => 0.5) },
+  });
+  const base = {
+    a: make(levels(-8, -40)), b: make(levels(-20, -20)),
+    fadeStartAMs: 0, fadeStartBMs: 0, fadeMs: 12000, beatMs: 500, tempoRate: 1,
+    handoffStartP: 0.78, handoffEndP: 0.92, weights: 'equal',
+  };
+  const trim = mod2.planBTrimCurve(base);
+  const plain = mod2.loudnessRampCurve(base);
+  const lifted = mod2.loudnessRampCurve({ ...base, bTrim: trim });
+  assert.ok(lifted.worst <= plain.worst + 1e-9, `补过之后不该更差：${lifted.worst} vs ${plain.worst}`);
+});
+
+// ── 分频点自适应 ────────────────────────────────────────────────
+test('低频相关性高（同型底鼓）→ 分频点保持 120', () => {
+  const bass = Array.from({ length: 120 }, (_, i) => 0.5 + 0.3 * Math.sin(i / 4));
+  const hz = mod2.planSplitHz({
+    a: { activity: { hopMs: 250, bass } },
+    b: { activity: { hopMs: 250, bass } },
+    fadeStartAMs: 0, fadeStartBMs: 0, fadeMs: 20000, tempoRate: 1,
+  });
+  assert.equal(hz, 120);
+});
+
+test('低频不相关（不同律动）→ 分频点抬到 150 以上', () => {
+  const a = Array.from({ length: 120 }, (_, i) => 0.6 + 0.3 * Math.sin(i / 3));
+  const b = Array.from({ length: 120 }, (_, i) => 0.6 + 0.3 * Math.sin(i / 3 + Math.PI));
+  const hz = mod2.planSplitHz({
+    a: { activity: { hopMs: 250, bass: a } },
+    b: { activity: { hopMs: 250, bass: b } },
+    fadeStartAMs: 0, fadeStartBMs: 0, fadeMs: 20000, tempoRate: 1,
+  });
+  assert.ok(hz >= 150 && hz <= 200, `hz=${hz}`);
+});
+
+test('一边没有低频 → 不动分频点', () => {
+  const a = new Array(120).fill(0.02);
+  const b = new Array(120).fill(0.7);
+  const hz = mod2.planSplitHz({
+    a: { activity: { hopMs: 250, bass: a } },
+    b: { activity: { hopMs: 250, bass: b } },
+    fadeStartAMs: 0, fadeStartBMs: 0, fadeMs: 20000, tempoRate: 1,
+  });
+  assert.equal(hz, 120);
+});
+
+test('低频层起点可后移：两侧律动不相关时同时重叠的采样更少', () => {
+  const base = mod.buildV2Plan({ fadeMs: 16000, barMs: 2000, swapShare: 0.25, rate: 1, bEntry: false });
+  const late = mod.buildV2Plan({ fadeMs: 16000, barMs: 2000, swapShare: 0.25, rate: 1, bEntry: false, lowStartP: 0.45 });
+  const both = (plan) => {
+    let n = 0;
+    for (let i = 0; i <= 400; i += 1) {
+      const p = i / 400;
+      if (mod.sampleCurve(plan.a.low, p) > 0.1 && mod.sampleCurve(plan.b.low, p) > 0.1) n += 1;
+    }
+    return n;
+  };
+  assert.ok(both(late) < both(base), `late=${both(late)} base=${both(base)}`);
 });

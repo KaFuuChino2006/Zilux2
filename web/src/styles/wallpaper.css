@@ -16,9 +16,12 @@
   display: flex;
   flex-direction: column;
   gap: 14px;
-  padding: 6px 26px calc(var(--player-h) + 34px) 6px;
+  /* 左右对称：原来右侧多留 26px 给滚动条，滚动条真出现时右边就比左边宽出一大截。
+     改成两侧同宽 + 双倍滚动条槽位，有没有滚动条都居中（与 .wall / .ui-page 一致）。 */
+  padding: 6px 6px calc(var(--player-h) + 34px) 6px;
   overflow-y: auto;
   overflow-x: hidden;
+  scrollbar-gutter: stable both-edges;
 }
 
 .wallpaper-page.is-hidden {
@@ -927,7 +930,7 @@ html.is-wallpaper-layer .app {
 }
 
 /* 壁纸在根视图下方时，给内容加一层很轻的压暗，保证文字可读（对应 §5.8 dimBase）。 */
-html.is-wallpaper-layer .app::after {
+html:not(.is-wallpaper-scene) #wallpaper-root::after {
   content: "";
   position: fixed;
   inset: 0;
@@ -1977,4 +1980,18 @@ html.is-bg-lyrics-scene.is-bg-motion .lyrics-view.is-vinyl {
    先压一层暗底，screen 混合的文字才有对比度（否则浅色壁纸会把字吃掉）。 */
 html.is-bg-lyrics-scene.is-bg-motion .wp-immersive-scrim {
   opacity: 1;
+}
+
+/* 隐藏壁纸后的窗口底色与各内容页共用；压暗层只随可见壁纸显示。 */
+html[data-theme="light"]:has(#wallpaper-root.is-hidden) .app:not(.is-app-bg),
+html[data-theme="light"]:not(.is-wallpaper-layer) .app:not(.is-app-bg) {
+  background: #fff;
+}
+html[data-theme="light"]:not(.is-wallpaper-scene):has(#wallpaper-root) body {
+  background: #fff;
+}
+
+/* 淡出期间让白色画布从壁纸下面连续显露，避免窗口抢先盖住壁纸。 */
+html[data-theme="light"]:not(.is-wallpaper-scene):has(#wallpaper-root.is-fading:not(.is-hidden)) .app:not(.is-app-bg) {
+  background: transparent;
 }

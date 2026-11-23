@@ -144,7 +144,7 @@ function makeCover(
   if (remapped) {
     const sized = withCoverWidth(remapped, width);
     if (sized === remapped) return remapped;
-    const sizedKey = `${track.id}:w${Math.round(width)}`;
+    const sizedKey = `${remapped}:w${Math.round(width)}`;
     const cachedSize = cache.get(sizedKey);
     if (cachedSize) return cachedSize;
     cache.set(sizedKey, sized);

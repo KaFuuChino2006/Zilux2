@@ -36,8 +36,9 @@ test('每次换行都重算放大余量，不只是切动效档位时', () => {
   assert.match(changed, /this\.applyLineEmphasisCap\(nextIndex\)/);
   // 版面变化（窗口尺寸 / 歌词列 ResizeObserver / 字号 / 字体就绪）后也要重算。
   assert.match(lyrics, /private recapEmphasis\(\): void/);
-  assert.match(lyrics, /this\.syncProgress\(true\);\s*\n\s*this\.recapEmphasis\(\);/);
-  assert.match(lyrics, /document\.fonts\?\.ready\.then\(\(\) => this\.recapEmphasis\(\)\)/);
+  assert.match(lyrics, /this\.measureLines\(\);\s*this\.syncProgress\(true\);\s*this\.recapEmphasis\(\);/, '版面变化后先量行再重算');
+  assert.match(lyrics, /if \(document\.fonts\?\.status === 'loading'\) void document\.fonts\.ready\.then\(/, '字体已就绪就不必再排队等一次');
+  assert.match(lyrics, /document\.fonts\.ready\.then\(\(\) => \{[\s\S]{0,200}this\.recapEmphasis\(\);/, '字体真加载完要重算放大余量');
 });
 
 test('歌曲信息的来源行不重复拼同一平台标签，也不再一行 nowrap 切掉', () => {

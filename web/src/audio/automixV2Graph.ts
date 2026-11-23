@@ -46,16 +46,41 @@ export interface AutomixV2Deck {
   lowGain: GainNode;
   /** 低频电平校准：换手前把 B 的低频拉到与 A 同响度，线性相加才不会越换越大。 */
   lowTrim: GainNode;
+  /** B 低频支路极性（1 正常 / −1 反相），只在 A/B 低频反相时翻一次。 */
+  lowPolarity: GainNode;
   /** 低频支路的电平探头（只测不发声）。 */
   lowAnalyser: AnalyserNode;
   /** 高频段增益（等功率交叉）。 */
   highGain: GainNode;
+  /** 风格 EQ（A 侧）：6500 Hz 高频架，默认 0 dB。 */
+  aStyleHigh: BiquadFilterNode;
+  /** 风格 EQ（A 侧）：齿音/咬字区峰值，Q 0.9，默认 0 dB。 */
+  aStylePresence: BiquadFilterNode;
+  /** 风格 EQ（B 侧）：6500 Hz 高频架，默认 0 dB。 */
+  bStyleHigh: BiquadFilterNode;
+  /** 风格 EQ（B 侧）：咬字区峰值，Q 0.9，默认 0 dB。 */
+  bStylePresence: BiquadFilterNode;
+  /** 风格 EQ（B 侧）：120 Hz 低架，默认 0 dB。 */
+  bStyleLow: BiquadFilterNode;
+  /**
+   * 本 deck 在过渡里的角色。风格 EQ 的两组节点都建在每条链上，
+   * 排程时只动与角色匹配的一组，另一组保持 0 dB 直通。
+   */
+  styleSide: 'a' | 'b' | null;
+  /** 分频点（LR4 低通/高通各两级）；换手前可按两边低频相关性微调。 */
+  crossover: BiquadFilterNode[];
   /** 整侧低通（A 用来「变闷」）。 */
   sweepLp: BiquadFilterNode;
   /** 整侧高通（B 用来「从远处走近」）。 */
   sweepHp: BiquadFilterNode;
   /** 人声让位（层 C）：A 的 1.5–4 kHz 峰值滤波，被 B 的人声活动度压下去。 */
   duck: BiquadFilterNode;
+  /** B 侧过渡期电平包络（只抬不降，0…+6 dB），随 B 自己顶上来回到 0。 */
+  bTrim: GainNode;
+  /** 湿声高通：B 侧只把 300 Hz 以上送进混响，低音保持干声。 */
+  wetHp: BiquadFilterNode;
+  /** 湿声让位：B 自己唱时把湿声压下去。 */
+  wetDuck: GainNode;
   /** B 顶上来时给 A 的压音（电平），默认 1。 */
   aPress: GainNode;
   /** 压音同时把 A 的低通往下拉（Hz），默认 20000。 */
@@ -234,12 +259,44 @@ export function buildAutomixV2Deck(element: HTMLAudioElement): AutomixV2Deck | n
   // 线性相加的正确前提是「两边一样响」；不同响度直接相加就会出现「越换越大」。
   const lowTrim = ctx.createGain();
   lowTrim.gain.value = 1;
+  // 反相开关：两边低频波形反相时，线性换手会互相抵消（越换越薄）；
+  //   把 B 的低频整体翻 180°，相关信号才谈得上相加。
+  const lowPolarity = ctx.createGain();
+  lowPolarity.gain.value = 1;
   // 探头接在 lowTrim 之前，量到的是未经校准的原始低频，便于反复校准。
   const lowAnalyser = ctx.createAnalyser();
   lowAnalyser.fftSize = 2048;
   lowAnalyser.smoothingTimeConstant = 0;
   const highGain = ctx.createGain();
   highGain.gain.value = 0;
+  // 风格 EQ：默认全部 0 dB 直通。A 侧修「高频空气感 / 咬字亮度」，
+  // B 侧额外补一点 120 Hz 低架（前奏常常偏薄）。两组节点同时存在于每条链，
+  // 排程时按 deck.styleSide 只动对应一侧，另一侧保持透明。
+  const aStyleHigh = ctx.createBiquadFilter();
+  aStyleHigh.type = 'highshelf';
+  aStyleHigh.frequency.value = 6500;
+  aStyleHigh.Q.value = 0.7;
+  aStyleHigh.gain.value = 0;
+  const aStylePresence = ctx.createBiquadFilter();
+  aStylePresence.type = 'peaking';
+  aStylePresence.frequency.value = 3000;
+  aStylePresence.Q.value = 0.9;
+  aStylePresence.gain.value = 0;
+  const bStyleHigh = ctx.createBiquadFilter();
+  bStyleHigh.type = 'highshelf';
+  bStyleHigh.frequency.value = 6500;
+  bStyleHigh.Q.value = 0.7;
+  bStyleHigh.gain.value = 0;
+  const bStylePresence = ctx.createBiquadFilter();
+  bStylePresence.type = 'peaking';
+  bStylePresence.frequency.value = 3000;
+  bStylePresence.Q.value = 0.9;
+  bStylePresence.gain.value = 0;
+  const bStyleLow = ctx.createBiquadFilter();
+  bStyleLow.type = 'lowshelf';
+  bStyleLow.frequency.value = 120;
+  bStyleLow.Q.value = 0.7;
+  bStyleLow.gain.value = 0;
   // 中低层：从 120 Hz 以上再切一刀（1200 Hz），让「乐器主体」与「人声/镲片」
   // 依次进场，而不是所有东西同时抬起来。
   const [midA, midB] = makeLr4(ctx, 'lowpass', 1200);
@@ -268,6 +325,8 @@ export function buildAutomixV2Deck(element: HTMLAudioElement): AutomixV2Deck | n
   sweepLp.frequency.value = 20000;
   sweepLp.Q.value = SWEEP_Q;
   let wetSendTap: 'pre' | 'post' = 'pre';
+  let wetHp: BiquadFilterNode;
+  let wetDuck: GainNode;
   let reverbSend: GainNode;
   let reverbGain: GainNode;
   let hallSend: GainNode;
@@ -304,6 +363,9 @@ export function buildAutomixV2Deck(element: HTMLAudioElement): AutomixV2Deck | n
   const loudnessTrim = ctx.createGain();
   loudnessTrim.gain.value = 1;
 
+  const bTrim = ctx.createGain();
+  bTrim.gain.value = 1;
+
   const duck = ctx.createBiquadFilter();
   duck.type = 'peaking';
   duck.frequency.value = 2500;
@@ -313,7 +375,8 @@ export function buildAutomixV2Deck(element: HTMLAudioElement): AutomixV2Deck | n
   try {
     tap.input.connect(lowA);
     lowA.connect(lowB);
-    lowB.connect(lowGain);
+    lowB.connect(lowPolarity);
+    lowPolarity.connect(lowGain);
     lowGain.connect(lowTrim);
     lowTrim.connect(lowSum);
     // 探头接在**分频输出**而不是 lowGain 之后：量的是这一侧真实的低频电平，
@@ -328,12 +391,20 @@ export function buildAutomixV2Deck(element: HTMLAudioElement): AutomixV2Deck | n
     midSum.connect(unfade);
     highB.connect(hiA);
     hiA.connect(hiB);
-    hiB.connect(highGain);
+    // 风格 EQ 串在 highGain 之前：hiB → aStyleHigh → aStylePresence → bStyleHigh
+    // → bStylePresence → bStyleLow → highGain。全部 0 dB 时链路与旧版等价。
+    hiB.connect(aStyleHigh);
+    aStyleHigh.connect(aStylePresence);
+    aStylePresence.connect(bStyleHigh);
+    bStyleHigh.connect(bStylePresence);
+    bStylePresence.connect(bStyleLow);
+    bStyleLow.connect(highGain);
     highGain.connect(highSum);
     highSum.connect(unfade);
     unfade.connect(sum);
     lowSum.connect(sum);
-    sum.connect(duck);
+    sum.connect(bTrim);
+    bTrim.connect(duck);
     duck.connect(loudnessTrim);
     loudnessTrim.connect(sweepLp);
     sweepLp.connect(sweepHp);
@@ -356,8 +427,16 @@ export function buildAutomixV2Deck(element: HTMLAudioElement): AutomixV2Deck | n
     // 听感就是「一进过渡，正在播的这首直接没声」。
     wetIn = ctx.createGain();
     wetIn.gain.value = 1;
+    wetHp = ctx.createBiquadFilter();
+    wetHp.type = 'highpass';
+    wetHp.frequency.value = 20;
+    wetHp.Q.value = 0.707;
+    wetDuck = ctx.createGain();
+    wetDuck.gain.value = 1;
     duck.connect(wetIn);
-    wetIn.connect(reverbSend);
+    wetIn.connect(wetHp);
+    wetHp.connect(wetDuck);
+    wetDuck.connect(reverbSend);
     reverbSend.connect(reverb);
     reverb.connect(reverbDamp);
     reverbDamp.connect(reverbGain);
@@ -427,6 +506,7 @@ export function buildAutomixV2Deck(element: HTMLAudioElement): AutomixV2Deck | n
     disposed = true;
     const nodes: AudioNode[] = [
       lowA, lowB, highA, highB, midA, midB, hiA, hiB, lowGain, midGain, lowTrim, lowAnalyser, highGain,
+      aStyleHigh, aStylePresence, bStyleHigh, bStylePresence, bStyleLow,
       lowSum, midSum, highSum, sum, duck, loudnessTrim, unfade,
       sweepLp, sweepHp, aPress, aDarken, wetIn, reverbSend, reverbGain, reverbDamp, reverb,
       hallSend, hallGain, hallPre, hallConv, hallDamp, hallNotch, hallHp,
@@ -448,8 +528,10 @@ export function buildAutomixV2Deck(element: HTMLAudioElement): AutomixV2Deck | n
   };
 
   const deck: AutomixV2Deck = {
-    element, tap, lowGain, midGain, lowTrim, lowAnalyser, highGain, sweepLp, sweepHp, duck, loudnessTrim, unfade,
-    aPress, aDarken, reverbSend, reverbGain, echoSend, echoDelay, echoOut, echoDamp, echoFeedback,
+    element, tap, lowGain, midGain, lowTrim, lowPolarity, lowAnalyser, highGain, sweepLp, sweepHp, duck, bTrim, loudnessTrim, unfade,
+    crossover: [lowA, lowB, highA, highB],
+    aStyleHigh, aStylePresence, bStyleHigh, bStylePresence, bStyleLow, styleSide: null,
+    aPress, aDarken, wetHp, wetDuck, reverbSend, reverbGain, echoSend, echoDelay, echoOut, echoDamp, echoFeedback,
     hallSend, hallGain, hallPre, hallConv, hallDamp, dispose,
     get wetSendTap() { return wetSendTap; },
     setWetTap(next: 'pre' | 'post') {
@@ -482,6 +564,28 @@ export function measureLowRms(deck: AutomixV2Deck): number {
 }
 
 /** 设置低频校准量（dB，夹 ±8）；0 dB 等价直通。 */
+/**
+ * 分频点自适应：把 LR4 低通/高通同时挪到 hz（90–200 Hz）。
+ * 低频段仍是线性换手，抬高只是让「相位打架」的一段缩窄。
+ */
+export function setCrossoverHz(deck: AutomixV2Deck, hz: number): void {
+  const target = Math.max(90, Math.min(200, hz));
+  const now = deck.crossover[0]?.context.currentTime ?? 0;
+  for (const filter of deck.crossover) {
+    filter.frequency.cancelScheduledValues(now);
+    filter.frequency.setTargetAtTime(target, now, 0.02);
+  }
+}
+
+export function setLowPolarity(deck: AutomixV2Deck, inverted: boolean): void {
+  const value = inverted ? -1 : 1;
+  try {
+    deck.lowPolarity.gain.setTargetAtTime(value, deck.lowPolarity.context.currentTime, 0.01);
+  } catch {
+    deck.lowPolarity.gain.value = value;
+  }
+}
+
 export function setLowTrimDb(deck: AutomixV2Deck, db: number): void {
   const clamped = Math.max(-8, Math.min(8, Number.isFinite(db) ? db : 0));
   const gain = 10 ** (clamped / 20);
@@ -606,6 +710,40 @@ function clampDb(value: number): number {
 }
 
 /**
+ * B 侧过渡期电平包络：只抬不降（0…+6 dB），随 B 自己顶上来回到 0。
+ *
+ * 体检里最差的响度塌陷不是换手时机，而是「B 前奏比 A 尾段低 10–12 LU」：
+ * 换手按小节数把 A 关掉后，中间那几秒只剩 B 的轻前奏。
+ * 这条包络在 A 还在响的时候把 B 抬起来（听感上被 A 掩蔽），
+ * 等 B 的鼓/人声进来再回到 0，避免「过渡完 B 突然变大」。
+ */
+export function scheduleAutomixV2BTrim(
+  deck: AutomixV2Deck,
+  atSec: number,
+  points: readonly { offsetMs: number; db: number }[],
+): void {
+  if (!points.length) return;
+  const param = deck.bTrim.gain;
+  const now = deck.bTrim.context.currentTime;
+  const at = Math.max(now, atSec);
+  try {
+    param.cancelScheduledValues(now);
+    param.setValueAtTime(1, now);
+  } catch {
+    /* 忽略 */
+  }
+  for (const point of points) {
+    const seconds = at + Math.max(0, point.offsetMs) / 1000;
+    const gain = Math.pow(10, Math.max(-6, Math.min(9, point.db)) / 20);
+    try {
+      param.linearRampToValueAtTime(gain, seconds);
+    } catch {
+      return;
+    }
+  }
+}
+
+/**
  * 尾段渐隐补回：把 A 的母带 fade-out 抬回渐隐前的电平。
  *
  * 与其它曲线不同，这条是「只抬不降」的单向曲线，所以用线性 ramp 直接排；
@@ -640,6 +778,93 @@ export function scheduleAutomixV2Presence(
   } catch {
     /* 调度失败就当没加，不影响过渡 */
   }
+}
+
+/** 风格 EQ 的目标值（对应 StylePolicy.eq）。 */
+export interface AutomixV2StyleEqPlan {
+  aHighDb?: number;
+  aPresenceDb?: number;
+  aPresenceHz?: number;
+  bHighDb?: number;
+  bPresenceDb?: number;
+  bPresenceHz?: number;
+  bLowDb?: number;
+  /** 这组值作用于哪一侧；缺省用 deck.styleSide，再缺省按 A 侧处理。 */
+  side?: 'a' | 'b';
+}
+
+/** 风格 EQ 的基准存在感频率：过渡结束后回到这里，下一次过渡从透明起步。 */
+const STYLE_PRESENCE_BASE_HZ = 3000;
+
+function clampStyleDb(value: number | undefined): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(-6, Math.min(6, value as number));
+}
+
+function clampStyleHz(value: number | undefined): number {
+  if (!Number.isFinite(value)) return STYLE_PRESENCE_BASE_HZ;
+  return Math.max(200, Math.min(12_000, value as number));
+}
+
+function scheduleStyleGain(param: AudioParam, targetDb: number, startSec: number, dur: number): void {
+  // BiquadFilterNode.gain 的单位是 dB，不要在这里换成线性增益。
+  const target = clampStyleDb(targetDb);
+  const peak = startSec + dur * 0.3;
+  const release = startSec + dur * 0.85;
+  try {
+    param.cancelScheduledValues(startSec);
+    param.setValueAtTime(param.value, startSec);
+    param.linearRampToValueAtTime(target, peak);
+    param.setValueAtTime(target, release);
+    // 契约：补偿只在过渡窗口内生效，末 15% 回到 0 dB。
+    param.linearRampToValueAtTime(0, startSec + dur);
+  } catch {
+    /* 调度失败就当没加，不影响过渡 */
+  }
+}
+
+function scheduleStyleFreq(param: AudioParam, targetHz: number, startSec: number, dur: number): void {
+  const target = clampStyleHz(targetHz);
+  try {
+    param.cancelScheduledValues(startSec);
+    param.setValueAtTime(param.value, startSec);
+    param.linearRampToValueAtTime(target, startSec + dur * 0.3);
+    param.setValueAtTime(target, startSec + dur * 0.85);
+    param.linearRampToValueAtTime(STYLE_PRESENCE_BASE_HZ, startSec + dur);
+  } catch {
+    /* 忽略 */
+  }
+}
+
+/**
+ * 把风格 EQ 排到过渡窗口上：
+ * - 前 30% 爬到目标（不做阶跃，避免「一进过渡突然变亮/变厚」）；
+ * - 保持到 85%；
+ * - 末 15% 回 0 dB（契约要求过渡补偿必须收干净，否则下一首会继承 EQ）。
+ *
+ * `plan.side` 决定写哪一组节点：A 侧 aStyleHigh/aStylePresence，B 侧 bStyleHigh/
+ * bStylePresence/bStyleLow。两组都常驻链上，未命中的一组保持 0 dB 直通。
+ */
+export function scheduleAutomixV2Style(
+  deck: AutomixV2Deck,
+  atSec: number,
+  durSec: number,
+  plan: AutomixV2StyleEqPlan,
+): void {
+  const ctx = deck.aStyleHigh.context;
+  const start = Math.max(0, Number.isFinite(atSec) ? atSec : 0, ctx.currentTime);
+  const dur = Math.max(0.2, Number.isFinite(durSec) && durSec > 0 ? durSec : 0.2);
+  const side = plan.side ?? deck.styleSide ?? 'a';
+  if (side === 'a') {
+    scheduleStyleGain(deck.aStyleHigh.gain, clampStyleDb(plan.aHighDb), start, dur);
+    scheduleStyleGain(deck.aStylePresence.gain, clampStyleDb(plan.aPresenceDb), start, dur);
+    scheduleStyleFreq(deck.aStylePresence.frequency, plan.aPresenceHz ?? STYLE_PRESENCE_BASE_HZ, start, dur);
+    return;
+  }
+  scheduleStyleGain(deck.bStyleHigh.gain, clampStyleDb(plan.bHighDb), start, dur);
+  scheduleStyleGain(deck.bStylePresence.gain, clampStyleDb(plan.bPresenceDb), start, dur);
+  scheduleStyleGain(deck.bStyleLow.gain, clampStyleDb(plan.bLowDb), start, dur);
+  scheduleStyleFreq(deck.bStylePresence.frequency, plan.bPresenceHz ?? STYLE_PRESENCE_BASE_HZ, start, dur);
 }
 
 export function scheduleAutomixV2Unfade(
@@ -744,7 +969,7 @@ export function scheduleAutomixV2Hall(
   options: { sendDb?: number; fromP?: number; attackP?: number; releaseP?: number; tailMs?: number } = {},
 ): void {
   const sendDb = options.sendDb ?? -22;
-  const fromP = Math.max(0, Math.min(0.7, options.fromP ?? 0.18));
+  const fromP = Math.max(0.5, Math.min(0.85, options.fromP ?? 0.5));
   const attackP = Math.max(0.15, Math.min(0.85, options.attackP ?? 0.55));
   const releaseP = Math.max(fromP + attackP + 0.02, Math.min(0.98, options.releaseP ?? fromP + attackP));
   const tailMs = Math.max(600, options.tailMs ?? Math.min(2600, Math.max(1200, durSec * 1000 * 0.18)));
@@ -771,15 +996,81 @@ export function scheduleAutomixV2Hall(
   }
 }
 
+/** B 专用：湿声只取 300 Hz 以上（低音保持干声），并给湿声留一条可被 duck 的增益。 */
+export function setWetHighpass(deck: AutomixV2Deck, hz: number): void {
+  const f = Math.max(20, Math.min(4_000, hz));
+  try { deck.wetHp.frequency.setTargetAtTime(f, deck.wetHp.context.currentTime, 0.02); } catch { /* 老 deck */ }
+}
+
+/**
+ * 过渡前段「B 在混响里」的湿声包络：50% 起送，80% 前保持，之后在 92% 之前收干。
+ * 与 scheduleAutomixV2Reverb 相比，它显式保证「80% 前湿、80% 后干」。
+ */
+export function scheduleAutomixV2WetBed(
+  deck: AutomixV2Deck,
+  startSec: number,
+  durSec: number,
+  options: { sendDb?: number; returnDb?: number; fromP?: number; dryAtP?: number; endDb?: number } = {},
+): void {
+  const sendDb = Math.max(-30, Math.min(-2, options.sendDb ?? -5));
+  const ret = Math.pow(10, Math.max(-6, Math.min(9, options.returnDb ?? 5)) / 20);
+  const fromP = Math.max(0.35, Math.min(0.85, options.fromP ?? 0.5));
+  const dryAtP = Math.max(fromP + 0.05, Math.min(0.95, options.dryAtP ?? 0.8));
+  const endDb = Math.min(-18, options.endDb ?? -30);
+  const start = startSec + durSec * fromP;
+  const dry = startSec + durSec * dryAtP;
+  const end = startSec + durSec * 0.97;
+  const peak = 10 ** (sendDb / 20);
+  const endGain = 10 ** (endDb / 20);
+  try {
+    const send = deck.reverbSend.gain;
+    const retGain = deck.reverbGain.gain;
+    send.cancelScheduledValues(startSec);
+    retGain.cancelScheduledValues(startSec);
+    send.setValueAtTime(0, Math.max(0, startSec));
+    send.linearRampToValueAtTime(peak, start);
+    send.setValueAtTime(peak, dry);
+    send.exponentialRampToValueAtTime(Math.max(1e-4, endGain), Math.max(dry + 0.05, end));
+    retGain.setValueAtTime(0, Math.max(0, startSec));
+    retGain.linearRampToValueAtTime(ret, start);
+    retGain.setValueAtTime(ret, dry);
+    retGain.linearRampToValueAtTime(0, Math.max(dry + 0.05, end));
+  } catch {
+    deck.reverbSend.gain.value = peak;
+    deck.reverbGain.gain.value = ret;
+  }
+}
+
+/** 湿声让位：B 自己唱的时候把湿声压下去，保证人声是干的。 */
+export function scheduleWetDuck(
+  deck: AutomixV2Deck,
+  startSec: number,
+  durSec: number,
+  points: readonly { p: number; db: number }[],
+): void {
+  if (!points.length || !(durSec > 0)) return;
+  const g = deck.wetDuck.gain;
+  try {
+    g.cancelScheduledValues(startSec);
+    g.setValueAtTime(1, Math.max(0, startSec));
+    for (const pt of points) {
+      const at = startSec + Math.max(0, Math.min(1, pt.p)) * durSec;
+      g.setTargetAtTime(10 ** (Math.max(-12, Math.min(0, pt.db)) / 20), at, 0.045);
+    }
+    g.setTargetAtTime(1, startSec + durSec * 0.98, 0.08);
+  } catch { /* 忽略 */ }
+}
+
 export function scheduleAutomixV2Reverb(
   deck: AutomixV2Deck,
   startSec: number,
   durSec: number,
   options: { sendDb?: number; returnDb?: number; fromP?: number; tailMs?: number } = {},
 ): void {
-  const sendDb = options.sendDb ?? -6;
+  const sendDb = Math.min(-6, options.sendDb ?? -9);
   const returnDb = options.returnDb ?? 8;
-  const fromP = Math.max(0, Math.min(0.9, options.fromP ?? 0.25));
+  // 用户口径：混响/声场在过渡 50% 之后才从 0 开始，之前一点不送。
+  const fromP = Math.max(0.5, Math.min(0.92, options.fromP ?? 0.5));
   // 尾巴长度：过渡完成后还要响一段才自然收掉；按窗口长度缩放，1.2–2.2 s。
   const tailMs = Math.max(600, options.tailMs ?? Math.min(2200, Math.max(1200, durSec * 1000 * 0.12)));
   const start = Math.max(0, startSec + durSec * fromP);
@@ -792,11 +1083,11 @@ export function scheduleAutomixV2Reverb(
     deck.reverbSend.gain.cancelScheduledValues(startSec);
     deck.reverbGain.gain.setValueAtTime(ret, Math.max(0, startSec));
     deck.reverbSend.gain.setValueAtTime(0, Math.max(0, startSec));
-    // 两段爬升（近似对数）：先到一半，再在窗口末端到满 —— 听感是「渐渐变湿」而不是突然出现。
-    const mid = start + (endSec - start) * 0.5;
-    deck.reverbSend.gain.linearRampToValueAtTime(peak * 0.5, Math.max(start + 0.02, mid));
-    deck.reverbSend.gain.linearRampToValueAtTime(peak, endSec);
-    // 过渡结束之后再慢慢消失（不是一刀切），这段就是「过渡完成后慢慢消失」。
+    // 从 0 平滑爬升：先到 40% 目标（避免 50% 处一个台阶），再在窗口末端到目标量。
+    const riseSec = Math.max(0.35, (endSec - start) * 0.35);
+    deck.reverbSend.gain.setValueAtTime(0, Math.max(0, startSec));
+    deck.reverbSend.gain.linearRampToValueAtTime(peak * 0.4, start + riseSec * 0.5);
+    deck.reverbSend.gain.linearRampToValueAtTime(peak, Math.min(endSec, start + riseSec));
     deck.reverbSend.gain.setValueAtTime(peak, endSec + 0.01);
     deck.reverbSend.gain.exponentialRampToValueAtTime(Math.max(0.0005, peak * 0.004), endSec + tailSec);
     deck.reverbSend.gain.linearRampToValueAtTime(0, endSec + tailSec + 0.05);
@@ -820,7 +1111,8 @@ export function scheduleAutomixV2Echo(
   const now = ctx.currentTime;
   const start = Math.max(now, startSec);
   const end = start + Math.max(0.05, durationSec);
-  const sendFrom = start + Math.max(0, Math.min(0.9, plan.sendFromP)) * (end - start);
+  // 回声同属声场：50% 前不送，从 0 起。
+  const sendFrom = start + Math.max(0.5, Math.min(0.9, plan.sendFromP)) * (end - start);
   const outGain = Math.pow(10, Math.max(-24, Math.min(0, plan.outDb)) / 20);
   try {
     deck.echoDelay.delayTime.cancelScheduledValues(now);

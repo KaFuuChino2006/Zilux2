@@ -6,7 +6,7 @@
  * 打新一段之前先把上一段的类摘干净并强制回流，避免「点了没反应 / 只播半截」。
  *
  * 样式在 `styles/app.css` §9：`is-block-in` / `is-block-out` / `is-block-settled` + `block-in-*` / `block-out-*` 关键帧。
- * 入场跑完切到 `is-block-settled`（而不是摘干净）：保住合成层，文字不会在收尾那一下重新栅格化。
+ * 入场跑完切到 `is-block-settled`（而不是摘干净）：保住合成层，收尾那一下不会整页重栅格化。
  */
 
 import { MOTION, prefersReducedMotion } from './motion';
@@ -53,17 +53,19 @@ const GROUP_WRAPPERS = '.playlists-page';
 
 const IN_CLASS = 'is-block-in';
 /**
- * 落定：分两段，缺一段就出另一种毛病。
+ * 落定：**换类、但不撤层**（2026-11-24 第三版口径）。
  *
- *   1) **桥接**：入场跑完那一帧不立刻摘类。动画期间元素在自己的合成层里，
- *      摘掉等于当场重栅格化，文字会重新 hint 一次 —— 就是「字体微动一次」。
- *      所以把算出来的矩阵与滤镜抄进行内变量，由 `.is-block-settled` 原样读回去，
- *      属性 / 矩阵 / 层三者都不变。
- *   2) **放手**：桥接两帧之后必须摘类清变量，让元素回主线程按设备像素重画。
- *      一直留在合成层里的话，文字是先画进离屏纹理再合成的；动画期间有过 scale /
- *      perspective，那份纹理就按当时比例画，之后不再重画 —— 表现为「字有点糊，
- *      而且是概率性的」（维护者 2026-11-22 报的第二个症状）。
- *      两帧足够让最后一帧先被呈现，放手时的重栅格化在静态画面上看不出来。
+ * 入场跑完那一帧把 `is-block-in` 换成 `is-block-settled`（只挂 `will-change: transform`，
+ * 不写 `transform`，免得压掉卡片自己的 hover 变换），元素从「合成的动画态」平滑变成
+ * 「静态但仍在合成层」——属性和几何都没变，所以这一下没有任何像素变化。
+ *
+ * 为什么不撤层：撤层那一帧，整批元素会一起从「合成层栅格」换回「主线程栅格」，
+ * 位置从分数吸附到设备像素（实测各块 0.1~0.8px）、文字从灰阶 AA 换成 LCD 次像素，
+ * 整页看起来就是「像素抖一下」——维护者 2026-11-24 报的原话：「动画进入完毕后会有位移的感觉，
+ * 就是那种像素的变化一样」。实测撤层那一帧整页 diff 88462 px，留层则连续帧 diff = 0。
+ *
+ * 层什么时候撤：跟着类一起在 `resetMotion()`（换页 / 重播 / 销毁）里撤，那时正在演离场
+ * 或页面已经藏起来，没人看得见。历史「留层会糊」的结论属于 3D / filter 时代，见 app.css §9 的注释。
  */
 const SETTLE_CLASS = 'is-block-settled';
 const OUT_CLASS = 'is-block-out';
@@ -96,11 +98,6 @@ export interface BlockEntranceOptions {
 export class BlockEntrance {
   /** 逐块入场的落定定时器（可能同时有整页一批 + 追加的一批）。 */
   private enterTimers = new Set<number>();
-  /** 落定桥接之后待执行的「放手」帧，打断/清场时要一起撤掉。 */
-  private releaseFrames = new Set<number>();
-  /** 每个元素当前的桥接代次：放手回调只认自己那一次，别把新一轮的状态清掉。 */
-  private settleTokens = new WeakMap<HTMLElement, number>();
-  private settleToken = 0;
   /** 逐块出场的落定定时器、本次的目标、等待方（被打断也要 resolve，调用方不能一直等）。 */
   private leaveTimer = 0;
   private leaveTargets: HTMLElement[] = [];
@@ -287,37 +284,19 @@ export class BlockEntrance {
       for (const { el } of scheduled) {
         // 收尾：所有变体的最后一帧都已经是恒等 2D 变换，所以这里不需要抄矩阵 ——
         // 抄 3D 矩阵再撤回去才是「像素级位移」的来源（3D 表面换回 2D，文字重新 hint）。
-        // 先挂落定类（transform: none，几何与最后一帧一致），两帧后再把类也摘掉，
-        // 让文字回主线程按设备像素重画：既不糊，也不会跳。
+        // 挂落定类（只留合成层、不写 transform），之后**不撤层**：撤层那一帧，
+        // 整批元素会一起从「合成层栅格」换回「主线程栅格」——位置从分数吸附到设备像素、
+        // 文字从灰阶 AA 换成 LCD 次像素，看起来就是整页「像素抖一下」
+        // （2026-11-24 维护者原话：「动画进入完毕后会有位移的感觉，就是那种像素的变化一样」；
+        //  实测撤层那一帧整页 diff 88462 px / 留层则是 0）。
+        // 层跟着类一起在 resetMotion()（换页 / 重播 / 销毁）里撤，那时要么正在演离场、
+        // 要么页已经藏起来了，没人看得见。
         el.classList.remove(IN_CLASS);
         el.classList.add(SETTLE_CLASS);
         el.style.removeProperty(ENTER_DELAY_VAR);
-        this.releaseSettleSoon(el);
       }
     }, total + MOTION.base + 90);
     this.enterTimers.add(timer);
-  }
-
-  /**
-   * 桥接两帧后真正放手（把落定类也摘掉）：
-   * 元素回主线程按设备像素重画，文字不再从离屏纹理里采样，也就不会概率性发糊；
-   * 因为落定类的几何和动画最后一帧完全一致，这一下不会有任何位移。
-   * 用代数戳防止「放手回调」把后来新一轮的桥接状态清掉。
-   */
-  private releaseSettleSoon(el: HTMLElement): void {
-    const token = ++this.settleToken;
-    this.settleTokens.set(el, token);
-    const first = window.requestAnimationFrame(() => {
-      const second = window.requestAnimationFrame(() => {
-        this.releaseFrames.delete(second);
-        if (this.settleTokens.get(el) !== token) return;
-        this.settleTokens.delete(el);
-        el.classList.remove(SETTLE_CLASS);
-      });
-      this.releaseFrames.delete(first);
-      this.releaseFrames.add(second);
-    });
-    this.releaseFrames.add(first);
   }
 
   /**
@@ -371,16 +350,8 @@ export class BlockEntrance {
     this.enterTimers.clear();
   }
 
-  /** 撤掉所有还在队列里的「放手」帧（新一轮开始前必须撤，否则会清掉新桥接的状态）。 */
-  private stopRelease(): void {
-    if (this.releaseFrames.size === 0) return;
-    for (const frame of this.releaseFrames) window.cancelAnimationFrame(frame);
-    this.releaseFrames.clear();
-  }
-
   /** 摘掉运动相关的类与自定义属性，让下一轮从干净状态重开。 */
   private clearMotionClasses(): void {
-    this.stopRelease();
     this.root
       .querySelectorAll<HTMLElement>(`.${IN_CLASS}, .${OUT_CLASS}, .${SETTLE_CLASS}`)
       .forEach((el) => this.resetMotion(el));
@@ -394,8 +365,6 @@ export class BlockEntrance {
     el.style.removeProperty(LEAVE_DELAY_VAR);
     el.style.removeProperty(IN_ANIM_VAR);
     el.style.removeProperty(OUT_ANIM_VAR);
-    // 这一块重新来过：作废它身上还没执行的「放手」回调。
-    this.settleTokens.delete(el);
     delete el.dataset.blockVariant;
     // 标题的逐字动画不归关键帧管：这块要重开就得先把它落到最终态。
     // 只查记过「有标题」的块，几百张海报的清场不受影响。
@@ -473,7 +442,7 @@ export class BlockEntrance {
   /** 页面销毁：停掉两段定时器、收掉等待方（否则 await 它的调用方会永远等下去）。 */
   dispose(): void {
     this.stopEnter();
-    this.stopRelease();
+    this.clearMotionClasses();
     this.finishLeave();
     for (const motion of this.titleInstances) motion.dispose();
     this.titleInstances.clear();

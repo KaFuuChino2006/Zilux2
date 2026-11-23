@@ -67,7 +67,7 @@ test('容器让位：带标题的那块只做纯淡入，不跟字的轨迹抢',
 });
 
 test('所有页面的顶部大字都接上，不只是海报墙', () => {
-  assert.match(app, /const WALL_TITLES = '\.wall-title, \.disc-sub-title'/);
+  assert.match(app, /const WALL_TITLES = '\.wall-title, \.disc-sub-title, \.library-display'/, '推荐式墙的 library-display 大字也要接上');
   assert.match(app, /titles: WALL_TITLES/);
   assert.match(home, /const HOME_TITLES = '\.ui-section-title, \.daily-title'/);
   assert.match(home, /titles: HOME_TITLES/);

@@ -175,7 +175,7 @@ export class HomeView {
     collections.append(...collectionCards);
     if (collectionCards.length > 0 || recentSection) {
       const row = h('div', { class: 'home-row' });
-      // 左 + 中给两个平台收藏，最近播放收窄后放最右侧
+      row.dataset.collectionCount = String(collectionCards.length);
       if (collectionCards.length > 0) row.append(collections);
       if (recentSection) row.append(recentSection);
       this.root.append(row);

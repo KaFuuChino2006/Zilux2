@@ -1,5 +1,5 @@
 import { setDeckMixGain, deckStemInput, scheduleElementEntry, deckAudioContext } from '../core/audioTap';
-import { ensureAutomixV2Deck, releaseAutomixV2Tail, scheduleAutomixV2, scheduleAutomixV2Duck, scheduleAutomixV2Echo, scheduleAutomixV2Presence, scheduleAutomixV2TailBleed, scheduleAutomixV2Unfade, scheduleAutomixV2Reverb, scheduleAutomixV2Hall, scheduleAutomixV2Press, setLowTrimDb, scheduleLoudnessTrim } from '../audio/automixV2Graph';
+import { ensureAutomixV2Deck, releaseAutomixV2Tail, scheduleAutomixV2, scheduleAutomixV2Duck, scheduleAutomixV2Echo, scheduleAutomixV2Presence, scheduleAutomixV2TailBleed, scheduleAutomixV2Unfade, scheduleAutomixV2Reverb, scheduleAutomixV2Hall, scheduleAutomixV2Press, scheduleAutomixV2WetBed, scheduleWetDuck, setWetHighpass, setCrossoverHz, setLowPolarity, setLowTrimDb, scheduleLoudnessTrim } from '../audio/automixV2Graph';
 import { risingPressure, buildV2Plan } from '../core/automix/v2Plan';
 import { ECHO_MAX_FADE_MS, planEchoTail, type EchoTailPlan } from '../core/automix/echoTail';
 import { planBackspin, type BackspinPlan } from '../core/automix/backspin';
@@ -10,6 +10,7 @@ import { budgetForAnalysis, vocalDensity } from '../core/automix/genreProfile';
 import { applePlanFor } from '../core/automix/appleRecipes';
 import { describeStyle, rankStyles, STYLE_CATALOG, type StyleParams, type TransitionStyleId } from '../core/automix/styleKit';
 import { planSpeedRamp, speedRampAt, type SpeedRampPlan } from '../core/automix/speedRamp';
+import { planTempoPolicy } from '../core/automix/tempoPolicy';
 import { planVocalOverlay, type VocalOverlayPlan } from '../core/automix/vocalOverlay';
 import { planIntroBridge } from '../core/automix/introBridge';
 import { instrumentalAnchor } from '../core/automix/vocalAnchor';
@@ -64,6 +65,8 @@ import {
 } from '../core/automix/introBridge';
 import {
   measureLowRms,
+  scheduleAutomixV2BTrim,
+  scheduleAutomixV2Style,
   type AutomixV2Deck,
 } from '../audio/automixV2Graph';
 import {
@@ -75,6 +78,10 @@ import {
   evaluateQuality as evaluateQualityReport,
   loudnessRampCurve,
   loudnessTrimCurve,
+  planBTrimCurve,
+  planSplitHz,
+  clampTempoRateForWindow,
+  bassCorrelation,
 } from '../core/automix/v2Quality';
 import { type AutomixForm, type FormDecision } from '../core/automix/automixPlan';
 import {
@@ -90,11 +97,22 @@ import {
 } from '../core/automix/vocalAnchor';
 import { MELODY_WINDOW_BARS, pickMelodyEntry } from '../core/automix/melodyAnchor';
 import { vocalPresenceDetail } from '../core/automix/vocalAnchor';
+
 import { type BridgePlan } from '../core/automix/bridgePlan';
 import {
   prefetchBridgeBytes,
   type BridgeRuntime,
 } from '../audio/automixV2Bridge';
+import { resolveStyleProfile, type StyleProfile } from '../core/automix/styleProfile';
+import { resolveStylePolicy, type StylePolicy } from '../core/automix/stylePolicy';
+import { planTimbreCompDb } from '../core/automix/v2Quality';
+import { planExtension, type ExtensionPlan } from '../core/automix/extensionPlan';
+import {
+  extensionActive,
+  renderExtensionBuffer,
+  startExtensionPlayback,
+  type ExtensionHandle,
+} from '../audio/extensionPlayer';
 import type { AnalysisResult, BeatAnalysis } from '../online/analysis';
 import type { OnlineTrack } from '../online/types';
 import { compensationDbFor } from './loudness';
@@ -243,7 +261,7 @@ const MIX_FLOOR_PRESET_MS: Record<CrossfadePreset, number> = {
 
 /** 这次过渡至少要多长（ms）；标准档返回 0（不受约束）。 */
 function resolveMixFloorMs(settings: CrossfadeSettings): number {
-  if (!isAutomixV2(readMixTransitionMode())) return 0;
+  if (!isAutomixV2(effectiveMode())) return 0;
   if (settings.mixFloor === 'auto') return MIX_FLOOR_PRESET_MS[settings.preset] ?? 12_000;
   const sec = Number(settings.mixFloor);
   return Number.isFinite(sec) && sec > 0 ? Math.round(sec * 1000) : 0;
@@ -265,12 +283,98 @@ const AUTO_SHORT_BAR_MS = 1_300;
 const AUTO_FALLBACK_MS = 7_000;
 
 /** 淡化太短听不出、太长会盖住半首歌，都夹住。上限按手动 30 秒留余量。 */
+/**
+ * 交换点按强拍微调：把人声/中高频的交换落在最近的 downbeat 上（前后一小节内），
+ * 并把交换段拉长/缩短到 0.65–0.90 之间。找不到合适强拍时返回 undefined，保持默认 0.80。
+ */
+function snapVocalAt(
+  downbeats: readonly number[] | undefined,
+  startMs: number,
+  spanMs: number,
+  barMs: number,
+): number | undefined {
+  if (!downbeats?.length || !(spanMs > 2_000) || !(barMs > 0)) return undefined;
+  const target = startMs + spanMs * 0.8;
+  let best = 0;
+  let bestDist = barMs;
+  for (const d of downbeats) {
+    if (!Number.isFinite(d)) continue;
+    const dist = Math.abs(d - target);
+    if (dist < bestDist) { bestDist = dist; best = d; }
+  }
+  if (!best) return undefined;
+  const p = (best - startMs) / spanMs;
+  return p >= 0.65 && p <= 0.9 ? p : undefined;
+}
+
 const MIN_FADE_MS = 1_200;
 /** 短前奏不能把自动过渡压成几百毫秒。 */
 const MIN_AUTO_BLEND_MS = 3_200;
 /** LRC 末句结束是按句间隔估算的，给最后一个字留一点余量。 */
 const VOCAL_RELEASE_MARGIN_MS = 1_000;
 const MAX_FADE_MS = 32_000;
+
+/** 自动档：本次过渡实际走哪条路径。`null` = 还没判断（回退标准）。 */
+let pairMixMode: MixTransitionMode | null = null;
+
+/**
+ * 自动选择：数据够就上进阶（分频换手/节拍吸附），
+ * 拍点稀、置信度低、速度差过大、调性冲突或没有活动度曲线时退回标准（等功率）。
+ */
+function pairIsExceptional(a: BeatAnalysis | null | undefined, b: BeatAnalysis | null | undefined): boolean {
+  if (!a || !b) return true;
+  // 「特别特别」的门槛：连速度都不可信、或速率差超出引擎能安全拉伸的范围、
+  // 或者几乎没有拍点。其余情况一律给进阶 v2。
+  if ((a.bpm ?? 0) <= 0 || (b.bpm ?? 0) <= 0) return true;
+  if ((a.bpmConfidence ?? 0) < 0.2 || (b.bpmConfidence ?? 0) < 0.2) return true;
+  const ratio = nearestTempoRatio((a.bpm as number) / (b.bpm as number));
+  if (Math.abs(ratio - 1) > 0.22) return true;
+  const beatsA = (a.beatsMs?.length ?? 0) + (a.downbeats?.length ?? 0);
+  const beatsB = (b.beatsMs?.length ?? 0) + (b.downbeats?.length ?? 0);
+  if (beatsA < 16 || beatsB < 16) return true;
+  return false;
+}
+
+function decidePairMode(a: BeatAnalysis | null | undefined, b: BeatAnalysis | null | undefined, plannedMs = 0): MixTransitionMode {
+  if (readMixTransitionMode() !== 'auto') return readMixTransitionMode();
+  // 规则：计划超过 5 s 一律走进阶 v2，只有「特别特别」的配对才退回标准；
+  // 5 s 及以下按数据完整度判断（短交叠里分频换手收益小、风险大）。
+  if (plannedMs > 5_000) return pairIsExceptional(a, b) ? 'standard' : 'automixV2';
+  const downA = a?.downbeats?.length ?? 0;
+  const downB = b?.downbeats?.length ?? 0;
+  const confA = a?.bpmConfidence ?? 0;
+  const confB = b?.bpmConfidence ?? 0;
+  const bpmA = a?.bpm ?? 0;
+  const bpmB = b?.bpm ?? 0;
+  const ratio = bpmA > 0 && bpmB > 0 ? nearestTempoRatio(bpmA / bpmB) : 1;
+  const gap = Math.abs(ratio - 1);
+  const keyGap = camelotGap(a?.camelot, b?.camelot);
+  const actA = a?.activity?.vocal?.length ?? 0;
+  const actB = b?.activity?.vocal?.length ?? 0;
+  if (downA < 8 || downB < 8) return 'standard';
+  if (confA < 0.45 || confB < 0.45) return 'standard';
+  if (!(gap <= 0.18)) return 'standard';
+  if (keyGap > 4) return 'standard';
+  if (actA < 8 || actB < 8) return 'standard';
+  return 'automixV2';
+}
+
+/** 早于窗口计算时，用设置估一个「计划时长」，只用于 >5 s 规则。 */
+function estimatePlannedMs(): number {
+  try {
+    const st = readCrossfadeSettings();
+    if (st.lengthMode === 'seconds') return Math.round(st.lengthValue * 1000);
+    if (st.lengthMode === 'beats') return Math.round(st.lengthValue * 500);
+    if (st.lengthMode === 'bars') return Math.round(st.lengthValue * 2000);
+  } catch { /* 忽略 */ }
+  return 32_000;
+}
+
+function effectiveMode(): MixTransitionMode {
+  const raw = readMixTransitionMode();
+  if (raw !== 'auto') return raw;
+  return pairMixMode ?? 'standard';
+}
 /**
  * 歌词衔接的过渡时长不设固定秒数上限：按「两首协调后的小节」实时计算——
  * 先用整小节让 A 的尾奏独听一段，再用一个乐句（小节很短时两个乐句，见 AUTO_BARS / AUTO_BARS_LONG）
@@ -314,7 +418,7 @@ function readTempoAnchor(): TempoAnchor {
 }
 
 function tempoRateWindow(): { min: number; max: number } {
-  return isAutomixV2(readMixTransitionMode())
+  return isAutomixV2(effectiveMode())
     ? { min: V2_RATE_MIN, max: V2_RATE_MAX }
     : { min: TEMPO_RATE_MIN, max: TEMPO_RATE_MAX };
 }
@@ -432,7 +536,7 @@ export function readCrossfadeSettings(): CrossfadeSettings {
         : DEFAULT_SETTINGS.mixFloor,
       // 模式存独立的键（壁纸已占用 transitionMode），这里只做只读投影，保证
       // readCrossfadeSettings().mixTransitionMode 与混音器读到的永远是同一个值。
-      mixTransitionMode: readMixTransitionMode(),
+      mixTransitionMode: effectiveMode(),
     };
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -780,6 +884,8 @@ export interface CrossfadeDebugState {
   handoffHoldMs: number;
   /** A 的「可听结尾」（曲内毫秒）：调度以它为终点；旧宿主无 audibleEndMs 时 = 曲内时长 */
   currentAudibleEndMs: number;
+  /** 本次过渡是否铺生成垫底：空 = 没有，否则是给预告卡显示的说明。 */
+  bedPlan?: string;
   /** A 的尾部静音（毫秒）= 曲内时长 - currentAudibleEndMs；无静音为 0 */
   tailSilenceMs: number;
   /** auto 本次的目标时长（毫秒）：= autoBars × autoBarMs；手动档位/回退为 0 */
@@ -1039,6 +1145,10 @@ export interface ManualCrossfadeOptions extends DeckPlanCommon {
 }
 
 interface FadeSchedule {
+  /** B 侧电平包络（dB，0…+6，窗口内均匀采样）；空 = 不补。 */
+  bTrim?: number[];
+  /** 自适应分频点（Hz）：两边低频相关性越低，越往上抬。 */
+  splitHz?: number;
   beatSync?: boolean;
   cleanPickup?: boolean;
   fadeStartFileMs: number;
@@ -1047,6 +1157,8 @@ interface FadeSchedule {
   bStartFileMs: number;
   /** 本次过渡给 B 的播放速率（1 = 不变速） */
   tempoRate: number;
+  /** 双侧向中点靠时 A 的速率；undefined = A 原速 */
+  aRate?: number;
   /** A 的可听结尾（曲内毫秒，已排除尾部静音；旧宿主回退为曲内时长） */
   audibleEndPosMs: number;
   /** A 的尾部静音（毫秒）；无静音（含旧宿主回退）为 0 */
@@ -1095,6 +1207,9 @@ interface FadeSchedule {
   v2Plan?: V2Plan | null;
   /** 层 C 人声让位事件（相对淡化起点，毫秒）。 */
   v2Duck?: DuckEvent[] | null;
+  lowCorr?: number | null;
+  lowInvert?: boolean;
+  bTrimMax?: number;
   /** 选中的过渡手法（styleKit）。只有 v2 档会填；standard 恒为 undefined。 */
   styleId?: TransitionStyleId;
   styleParams?: StyleParams;
@@ -1124,6 +1239,8 @@ interface FadeSchedule {
   aTailBleedMs?: number;
   /** A 尾巴铺着时的电平（0…0.4）。 */
   aTailHold?: number;
+  /** 窗口关不住 A 末句时，尾巴需要覆盖的缺口（毫秒）；0 = 没有。 */
+  tailGuardMs?: number;
   /** 人声叠加（acapellaOverlay）的零分轨降级参数。 */
   vocalOverlay?: VocalOverlayPlan | null;
   /** 变速目标是下一首（A 被拉，B 原速）时为 true。 */
@@ -1132,9 +1249,17 @@ interface FadeSchedule {
   rampPlan?: SpeedRampPlan;
   /** 过渡的真实墙钟时长（= fadeMs × tempoRate，当目标是下一首时）。 */
   fadeWallMs?: number;
+  /** 本次过渡的风格策略（EQ / duck / 窗口缩放 / 延长预算的唯一来源）。 */
+  stylePolicy?: StylePolicy;
+  /** A 尾自延长计划（source='none' 或无需延长时为 null）。 */
+  extensionPlan?: ExtensionPlan | null;
 }
 
 interface ActivePlan {
+  /** B 侧电平包络（dB，0…+6，窗口内均匀采样）；空 = 不补。 */
+  bTrim?: number[];
+  /** 自适应分频点（Hz）：两边低频相关性越低，越往上抬。 */
+  splitHz?: number;
   /** 本次过渡的尾段混响参数（浮层回读用）。 */
   reverb?: { sendDb: number; returnDb: number; fromP: number; tailMs: number };
   /** 短过渡的尾段回声计划（只有 ≤4.2 s 的窗口才有）。 */
@@ -1144,6 +1269,8 @@ interface ActivePlan {
   /** A 的器乐尾巴还要在窗口之后铺多久（0 = 没有）。 */
   aTailBleedMs?: number;
   aTailHold?: number;
+  /** 为「唱完最后一句」补的尾巴长度（毫秒）；0 = 没有。 */
+  tailGuardMs?: number;
   tailBleedArmed?: boolean;
   phraseMatch?: boolean;
   /** 规划期那份 schedule（质量门重算后回写，浮层/体检台读的同一份数字）。 */
@@ -1167,6 +1294,7 @@ interface ActivePlan {
   graphMode: boolean;
   /** 本次过渡给 B 的播放速率（WSOLA 节拍对齐；1 = 不变速） */
   tempoRate: number;
+  aRate?: number;
   /** 本次是否走「歌词衔接」（A 末句唱完接 B 首句；手动/loop 恒 false） */
   handoff: boolean;
   /**
@@ -1236,6 +1364,9 @@ interface ActivePlan {
   v2Plan?: V2Plan | null;
   /** 层 C 人声让位事件。 */
   v2Duck?: DuckEvent[] | null;
+  lowCorr?: number | null;
+  lowInvert?: boolean;
+  bTrimMax?: number;
   /** 选中的过渡手法（styleKit）。只有 v2 档会填；standard 恒为 undefined。 */
   styleId?: TransitionStyleId;
   styleParams?: StyleParams;
@@ -1254,6 +1385,12 @@ interface ActivePlan {
   fadeWallMs?: number;
   /** A 侧分段变速折线（Apple `speedRamp` 的最小平替），惰性生成后缓存。 */
   rampPlan?: SpeedRampPlan;
+  /** 本次过渡的风格策略（执行期只读，不再推理）。 */
+  stylePolicy?: StylePolicy | null;
+  /** A 尾自延长计划。 */
+  extensionPlan?: ExtensionPlan | null;
+  /** 规划期异步渲染好的延长 buffer。 */
+  extensionBuffer?: AudioBuffer | null;
 }
 
 /** v2 过渡的运行时句柄：两侧 deck 的专用链 + 本次曲线计划。 */
@@ -1268,6 +1405,8 @@ interface AutomixV2Runtime {
   doubling?: BridgeRuntime | null;
   /** 前奏桥 buffer 句柄（B 元素推迟起播时才有）。 */
   introBridge?: BridgeRuntime | null;
+  /** A 尾自延长播放句柄（buffer 循环补在 A 的 audibleEnd 之后）。 */
+  extension?: ExtensionHandle | null;
   /** B 元素「推迟起播」的定时器，收尾时必须清掉。 */
   introTimer?: number | null;
   /** 幂等收尾标记。 */
@@ -2019,9 +2158,62 @@ function camelotGap(a?: string, b?: string): number {
 }
 
 /**
+ * 风格画像缓存：同一首歌在连续过渡里会被反复取用，`resolveStyleProfile` 虽然纯函数，
+ * 但一次要遍历活动度曲线与风格特征；缓存按「曲目 + 分析版本」失效，最多 64 条。
+ */
+const STYLE_PROFILE_CACHE = new Map<string, StyleProfile>();
+
+function styleProfileFor(track: OnlineTrack, result: AnalysisResult): StyleProfile {
+  const analysis = result.analysis;
+  // 宿主分析缓存里带了 styleProfile 就直接用（Lead 在 analysis.ts 合入该字段）。
+  const embedded = (analysis as BeatAnalysis & { styleProfile?: StyleProfile }).styleProfile;
+  if (embedded) return embedded;
+  const key = [
+    track.source, track.id, track.title, track.artist,
+    result.analyzer ?? '', analysis.bpm ?? 0, result.durationMs,
+  ].join('|');
+  const hit = STYLE_PROFILE_CACHE.get(key);
+  if (hit) return hit;
+  const profile = resolveStyleProfile({
+    analysis,
+    meta: { title: track.title, artist: track.artist },
+    styleFeatures: result.features?.style ?? null,
+  });
+  if (STYLE_PROFILE_CACHE.size >= 64) {
+    const oldest = STYLE_PROFILE_CACHE.keys().next().value;
+    if (oldest !== undefined) STYLE_PROFILE_CACHE.delete(oldest);
+  }
+  STYLE_PROFILE_CACHE.set(key, profile);
+  return profile;
+}
+
+/** 人声强度 0..1（策略只需要「这首有没有人唱、占多少时间」）。 */
+function styleVocalScore(analysis: BeatAnalysis): number {
+  const detail = vocalPresenceDetail(analysis);
+  if (detail.kind === 'instrumental') return 0;
+  if (detail.kind === 'vocal') return Math.max(0.5, Math.min(1, detail.voiced));
+  return 0.4;
+}
+
+/**
  * auto 优先完整交叠。拍速或调性单独不匹配时保持等功率交叠，
  * 只有两者都明显冲突时才快速切入。
  */
+/** 某条活动度曲线在文件时间段的均值（越界夹取，缺失返回 0）。 */
+function meanActivity(analysis: BeatAnalysis, key: 'vocal' | 'drum' | 'bass', fromMs: number, toMs: number): number {
+  const act = analysis.activity;
+  const curve = act?.[key];
+  if (!curve || !curve.length) return 0;
+  const hop = act && act.hopMs > 0 ? act.hopMs : 250;
+  const i0 = Math.max(0, Math.floor(fromMs / hop));
+  const i1 = Math.min(curve.length - 1, Math.ceil(toMs / hop));
+  if (i1 < i0) return 0;
+  let sum = 0;
+  let n = 0;
+  for (let i = i0; i <= i1; i += 1) { sum += curve[i] ?? 0; n += 1; }
+  return n ? sum / n : 0;
+}
+
 function resolveTransitionStyle(
   settings: CrossfadeSettings,
   analysis: BeatAnalysis,
@@ -2406,7 +2598,39 @@ function pickV2StyleFor(input: {
   }
 }
 
+/**
+ * 窗口关不住 A 最后一句时的兜底：不再直接切走，让 A 停在 −10 dB 把这一句唱完，
+ * 再在窗口后用 tailBleed 收干（最多 3 s）。乐句路径与常规路径共用同一套数字。
+ */
+function applyVocalTailGuard(
+  schedule: FadeSchedule,
+  analysis: BeatAnalysis,
+  currentStartMs: number,
+  audibleEndPosMs: number,
+): void {
+  if (!isAutomixV2(effectiveMode())) return;
+  if (schedule.cleanPickup || schedule.bridge || schedule.backspin || schedule.loopRoll) return;
+  if (!(audibleEndPosMs > 0)) return;
+  const raw = lastVocalEnd(analysis, audibleEndPosMs);
+  if (!(raw > 0)) return;
+  const lastVocalFileMs = currentStartMs + Math.min(raw, audibleEndPosMs);
+  const needEndMs = lastVocalFileMs + 600;
+  const endNowMs = schedule.fadeStartFileMs + schedule.fadeMs;
+  if (needEndMs <= endNowMs + 200) return;
+  const coverMs = Math.min(3000, Math.round(needEndMs - endNowMs) + 600);
+  if (!(coverMs >= 600)) return;
+  schedule.aTailBleedMs = Math.max(schedule.aTailBleedMs ?? 0, coverMs);
+  schedule.aTailHold = Math.max(schedule.aTailHold ?? 0, 0.32);
+  schedule.tailGuardMs = coverMs;
+  logEvent('automix-v2-vocal-tail',
+    `窗口末端早于 A 末句 ${Math.round(needEndMs - endNowMs)}ms，A 停在 ${(20 * Math.log10(schedule.aTailHold)).toFixed(0)} dB 唱完再收（tailBleed ${coverMs}ms）`);
+}
+
 function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
+  pairMixMode = decidePairMode(options.currentAnalysis?.analysis, options.nextAnalysis?.analysis, estimatePlannedMs());
+  if (readMixTransitionMode() === 'auto') {
+    logEvent('automix-auto-mode', pairMixMode === 'automixV2' ? '自动：两首数据完整，走进阶混音' : '自动：拍点/调性/活动度不足，走标准');
+  }
   const currentStartMs = options.current.startAt * 1000;
   const currentPosMs = Math.max(0, options.currentPositionMs);
   const durationMs = options.currentDurationMs;
@@ -2434,6 +2658,39 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
       : Math.max(0, options.nextAnalysis.durationMs - nextStartMs);
   const nextLimitMs = nextDurationMs > 0 ? nextStartMs + nextDurationMs : 0;
   const nextAnalysis = options.nextAnalysis.analysis;
+  // 风格画像/策略：EQ、窗口缩放、duck 与延长预算都由这两首的画像 + 当前上下文决定。
+  // 纯计算，放在 buildSchedule 规划期；播放期只读 StylePolicy，不再推理。
+  const styleProfileA = styleProfileFor(options.current.track, options.currentAnalysis);
+  const styleProfileB = styleProfileFor(options.next.track, options.nextAnalysis);
+  // 谱质心差（整曲平均）：B 明显更暗/更亮时，用它给 presence 一点补偿。
+  // 只看 style 曲线，没有就把 eq 留平；补偿上限 ±3 dB，编曲级差异（808 vs 弦乐）不硬修。
+  const meanCentroidHz = (an: BeatAnalysis): number | null => {
+    const cur = an.styleFeatures?.centroidHz;
+    if (!cur || cur.length < 3) return null;
+    let sum = 0;
+    for (const v of cur) sum += v;
+    return cur.length ? sum / cur.length : null;
+  };
+  const timbreComp = planTimbreCompDb(meanCentroidHz(analysis), meanCentroidHz(nextAnalysis));
+  const stylePolicyFor = (windowMs: number, windowBarMs: number): StylePolicy => {
+    const rawKeyGap = camelotGap(analysis.camelot, nextAnalysis.camelot);
+    const policy = resolveStylePolicy(styleProfileA, styleProfileB, {
+      // 缺调性（-1）按「相邻」中性处理，不能让未知数据误触发同调规则把 EQ 清零。
+      keyGap: rawKeyGap < 0 ? 1 : rawKeyGap,
+      bpmGap: analysis.bpm > 0 ? Math.abs(nextAnalysis.bpm - analysis.bpm) / analysis.bpm : 0,
+      energyGap: Math.abs((analysis.energy ?? 0) - (nextAnalysis.energy ?? 0)),
+      windowMs: Math.max(0, windowMs),
+      barMs: Math.max(1, windowBarMs),
+      aVocal: styleVocalScore(analysis),
+      bVocal: styleVocalScore(nextAnalysis),
+    });
+    if (timbreComp) {
+      const clamp3 = (v: number) => Math.max(-3, Math.min(3, Math.round(v * 10) / 10));
+      policy.eq.aPresenceDb = clamp3(policy.eq.aPresenceDb + timbreComp.aPresenceDb);
+      policy.eq.bPresenceDb = clamp3(policy.eq.bPresenceDb + timbreComp.bPresenceDb);
+    }
+    return policy;
+  };
   const nextFirstDownbeat = pickDownbeatAtOrAfter(nextAnalysis, nextStartMs, nextLimitMs);
   const baseBStartFileMs = nextFirstDownbeat === null ? nextStartMs : nextFirstDownbeat;
 
@@ -2444,7 +2701,7 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
   // ---- 唱词锚点（进阶 v2）：没有歌词也能把过渡落到「B 的唱词时段」----
   // 曲线来自宿主 p1-0 的 activity.vocal（250 ms 一格）；歌词坐标精确到毫秒，
   // 所以只要歌词可用就优先用歌词，曲线只做兜底与「从副歌人声进来」的选点。
-  const v2VocalAnchor = isAutomixV2(readMixTransitionMode());
+  const v2VocalAnchor = isAutomixV2(effectiveMode());
   let activityVocalEntryMs = 0;
   let activityLastVocalEndMs = 0;
   // 旋律相似度（p1-1）：只用于浮层显示与日志，0 = 没算/没有 chroma。
@@ -2500,6 +2757,23 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
           melodySim = melody.sim;
         } else if (melody) {
           melodySim = melody.sim;
+        }
+      }
+    }
+    // ---- 入点打分：如果首句会把 A 的末句切掉，就往后再挑一句能装下 A 的唱句 ----
+    // 只是「换一句进」，不改窗口公式；最多往后 16 s，且候选自身要有够清楚的人声。
+    if (settings.vocalAnchor === 'auto' && !options.nextVocalStartMs && activityVocalEntryMs > 0 && anchorPresenceOk(analysis)) {
+      const aLast = currentStartMs + Math.min(lastVocalEnd(analysis, fileAudibleEndMs), fileAudibleEndMs > 0 ? fileAudibleEndMs : Number.POSITIVE_INFINITY);
+      const needEnd = aLast + 600;
+      const endNow = activityVocalEntryMs - 150;
+      if (needEnd > endNow + 400) {
+        const later = findVocalSegments(nextAnalysis)
+          .filter((seg) => seg.startMs - 150 >= needEnd && seg.startMs <= activityVocalEntryMs + 16000 && seg.mean >= 0.5)
+          .sort((x, y) => x.startMs - y.startMs)[0];
+        if (later) {
+          logEvent('automix-v2-entry-score',
+            `首句会把 A 末句切掉 ${Math.round(needEnd - endNow)}ms，改从 ${Math.round(later.startMs - nextStartMs)}ms 的第二句进（清晰度 ${later.mean.toFixed(2)}）`);
+          activityVocalEntryMs = later.startMs;
         }
       }
     }
@@ -2830,7 +3104,7 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
       ? transitionMatchDb(analysis, nextAnalysis, x + Math.max(0, span - 3000), entry || y, Math.min(span, 3000), rate)
       : 0;
     // 过渡手法：按 BPM/调性/能量/唱词/结构/时长挑一种（只做决策，参数在 startSplitMix 施加）。
-    const stylePick = pickV2StyleFor(
+    let stylePick = pickV2StyleFor(
       {
         a: analysis, b: nextAnalysis, fadeMs: span, barMs: bar, beatMs: beat,
         bFirstVocalFileMs: entryUsable ? entryAnchor : 0,
@@ -2883,6 +3157,16 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
       logEvent('automix-v2-style-handoff', `halfTime 需要 2:1 折叠速率，交给通用路径`);
       return null;
     }
+    if (stylePick && (stylePick.id === 'echoOut' || stylePick.id === 'reverbOut')
+      && meanActivity(analysis, 'drum', x + span - 4000, x + span) > 0.55) {
+      logEvent('automix-v2-wet-dense', `A 尾鼓密度高，${stylePick.label} 改成滤波交叉`);
+      stylePick = {
+        id: 'filterSweep',
+        label: describeStyle('filterSweep'),
+        params: { swapShare: 0.3, sweepShare: 0.45, duckDb: -5, tailHold: 0.12 },
+        reasons: ['A 尾鼓密度高于 0.55', '湿声会糊掉密集鼓组，退回滤波交叉'],
+      };
+    }
     if (stylePick) {
       logEvent('automix-v2-style', `${stylePick.label}｜${stylePick.reasons.join('；')}`);
     }
@@ -2894,22 +3178,46 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
     });
     // 乐句路径的质量门也必须用**计划曲线**：原来这里走 `weights:'compact'` 的宽带模型，
     // 与通用路径（`weights:'plan'`）两套口径，同一对歌换个入口就得出不同的 drift。（round 9）
+    const phrasePolicy = stylePolicyFor(span, bar);
+    // 让位深度跟调性距离走：远调（Camelot ≥4）两条人声咬字会打架，压到 −8；
+    // 近调/同调是和声，维持 −6；距离未知也按 −6。指标按同一条深度折算。
+    const phraseKeyGap = camelotGap(analysis.camelot, nextAnalysis.camelot);
+    const phraseDuckDb = phraseKeyGap === null ? -15 : phraseKeyGap >= 4 ? -15 : -15;
+
+    // 已经由 `transitionMatchDb` 给过 B 正向补偿时，包络只补剩下的余量（总和不超过 +6），
+    // 否则「窗口对齐」和「包络」两笔补偿会叠成 +9 dB。
+    const phraseTrimRoom = Math.max(0, 6 - Math.max(0, gainTrimDb));
+    const phraseBTrim = planBTrimCurve({
+      a: analysis, b: nextAnalysis, fadeStartAMs: x, fadeStartBMs: y, fadeMs: span, tempoRate: rate,
+    }).map((db) => Math.min(db, phraseTrimRoom));
+    // 分频点自适应：两边低频越不像，越把分频点往上抬（更多低频走线性互补，少走等功率交叉）。
+    const phraseSplitHz = planSplitHz({
+      a: analysis, b: nextAnalysis, fadeStartAMs: x, fadeStartBMs: y, fadeMs: span, tempoRate: rate,
+    });
+    const phraseLowCorr = bassCorrelation({ a: analysis, b: nextAnalysis, fadeStartAMs: x, fadeStartBMs: y, fadeMs: span, tempoRate: rate });
+    const phraseCurves = buildV2Plan({
+      fadeMs: span, barMs: bar, rate,
+      vocalAt: snapVocalAt(analysis.downbeats, x, span, bar),
+      swapShare: Math.min(0.6, Math.max(0.06, (2 * bar) / Math.max(1, span))),
+      bEntry: false,
+      sweep: stylePick ? stylePick.params?.sweepShare !== 0 : true,
+      sweepShare: stylePick?.params?.sweepShare,
+      windowScale: phrasePolicy.windowScale,
+      swapShareBias: phrasePolicy.swapShareBias,
+      duckScale: phrasePolicy.duckScale,
+      lowStartP: phraseLowCorr !== null && phraseLowCorr < -0.2 ? 0.8 : undefined,
+    });
     const phraseQuality: QualityReport | null = (() => {
       try {
-        const curves = buildV2Plan({
-          fadeMs: span, barMs: bar, rate,
-          swapShare: Math.min(0.6, Math.max(0.06, (2 * bar) / Math.max(1, span))),
-          bEntry: false,
-          sweep: stylePick ? stylePick.params?.sweepShare !== 0 : true,
-          sweepShare: stylePick?.params?.sweepShare,
-        });
+        const curves = phraseCurves;
         return qualityWithCurves({
           a: analysis, b: nextAnalysis,
           fadeStartAMs: x, fadeStartBMs: y, fadeMs: span, beatMs: beat,
           tempoRate: rate, handoffStartP: 0.78, handoffEndP: 0.92,
           gainTrimDb, bEntry: false,
           aInstrumental: vocalPresence(analysis) === 'instrumental',
-          keyGap: camelotGap(analysis.camelot, nextAnalysis.camelot),
+          keyGap: phraseKeyGap,
+          aDuckDb: vocalPresence(analysis) === 'instrumental' ? Math.max(phraseDuckDb, -3) : phraseDuckDb,
           swapShare: Math.min(0.6, Math.max(0.06, (2 * bar) / Math.max(1, span))),
           // 让位真的排了（含 groove 路径那条）就要在指标里算进去，否则压了也不算。
           bEntryDucked: !entryUsable || phraseBDuck.length > 0,
@@ -2917,6 +3225,7 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
           wetTail: stylePick?.id === 'echoOut' || stylePick?.id === 'reverbOut'
             ? { sendDb: -6, decayMs: stylePick.id === 'reverbOut' ? 1_600 : 900, fromP: 0.5 }
             : undefined,
+          bTrim: phraseBTrim,
         }, curves, {
           a: lowShareOf(analysis, x, span),
           b: lowShareOf(nextAnalysis, y, span * rate),
@@ -2929,10 +3238,20 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
       b: nextAnalysis, fadeStartBMs: y, fadeMs: span, tempoRate: rate,
       gateBeforeMs: entryUsable ? entryAnchor : 0,
       aInstrumental: vocalPresence(analysis) === 'instrumental',
+      maxDuckDb: phraseDuckDb,
     });
     // B 一开播就唱（首句 < 3.2 s）：没有窗口能把首句摆到接缝上，但也不能就这么算了。
     //   反过来压 B —— A 还在唱的时候 B 的 1.5–4 kHz 压 6 dB，A 唱完立刻放开，
     //   听感是「下一首在人声底下偷进来」，而不是两条人声互盖。
+    // 乐句路径的终点是「B 首句 − 窗口」，A 若还在唱就会被切在字中间。
+    //   缺口在 3 s 内交给 applyVocalTailGuard 铺尾巴；超过 3 s 铺不住，也不该硬切——
+    //   放行给通用路径，它会按 A 的末句重新摆窗口（B 的首句就不再精确落接缝）。
+    const aLastVocalFileMs = lastVocalEnd(analysis, audibleEndPosMs);
+    if (aLastVocalFileMs > 0 && x + span + 600 < aLastVocalFileMs) {
+      logEvent('automix-v2-phrase-vocal-cut',
+        `乐句窗口结束 ${Math.round(x + span)}ms 早于 A 末句 ${Math.round(aLastVocalFileMs)}ms，交给通用路径`);
+      return null;
+    }
     const tailLiftOn = localStorage.getItem('zilux2.dev.tailfade') !== '0';
     const aUnfade = tailLiftOn && tailFade && !trimTail ? clipLift(tailFade.points,x,x+span)
       .map(point => ({...point,liftDb:Math.min(6,point.liftDb)})) : null;
@@ -2946,28 +3265,45 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
       audibleEndPosMs,tailSilenceMs,nextVocalStartMs:vocalPosMs,vocalAligned:!groove && entryUsable,
       // handoff = 「有人声处理」；vocalAligned = 「B 的首句精确落在接缝上」。
       //   两者分开：B 一开播就唱的对靠 bDuck 处理，handoff 仍是 true，只是没对齐。
-      handoff:entryUsable || phraseBDuck.some((e) => e.db < -1),
+      handoff:entryUsable || phraseBDuck.some((e) => e.db < -1) || meanVocalInWindow(analysis, x, span) > 0.3,
       lastVocalEndPosMs:Math.max(0,last),handoffHoldMs:0,
       quality: phraseQuality,
+      v2Plan: phraseCurves,
+      bTrim: phraseBTrim,
+      splitHz: phraseSplitHz,
       v2Duck: phraseDuck,
+      lowCorr: phraseLowCorr,
+      lowInvert: phraseLowCorr !== null && phraseLowCorr < -0.6,
       bDuck: phraseBDuck,
       styleId: stylePick?.id,
       styleParams: stylePick?.params,
       styleReasons: stylePick?.reasons,
+      stylePolicy: phrasePolicy,
+      extensionPlan: null,
       autoFadeMs:span,autoBars:Math.round(span/bar),autoBarMs:bar,
       autoNote: residue && residue.residueMs >= 120
         ? `尾句与前奏乐句匹配；截住 ${(residue.residueMs / 1000).toFixed(1)}s ${residue.decaying ? '衰减' : '持续'}散音，只留 ${(residueKeep / 1000).toFixed(2)}s 收尾`
         : '尾句与前奏乐句匹配',
     };
     })();
-    if (phrasePlan) return phrasePlan;
+    if (phrasePlan) {
+      applyVocalTailGuard(phrasePlan, analysis, currentStartMs, audibleEndPosMs);
+      return phrasePlan;
+    }
     logEvent('automix-v2-phrase-skip', '乐句匹配没有可用窗口，退回常规混音');
   }
   // ---- E8 结构桥接：A 尾奏不够长就把它循环补齐，让过渡仍能撑满一个乐句 ----
   // 只在 v2 档生效：标准档的行为必须保持「永远在可听结尾收干净」。
   let bridge: BridgePlan | null = null;
   // 桥接命中时，下游所有「A 的结尾」都按延长后的结尾算：过渡长度、贴拍、B 起播都跟着走。
-  const schedAudibleEndMs = fileAudibleEndMs;
+  // 出点落强拍：在半拍上换歌最容易被听出来。可听结尾只允许在 ±0.35 小节内吸到最近强拍，
+  // 超过这个距离说明结尾本来就不在网格上（现场录音/自由尾奏），硬吸会切掉最后一击。
+  const schedAudibleEndMs = (() => {
+    const bar = barIntervalOf(analysis) || 2_000;
+    const snap = pickDownbeatNear(analysis, fileAudibleEndMs, fileAudibleEndMs - bar * 0.6);
+    if (snap !== null && Math.abs(snap - fileAudibleEndMs) <= bar * 0.35) return snap;
+    return fileAudibleEndMs;
+  })();
 
   // 过渡时长（auto 需要 B 的起播点/唱词位置来判断前奏空间，所以放在 B 侧基础信息之后算）。
   const fadePlan = resolveFadePlan(options, {
@@ -3148,7 +3484,7 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
   // 探测点取「可听结尾」与「文件时长」的较大者：Skydive 这类曲子在 audibleEnd 之后
   // 还垫着 2 s 的淡出尾巴，只看 audibleEnd 会把真正的淡出尾巴切掉一半。
   const tailProbeMs = Math.max(schedAudibleEndMs, (analysis as BeatAnalysis & { durationMs?: number }).durationMs ?? 0);
-  const earlyTailFade = isAutomixV2(readMixTransitionMode())
+  const earlyTailFade = isAutomixV2(effectiveMode())
     ? detectTailFade(analysis, tailProbeMs, { barMs: barIntervalOf(analysis) || 2000 }) : null;
   let fadeEndFile = schedAudibleEndMs;
   // ---- 剔除渐隐段 ----
@@ -3262,11 +3598,44 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
   let fadeMs = structure ? structure.fadeMs : Math.round(handoff ? handoffFadeMs : fadeEndFile - fadeStartFile);
   if (fadeMs < MIN_FADE_MS) return null;
 
+  // 实际窗口算出来后，用真实时长重判一次自动档（短交叠可能落到 5 s 以下）。
+  if (readMixTransitionMode() === 'auto') {
+    const decided = decidePairMode(analysis, nextAnalysis, fadeMs);
+    if (decided !== pairMixMode) {
+      pairMixMode = decided;
+      logEvent('automix-auto-mode', decided === 'automixV2' ? '自动：窗口 >5 s，走进阶混音' : '自动：短交叠/数据不足，走标准');
+    }
+  }
+
+  // ---- 标准档也做鼓点对齐 ----
+  // 老路径起点是任意帧、B 从任意帧进；这里把 A 的起点和 B 的入场都吸到
+  // 各自的强拍上（只在小范围内挪，不改变自动长度的语义）。
+  const stdAlign = !isAutomixV2(effectiveMode())
+    && (analysis.downbeats?.length ?? 0) >= 4
+    && readCrossfadeSettings().lengthMode !== 'seconds';
+  if (stdAlign) {
+    try {
+      const barA0 = barIntervalOf(analysis) || 2_000;
+      const barB0 = barIntervalOf(nextAnalysis) || barA0;
+      const nearB = pickDownbeatNear(nextAnalysis, bStartFileMs, nextStartMs, barB0 * 0.6);
+      if (nearB !== null && nearB >= nextStartMs) bStartFileMs = Math.round(nearB);
+      const nearA = pickDownbeatNear(analysis, fadeStartFile, currentStartMs + currentPosMs + 200, barA0 * 0.3);
+      if (nearA !== null) {
+        const span = Math.round(fadeEndFile - nearA);
+        if (span >= MIN_FADE_MS && span <= MAX_FADE_MS) {
+          fadeStartFile = Math.round(nearA);
+          fadeMs = span;
+        }
+      }
+      logEvent('standard-grid', `标准档对齐：A 起点 ${Math.round(fadeStartFile)}ms · B 起点 ${Math.round(bStartFileMs)}ms · 窗口 ${Math.round(fadeMs)}ms`);
+    } catch { /* 无网格就保持原值 */ }
+  }
+
   // ---- v2：A 已经进纯尾奏时把窗口往前挪一点----
   // 「两边都安静」是听感上最空的一种过渡：A 的尾奏只剩氛围垫、B 的前奏还没进。
   // 只要 A 的窗口平均唱词 < 0.3、且起始点后面还有余地，就整体前移，
   // 让窗口跨过 A 的最后一句——有内容的一侧撑住，另一侧才有「走进来」的感觉。
-  if (isAutomixV2(readMixTransitionMode()) && !handoff && !structure && lastVocalEndPosMs > 0) {
+  if (isAutomixV2(effectiveMode()) && !handoff && !structure && lastVocalEndPosMs > 0) {
     const meanVocal = meanVocalInWindow(analysis, fadeStartFile, fadeMs);
     if (meanVocal < 0.3) {
       const barA = barIntervalOf(analysis) || 2000;
@@ -3344,16 +3713,34 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
   // ---- WSOLA 节拍对齐：按「目标曲」对齐拍间隔，再微调起播相位到同拍 ----
   let tempoRate = 1;
   // 只在新进阶档启用：标准档冻结为「B 贴 A」的老行为，保证两种过渡互不影响。
-  const tempoAnchorNext = isAutomixV2(readMixTransitionMode()) && readTempoAnchor() === 'next';
+  const tempoAnchorNext = isAutomixV2(effectiveMode()) && readTempoAnchor() === 'next';
   let tempoInverted = false;
   // 局部速度（p0-13 曲线 / 跟拍覆盖）：B 取入场处、A 取淡化起点处；变速歌不再按整曲 BPM 算比率。
   const aBpm = tempoAtMs(options.current.track, analysis, fadeStartFile) || analysis.bpm;
   const bBpm = tempoAtMs(options.next.track, nextAnalysis, bStartFileMs) || nextAnalysis.bpm;
   // v2 档把可变速率域放宽到 ±15%（设置值更大的话以设置为准）；标准档仍是 ±8%。
-  const tempoRange = isAutomixV2(readMixTransitionMode())
+  const tempoRange = isAutomixV2(effectiveMode())
     ? Math.max(settings.tempoRange, V2_TEMPO_RANGE)
     : settings.tempoRange;
-  if (aBpm >= 40 && bBpm >= 40 && tempoRange > 0 && analysis.bpmConfidence >= 0.5 && nextAnalysis.bpmConfidence >= 0.5) {
+  let tempoMeetA = 0;
+  let tempoMeet = false;
+  if (isAutomixV2(effectiveMode()) && aBpm >= 40 && bBpm >= 40
+      && analysis.bpmConfidence >= 0.5 && nextAnalysis.bpmConfidence >= 0.5) {
+    // 用户口径：≤25% B 贴 A；25–50% 两侧向中点靠；整倍/半整倍按错拍对齐。
+    const policy = planTempoPolicy(aBpm, bBpm);
+    if (policy.mode === 'meet') {
+      tempoMeet = true;
+      tempoMeetA = policy.aRate;
+      tempoRate = policy.bRate;
+      tempoInverted = false;
+    } else if (policy.mode === 'b-to-a') {
+      tempoRate = policy.bRate;
+      tempoInverted = false;
+    } else if (policy.mode === 'octave' || policy.mode === 'same' || policy.mode === 'free') {
+      tempoRate = 1;
+      tempoInverted = false;
+    }
+  } else if (aBpm >= 40 && bBpm >= 40 && tempoRange > 0 && analysis.bpmConfidence >= 0.5 && nextAnalysis.bpmConfidence >= 0.5) {
     const raw = nearestTempoRatio(aBpm / bBpm);
     // 允许范围由设置决定（标准档默认 ±8%）；超出会明显听出快/慢，宁可不变速、按原强拍起播。
     const minRate = 1 - tempoRange;
@@ -3421,7 +3808,11 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
     // A 的末句唱完就结束窗口：不让 A 后面那段「只剩器乐/渐隐」的尾巴把过渡拉长
     //   （那会让 B 的前奏在 A 已经没人声的地方空转，听感就是「衔接不上最后一句」）。
     if ((options.currentLastVocalEndMs ?? 0) > 0 && lastVocalEndPosMs > 0 && !structure) {
-      const lastWordFile = Math.round(currentStartMs + lastVocalEndPosMs);
+      const lyricWordFile = Math.round(currentStartMs + lastVocalEndPosMs);
+      // LRC 的末句常比真实唱段短（尾句拖音 / ad-lib 没写进歌词）。切割点取两者较晚者：
+      // 宁可多留一小节器乐，也不要在还唱着的时候把 A 切走（体检里的 A_VOCAL_CUT）。
+      const curveWordFile = activityLastVocalEndMs > 0 ? Math.round(activityLastVocalEndMs) : 0;
+      const lastWordFile = Math.max(lyricWordFile, curveWordFile);
       const barA = barIntervalOf(analysis) || 2000;
       // 「末句唱完」不等于「这首歌完了」：很多歌最后一个词后面还有半句/一整句的器乐回答、
       // 或者正好压在 climax 的最后一小节上。以前只留半小节，听感就是「唱到最后一个词就切」。
@@ -3483,8 +3874,6 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
     fadeStartFile += fadeMs - 2400;
     fadeMs = 2400;
   }
-  // A short intro cannot fit a long blend before the first word. Keep the overlap;
-  // only lyric handoff with sufficient pre-roll may shorten its own schedule.
   if (handoff && vocalFileMs > bStartFileMs) {
     const room = (vocalFileMs - bStartFileMs - 100) / (tempoInverted ? 1 : tempoRate);
     if (room >= MIN_AUTO_BLEND_MS && room < fadeMs) {
@@ -3494,12 +3883,6 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
   }
   if (fadeMs < MIN_FADE_MS) return null;
 
-  // ---- B 侧前奏桥：把下一首的前奏循环延长 + 移调，撑到 A 的末句之后 ----
-  // 目标：交接时先听到 B 的鼓/贝斯（器乐），人声晚一步到，中间不留真空。
-  // 只有 v2 档、非硬切、B 确实有前奏时才做；前奏已经够长时 `planIntroBridge` 返回 null。
-  let introBridge: IntroBridgePlan | null = null;
-
-  // 手动过渡时长优先：自动解析出的「快速切入」与用户指定时长冲突，使用自然等功率。
   if (settings.lengthMode !== 'auto' && settings.style === 'auto' && style === 'cut') style = 'equal';
   let bassHandoffP = AM_BASS_HANDOFF_P;
   if (settings.bassSwap === 'off') {
@@ -3510,24 +3893,16 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
     bassHandoffP = Math.min(0.9, Math.max(0.12, (swapBar * structureBarMs) / fadeMs));
   }
   if (style === 'cut' && structure) bassHandoffP = 0;
-  // ---- 尾段渐隐（母带 fade-out）----
-  // 过渡如果落在 A 的渐隐段，等于拿「快没气的那几秒」去接 B：A 变虚、B 一进来就炸。
-  // 两件事一起做：把 A 抬回渐隐前的电平（unfade 曲线），并让 B 对齐「渐隐前」而不是「渐隐中」。
+
   const tailFade = earlyTailFade;
   const matchFromMs = tailFade && tailFade.fadeStartMs < fadeStartFile
-    ? Math.max(0, tailFade.fadeStartMs - 6_000)   // 渐隐已经开始：拿渐隐前 6 秒当参考
+    ? Math.max(0, tailFade.fadeStartMs - 6_000)
     : fadeStartFile;
   const gainTrimDb = settings.loudnessMatch
     ? transitionMatchDb(analysis, nextAnalysis, matchFromMs, bStartFileMs, fadeMs,
         tempoInverted ? 1 : tempoRate) : 0;
-  // 渐隐补回：①只补 ≥8 dB 的真渐隐（浅衰减不补，避免把房间/混响尾巴抬起来）；
-  // ②单个点最多 +6 dB —— 补 12 dB 等于把母带底噪和混响一起放大，听感就是「糊+带回声」。
-  const TAIL_LIFT_CAP_DB = 6;
-  const TAIL_LIFT_MIN_DROP_DB = 8;
-  // 母带渐隐补回默认**关闭**：它本质是给 A 的高频支路加 +6 dB，
-  // 用户明确要求「过渡里原曲不要有任何变化」，所以改成开发者开关 opt-in。
-  // 默认开启「反向补回」：用户要求「渐隐段要么剔除、要么用反向增益补回来」。
-  // 想关掉可写 localStorage['zilux2.dev.tailfade']='0'。
+  const TAIL_LIFT_CAP_DB = 12;
+  const TAIL_LIFT_MIN_DROP_DB = 5;
   const tailLiftEnabled = (() => {
     try {
       return window.localStorage.getItem('zilux2.dev.tailfade') !== '0';
@@ -3540,8 +3915,7 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
       .map((point) => ({ ms: point.ms, liftDb: Math.min(TAIL_LIFT_CAP_DB, point.liftDb) }))
     : null;
 
-  // 过渡手法：与乐句路径同一套决策（styleKit），参数在 startSplitMix 施加。
-  let autoStylePick = isAutomixV2(readMixTransitionMode())
+  let autoStylePick = isAutomixV2(effectiveMode())
     ? pickV2StyleFor(
         {
           a: analysis,
@@ -3567,12 +3941,32 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
   if (autoStylePick) {
     logEvent('automix-v2-style', `${autoStylePick.label}｜${autoStylePick.reasons.join('；')}`);
   }
-  // 硬切类（cut/slam）：真的把窗口收短到 1.2–1.6 s，并落到最近的强拍上。
-  // 以前只是「标着 cut，实际还在交叠」——那正是用户听到的「怎么还在混」。
+  // 回声/混响收尾只在 A 尾巴稀疏时成立：密集鼓组 + 长延迟尾会把 1.5–4 kHz 糊成一片，
+  //   听感是「脏」而不是「空间」。鼓密度 >0.55 时退回滤波交叉。
+  const aTailDrumDensity = (() => {
+    const act = analysis.activity;
+    if (!act?.drum?.length) return 0;
+    const hop = act.hopMs > 0 ? act.hopMs : 250;
+    const from = Math.max(0, fadeStartFile + fadeMs - 4000);
+    const i0 = Math.max(0, Math.floor(from / hop));
+    const i1 = Math.min(act.drum.length - 1, Math.ceil((fadeStartFile + fadeMs) / hop));
+    let sum = 0;
+    let n = 0;
+    for (let i = i0; i <= i1; i += 1) { sum += act.drum[i] ?? 0; n += 1; }
+    return n ? sum / n : 0;
+  })();
+  if (autoStylePick && (autoStylePick.id === 'echoOut' || autoStylePick.id === 'reverbOut') && aTailDrumDensity > 0.55) {
+    logEvent('automix-v2-wet-dense',
+      `A 尾鼓密度 ${aTailDrumDensity.toFixed(2)}，${autoStylePick.label} 改成滤波交叉`);
+    autoStylePick = {
+      id: 'filterSweep',
+      label: describeStyle('filterSweep'),
+      params: { swapShare: 0.3, sweepShare: 0.45, duckDb: -5, tailHold: 0.12 },
+      reasons: [`A 尾鼓密度 ${aTailDrumDensity.toFixed(2)} 高于 0.55`, '湿声会糊掉密集鼓组，退回滤波交叉'],
+    };
+  }
   const hardCut = autoStylePick?.id === 'cut' || autoStylePick?.id === 'slam';
   if (hardCut) {
-    // 硬切窗口按曲风细分：hip-hop 2.6 s 足够，techno/ambient 的「一刀」可以拖到 5 s
-    // （它们本来就是长段落，切太快反而像误操作）。上限仍夹 4 s，避免变成短交叉。
     const cutBudget = budgetForAnalysis(nextAnalysis, barIntervalOf(analysis) || 2_000).gestureMaxMs;
     const cutCeil = Math.max(2_600, Math.min(4_000, Number.isFinite(cutBudget) ? cutBudget : 4_000));
     const targetMs = Math.max(2_600, Math.min(cutCeil, Math.round(fadeMs * 0.3)));
@@ -3586,9 +3980,7 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
     logEvent('automix-v2-hard-cut',
       `${autoStylePick?.label ?? 'cut'}：窗口收到 ${(fadeMs / 1000).toFixed(2)}s，落点 ${Math.round(cutEnd)}ms`);
   }
-  // 人声叠加（acapellaOverlay 的零分轨降级）：A 抬中频「浮」出最后一句，B 让位。
-  // 真正的 acapella 叠加要源分离 —— 那条路已废弃（分离有损、播放期变调），这里只做
-  // 「最后一句浮在 B 的伴奏上」，并用 Camelot 距离把关：调性差 ≥5 不叠。
+
   let vocalOverlay: VocalOverlayPlan | null = null;
   if (autoStylePick?.id === 'acapellaOverlay') {
     vocalOverlay = planVocalOverlay({
@@ -3598,15 +3990,13 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
       fadeMs,
     });
     if (!vocalOverlay.enabled) {
-      autoStylePick = null; // 退回打分第二名的常规手法
+      autoStylePick = null;
       logEvent('automix-v2-overlay-skip', vocalOverlay.note);
     } else {
       logEvent('automix-v2-overlay', vocalOverlay.note);
     }
   }
 
-  // 非硬切时保住最小交叠：乐句路径的兜底管不到这里，掉到通用路径的短尾歌曲
-  // 会在 1.3–1.9 s 里草草交叠（实测 5.5% 的对），听感就是「突然换歌」。
   if (!hardCut && !handoff && settings.lengthMode === 'auto' && fadeMs < MIN_AUTO_BLEND_MS) {
     const barMs = barIntervalOf(analysis) || 2_000;
     const want = Math.min(MAX_FADE_MS, Math.max(MIN_AUTO_BLEND_MS, Math.round(barMs * 4)));
@@ -3617,9 +4007,7 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
       fadeMs = fadeEndFile - start;
     }
   }
-  // 半速/倍速关系（128 ↔ 64）：按 2:1 折叠播放速率，而不是硬拉 50%。
-  // 注意：折叠是「手法的一部分」——手法后面可能因为窗口太短被丢弃，那时必须把速度还原，
-  // 否则会留下 B 以 ×0.5 慢放的空窗（：3.2 s 窗口里 B 慢放，听感是拖长的糊音）。
+
   let halfTimeFolded = false;
   if (autoStylePick?.id === 'halfTime' && analysis.bpm > 0 && nextAnalysis.bpm > 0) {
     const ratio = analysis.bpm / nextAnalysis.bpm;
@@ -3633,9 +4021,7 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
     }
   }
 
-  // 曲风预算：同一套手法在 hip-hop 里铺四小节会糊词，在 techno 里八小节才正常。
-  // 只在新进阶档生效，标准档的长度语义保持冻结。
-  if (isAutomixV2(readMixTransitionMode())) {
+  if (isAutomixV2(effectiveMode())) {
     const barBudget = barIntervalOf(nextAnalysis) || 2_000;
     const budget = budgetForAnalysis(nextAnalysis, barBudget);
     const gesture = autoStylePick?.id === 'cut' || autoStylePick?.id === 'slam'
@@ -3643,8 +4029,6 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
     const cap = gesture ? budget.gestureMaxMs : budget.maxFadeMs;
     if (Number.isFinite(cap) && cap >= MIN_FADE_MS && fadeMs > cap) {
       if (instSeam !== null) {
-        // 器乐接缝比「曲风预算」更硬：预算是为了避免无意义的超长交叠，而接缝来自真实乐句边界。
-        // 这里收短只能把起点往右推（= 从乐句中间开始），宁可放过预算也不能毁接缝。
         logEvent('automix-v2-budget-skip',
           `${budget.note}；但器乐接缝在 ${Math.round(instSeam.ms)}ms，保留 ${(fadeMs / 1000).toFixed(1)}s 窗口`);
       } else {
@@ -3655,7 +4039,6 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
     }
   }
 
-  // dropSwap / doubleDrop：B 不从曲首进，直接切到它的第一个 drop / 副歌；A 让多快由落点求解决定。
   let dropEntry: DropEntryPlan | null = null;
   if (autoStylePick?.id === 'dropSwap' || autoStylePick?.id === 'doubleDrop') {
     dropEntry = planDropEntry({
@@ -3676,7 +4059,6 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
     }
   }
 
-  // 叠播加厚：把 B 的半拍切片连打一小节，铺在 A 的最后几拍上（不动 A 的 gate）。
   let doubling: DoublingPlan | null = null;
   if (autoStylePick?.id === 'doubling') {
     const barB = barIntervalOf(nextAnalysis) || 2_000;
@@ -3693,10 +4075,7 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
     else { logEvent('automix-v2-doubling-skip', '窗口放不下叠播'); doubling = null; }
   }
 
-  // v2 的窗口下限：收尾规则（末尾只留半小节）与结构计划都会把窗口压到 1–2 s，
-  // 那种长度连一次低频换手都放不下，听感就是硬切。只要还有余地，就把窗口向前
-  // 补到 MIN_AUTO_BLEND_MS（3.2 s）——向前补不会盖住 A 的末句，只多留一点交叠。
-  if (isAutomixV2(readMixTransitionMode()) && !hardCut && fadeMs < MIN_AUTO_BLEND_MS) {
+  if (isAutomixV2(effectiveMode()) && !hardCut && fadeMs < MIN_AUTO_BLEND_MS) {
     const room = Math.round(fadeStartFile - (currentStartMs + currentPosMs + 80));
     const want = Math.min(room, MIN_AUTO_BLEND_MS - fadeMs);
     if (want >= 200) {
@@ -3706,9 +4085,6 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
     }
   }
 
-  // 手法选完之后，窗口还可能被收尾规则 / 曲风预算压短。每种手法有自己的最短窗口
-  // （halfTime 4 s、longBlend 8 s…），压到门槛以下那套参数就名不副实——1.6 s 的
-  // halfTime 听感就是硬切。这时宁可退回中性过渡，也不硬套手法。
   if (autoStylePick) {
     const spec = STYLE_CATALOG.find((entry) => entry.id === autoStylePick!.id);
     if (spec && fadeMs + 1 < spec.minFadeMs) {
@@ -3719,9 +4095,6 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
         halfTimeFolded = false;
         logEvent('automix-v2-halftime-cancel', '手法被丢弃，取消 2:1 折叠，恢复原速');
       }
-      // 别直接置空：置空等于这条过渡什么处理都没有（窗口还在，但没有扫频/让位/回声），
-      // 体检台看到的是 `tech=-` 的裸等功率交叠。退回苹果系的滤波交叉，它没有「最短窗口」门槛，
-      // 也正是短窗口下最合理的那种处理。（round 28）
       autoStylePick = {
         id: 'filterSweep',
         label: describeStyle('filterSweep'),
@@ -3731,23 +4104,114 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
     }
   }
 
-  // 规划期的 v2 曲线：体检台/浮层/质量门共用这一份（原来只有 startSplitMix 才知道曲线）。
+  // A 末句硬保护：窗口末端早于末句 +600 ms 时把窗口延长到盖过末句（受 B 可用长度与上限约束）。
+  let vocalTailShortfallMs = 0;
+  if (lastVocalEndPosMs > 0) {
+    const lastWordFile = currentStartMs + Math.min(lastVocalEndPosMs, audibleEndPosMs);
+    const needEnd = lastWordFile + 600;
+    const windowEnd = fadeStartFile + fadeMs;
+    if (needEnd > windowEnd && fadeStartFile < needEnd) {
+      const bRoom = nextDurationMs > 0 ? Math.max(0, nextDurationMs - (bStartFileMs - nextStartMs)) : Number.POSITIVE_INFINITY;
+      const target = Math.min(fadeStartFile + MAX_FADE_MS, currentStartMs + audibleEndPosMs + 400, fadeStartFile + Math.max(0, bRoom - 400), needEnd);
+      if (target > windowEnd + 200) {
+        fadeMs = Math.round(target - fadeStartFile);
+        logEvent('automix-v2-vocal-guard', `A 末句 ${Math.round(lastWordFile)}ms，窗口末端 ${Math.round(windowEnd)}ms → ${Math.round(fadeStartFile + fadeMs)}ms`);
+      }
+      const shortfall = Math.round(needEnd - (fadeStartFile + fadeMs));
+      if (shortfall > 200) {
+        vocalTailShortfallMs = shortfall;
+        logEvent('automix-v2-vocal-tail', `窗口末端仍早于 A 末句 ${shortfall}ms，A 改为停在 -10 dB 唱完再收（tailBleed ${Math.min(3000, shortfall + 600)}ms）`);
+      }
+    }
+  }
+
+  const autoPolicy = stylePolicyFor(fadeMs, barIntervalOf(nextAnalysis) || 2000);
+  const autoExtension = (() => {
+    if (!isAutomixV2(effectiveMode()) || hardCut) return null;
+    if (!lastVocalEndPosMs) return null;
+    const needed = Math.max(0, fadeStartFile + fadeMs - (currentStartMs + lastVocalEndPosMs));
+    if (needed <= 0) return null;
+    const plan = planExtension({
+      side: 'a' as const,
+      analysis,
+      neededMs: needed,
+      policy: autoPolicy,
+      barMs: barIntervalOf(nextAnalysis) || 2000,
+      preferModel: false,
+      modelReady: false,
+    });
+    return plan.source === 'none' ? null : plan;
+  })();
+
+  const lowCorr = bassCorrelation({ a: analysis, b: nextAnalysis, fadeStartAMs: fadeStartFile, fadeStartBMs: bStartFileMs, fadeMs, tempoRate });
+  const trimRoom = Math.max(0, 6 - Math.max(0, gainTrimDb));
   const plannedV2 = (() => {
-    if (!isAutomixV2(readMixTransitionMode())) return null;
+    if (!isAutomixV2(effectiveMode())) return null;
     if (hardCut) return null;
     const barMs = barIntervalOf(nextAnalysis) || 2000;
     const share = Math.min(0.6, Math.max(0.06, (2 * barMs) / Math.max(1, fadeMs)));
     return buildV2Plan({
       fadeMs, barMs, rate: tempoRate, swapShare: share, bEntry: true,
+      vocalAt: snapVocalAt(analysis.downbeats, fadeStartFile, fadeMs, barMs),
       aTailHold: tailAnchorKind === 'vocal' && lastVocalEndPosMs > 0 ? 0.22 : 0,
       sweep: autoStylePick?.params?.sweepShare !== 0,
       sweepShare: autoStylePick?.params?.sweepShare,
+      windowScale: autoPolicy.windowScale,
+      swapShareBias: autoPolicy.swapShareBias,
+      duckScale: autoPolicy.duckScale,
+      lowStartP: lowCorr !== null && lowCorr < -0.5 ? 0.9 : lowCorr !== null && lowCorr < -0.2 ? 0.8 : undefined,
       handoffStartP: tailFadeHandoffP(earlyTailFade, fadeStartFile, fadeMs),
     });
   })();
+  const introBridge = (() => {
+    if (!isAutomixV2(effectiveMode()) || hardCut) return null;
+    const introMs = vocalFileMs > bStartFileMs ? vocalFileMs - bStartFileMs : 0;
+    if (vocalFileMs <= 0 || introMs < MIN_AUTO_BLEND_MS) return null;
+    // 前奏已经够长时不需要桥；只有窗口比前奏长（或前奏太短撑不住窗口）才补。
+    if (introMs >= fadeMs) return null;
+    return planIntroBridge({
+      introStartMs: bStartFileMs,
+      firstVocalMs: vocalFileMs,
+      barMs: barIntervalOf(nextAnalysis),
+      targetMs: fadeMs,
+      loopUnits: nextAnalysis.loopUnits,
+      keyFrom: analysis.key,
+      keyTo: nextAnalysis.key,
+    });
+  })();
+
+  // 变速斜率：窗口内每拍最多 1% 的速率变化（整八度折叠不动），超出就夹回。
+  {
+    const beatMsA = barIntervalOf(analysis) / 4 || 500;
+    tempoRate = clampTempoRateForWindow(tempoRate, fadeMs, beatMsA, 1);
+    if (Math.abs(tempoRate - 1) > 1e-6) {
+      logEvent('automix-v2-rate-clamp', `窗口 ${(fadeMs / 1000).toFixed(1)}s，速率夹到 ×${tempoRate.toFixed(3)}`);
+    }
+  }
+
+  const plannedSplitHz = plannedV2
+    ? planSplitHz({ a: analysis, b: nextAnalysis, fadeStartAMs: fadeStartFile, fadeStartBMs: bStartFileMs, fadeMs, tempoRate })
+    : 120;
+  const plannedBTrim = plannedV2
+    ? planBTrimCurve({
+        a: analysis, b: nextAnalysis,
+        fadeStartAMs: fadeStartFile, fadeStartBMs: bStartFileMs,
+        fadeMs, tempoRate,
+      }).map((db) => Math.min(db, trimRoom))
+    : [];
   // A 有明显的母带渐隐时，窗口里那段「本来就该被补回来」的下坠允许补更多（6 dB）；
   // 3 dB 上限会把真正的渐隐补一半、留一个 3 LU 的坑。
   // 补平的上限也收：整窗补 6 dB 会让 A 听起来被「拉高」。
+  // 通用路径以前完全不生成让位事件，质量门却按「A 已压 6 dB」算重叠 —— 听感与报表
+  //   都对不上。这里补上真实的让位：B 唱就压 A 的 1.5–4 kHz，深度同乐句路径。
+  const plannedDuck = plannedV2
+    ? buildDuckEvents({
+        b: nextAnalysis, fadeStartBMs: bStartFileMs, fadeMs, tempoRate,
+        maxDuckDb: -12,
+        aInstrumental: vocalPresence(analysis) === 'instrumental',
+      })
+    : [];
+
   const loudTrimCapDb = earlyTailFade && earlyTailFade.dropDb >= 8 ? 4 : 2;
   const plannedQuality: QualityReport | null = plannedV2
     ? (() => {
@@ -3768,6 +4232,8 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
             wetTail: autoStylePick?.id === 'echoOut' || autoStylePick?.id === 'reverbOut'
               ? { sendDb: -6, decayMs: autoStylePick.id === 'reverbOut' ? 1_600 : 900, fromP: 0.5 }
               : undefined,
+            bTrim: plannedBTrim,
+            aDuckDb: -12,
           }, plannedV2, {
             a: lowShareOf(analysis, fadeStartFile, fadeMs),
             b: lowShareOf(nextAnalysis, bStartFileMs, fadeMs * tempoRate),
@@ -3778,16 +4244,29 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
 
   return {
     v2Plan: plannedV2,
+    v2Duck: plannedDuck,
+    lowCorr,
+    lowInvert: lowCorr !== null && lowCorr < -0.6,
+    bTrimMax: plannedBTrim.length ? Math.max(...plannedBTrim) : 0,
     quality: plannedQuality,
+    bTrim: plannedBTrim,
+    splitHz: plannedSplitHz,
     loudTrimCapDb,
     fadeStartFileMs: fadeStartFile,
     fadeStartPosMs: fadeStartFile - currentStartMs,
     fadeMs,
     bStartFileMs,
     tempoRate,
+    aRate: tempoMeet ? tempoMeetA : undefined,
     vocalOverlay,
     tempoInverted,
-    fadeWallMs: Math.round(fadeMs * (tempoInverted ? tempoRate : 1)),
+    // 墙钟长度 = 曲内时长 /(用户倍速 × 实际消耗速率)。
+    // A 侧被拉向 B 时用 1/tempoRate（A 快放），双侧对齐时用 aRate，B 贴 A 时用 tempoRate。
+    fadeWallMs: Math.round(
+      fadeMs /
+        (Math.max(0.5, baseDeckRate(options)) *
+          (tempoMeet ? Math.max(0.5, tempoMeetA) : tempoInverted ? 1 / Math.max(0.5, tempoRate) : Math.max(0.5, tempoRate))),
+    ),
     structure: structure !== null,
     cueMode: structure ? structure.cueMode : 'off',
     phraseBars: structure ? structure.bars : 0,
@@ -3808,7 +4287,7 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
     // 让它在 B 的开头底下当一件乐器继续响，然后缓慢收干。
     aTailBleedMs: (() => {
       // 只在进阶 v2 档做（标准档的等功率过渡没有「把 A 尾巴当乐器」的位置）。
-      if (!isAutomixV2(readMixTransitionMode())) return 0;
+      if (!isAutomixV2(effectiveMode())) return 0;
       if (hardCut || autoStylePick?.id === 'backspin' || autoStylePick?.id === 'halfTime' || autoStylePick?.id === 'loopRoll') return 0;
       if (tailAnchorKind !== 'vocal' || lastVocalEndPosMs <= 0) return 0;
       // 已经决定「把母带渐隐段剔除在过渡之外」时，绝不能再把这段尾巴当乐器铺出来：
@@ -3828,7 +4307,7 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
       return bleed >= 600 ? Math.round(bleed) : 0;
     })(),
     aTailHold: (() => {
-      if (!isAutomixV2(readMixTransitionMode())) return 0;
+      if (!isAutomixV2(effectiveMode())) return 0;
       if (hardCut || autoStylePick?.id === 'backspin' || autoStylePick?.id === 'halfTime' || autoStylePick?.id === 'loopRoll') return 0;
       if (tailAnchorKind !== 'vocal' || lastVocalEndPosMs <= 0) return 0;
       if (tailCutApplied) return 0;
@@ -3839,6 +4318,8 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
     })(),
     tailFade,
     aUnfade,
+    // 窗口关不住 A 末句时留给尾巴的缺口（毫秒）；0 = 没有。
+    tailGuardMs: vocalTailShortfallMs,
     // handoff 为真但 B 的首句没能精确落在接缝上（例如 B 的唱词起点不可信、或窗口被最短混音压过），
     // 这时不能装没事：给 B 的 1.5–4 kHz 排一组入场让位，A 唱完立刻放开。
     // 乐句路径早就有这条（`phraseBDuck`），常规路径一直缺，体检台因此报 HANDOFF_UNALIGNED + VOCAL_OVERLAP。（round 11）
@@ -3862,6 +4343,8 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
     styleId: autoStylePick?.id,
     styleParams: autoStylePick?.params,
     styleReasons: autoStylePick?.reasons,
+    stylePolicy: autoPolicy,
+    extensionPlan: autoExtension,
     form: formOf({
       styleId: autoStylePick?.id,
       bridge: Boolean(bridge),
@@ -3898,6 +4381,35 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
   };
 }
 
+/**
+ * 延长段起播参数：bed 从 fadeStart 整段垫底，tail 从 A 的可听结尾补位。
+ * 单独提出来是为了可测——播放路径本身没有 AudioContext 就起不来。
+ */
+export function extensionPlaybackParams(
+  plan: Pick<ActivePlan, 'extensionPlan' | 'audibleEndPosMs' | 'fadeStartPosMs' | 'fadeMs'>,
+  clock: number,
+  rate: number,
+): { atSec: number; durationSec: number; fadeInSec: number; fadeOutSec: number; bed: boolean; coverSec?: number } | null {
+  const ext = plan.extensionPlan;
+  if (!ext || !(ext.targetMs > 0)) return null;
+  const bed = ext.mode === 'bed';
+  const safeRate = rate > 0 ? rate : 1;
+  // 垫底比窗口短时，往后贴：空档总在窗口末尾（A 已经收掉、B 还没顶上来），
+  //   从 fadeStart 起播会让最后几秒重新露洞。
+  const atSec = bed
+    ? clock
+    : clock + Math.max(0, (plan.audibleEndPosMs - plan.fadeStartPosMs) / 1000 / safeRate);
+  const bedSeconds = plan.fadeMs / 1000;
+  return {
+    atSec,
+    durationSec: bed ? bedSeconds : ext.targetMs / 1000,
+    fadeInSec: bed ? 0.6 : 0.02,
+    fadeOutSec: bed ? Math.min(1.2, bedSeconds / 3) : 0.05,
+    bed,
+    ...(bed ? { coverSec: bedSeconds } : {}),
+  };
+}
+
 function applySchedule(plan: ActivePlan, schedule: FadeSchedule): void {
   plan.bedWindows = undefined;
   if (schedule.cleanPickup && plan.graphMode && schedule.vocalAnchor?.bEntryMs) {
@@ -3927,6 +4439,7 @@ function applySchedule(plan: ActivePlan, schedule: FadeSchedule): void {
   plan.beatSync = schedule.beatSync;
   plan.phraseMatch = schedule.cueMode === 'phrase-match';
   plan.tempoInverted = schedule.tempoInverted ?? false;
+  plan.aRate = schedule.aRate;
   plan.fadeWallMs = schedule.fadeWallMs ?? schedule.fadeMs;
   plan.styleId = schedule.styleId;
   plan.styleParams = schedule.styleParams;
@@ -3934,6 +4447,15 @@ function applySchedule(plan: ActivePlan, schedule: FadeSchedule): void {
   plan.aTailBleedMs = schedule.aTailBleedMs ?? 0;
   plan.loudTrimCapDb = schedule.loudTrimCapDb ?? 3;
   plan.aTailHold = schedule.aTailHold ?? 0;
+  // 窗口关不住 A 的最后一句时，用尾巴把这一句唱完再淡出：
+  // 这是听感上的「不被切断」，不是把 A 留在 B 底下赖着不走，所以尾巴最多 3 s。
+  const tailGuardMs = schedule.tailGuardMs ?? 0;
+  if (tailGuardMs > 0 && !schedule.cleanPickup) {
+    const coverMs = Math.min(3000, tailGuardMs + 600);
+    plan.aTailBleedMs = Math.max(plan.aTailBleedMs, coverMs);
+    plan.aTailHold = Math.max(plan.aTailHold, 0.32);
+    plan.tailGuardMs = coverMs;
+  }
   plan.tailBleedArmed = false;
   plan.fadeStartFileMs = schedule.fadeStartFileMs;
   plan.fadeStartPosMs = schedule.fadeStartPosMs;
@@ -4055,6 +4577,29 @@ function applySchedule(plan: ActivePlan, schedule: FadeSchedule): void {
   plan.bDuck = schedule.bDuck ?? null;
   plan.tailFade = schedule.tailFade ?? null;
   plan.aUnfade = schedule.aUnfade ?? null;
+  plan.stylePolicy = schedule.stylePolicy ?? null;
+  plan.extensionPlan = schedule.extensionPlan ?? null;
+  plan.extensionBuffer = undefined;
+  if (schedule.extensionPlan && schedule.extensionPlan.source === 'a-tail') {
+    const ext = schedule.extensionPlan;
+    try {
+      const src = plan.options.active.currentSrc || plan.options.active.src;
+      const ctx = deckAudioContext(plan.options.active);
+      if (src && ctx) {
+        void renderExtensionBuffer({
+          ctx, src,
+          unitStartFileMs: ext.unitStartMs,
+          unitMs: ext.unitMs,
+          passes: ext.passes,
+        }).then((buffer) => {
+          if (buffer && plan.extensionPlan === ext) plan.extensionBuffer = buffer;
+        }).catch(() => {});
+      }
+    } catch {
+      /* 忽略：拿不到 buffer 就不延长，主过渡照常 */
+    }
+  }
+
   if (schedule.bridge) {
     // 提前抓 A 的字节：桥接点通常在过渡开始后几秒才到，那时只解码不下载。
     try {
@@ -4247,6 +4792,7 @@ export function prepareCrossfade(options: CrossfadePrepareOptions): boolean {
   debug.amActive = plan.am;
   debug.nextPrepared = true;
   debug.progress = 0;
+  debug.bedPlan = plan.extensionPlan ? `${(plan.extensionPlan.targetMs / 1000).toFixed(1)}s` : '';
   debug.baseVolume = clamp01(options.baseVolume());
   logEvent(
     'prepared',
@@ -4297,7 +4843,7 @@ function stemKeyFor(track: OnlineTrack | null | undefined, positionSec: number):
 function buildAdvancedPreview(options: CrossfadePrepareOptions, plan: ActivePlan): CrossfadeAdvancedPreview | null {
   try {
     if (typeof resolveTransition !== 'function' || typeof buildTimeline !== 'function') return null;
-    const mode = readMixTransitionMode();
+    const mode = effectiveMode();
     const resolved = resolveTransition({
       mode: mode === 'standard' ? 'standard' : 'advanced',
       analysisA: options.currentAnalysis.analysis,
@@ -4346,7 +4892,7 @@ function prefetchAdvancedWindows(options: CrossfadePrepareOptions, plan: ActiveP
     // T6-5：门控判成 standard 时这一趟根本不会有分轨动作，预热纯属白烧 CPU/磁盘，
     // 也会把 stems=4 打到宿主上去。barMs 只有真算出 plan 时才会 > 0，用它当门。
     if (!preview || !(preview.barMs > 0)) return;
-    if (readMixTransitionMode() === 'standard') return;
+    if (effectiveMode() === 'standard') return;
 
     const spanSec = Math.max(0, preview.totalMs / 1000);
     const a = { track: options.current?.track, positionSec: plan.fadeStartPosMs / 1000 };
@@ -4727,7 +5273,7 @@ function startFade(plan: ActivePlan): void {
   }
   // v2 链预热：B 还没起播，此刻建链听不到任何东西。等到 beginTimeline 再建，
   // 图拓扑变更 + Convolver IR 分配就落在可听瞬间 —— 听感是「一进过渡卡一下」。
-  if (isAutomixV2(readMixTransitionMode()) && audioTapGraphActive()) {
+  if (isAutomixV2(effectiveMode()) && audioTapGraphActive()) {
     const warmAt = performance.now();
     const warmB = ensureAutomixV2Deck(plan.options.standby);
     if (warmB) setDeckGraphGain(plan.options.standby, 0);
@@ -4815,7 +5361,7 @@ const APPLE_RECIPE_BY_STYLE: Partial<Record<TransitionStyleId, number>> = {
 function readReverbOptions(): ReverbOptions {
   // 尾段混响收短：1600 ms 的尾巴会把两首歌的残响叠在一起，听感「拖」；
   // 900 ms 只够把 A 的最后一口气送出去，不跨进 B 的第一句。
-  const fallback: ReverbOptions = { sendDb: -9, returnDb: 6, fromP: 0.3, tailMs: 900 };
+  const fallback: ReverbOptions = { sendDb: -12, returnDb: 6, fromP: 0.5, tailMs: 900 };
   try {
     const raw = window.localStorage.getItem('zilux2.dev.reverb');
     if (!raw) return fallback;
@@ -4825,7 +5371,7 @@ function readReverbOptions(): ReverbOptions {
     return {
       sendDb: clamp(parsed.sendDb, -24, 0, fallback.sendDb),
       returnDb: clamp(parsed.returnDb, -18, 3, fallback.returnDb),
-      fromP: clamp(parsed.fromP, 0, 0.95, fallback.fromP),
+      fromP: clamp(parsed.fromP, 0.5, 0.95, fallback.fromP),
       tailMs: clamp(parsed.tailMs, 300, 4000, fallback.tailMs),
     };
   } catch {
@@ -4881,7 +5427,7 @@ function lowShareOf(analysis: BeatAnalysis, startMs: number, lengthMs: number): 
  * 高频不相关：按**功率**相加（`cos²+sin²=1`）。所以 A 的包络不能写成 `(low²+high²)/2`，
  * 必须按各自频段的能量占比加权：`low² × lowShare + high² × (1 − lowShare)`。
  */
-function planEnvOf(curves: V2Plan, side: 'a' | 'b', lowShare: number): number[] {
+function planEnvOf(curves: V2Plan, side: 'a' | 'b', lowShare: number, midShare = 0.35): number[] {
   const steps = 21;
   const deck = side === 'a' ? curves.a : curves.b;
   const at = (arr: { t: number; v: number }[], p: number): number => {
@@ -4890,11 +5436,16 @@ function planEnvOf(curves: V2Plan, side: 'a' | 'b', lowShare: number): number[] 
     return arr[i].v;
   };
   const out: number[] = [];
+  // 三层各自独立换手：mid（120–1200 Hz）的窗口和高频不同，把它算进 high 会把
+  // 「乐器主体还在、镲片先走」误判成响度塌洞。按各层能量占比加权才是链路真实电平。
+  const mid = Math.max(0, Math.min(1 - lowShare, midShare));
+  const hiShare = Math.max(0, 1 - lowShare - mid);
   for (let i = 0; i < steps; i += 1) {
     const p = i / (steps - 1);
     const lo = at(deck.low, p);
+    const md = at(deck.mid, p);
     const hi = at(deck.high, p);
-    out.push(lo * lo * lowShare + hi * hi * (1 - lowShare));
+    out.push(lo * lo * lowShare + md * md * mid + hi * hi * hiShare);
   }
   return out;
 }
@@ -4909,7 +5460,7 @@ function qualityWithCurves(
   base: Omit<QualityInput, 'weights' | 'aEnv' | 'bEnv'>,
   curves: V2Plan,
   shares?: { a?: number; b?: number },
-  trimCapDb = 3,
+  trimCapDb = 4.5,
 ): QualityReport {
   const withPlan = {
     ...base,
@@ -5024,8 +5575,15 @@ function startSplitMix(plan: ActivePlan, clock: number): boolean {
   // 硬编码的 700 Hz / 12 kHz 会让「A 退不干净、B 进得太亮」。
   const appleLpMin = apple?.aLp && apple.aLp.toHz >= 120 && apple.aLp.toHz <= 12_000 ? apple.aLp.toHz : undefined;
   const appleBStart = apple?.bHp && apple.bHp.fromHz >= 1_500 && apple.bHp.fromHz <= 20_000 ? apple.bHp.fromHz : undefined;
+  const styleWindowScale = plan.stylePolicy?.windowScale;
+  const styleSwapBias = plan.stylePolicy?.swapShareBias;
+  const styleDuckScale = plan.stylePolicy?.duckScale;
   const curves = buildV2Plan({fadeMs:plan.fadeMs,barMs:bar,rate:plan.tempoRate,
+    vocalAt: snapVocalAt(nextA.downbeats, plan.fadeStartFileMs, plan.fadeMs, bar),
     swapShare:finalShare,bEntry:true,aTailHold,sweep:styleSweep,sweepShare:styleParams?.sweepShare,
+    windowScale: styleWindowScale,
+    swapShareBias: styleSwapBias,
+    duckScale: styleDuckScale,
     sweepStartP: apple?.aLp ? apple.aLp.t0 : undefined,
     sweepEndP: apple?.aLp ? apple.aLp.t1 : undefined,
     lpMinHz: appleLpMin,
@@ -5077,10 +5635,41 @@ function startSplitMix(plan: ActivePlan, clock: number): boolean {
   }
   scheduleAutomixV2(a,clock,plan.fadeMs/1000,curves.a);
   scheduleAutomixV2(b,clock,plan.fadeMs/1000,curves.b);
+  // 分频点：规划期按两边低频相关性算，运行期只挪一次（不随帧改）。
+  if (plan.splitHz && Number.isFinite(plan.splitHz)) {
+    setCrossoverHz(a, plan.splitHz);
+    setCrossoverHz(b, plan.splitHz);
+    // 低频反相时把 B 的低频整体翻 180°，否则线性换手是「越换越薄」。
+    setLowPolarity(b, plan.lowInvert === true);
+    logEvent('automix-v2-split', `分频点 ${Math.round(plan.splitHz)} Hz（低频相关性自适应）`);
+  }
+  // B 侧电平包络：只抬 B、不动 A。A 还满电平的时候抬起来会被掩蔽，
+  // 等 B 的鼓/人声进来包络自己回 0，不会「过渡完突然变大」。
+  if (plan.bTrim && plan.bTrim.length > 1) {
+    const wallMs = Math.max(200, plan.fadeWallMs ?? plan.fadeMs);
+    scheduleAutomixV2BTrim(b, clock, plan.bTrim.map((db, i) => ({
+      offsetMs: (i / (plan.bTrim!.length - 1)) * wallMs,
+      db,
+    })));
+  }
+  // 风格 EQ：A/B 各自的固定补偿（高频空气感、presence、B 的低频厚度），
+  // 30% 到目标、末 15% 回 0 —— 与契约里的过渡补偿同一条规则，避免进歌后音色突变。
+  if (plan.stylePolicy?.eq) {
+    // 风格 EQ 不许在过渡一开始就改 A：A 在 80% 之前保持原样。
+    // B 从 30%（低频进入）开始补偿，A 只留最后 20% 的一半量，避免「一进过渡旧歌就变味」。
+    const eq = plan.stylePolicy.eq;
+    scheduleAutomixV2Style(b, clock + plan.fadeMs * 0.3 / 1000, plan.fadeMs * 0.7 / 1000, { ...eq, side: 'b' });
+    scheduleAutomixV2Style(a, clock + plan.fadeMs * 0.8 / 1000, plan.fadeMs * 0.2 / 1000, {
+      ...eq,
+      side: 'a',
+      aHighDb: (eq.aHighDb ?? 0) * 0.5,
+      aPresenceDb: (eq.aPresenceDb ?? 0) * 0.5,
+    });
+  }
   // 响度补平：规划期算出的窗口内合成响度曲线（`quality.curve`，等距 39 点）。
   // 中段塌陷多来自「A 尾奏在掉 + B 前奏还轻」，按曲线补 0–3 dB 就能把 1.5–2.9 LU 的坑抹平。
   // 只抬不降；整窗最大补偿 < 0.25 dB 时不排，省一条自动化曲线。
-  const trimCurve = plan.quality?.curve ? loudnessTrimCurve(plan.quality.curve, plan.loudTrimCapDb ?? 3) : null;
+  const trimCurve = plan.quality?.curve ? loudnessTrimCurve(plan.quality.curve, plan.loudTrimCapDb ?? 4.5) : null;
   if (trimCurve && trimCurve.db.length > 2 && Math.max(...trimCurve.db) >= 0.25) {
     scheduleLoudnessTrim(
       a,
@@ -5093,10 +5682,11 @@ function startSplitMix(plan: ActivePlan, clock: number): boolean {
   setDeckGraphGain(active,1);
   setDeckGraphGain(standby,1);
   // 手法可以要求更浅/更深的让位（默认 −6 dB）：按比例缩放，不改变曲线的相对形状。
-  const duckScale = Number.isFinite(styleParams?.duckDb ?? NaN)
+  const baseDuckScale = Number.isFinite(styleParams?.duckDb ?? NaN)
     ? Math.max(0, Math.min(1, Math.abs(styleParams?.duckDb as number) / 6)) : 1;
+  const duckScale = Math.max(0, Math.min(1.2, baseDuckScale * (plan.stylePolicy?.duckScale ?? 1)));
   if (plan.v2Duck?.length) {
-    scheduleAutomixV2Duck(a, plan.v2Duck.map((e) => ({ atSec: clock + e.offsetMs / 1000, db: Math.max(-9, e.db * duckScale) })));
+    scheduleAutomixV2Duck(a, plan.v2Duck.map((e) => ({ atSec: clock + e.offsetMs / 1000, db: Math.max(-15, e.db * duckScale) })));
     logEvent('automix-v2-duck', `A 在 B 唱句处让位 ${Math.abs(Math.min(...plan.v2Duck.map((e) => e.db))).toFixed(1)} dB（${plan.v2Duck.length} 点）`);
   }
   // B 的让位只有一条通路能写 `duck.gain`：acapellaOverlay 自己会排 presence 曲线，
@@ -5117,7 +5707,7 @@ function startSplitMix(plan: ActivePlan, clock: number): boolean {
     ...(styleSend !== null ? { ...baseReverb, sendDb: styleSend } : baseReverb),
     ...(appleRev
       ? {
-          fromP: Math.max(0.05, Math.min(0.9, appleRev.t0 || baseReverb.fromP)),
+          fromP: Math.max(0.5, Math.min(0.9, appleRev.t0 || baseReverb.fromP)),
           tailMs: Math.max(400, Math.min(3_000, Math.round(appleRev.decaySec * 1_000))),
         }
       : {}),
@@ -5131,21 +5721,55 @@ function startSplitMix(plan: ActivePlan, clock: number): boolean {
   try { a.setWetTap(wetPost ? 'post' : 'pre'); } catch { /* 老 deck 没有这个开关 */ }
   try { b.setWetTap('pre'); } catch { /* 同上 */ }
   logEvent('automix-v2-wet-tap', wetPost ? '送出点：滤波后（尾巴跟主声道一起变暗）' : '送出点：全带宽');
-  scheduleAutomixV2Reverb(a, clock, plan.fadeMs / 1000, reverb);
+  // A 的湿声再往后压：70% 才起送、只送一半量、返回电平也降 4 dB。
+  // 之前 50% 起送、return +8 dB，是「进过渡一会后发糊」的第二个来源。
+  scheduleAutomixV2Reverb(a, clock, plan.fadeMs / 1000, {
+    ...reverb,
+    fromP: Math.max(0.7, reverb.fromP),
+    sendDb: Math.min(-14, reverb.sendDb - 6),
+    returnDb: Math.min(4, reverb.returnDb - 4),
+  });
   scheduleAutomixV2Reverb(b, clock, plan.fadeMs / 1000, {
     sendDb: reverb.sendDb - 9,
     returnDb: reverb.returnDb,
-    fromP: Math.min(0.85, reverb.fromP + 0.3),
+    fromP: Math.min(0.88, reverb.fromP + 0.12),
     tailMs: reverb.tailMs,
   });
+  // B 的「80% 前在混响里」：只把 300 Hz 以上送进湿声（低音保持干），
+  // 50% 起送、80% 前保持、92% 前收干；B 自己唱的时候再把湿声压 8 dB（人声保持干）。
+  try { setWetHighpass(a, 20); setWetHighpass(b, 300); } catch { /* 老 deck */ }
+  scheduleAutomixV2WetBed(b, clock, plan.fadeMs / 1000, {
+    sendDb: plan.styleId === 'reverbOut' ? -3 : -4,
+    returnDb: 6,
+    fromP: 0.5,
+    dryAtP: 0.8,
+    endDb: -30,
+  });
+  try {
+    const actB = nextA.activity;
+    if (actB && actB.hopMs > 0) {
+      const points: { p: number; db: number }[] = [];
+      const stepMs = 200;
+      let lastDb = 0;
+      for (let ms = 0; ms < plan.fadeMs; ms += stepMs) {
+        const i = Math.floor((plan.bStartFileMs + ms * plan.tempoRate) / actB.hopMs);
+        const v = i >= 0 && i < actB.vocal.length ? actB.vocal[i] ?? 0 : 0;
+        const db = v > 0.45 ? -8 : 0;
+        if (db !== lastDb) { points.push({ p: ms / plan.fadeMs, db }); lastDb = db; }
+      }
+      if (points.length) scheduleWetDuck(b, clock, plan.fadeMs / 1000, points);
+    }
+  } catch { /* 无活动度曲线就不压 */ }
   // B 顶上来的那一下压 A：陡升段同时下压 A 的电平并把它收闷，
   // 听感是「新歌起来的时候旧歌退到门后」，而不是两条轨道硬叠在一起。
   try {
-    const pressure = risingPressure(plan.v2Plan?.b ?? { low: [], high: [] });
+    // 只在最后 15% 轻微压一下 A：30–50% 的低频进入段绝不允许把 A 收闷，
+    // 否则听感是「一进过渡旧歌就变糊」。深度也收到 -2 dB、低通只到 6 kHz。
+    const pressure = risingPressure(plan.v2Plan?.b ?? { low: [], high: [] }).filter((pt) => pt.p >= 0.85);
     if (pressure.some((pt) => pt.drive > 0.05)) {
       scheduleAutomixV2Press(a, clock, plan.fadeMs / 1000, pressure, {
-        pressDb: plan.styleId === 'dropSwap' || plan.styleId === 'doubleDrop' ? -6 : -5,
-        floorHz: 1_500,
+        pressDb: plan.styleId === 'dropSwap' || plan.styleId === 'doubleDrop' ? -3 : -2,
+        floorHz: 6_000,
       });
       const peak = pressure.reduce((best, pt) => (pt.drive > best.drive ? pt : best), pressure[0]!);
       logEvent(
@@ -5169,11 +5793,15 @@ function startSplitMix(plan: ActivePlan, clock: number): boolean {
       releaseP: 0.68,
       tailMs: Math.max(500, Math.min(900, Math.round(plan.fadeMs * 0.05))),
     };
-    scheduleAutomixV2Hall(a, clock, plan.fadeMs / 1000, hall);
+    scheduleAutomixV2Hall(a, clock, plan.fadeMs / 1000, {
+      ...hall,
+      fromP: Math.max(0.7, hall.fromP),
+      sendDb: hall.sendDb - 6,
+    });
     scheduleAutomixV2Hall(b, clock, plan.fadeMs / 1000, {
       ...hall,
       sendDb: hall.sendDb - 4,
-      fromP: Math.min(0.7, hall.fromP + 0.2),
+      fromP: Math.min(0.85, Math.max(0.5, hall.fromP + 0.1)),
     });
     logEvent(
       'automix-v2-hall',
@@ -5287,6 +5915,43 @@ function startSplitMix(plan: ActivePlan, clock: number): boolean {
     if (delay >= 0) plan.v2.bridge = startBridgePlayback({ctx,tap:a.tap,buffer:plan.bridgeBuffer,
       atSec:clock+delay,durationSec:Math.max(0,plan.fadeMs/1000-delay),rate:baseDeckRate(options)});
   }
+  // A 尾自延长 / 生成过渡垫底：buffer 接在 tap.input（绕过元素门、仍经过 v2 链）。
+  // tail：从 A 的 audibleEnd 起播，补到主过渡收尾；bed：从 fadeStart 起播，整段垫在换手下面。
+  if (plan.extensionPlan?.source === 'a-tail'
+    && plan.extensionBuffer && !plan.v2.extension) {
+    const ctx = a.tap.input.context as AudioContext;
+    const rate = active.playbackRate;
+    const ext = plan.extensionPlan;
+    const params = extensionPlaybackParams(plan, clock, rate);
+    const bed = params?.bed === true;
+    plan.v2.extension = params ? startExtensionPlayback({
+      ctx,
+      tap: a.tap,
+      buffer: plan.extensionBuffer,
+      atSec: params.atSec,
+      gainDb: ext.gainDb,
+      durationSec: params.durationSec,
+      offsetSec: 0,
+      fadeInSec: params.fadeInSec,
+      fadeOutSec: params.fadeOutSec,
+      coverSec: params.coverSec,
+    }) : null;
+    if (plan.v2.extension) {
+      const label = bed
+        ? ext.model === 'musicgen'
+          ? '生成过渡续接（MusicGen）'
+          : '生成过渡垫底（Stable Audio）'
+        : ext.source === 'model' ? 'A 尾补生成段' : 'A 尾补循环';
+      logEvent('automix-v2-extension', `${label} ${(ext.targetMs / 1000).toFixed(1)}s（${ext.passes} 遍 · ${ext.reason}）`);
+      if (bed) {
+        toast(
+          `生成过渡：${ext.model === 'musicgen' ? '续接' : '垫底'} ${(
+            ext.targetMs / 1000
+          ).toFixed(1)}s · 随换手收尾`,
+        );
+      }
+    }
+  }
   return true;
 }
 
@@ -5397,6 +6062,8 @@ function releaseSplitMix(plan: ActivePlan): void {
   runtime.backspin?.stop();
   runtime.loopRoll?.stop();
   runtime.doubling?.stop();
+  runtime.extension?.stop();
+  runtime.extension = null;
   try { runtime.a.setWetTap('pre'); } catch { /* 老 deck 没这个开关 */ }
   try { runtime.b.setWetTap('pre'); } catch { /* 同上 */ }
   // 混响/回声的尾巴先自己走完，再拆链：直接 dispose 等于把 return 一步砍到 0
@@ -5405,6 +6072,10 @@ function releaseSplitMix(plan: ActivePlan): void {
   releaseAutomixV2Tail(runtime.b);
   const aDeck = runtime.a;
   const bDeck = runtime.b;
+  // Return both elements to their dry outputs now. Only the already-fed
+  // reverb/delay nodes need to survive for the tail.
+  aDeck.tap.restore();
+  bDeck.tap.restore();
   window.setTimeout(() => {
     aDeck.dispose();
     bDeck.dispose();
@@ -5443,8 +6114,8 @@ function beginTimeline(plan: ActivePlan): void {
       // v2 的响度对齐是「整段有效」的：接上就不撤，否则过渡结束后 B 会回升 3 dB
       // 不能整首保持：B 会被永久抬 2–6 dB，听感就是「放大过、还带点混响」。
       // 过渡期间保持，之后用 8 秒（约 4 小节）慢慢放掉，跳跃感不可闻。
-      maxDb: isAutomixV2(readMixTransitionMode()) ? 2 : 3,
-      holdSec: isAutomixV2(readMixTransitionMode()) ? 8 : 4,
+      maxDb: isAutomixV2(effectiveMode()) ? 2 : 3,
+      holdSec: isAutomixV2(effectiveMode()) ? 8 : 4,
     });
     if (plan.cleanPickup) {
       const edge = Math.max(0,plan.fadeMs-12);
@@ -5602,7 +6273,7 @@ function fadeStep(): void {
   const elapsed = plan.audioStartedAt !== undefined && clock !== null
     ? (clock - plan.audioStartedAt) * 1000 : performance.now() - plan.startedAt;
   // 目标 = 下一首时，A 被拉快/拉慢，窗口的墙钟长度随之变成 fadeMs × tempoRate。
-  const wallMs = plan.fadeMs * (plan.tempoInverted ? Math.max(0.5, plan.tempoRate) : 1);
+  const wallMs = plan.fadeWallMs ?? plan.fadeMs * (plan.tempoInverted ? Math.max(0.5, plan.tempoRate) : 1);
   const progress = Math.min(1, elapsed / Math.max(1, wallMs));
   const runtime = plan.v2;
   if (runtime && !runtime.lowTrimDone && progress >= Math.max(0,runtime.plan.handoffStartP-0.12)) {
@@ -5627,7 +6298,20 @@ function fadeStep(): void {
   debug.progress = progress;
   // A 在 MATCHED_OVERLAP_END 处已静音，之后才恢复 B 原速：
   // 之后平滑拉回用户倍速，过渡完成的瞬间 B 已经是正常播放速度。
-  if (plan.tempoInverted) {
+  if (plan.aRate && Math.abs(plan.aRate - 1) > 0.001) {
+    // 双侧向中点靠：A 拉到 aRate、B 拉到 tempoRate，过渡后各自回原速。
+    const baseRate = baseDeckRate(plan.options);
+    const rampMs = Math.max(1_200, Math.min(6_000, Math.round(wallMs * 0.25)));
+    const k = Math.min(1, elapsed / rampMs);
+    const wantA = baseRate * (1 + (plan.aRate - 1) * k);
+    const wantB = baseRate * (1 + (plan.tempoRate - 1) * k);
+    const aEl = plan.options.active;
+    if (!aEl.paused && Math.abs(aEl.playbackRate - wantA) > 0.002) setDeckPlaybackRate(aEl, wantA);
+    if (!plan.options.standby.paused && Math.abs(plan.options.standby.playbackRate - wantB) > 0.002) {
+      setDeckPlaybackRate(plan.options.standby, wantB);
+    }
+    debug.tempoRateLive = Math.round(plan.tempoRate * 1000) / 1000;
+  } else if (plan.tempoInverted) {
     // 目标 = 下一首：B 保持原速，A 在过渡前段被拉到 B 的 BPM。
     // 苹果的 `speedRamp` 是几十段折线（日志里 39 / 77 段）；WebAudio 只有一个 playbackRate，
     // 折中成 4 段 ease-in-out 折线 —— 听感上不再是「一条直线匀速拉」，而是先慢、中间快、末段再慢下来。
@@ -5774,6 +6458,7 @@ function finishFade(plan: ActivePlan): void {
     setAudioTapVolume(plan.baseVolume, true);
     releaseDeckFx(plan.options.active, 0);
     releaseDeckFx(plan.options.standby, 1);
+    setDeckMixGain(plan.options.standby, 1);
     setDeckGraphTilt(plan.options.active, 0, 0);
     setDeckGraphTilt(plan.options.standby, 0, 0);
     setDeckGraphVocalFocus(plan.options.active, 0);
@@ -5937,6 +6622,8 @@ export interface MixDeckSnapshot {
   /** 到下一拍的毫秒数 */
   nextBeatMs: number;
   layers: MixLayerSnapshot;
+  /** 该侧的风格画像（分析增强已合并时为非空） */
+  styleProfile: { primary: string; mood: string; confidence: number } | null;
   /** v2 链上的实际参数（没建链时为 null） */
   chain: {
     lowDb: number;
@@ -6103,6 +6790,13 @@ function deckSnapshot(
       drum: sampleLayer(analysis?.activity?.drum ?? [], hop, posMs),
       bass: sampleLayer(analysis?.activity?.bass ?? [], hop, posMs),
     },
+    styleProfile: analysis?.styleProfile
+      ? {
+          primary: analysis.styleProfile.primary,
+          mood: analysis.styleProfile.mood,
+          confidence: Math.round(analysis.styleProfile.confidence * 100) / 100,
+        }
+      : null,
     chain: chain
       ? {
           lowDb: Math.round(linearToDb(chain.lowGain.gain.value) * 10) / 10,
@@ -6229,8 +6923,10 @@ export function crossfadeLiveSnapshot(): MixLiveSnapshot {
     bpmATarget: base.a?.bpm && inv ? Math.round(base.a.bpm * aRate * 10) / 10 : base.a?.bpm || null,
     bpmBTarget: !inv && base.b?.bpm ? Math.round(base.b.bpm * rate0 * 10) / 10 : base.b?.bpm || null,
     inverted: inv,
-    /** 两首同速：根本没变速，别显示「原速 / 回正」这种听着像做了动作的字。 */
-    sameTempo: Math.abs(rate0 - 1) < 0.004,
+    /** 两首同速：真的同速才这么说。BPM 差很大但引擎选择不拉拍时，不能报「同速」。 */
+    sameTempo:
+      Math.abs(rate0 - 1) < 0.004 &&
+      (!base.a?.bpm || !base.b?.bpm || Math.abs(base.a.bpm / base.b.bpm - 1) < 0.01),
   };
   base.gate = Math.round((plan.v2?.a.tap.gate.gain.value ?? 1) * 100) / 100;
   base.bridgeKind = plan.v2?.introBridge ? 'intro' : plan.v2?.bridge ? 'loop' : null;
@@ -6362,6 +7058,14 @@ export function crossfadeTailBleedActive(): boolean {
 
 export function crossfadeBridgeActive(): boolean {
   return Boolean(activePlan?.v2?.bridge);
+}
+
+/**
+ * A 尾自延长是否正在响：播放器 `ended` 守卫必须等它走完再收尾，
+ * 否则元素一结束就把整条链拆掉，延长 buffer 会被硬切。
+ */
+export function crossfadeExtensionActive(): boolean {
+  return extensionActive() || activePlan?.v2?.extension?.active === true;
 }
 
 export function crossfadeFinishNow(reason = 'ended'): boolean {
@@ -6791,6 +7495,11 @@ export function buildCrossfadeSection(scope: Disposers | null): HTMLElement {
     dataAttr: 'data-mix-mode',
     items: [
       {
+        value: 'auto',
+        label: '自动',
+        title: '按两首的拍点、置信度、速度差、调性与活动度选：够格走进阶 v2，否则退回标准',
+      },
+      {
         value: 'standard',
         label: '标准',
         title: '整轨等功率交叉：与旧版逐样本一致，不做低频换手、不加扫频',
@@ -6805,7 +7514,7 @@ export function buildCrossfadeSection(scope: Disposers | null): HTMLElement {
     onPick: (value) => {
       writeMixTransitionMode(value);
       paint();
-      toast(value === 'automixV2' ? '混音过渡：智能接歌' : '混音过渡：标准（整轨等功率）');
+      toast(value === 'automixV2' ? '混音过渡：进阶 v2' : value === 'auto' ? '混音过渡：自动（按两首判断）' : '混音过渡：标准（整轨等功率）');
     },
   });
   const mixField = h(
@@ -6822,6 +7531,7 @@ export function buildCrossfadeSection(scope: Disposers | null): HTMLElement {
     ),
     mixRow.root,
   );
+
 
   /**
    * 接唱点：过渡的**终点**锚到下一首的哪个唱词时段。
@@ -6917,7 +7627,7 @@ export function buildCrossfadeSection(scope: Disposers | null): HTMLElement {
     vocalRow.paint(settings.vocalAnchor);
     vocalRow.setDisabled(!settings.handoff || settings.lengthMode !== 'auto');
     floorRow.paint(settings.mixFloor);
-    floorRow.setDisabled(!isAutomixV2(readMixTransitionMode()));
+    floorRow.setDisabled(!isAutomixV2(effectiveMode()));
     handoffRow.setDisabled(settings.lengthMode !== 'auto');
     barsHint.textContent =
       settings.lengthMode === 'auto'

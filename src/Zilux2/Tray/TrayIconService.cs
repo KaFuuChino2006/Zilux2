@@ -4,11 +4,11 @@ using Forms = System.Windows.Forms;
 namespace Zilux2.Tray;
 
 /// <summary>
-/// 托盘图标（<see cref="Forms.NotifyIcon"/>）：左键单击显示/隐藏主窗口，右键菜单提供显示窗口、
-/// 播放控制（播放/暂停、上一首、下一首）和真正退出。
+/// 托盘图标（<see cref="Forms.NotifyIcon"/>）：左键单击显示/隐藏主窗口，右键弹出
+/// <see cref="TrayMenuWindow"/>（自绘卡片菜单，替换掉 2026-11-24 之前的系统灰 ContextMenuStrip）。
 ///
 /// 线程模型：NotifyIcon 在 WPF UI 线程上创建，它的隐藏窗口由 WPF 的消息泵分发，因此所有回调
-/// 都在 UI 线程执行，可以直接调用 <see cref="MainWindow"/> 的方法，不需要额外调度。
+/// 都在 UI 线程执行，可以直接调用 <see cref="MainWindow"/> 与创建 WPF 窗口，不需要额外调度。
 /// 播放控制统一走页面 command 消息（MainWindow.SendCommand → WebViewHost.PostCommand），
 /// 与全局热键共用同一条链路。
 /// </summary>
@@ -16,16 +16,17 @@ internal sealed class TrayIconService : IDisposable
 {
     private readonly MainWindow _window;
     private readonly Forms.NotifyIcon _icon;
-    private readonly Forms.ContextMenuStrip _menu;
     private readonly Icon? _ownedIcon;
     private bool _shownHint;
     private bool _disposed;
-    private readonly Forms.ToolStripMenuItem _togglePlayItem;
-    private readonly Forms.ToolStripMenuItem _wallpaperInfoItem;
-    private readonly Forms.ToolStripMenuItem _wallpaperPauseItem;
-    private readonly Forms.ToolStripMenuItem _wallpaperNextItem;
-    private readonly Forms.ToolStripMenuItem _wallpaperDesktopItem;
     private readonly Forms.Timer _clickTimer;
+
+    // 菜单状态：右键才建窗口，先把状态攒在这些字段里，弹出时一次性灌进去。
+    private TrayMenuWindow? _menu;
+    private bool _playing;
+    private string _wallpaperTitle = "未启用";
+    private bool _wallpaperPaused;
+    private bool _wallpaperRunning;
 
     public TrayIconService(MainWindow window)
     {
@@ -39,47 +40,8 @@ internal sealed class TrayIconService : IDisposable
             Visible = false,
         };
 
-        _menu = new Forms.ContextMenuStrip();
-        var showItem = new Forms.ToolStripMenuItem("显示主窗口");
-        showItem.Click += (_, _) => _window.ShowFromTray();
-        _togglePlayItem = new Forms.ToolStripMenuItem("播放或暂停");
-        _togglePlayItem.Click += (_, _) => _window.SendCommand("togglePlay");
-        var previousItem = new Forms.ToolStripMenuItem("上一首");
-        previousItem.Click += (_, _) => _window.SendCommand("prev");
-        var nextItem = new Forms.ToolStripMenuItem("下一首");
-        nextItem.Click += (_, _) => _window.SendCommand("next");
-        // 壁纸（第 93 轮 B：当前壁纸名 + 暂停 + 下一张 + 桌面层开关）。
-        _wallpaperInfoItem = new Forms.ToolStripMenuItem("壁纸：未启用") { Enabled = false };
-        _wallpaperPauseItem = new Forms.ToolStripMenuItem("暂停壁纸");
-        _wallpaperPauseItem.Click += (_, _) => _window.ToggleWallpaperPauseFromHotkey();
-        _wallpaperNextItem = new Forms.ToolStripMenuItem("下一张壁纸");
-        _wallpaperNextItem.Click += (_, _) => _window.NextWallpaperFromHotkey();
-        _wallpaperDesktopItem = new Forms.ToolStripMenuItem("桌面层（二期）") { Enabled = false };
-
-        var unlockLyricsItem = new Forms.ToolStripMenuItem("解锁桌面歌词");
-        unlockLyricsItem.Click += (_, _) => _window.UnlockDesktopLyrics();
-        var settingsItem = new Forms.ToolStripMenuItem("设置…");
-        settingsItem.Click += (_, _) => _window.OpenSettingsFromTray();
-        var exitItem = new Forms.ToolStripMenuItem("退出");
-        exitItem.Click += (_, _) => _window.CloseForReal();
-        _menu.Items.Add(showItem);
-        _menu.Items.Add(new Forms.ToolStripSeparator());
-        _menu.Items.Add(_togglePlayItem);
-        _menu.Items.Add(previousItem);
-        _menu.Items.Add(nextItem);
-        _menu.Items.Add(new Forms.ToolStripSeparator());
-        _menu.Items.Add(_wallpaperInfoItem);
-        _menu.Items.Add(_wallpaperPauseItem);
-        _menu.Items.Add(_wallpaperNextItem);
-        _menu.Items.Add(_wallpaperDesktopItem);
-        _menu.Items.Add(new Forms.ToolStripSeparator());
-        _menu.Items.Add(unlockLyricsItem);
-        _menu.Items.Add(settingsItem);
-        _menu.Items.Add(new Forms.ToolStripSeparator());
-        _menu.Items.Add(exitItem);
-        _icon.ContextMenuStrip = _menu;
-
         _icon.MouseClick += OnIconMouseClick;
+        _icon.MouseUp += OnIconMouseUp;
         _clickTimer = new Forms.Timer { Interval = 250 };
         _clickTimer.Tick += OnClickTimerTick;
         _window.HiddenToTray += OnHiddenToTray;
@@ -97,6 +59,29 @@ internal sealed class TrayIconService : IDisposable
         }
 
         HostLog.Info($"tray.start icon={(_ownedIcon is not null ? "process" : "fallback")}");
+
+        // 调试用：设 ZILUX2_TRAY_MENU_PREVIEW=1 启动，应用起来后直接把右键菜单弹在鼠标处，
+        // 用来截屏核对菜单观感（和 ZILUX2_WEBVIEW_ARGS 同一类调试口子，不设就不生效）。
+        if (Environment.GetEnvironmentVariable("ZILUX2_TRAY_MENU_PREVIEW") == "1")
+        {
+            System.Windows.Application.Current?.Dispatcher.BeginInvoke(
+                new Action(() =>
+                {
+                    try
+                    {
+                        var menu = EnsureMenu();
+                        menu.SyncShellVisibility(!_window.IsVisible);
+                        menu.SyncPlayback(_playing);
+                        menu.SyncWallpaper(_wallpaperTitle, _wallpaperPaused, _wallpaperRunning);
+                        menu.ToggleAtCursor();
+                    }
+                    catch (Exception exception)
+                    {
+                        HostLog.Warn($"tray.menu preview failed: {exception.Message}");
+                    }
+                }),
+                System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+        }
     }
 
     /// <summary>托盘图标是否真的挂上了资源管理器；失败时 App 不会保留这个实例。</summary>
@@ -141,6 +126,52 @@ internal sealed class TrayIconService : IDisposable
         _clickTimer.Start();
     }
 
+    private void OnIconMouseUp(object? sender, Forms.MouseEventArgs e)
+    {
+        if (_disposed || e.Button != Forms.MouseButtons.Right)
+        {
+            return;
+        }
+
+        // 右键：自绘菜单。已经开着就收起（和系统托盘菜单的手感一致）。
+        try
+        {
+            var menu = EnsureMenu();
+            menu.SyncShellVisibility(!_window.IsVisible);
+            menu.SyncPlayback(_playing);
+            menu.SyncWallpaper(_wallpaperTitle, _wallpaperPaused, _wallpaperRunning);
+            menu.ToggleAtCursor();
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"tray.menu failed: {exception.GetType().Name}: {exception.Message}");
+        }
+    }
+
+    private TrayMenuWindow EnsureMenu()
+    {
+        if (_menu is not null)
+        {
+            return _menu;
+        }
+
+        var menu = new TrayMenuWindow
+        {
+            ShowMainRequested = () => _window.ShowFromTray(),
+            TogglePlayRequested = () => _window.SendCommand("togglePlay"),
+            PreviousRequested = () => _window.SendCommand("prev"),
+            NextRequested = () => _window.SendCommand("next"),
+            ToggleWallpaperPauseRequested = () => _window.ToggleWallpaperPauseFromHotkey(),
+            NextWallpaperRequested = () => _window.NextWallpaperFromHotkey(),
+            UnlockLyricsRequested = () => _window.UnlockDesktopLyrics(),
+            OpenSettingsRequested = () => _window.OpenSettingsFromTray(),
+            ExitRequested = () => _window.CloseForReal(),
+        };
+
+        _menu = menu;
+        return menu;
+    }
+
     private void OnClickTimerTick(object? sender, EventArgs e)
     {
         _clickTimer.Stop();
@@ -158,9 +189,10 @@ internal sealed class TrayIconService : IDisposable
             return;
         }
 
-        _wallpaperInfoItem.Text = running ? $"壁纸：{title}" : $"壁纸：{title}（未运行）";
-        _wallpaperPauseItem.Text = paused ? "继续壁纸" : "暂停壁纸";
-        _wallpaperPauseItem.Enabled = running;
+        _wallpaperTitle = title;
+        _wallpaperPaused = paused;
+        _wallpaperRunning = running;
+        _menu?.SyncWallpaper(title, paused, running);
     }
 
     /// <summary>页面播放状态推送：菜单文案与播放态同步（B23）。</summary>
@@ -171,12 +203,20 @@ internal sealed class TrayIconService : IDisposable
             return;
         }
 
-        _togglePlayItem.Text = playing ? "暂停" : "播放";
+        _playing = playing;
+        _menu?.SyncPlayback(playing);
     }
 
     private void OnHiddenToTray(object? sender, EventArgs e)
     {
-        if (_disposed || _shownHint)
+        if (_disposed)
+        {
+            return;
+        }
+
+        _menu?.SyncShellVisibility(true);
+
+        if (_shownHint)
         {
             return;
         }
@@ -241,6 +281,7 @@ internal sealed class TrayIconService : IDisposable
             _clickTimer.Stop();
             _clickTimer.Dispose();
             _icon.MouseClick -= OnIconMouseClick;
+            _icon.MouseUp -= OnIconMouseUp;
             _window.HiddenToTray -= OnHiddenToTray;
         }
         catch
@@ -259,7 +300,8 @@ internal sealed class TrayIconService : IDisposable
 
         try
         {
-            _menu.Dispose();
+            _menu?.Close();
+            _menu = null;
         }
         catch (Exception exception)
         {

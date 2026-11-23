@@ -230,7 +230,7 @@
 
 /* Desktop home reference: keep page colors and geometry local to the scrolling content. */
 .home-host .ui-page.home {
-  --home-card: linear-gradient(155deg, #fff 12%, color-mix(in srgb, var(--accent) 8%, white));
+  --home-card: linear-gradient(155deg, #fff 22%, color-mix(in srgb, var(--accent) 20%, white));
   --home-border: #dfe8ed;
   --text: #101820;
   --muted: #65717f;
@@ -563,4 +563,103 @@
   transition:
     opacity var(--motion-quick) var(--ease),
     visibility 0s linear var(--motion-quick);
+}
+
+/* 封面作为画格，栏目签、网点和裁切星芒随整卡进退场。 */
+.home-host .home .daily-card {
+  --print-color: #60bfa8;
+  --print-ink: #23464b;
+  position: relative;
+  isolation: isolate;
+  border-color: color-mix(in srgb, var(--print-color) 38%, white);
+  border-radius: 5px 20px 5px 16px;
+  background:
+    linear-gradient(126deg, transparent 75%, color-mix(in srgb, var(--print-color) 14%, transparent) 75% 78%, transparent 78.2%),
+    var(--home-card);
+}
+.home-host .home .radar-card { --print-color: #a08bc9; --print-ink: #46385d; }
+.home-host .home .home-provider .daily-card { --print-color: #83acce; --print-ink: #304d61; }
+.home-host .home .home-collections > :nth-child(2) .daily-card { --print-color: #d693a8; --print-ink: #664254; }
+.home-host .home .daily-card::before,
+.home-host .home .daily-card::after {
+  content: '';
+  position: absolute;
+  pointer-events: none;
+  z-index: -1;
+}
+.home-host .home .daily-card::before {
+  inset: 0 0 0 auto;
+  width: 32%;
+  border-radius: inherit;
+  background: radial-gradient(circle, var(--print-color) 1px, transparent 1.3px) right bottom / 5px 5px;
+  mask-image: linear-gradient(120deg, transparent 40%, #0008);
+}
+.home-host .home .daily-card::after {
+  top: 6px;
+  right: 12px;
+  width: 26px;
+  height: 32px;
+  background: var(--print-color);
+  clip-path: polygon(51% 0, 60% 36%, 99% 46%, 62% 58%, 48% 100%, 39% 62%, 0 53%, 38% 40%);
+}
+.home-host .home .daily-kicker {
+  width: fit-content;
+  max-width: 100%;
+  padding: 3px 12px 3px 7px;
+  color: var(--print-ink);
+  background: color-mix(in srgb, var(--print-color) 23%, white);
+  clip-path: polygon(0 0, 100% 0, calc(100% - 7px) 100%, 0 100%);
+  font-weight: 700;
+  letter-spacing: .08em;
+}
+.home-host .home .daily-title { color: #202e39; font-weight: 800; }
+.home-host .home .daily-deck .daily-cover-0 {
+  border: 3px solid white;
+  border-radius: 4px 10px 4px 8px;
+  box-shadow: 1px 1px 0 1px var(--print-ink), 4px 5px 0 var(--print-color);
+}
+/* 根据实际显示的收藏卡分栏，最近播放缺席时由收藏占满整行。 */
+.home-host .home .home-row:is([data-collection-count="1"], [data-collection-count="2"]) > .home-collections {
+  margin-top: 0;
+}
+@media (min-width: 761px) {
+  .home-host .home .home-row[data-collection-count="1"] {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .home-host .home .home-row[data-collection-count="1"]:has(> .home-recent) {
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  }
+  .home-host .home .home-row[data-collection-count="1"] .home-recent {
+    margin: 0;
+  }
+  .home-host .home .home-row[data-collection-count="1"] .recent-strip {
+    max-width: none;
+  }
+  .home-host .home .home-row[data-collection-count="1"] .daily-card > .daily-deck {
+    width: clamp(100px, 9vw, 148px);
+  }
+  .home-host .home .home-row[data-collection-count="1"] .daily-title {
+    font-size: clamp(20px, 1.65vw, 28px);
+  }
+}
+@media (min-width: 1100px) {
+  .home-host .home .home-row[data-collection-count="2"]:has(> .home-recent) {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  }
+  .home-host .home .home-row[data-collection-count="2"] .home-recent {
+    margin: 0;
+  }
+}
+@media (min-width: 761px) and (max-width: 1099px) {
+  .home-host .home .home-row[data-collection-count="2"] .recent-strip {
+    max-width: none;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-auto-rows: 34px;
+    align-content: start;
+    height: auto;
+    max-height: 136px;
+  }
 }

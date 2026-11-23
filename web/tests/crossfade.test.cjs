@@ -32,7 +32,7 @@ function harness({ graph = true } = {}) {
       : fs.existsSync(automixFile) ? automixFile : audioFile;
     if (modules.has(file)) return modules.get(file);
     let source = fs.readFileSync(file, 'utf8');
-    if (name === 'crossfadeDeck') source += '\nexport { buildSchedule, buildAmTracks, resolveTransitionStyle, readCrossfadeDebug };';
+    if (name === 'crossfadeDeck') source += '\nexport { buildSchedule, buildAmTracks, resolveTransitionStyle, readCrossfadeDebug, extensionPlaybackParams };';
     const exports = {};
     modules.set(file, exports);
     vm.runInNewContext(ts.transpileModule(source, { compilerOptions: {
@@ -49,7 +49,8 @@ function harness({ graph = true } = {}) {
         const allowed = new Set(['phraseMix', 'transitionMath', 'transitionLoudness', 'loudness', 'advancedHandoff',
           'mixTransitionMode', 'transitionTimeline', 'advancedTransition', 'transitionPlan', 'tempoGate',
           'djMoves', 'stemSwap', 'beatPll', 'vocalAnchor', 'introBridge', 'tailFade', 'v2Plan',
-          'v2Quality', 'automixPlan', 'bridgePlan', 'pitchShift', 'styleKit', 'melodyAnchor', 'echoTail', 'backspin', 'loopRoll', 'dropEntry', 'doubling', 'genreProfile', 'appleRecipes']);
+          'v2Quality', 'automixPlan', 'bridgePlan', 'pitchShift', 'styleKit', 'melodyAnchor', 'echoTail', 'backspin', 'loopRoll', 'dropEntry', 'doubling', 'genreProfile', 'appleRecipes',
+          'styleProfile', 'stylePolicy', 'extensionPlan', 'extensionPlayer', 'tempoPolicy']);
         return allowed.has(base) ? load(base) : {};
       },
     }, { filename: file });
@@ -955,4 +956,17 @@ test('v2 窗口下限：收尾规则压短后仍补够 3.2 s，且手法不超�
     assert.ok(s.fadeMs + 1 >= spec.minFadeMs,
       `手法 ${s.styleId} 要求 >= ${spec.minFadeMs} ms，实为 ${Math.round(s.fadeMs)} ms`);
   }
+});
+
+test('延长段起播参数：tail 从可听结尾补位', () => {
+  const { engine } = harness();
+  const tail = engine.extensionPlaybackParams({
+    extensionPlan: { source: 'a-tail', targetMs: 5000, gainDb: 0, passes: 1, reason: '补尾' },
+    audibleEndPosMs: 50000, fadeStartPosMs: 40000,
+  }, 12.5, 2);
+  assert.equal(tail.atSec, 17.5);
+  assert.equal(tail.durationSec, 5);
+  assert.equal(tail.fadeInSec, 0.02);
+  assert.equal(tail.fadeOutSec, 0.05);
+  assert.equal(engine.extensionPlaybackParams({ extensionPlan: null, audibleEndPosMs: 0, fadeStartPosMs: 0 }, 0, 1), null);
 });

@@ -125,7 +125,7 @@ import {
   sourceSupportsLikedWrite,
 } from '../online/sources';
 import { onlineArtwork } from '../online/artwork';
-import { analysisKey, analyzeTrack, cachedAnalysis } from '../online/analysis';
+import { analysisKey, analyzeTrack, cachedAnalysis, ensureEnhancedAnalysis } from '../online/analysis';
 import type { AnalysisResult } from '../online/analysis';
 import { resolveMixSources, saveMixSources, type MixKind } from './mixSources';
 import { buildAnalysisSection } from './analysisSection';
@@ -771,11 +771,11 @@ const SPECIAL_LIMIT: Record<HomeSpecialKind, number> = {
  * 墙头、区块标题、歌单封面、海报、搜索行、本地歌单行、场景卡、统计卡。
  */
 const WALL_ITEMS =
-  '.poster, .ui-tile, .track-row, .row, .stats-card, .disc-track, .disc-tabs, .disc-bar, .disc-sub-title';
+  '.poster, .ui-tile, .track-row, .row, .stats-card, .disc-track, .disc-tabs, .disc-bar, .disc-sub-title, .wall-daily-layout, .library-imprint, .library-display, .library-mark, .library-folio';
 /** 标题只走轻量款，别让一行字翻 58°。 */
 const WALL_HEADS = '.wall-head, .section-title, .disc-sub-title';
 /** 页面顶部的黑色大字：容器淡入 + 逐字上浮显影（见 ui/titleEntrance.ts）。 */
-const WALL_TITLES = '.wall-title, .disc-sub-title';
+const WALL_TITLES = '.wall-title, .disc-sub-title, .library-display';
 
 /**
  * 首页内容指纹：只有曲目/歌单的 id、标题、数量、来源这类结构字段参与，
@@ -861,6 +861,13 @@ export class App {
   /** 整页视图（今日推荐/私人雷达）时导航条常驻，不自动收起。 */
   private dockPinned = false;
   private dockSetPinned: ((on: boolean) => void) | null = null;
+  /**
+   * 歌词页整页覆盖时把导航条彻底停掉：连悬停也不许出来。
+   * 维护者 2026-11-24：「打开歌词页面后在默认歌词页面的时候上方导航栏应该是不显示的，
+   * 即使鼠标移动上去」——歌词页铺满整窗，上面没有导航条的位置。
+   */
+  private dockSuspended = false;
+  private dockSuspend: ((on: boolean) => void) | null = null;
   /** 当前是不是停在首页：首页导航条要一直常驻，只有右键能让它暂时退场。 */
   private homeView = true;
   /** 每次右键召唤领一个序号：异步收尾回来发现序号变了就作废（连点几下只有最后一次落地）。 */
@@ -913,6 +920,7 @@ export class App {
   private mixPicker: HTMLDivElement | null = null;
   private mixPickerCleanup: (() => void) | null = null;
   /** 封面显示方式：网格卡片 / 横条列表（与首页热门歌单共用偏好） */
+  private wallDaily: FxDailyStage | null = null;
   private wallLayout: PosterLayout = readPosterLayout();
   private localQuery = '';
   /** 本地曲库视图：歌曲列表 / 歌手（艺术家）网格。 */
@@ -2132,6 +2140,7 @@ export class App {
     const scheduleIdle = (): void => {
       window.clearTimeout(this.dockMuteTimer);
       this.dockMuteTimer = 0;
+      if (this.dockSuspended) return;
       if (mode === 'pinned') return;
       this.dockMuteTimer = window.setTimeout(() => {
         this.dockMuteTimer = 0;
@@ -2216,6 +2225,7 @@ export class App {
      * 收尾是异步的，所以领一个序号：这中间又点了别处 / 换了页面，这次召唤直接作废。
      */
     const summon = async (centerX: number, centerY: number): Promise<void> => {
+      if (this.dockSuspended) return;
       const token = ++this.dockSummonSeq;
       mode = 'summoned';
       this.dockPinned = false;
@@ -2235,6 +2245,14 @@ export class App {
      * `on` 由 `showHome()` / `applyNavSnapshot()` 这类导航动作决定，别在别处乱调。
      */
     this.dockSetPinned = (on: boolean): void => {
+      // 歌词页：谁来都按收着处理，出歌词页时 dockSuspend(false) 会按当时页面重算。
+      if (this.dockSuspended) {
+        this.dockPinned = false;
+        dock.classList.remove('is-pinned');
+        mode = 'idle';
+        void hideDock(false);
+        return;
+      }
       this.dockPinned = on;
       dock.classList.toggle('is-pinned', on);
       clearTimers();
@@ -2267,11 +2285,35 @@ export class App {
       }
     };
 
+    /**
+     * 歌词页开合时整体停用 / 恢复导航条。
+     *
+     * 歌词页是铺满整窗的覆盖层，导航条压在上面既挡视线又抢指针，所以进去就彻底关掉：
+     * `is-dock-suspended` 让它连悬停判定都不参与（指针事件与可见性一起关掉），
+     * 这里再把状态机按「收着」处理，出歌词页时按当时的页面重新落位（首页恢复常驻）。
+     */
+    this.dockSuspend = (on: boolean): void => {
+      this.dockSuspended = on;
+      dock.classList.toggle('is-dock-suspended', on);
+      clearTimers();
+      // 没跑完的召唤作废，免得它的异步收尾在歌词页里把条又搬出来。
+      this.dockSummonSeq += 1;
+      if (on) {
+        this.dockPinned = false;
+        dock.classList.remove('is-pinned');
+        mode = 'idle';
+        void hideDock(false);
+        return;
+      }
+      this.dockSetPinned?.(this.homeView);
+    };
+
     // 非首页：指针靠近就展开，离开就收；召唤出来的条不跟指针（移开也留着，直到点别处 / 5 秒闲置 / 换页）。
     window.addEventListener('pointermove', (event) => {
       if (drag || resize) return;
       pointerX = event.clientX;
       pointerY = event.clientY;
+      if (this.dockSuspended) return;
       // 搜索面板开着：导航条由 CSS 收着，不跟指针走（否则会一边藏着一边跑展开动画）。
       // 坐标照常更新，面板一关，下一次指针移动的判断才是对的。
       if (this.root.classList.contains('is-search-open')) return;
@@ -2325,7 +2367,7 @@ export class App {
       // 浮层、控件、以及自带右键菜单的卡片/行不抢（那些菜单比召唤导航条更要紧）。
       if (
         target.closest(
-          '.rail.nav-dock, .sheet, .login, .lyrics-view, .playerbar, .upnext, .quick, input, textarea, .poster, .fx-card, .track-row',
+          '.rail.nav-dock, .sheet, .login, .lyrics-view, .playerbar, .upnext, .quick, input, textarea, .poster, .fx-card, .wall-daily-layout .fx-hero-cover, .track-row',
         )
       ) {
         return;
@@ -2646,6 +2688,8 @@ export class App {
     next?.style.removeProperty('pointer-events');
     if (this.stageLayer === next) return;
     const prev = this.stageLayer;
+    if (prev === this.wallHost) this.wallDaily?.hide();
+    if (next === this.wallHost) this.wallDaily?.show('daily');
     this.stageLayer = next;
     // 其余层直接收起来，只留「正在退场」和「正在进场」两层同场。
     for (const layer of [this.homeHost, this.wallHost, this.dailyView, this.wallpaperHost]) {
@@ -3841,6 +3885,8 @@ export class App {
     // 先把上一屏清掉再切层：切层时宿主里还留着旧 DOM，reveal() 会先在那批旧节点上开一遍入场，
     // 紧接着又被抹掉重开——看起来就是「亮一下、抖一下、再重来」。
     if (!skipEnter) this.wallHost.scrollTop = 0;
+    this.wallDaily?.dispose();
+    this.wallDaily = null;
     this.wallHost.textContent = '';
     // 后台刷新（本地曲库/收藏变化）也会走这里；那种情况绝不能把海报墙抢到台上，
     // 否则用户明明在首页，导航栈里却会记下「喜欢墙」，侧键返回就跳回「我喜欢的音乐」。
@@ -3867,19 +3913,38 @@ export class App {
     }
     this.refreshWallShortcuts();
     queueMicrotask(() => this.refreshWallShortcuts());
+    const dailyEligible = this.wall.kind === 'liked' || this.wall.kind === 'recent';
+    const layoutKey = 'zilux2.dailyLayout.' + this.wall.kind;
+    const dailySelected = dailyEligible && localStorage.getItem(layoutKey) === '1';
     const actions: HTMLElement[] = [];
     if (this.wall.kind !== 'search' && tracks.length > 0 && !this.isLocalArtistGrid()) {
       const seg = h('div', { class: 'seg seg-sm layout-modes' });
-      ([['grid', '网格'], ['list', '横条']] as Array<[PosterLayout, string]>).forEach(([id, label]) => {
+      const modes: Array<[PosterLayout | 'daily', string]> = [['grid', '网格'], ['list', '横条']];
+      if (dailyEligible) modes.push(['daily', '推荐式']);
+      let layoutChangePending = false;
+      modes.forEach(([id, label]) => {
         const btn = h('button', {
-          class: `seg-btn${this.wallLayout === id ? ' is-on' : ''}`,
+          class: `seg-btn${(dailySelected ? 'daily' : this.wallLayout) === id ? ' is-on' : ''}`,
           text: label,
-          title: id === 'grid' ? '封面网格' : '横条列表（同搜索结果）',
+          title: id === 'daily' ? '今日推荐排版' : id === 'grid' ? '封面网格' : '横条列表（同搜索结果）',
         });
         btn.addEventListener('click', () => {
-          if (this.wallLayout === id) return;
-          this.wallLayout = id;
-          writePosterLayout(id);
+          const selected = dailyEligible && localStorage.getItem(layoutKey) === '1' ? 'daily' : this.wallLayout;
+          if (selected === id) return;
+          if (dailyEligible) localStorage.setItem(layoutKey,id === 'daily' ? '1' : '0');
+          if (id !== 'daily') {
+            this.wallLayout = id;
+            writePosterLayout(id);
+          }
+          if (dailyEligible) {
+            // During exit the controls still belong to the old layout. Paint the
+            // latest selection once, when the shared wall transition completes.
+            if (!layoutChangePending) {
+              layoutChangePending = true;
+              this.renderWall();
+            }
+            return;
+          }
           // skipEnter：网格不再自己播入场动画，只靠下面的 is-swap 过渡，否则会看起来刷新两次。
           this.renderWall(true);
           // 视图切换的过渡：重新挂动画类，触发淡入/上浮
@@ -4162,6 +4227,47 @@ export class App {
       return;
     }
 
+    if (dailySelected) {
+      const recent = this.wall.kind === 'recent';
+      const host = h('div', {class: 'wall-daily-layout ' + (recent ? 'library-history' : 'library-favorites')});
+      const masthead = h('div', {class:'library-masthead'},
+        h('div', {class:'library-imprint', text: recent ? 'ZILUX2  /  PLAY LOG' : 'ZILUX2  /  RECORD FILE'}),
+        h('div', {class:'library-display', text: recent ? 'On Repeat' : 'Favorites'}),
+        h('div', {class:'library-mark', 'aria-hidden':'true'},
+          ...['screen','blade','orbit','spark','ticks'].map(layer => h('i',{class:'sleeve-'+layer}))),
+      );
+      const folio = h('div', {class:'library-folio'},
+        h('span', {text: recent ? '播放记录　/　LISTENING HISTORY' : '私人收藏　/　PERSONAL COLLECTION'}),
+        h('i', {'aria-hidden':'true'}),
+        h('span', {class:'library-track-count',text: tracks.length + ' TRACKS'}),
+      );
+      const stage = createFxDailyStage({
+        registerTrack: registerPreviewTrack,
+        onTrackChange: key => {
+          let hash = 0;
+          for (const char of key) hash = (hash*31+char.charCodeAt(0)) >>> 0;
+          host.dataset.composition = String(hash % 3);
+        },
+        load: async () => tracks.slice(),
+        play: (list,index) => this.playWithPreviewHandoff(list,index),
+      });
+      this.wallDaily = stage;
+      stage.setWord(this.wall.kind === 'recent' ? '最近播放' : '我的喜欢');
+      host.append(masthead,stage.root,folio);
+      this.wallHost.append(host);
+      if (skipEnter && this.wallMotion().isVisible()) {
+        this.wallMotion().playOn([host, ...host.querySelectorAll<HTMLElement>('.library-imprint,.library-display,.library-mark,.library-folio')]);
+      }
+      stage.show('daily');
+      stage.syncCurrent(playerState().track,!playerState().playing);
+      const grid = stage.root.querySelector('.fx-cards');
+      grid?.addEventListener('scroll', () => {
+        if (this.wallDaily === stage && grid.scrollTop+grid.clientHeight >= grid.scrollHeight-500)
+          void this.loadMoreWall();
+      },{passive:true});
+      return;
+    }
+
     if (this.wallLayout === 'list') {
       this.wallHost.append(this.buildSearchList(tracks));
       if (this.wall.kind !== 'liked') void this.prefetchSearchLiked(tracks);
@@ -4349,7 +4455,12 @@ export class App {
       pager.hasMore = pages.some((page) => (page?.hasMore ?? false) || (page?.tracks.length ?? 0) >= pager.pageSize);
       if (fresh.length === 0) return;
       this.wall.tracks.push(...fresh);
-      if (this.wallLayout === 'list') {
+      if (this.wallDaily) {
+        this.wallDaily.reload();
+        const count = this.wallHost.querySelector('.library-track-count');
+        if (count) count.textContent = this.wall.tracks.length + ' TRACKS';
+      }
+      else if (this.wallLayout === 'list') {
         this.wallHost.querySelector('.track-list')?.remove();
         this.wallHost.append(this.buildSearchList(this.wall.tracks));
       } else {
@@ -5152,7 +5263,7 @@ export class App {
   /** 墙面 .track-row 的右键入口：从 data-track-key 回查当前 wall 的曲目对象。 */
   private onWallTrackContextMenu(event: MouseEvent): void {
     const target = event.target instanceof Element ? event.target : null;
-    const row = target?.closest('.track-row');
+    const row = target?.closest('.track-row, .wall-daily-layout [data-track-key]');
     if (!(row instanceof HTMLElement)) return;
     const key = row.dataset.trackKey ?? '';
     if (!key) return;
@@ -5160,6 +5271,7 @@ export class App {
     const index = tracks.findIndex((item) => `${item.source}:${item.id}` === key);
     if (index < 0) return;
     event.preventDefault();
+    event.stopPropagation();
     this.openTrackContextMenu(event.clientX, event.clientY, tracks[index]!, tracks, index);
   }
 
@@ -13288,7 +13400,8 @@ export class App {
       return;
     }
     this.playerbar.classList.remove('is-idle');
-    this.pbSource.textContent = sourceMeta(track.source)?.short ?? track.source;
+    const platform = sourceMeta(track.source)?.short ?? track.source;
+    if (this.pbSource.textContent !== platform) this.pbSource.textContent = platform;
     this.pbSource.dataset.source = track.source;
     this.paintStreamQuality();
     const trackKey = `${track.source}:${track.id}`;
@@ -13324,25 +13437,30 @@ export class App {
       this.loadClimax(track);
       refreshLoudness(track);
     }
-    this.pbTitle.textContent = track.title;
-    this.syncPlayerbarCollapsedWidth();
-    this.pbArtist.textContent = track.artist || '未知歌手';
+    if (trackChanged || this.pbTitle.textContent !== track.title) {
+      this.pbTitle.textContent = track.title;
+      this.syncPlayerbarCollapsedWidth();
+    }
+    if (this.pbArtist.textContent !== (track.artist || '未知歌手')) this.pbArtist.textContent = track.artist || '未知歌手';
     const artistLinkable = track.source === 'local' && Boolean(track.artist);
     this.pbArtist.classList.toggle('is-linkable', artistLinkable);
     this.pbArtist.title = artistLinkable ? `查看 ${track.artist} 的本地歌曲` : '';
     if (trackChanged) this.syncMiniWidth();
     if (trackChanged) this.playTrackEnter();
     if (trackChanged) this.refreshWallShortcuts();
-    this.pbPlayBtn.textContent = '';
-    this.pbPlayBtn.append(icon(state.playing ? 'pause' : 'play', 20));
+    if (trackChanged || this.pbPlayBtn.dataset.playing !== String(state.playing)) {
+      this.pbPlayBtn.dataset.playing = String(state.playing);
+      this.pbPlayBtn.replaceChildren(icon(state.playing ? 'pause' : 'play', 20));
+    }
     const ratio = state.durationMs > 0 ? Math.min(1, state.positionMs / state.durationMs) : 0;
     this.pbFill.style.width = `${(ratio * 100).toFixed(2)}%`;
     this.paintProgressMarks(state);
     this.pbCur.textContent = fmtTime(state.positionMs);
     this.pbDur.textContent = fmtTime(state.durationMs);
     this.paintMiniMeta(state);
-    this.pbLikeBtn.textContent = '';
-    this.pbLikeBtn.append(icon(state.liked ? 'heartFill' : 'heart'));
+    if (trackChanged || this.pbLikeBtn.classList.contains('is-liked') !== state.liked) {
+      this.pbLikeBtn.replaceChildren(icon(state.liked ? 'heartFill' : 'heart'));
+    }
     this.pbLikeBtn.classList.toggle('is-liked', state.liked);
     this.paintModeBtn(state.mode);
     this.syncQuickBody();
@@ -13452,6 +13570,8 @@ export class App {
     if (!el) return;
     // 这里反映「这首歌记忆的过渡」，而不是全局设置。
     const settings = effectiveCrossfadeSettings(state.track);
+    // 续接/垫底用的是「这首歌自己的尾段」：当前曲一进播放就排队；下一首也提前排，
+    // 这样它轮到自己时片段已经算好，而不是等换手前才开工。
     const next = state.queue[state.index + 1] ?? null;
     if (!next || !settings.enabled || !settings.showPreview) {
       if (!el.classList.contains('is-hidden')) {
@@ -13848,6 +13968,9 @@ export class App {
           await this.waitCrossfadeIdle();
           try {
             const analysis = await this.withTimeout(analyzeTrack(track), ANALYSIS_TIMEOUT_MS);
+            // 规划前给增强特征一个短窗口：分轨曲线/SSM 结构一到就替换 DSP 结果。
+            await ensureEnhancedAnalysis(track, 2500).catch(() => null);
+            // 生成式延长是「提前算」：只有开发者开关打开时才排队，生成完再合并回来。
             const label = this.formatTempo(analysis);
             if (label) this.upnextTempo.set(key, label);
             analyzedNow += 1;
@@ -14126,7 +14249,10 @@ export class App {
     view.root.classList.remove('is-leaving');
     view.root.style.removeProperty('pointer-events');
     void enterMotion(view.root, { duration: MOTION.slow, rise: MOTION.riseIn + 6 });
+    this.stage.inert = true;
     this.root.classList.add('is-lyrics-open');
+    // 歌词页铺满整窗：导航条彻底停用，连悬停也不许出来（维护者 2026-11-24）。
+    this.dockSuspend?.(true);
     // 进歌词页要立刻把壁纸层挪进 .lyrics-view（screen 混合要靠同层），不等状态推送。
     syncPageWallpaperClass();
     this.wallShortcuts?.classList.remove('is-visible');
@@ -14148,6 +14274,11 @@ export class App {
       // 期间又被打开（this.lyrics 换了新的）就别拆掉新的那个。
       if (this.lyrics === view) return;
       view.dispose();
+      if (!this.lyrics && !this.root.querySelector('.lyrics-view')) {
+        this.stage.inert = false;
+        // 出歌词页：导航条按当时所在页面重新落位（首页恢复常驻，其它页面回到「靠近才出来」）。
+        this.dockSuspend?.(false);
+      }
       this.refreshWallShortcuts();
     });
   }

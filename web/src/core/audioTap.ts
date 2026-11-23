@@ -479,7 +479,7 @@ export function setDeckGraphGain(element: HTMLAudioElement, value: number, rampM
       param.setValueAtTime(param.value, now);
       param.linearRampToValueAtTime(target, now + rampMs / 1000);
     } else {
-      param.value = target;
+      param.setValueAtTime(target, now);
     }
   } catch {
     /* 忽略 */

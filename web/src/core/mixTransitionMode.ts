@@ -22,12 +22,13 @@
  * 注意 v2 与 advanced 是**两条互斥的实现**：v2 走 `web/src/audio/automixV2Graph.ts`
  * 自己的分频链，不碰分轨、不碰标准路径的节点；切回 standard 就是完全回到旧行为。
  */
-export type MixTransitionMode = 'standard' | 'automixV2' | 'advanced' | 'advancedSafe';
+export type MixTransitionMode = 'auto' | 'standard' | 'automixV2' | 'advanced' | 'advancedSafe';
 
 /** 与壁纸的 `transitionMode` 区分开，别复用。 */
 export const MIX_TRANSITION_KEY = 'mixTransitionMode';
 
 export const MIX_TRANSITION_LABELS: Record<MixTransitionMode, string> = {
+  auto: '自动（按两首判断）',
   standard: '标准（整轨等功率）',
   automixV2: '进阶混音（智能选点）',
   advanced: '进阶（分轨换手·已停用）',
@@ -35,6 +36,7 @@ export const MIX_TRANSITION_LABELS: Record<MixTransitionMode, string> = {
 };
 
 export const MIX_TRANSITION_HINTS: Record<MixTransitionMode, string> = {
+  auto: '按两首的拍点、速度差、调性与人声数据，自动在标准与进阶之间选择；数据不够就退回标准。',
   standard: '保持现在的整轨等功率交叉，一分钱不加，行为与旧版完全一致。',
   automixV2:
     '按两首歌的重拍、鼓点、低音活动和人声位置选择接歌点，速度相近时自动对拍。',
@@ -50,6 +52,7 @@ export const MIX_TRANSITION_ORDER: readonly MixTransitionMode[] = ['standard', '
 
 /** UI 下拉顺序：v2 紧跟标准档，因为它是标准档的「升级版」而不是旧分轨路。 */
 export const MIX_TRANSITION_UI_ORDER: readonly MixTransitionMode[] = [
+  'auto',
   'standard',
   'automixV2',
   'advanced',

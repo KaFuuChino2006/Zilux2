@@ -56,6 +56,11 @@ export interface QualityInput {
   /** A 是纯器乐（让位深度减半，重叠判定按 −3 dB 折算）。 */
   aInstrumental?: boolean;
   /**
+   * 链路实际排的人声让位深度（dB，负值）。不传时退回旧口径：人声 −6 / 器乐 −3。
+   * 远调（Camelot ≥4）会压得更深、近调更浅，指标必须按真实深度折算。
+   */
+  aDuckDb?: number;
+  /**
    * 两首的 Camelot 距离（0–6，未知名返回 null/省略）。
    *
    * 只用于区分「同一件事」的两种重叠：同调/近调（距离 ≤3，含关系大小调）两条人声
@@ -106,6 +111,15 @@ export interface QualityInput {
     /** 从窗口哪个位置开始有湿声（0–1）。 */
     fromP?: number;
   };
+  /**
+   * B 侧过渡期电平包络（dB，0…+6，与 `ps` 同一网格）。
+   *
+   * 最差的响度塌陷不是换手时机，而是「B 前奏比 A 尾低 10–12 LU」：
+   * 链路按小节把 A 关掉之后，中间几秒只剩轻前奏。包络在 A 还响着时把 B 抬起来
+   * （被 A 掩蔽），等 B 的鼓/人声进来再回 0。指标必须按同一条包络折算 B 的能量，
+   * 否则「已经补平」在报表上仍是塌洞。
+   */
+  bTrim?: number[];
   /**
    * 响度补平曲线（dB，与 `loudnessRampCurve` 同网格）：链路在 `loudnessTrim` 上按它把塌陷补回来。
    * 指标必须同口径地把这段补偿算进去，否则「修好了」和「没修」在报表上完全一样。
@@ -255,7 +269,9 @@ export function estimateVocalOverlapBeats(input: QualityInput): number {
   //   旧指标只看两条原始曲线，把「压过之后的 A」还按满量算，于是永远报重叠。
   //   这里按实际链路折算：A 在 B 有人声的那一拍按 −6 dB（×0.501）计权，
   //   A 是纯器乐时按 −3 dB（×0.708）。阈值仍是 0.5 → 压完低于 0.5 就不算"还在唱"。
-  const duckGain = input.aInstrumental ? 0.708 : 0.501;
+  const duckGain = Number.isFinite(input.aDuckDb)
+    ? Math.pow(10, (input.aDuckDb as number) / 20)
+    : (input.aInstrumental ? 0.708 : 0.501);
   // 阈值不能取 0.5：A 满嗓子 1.0 乘 0.501 就是 0.501，判据「>0.5」只在曲线恰好到 1.0 时成立，
   // 于是这个指标长期报 0（换手明显还听得见两条人声却显示「无重叠」）。取 0.35 表示
   // 「压过之后仍明显可听」—— A 需原始 >0.70（器乐 A >0.49）才算重叠。
@@ -268,7 +284,10 @@ export function estimateVocalOverlapBeats(input: QualityInput): number {
     const vocalBRaw = sampleActivity(bCurve, bMs)[0];
     // 入场让位：B 唱得太早时被压 6 dB（×0.501），按实际链路折算后再判重叠。
     const vocalB = vocalBRaw * (input.bEntryDucked ? 0.501 : 1);
-    const vocalA = sampleActivity(aCurve, aMs)[0] * (vocalB > DUCK_TRIGGER ? duckGain : 1);
+    // A 判为器乐时，300–3500 Hz 里的能量多半是主旋律/弦乐而不是咬字：
+    //   按 0.6 折权，避免把「旋律与唱句同频」算成两个人抢麦。
+    const aWeight = input.aInstrumental ? 0.6 : 1;
+    const vocalA = sampleActivity(aCurve, aMs)[0] * aWeight * (vocalB > DUCK_TRIGGER ? duckGain : 1);
     if (vocalA > audible && vocalB > 0.5) overlap += 1;
   }
   return round2(overlap);
@@ -302,6 +321,153 @@ export interface LoudnessRamp {
  * 单独导出是为了排查：只看一个数字（drift = 1.8 LU）无法判断是换手空档、A 尾奏渐隐，
  * 还是 B 前奏本来就轻；`web/tools/mix-audit.cjs --curves=N` 会把最差的几对曲线打出来。
  */
+/**
+ * B 侧过渡期电平包络：按 A/B 在窗口内的 LUFS 差，把 B 在 A 还响着时抬到「只差 1 dB」，
+ * 上限 +6 dB；B 自己顶上来之后自然回 0（差值变负 → 目标 0）。
+ *
+ * 只在两边都真的在响（各自峰值 10 dB 内）的采样点计算，其余沿用上一个值；
+ * 结果做两遍 5 点平滑，避免包络本身变成新的电平抖动。
+ */
+/** 取一段曲线的窗口样本（按 ms 线性取样，缺数据回 null）。 */
+function windowSamples(points: readonly number[] | null | undefined, hopMs: number,
+                       startMs: number, lengthMs: number, stepMs = 250): number[] {
+  if (!points || points.length === 0 || hopMs <= 0 || lengthMs <= 0) return [];
+  const out: number[] = [];
+  for (let t = startMs; t < startMs + lengthMs; t += stepMs) {
+    const i = Math.round(t / hopMs);
+    if (i >= 0 && i < points.length) out.push(points[i]);
+  }
+  return out;
+}
+
+function pearson(a: readonly number[], b: readonly number[]): number | null {
+  const n = Math.min(a.length, b.length);
+  if (n < 6) return null;
+  let ma = 0, mb = 0;
+  for (let i = 0; i < n; i++) { ma += a[i]; mb += b[i]; }
+  ma /= n; mb /= n;
+  let num = 0, da = 0, db = 0;
+  for (let i = 0; i < n; i++) {
+    const x = a[i] - ma, y = b[i] - mb;
+    num += x * y; da += x * x; db += y * y;
+  }
+  if (da <= 1e-9 || db <= 1e-9) return null;
+  return num / Math.sqrt(da * db);
+}
+
+/**
+ * 分频点自适应：低频换手是「相关信号线性相加」，两边低频越不像（相关低），
+ * 120 Hz 处的相位/音高打架就越明显。把分频点往上抬一点，让更多低频走线性互补、
+ * 少一点走等功率交叉，能减轻「两首歌的底鼓/贝斯互相抵消」。
+ *
+ * 只在两边都真的有低频时调整：一边没低频时任何分频都一样，别白改。
+ */
+/** 窗口内两侧 bass 活动的 Pearson 相关（−1…1）；任一侧没有低频返回 null。 */
+export function bassCorrelation(input: {a: BeatAnalysis; b: BeatAnalysis; fadeStartAMs: number; fadeStartBMs: number; fadeMs: number; tempoRate: number}): number | null {
+  const hopA = input.a.activity?.hopMs || 250;
+  const hopB = input.b.activity?.hopMs || 250;
+  const ca = windowSamples(input.a.activity?.bass, hopA, input.fadeStartAMs, input.fadeMs);
+  const cb = windowSamples(input.b.activity?.bass, hopB,
+    input.fadeStartBMs / Math.max(0.5, input.tempoRate), input.fadeMs / Math.max(0.5, input.tempoRate));
+  if (ca.length < 8 || cb.length < 8) return null;
+  let ma = 0, mb = 0;
+  for (let i = 0; i < ca.length; i += 1) { ma += ca[i]; mb += cb[i]; }
+  ma /= ca.length; mb /= cb.length;
+  let num = 0, da = 0, db = 0;
+  for (let i = 0; i < ca.length; i += 1) {
+    const x = ca[i] - ma, y = cb[i] - mb;
+    num += x * y; da += x * x; db += y * y;
+  }
+  if (da < 1e-9 || db < 1e-9) return null;
+  return num / Math.sqrt(da * db);
+}
+
+export function planSplitHz(input: {
+  a: BeatAnalysis; b: BeatAnalysis;
+  fadeStartAMs: number; fadeStartBMs: number; fadeMs: number; tempoRate: number;
+}): number {
+  const hopA = input.a.activity?.hopMs ?? 0;
+  const hopB = input.b.activity?.hopMs ?? 0;
+  const bassA = windowSamples(input.a.activity?.bass, hopA, input.fadeStartAMs, input.fadeMs);
+  const bassB = windowSamples(input.b.activity?.bass, hopB,
+    input.fadeStartBMs / Math.max(0.5, input.tempoRate), input.fadeMs / Math.max(0.5, input.tempoRate));
+  const n = Math.min(bassA.length, bassB.length);
+  if (n < 6) return 120;
+  const median = (xs: number[]) => {
+    const s = [...xs].sort((x, y) => x - y);
+    return s[Math.floor(s.length / 2)] ?? 0;
+  };
+  if (median(bassA.slice(0, n)) < 0.08 || median(bassB.slice(0, n)) < 0.08) return 120;
+  const corr = pearson(bassA.slice(0, n), bassB.slice(0, n));
+  if (corr === null) return 120;
+  // corr 1 → 120 Hz；corr 0 → 150 Hz；corr -1 → 180 Hz。
+  const hz = 120 + 30 * (1 - Math.max(-1, Math.min(1, corr)));
+  return Math.round(hz / 5) * 5;
+}
+
+export function planBTrimCurve(input: {
+  a: BeatAnalysis;
+  b: BeatAnalysis;
+  fadeStartAMs: number;
+  fadeStartBMs: number;
+  fadeMs: number;
+  tempoRate: number;
+}): number[] {
+  const levelsA = windowLevels(input.a, input.fadeStartAMs, input.fadeMs);
+  const levelsB = windowLevels(input.b, input.fadeStartBMs, input.fadeMs * Math.max(0.5, input.tempoRate));
+  if (levelsA.length < 4 || levelsB.length < 4) return [];
+  const pick = (arr: number[], p: number): number | null => {
+    const pos = p * (arr.length - 1);
+    const i0 = Math.floor(pos);
+    const i1 = Math.min(arr.length - 1, i0 + 1);
+    const a = arr[i0];
+    const b = arr[i1];
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+    if (a < LOUD_FLOOR_LUFS || b < LOUD_FLOOR_LUFS) return null;
+    return a + (b - a) * (pos - i0);
+  };
+  const finite = (v: number[]) => v.filter((x) => Number.isFinite(x) && x > LOUD_FLOOR_LUFS);
+  const aMax = Math.max(...finite(levelsA), LOUD_FLOOR_LUFS);
+  // 参考取 A 的峰值：过渡的目标是「B 接住 A 的电平」，不是「两边谁响跟谁」。
+  //   取 max 时 B 比 A 响永远补 0，drift 只能靠 gainTrimDb 的 ±3 dB 兜，兜不住。
+  //   B 更响时允许把 B 压下来（负值），A 始终不动（A 不许被改）。
+  const refLevel = aMax;
+  const steps = Math.max(8, Math.min(160, Math.min(levelsA.length, levelsB.length) - 1));
+  const raw: number[] = [];
+  let last = 0;
+  for (let i = 0; i <= steps; i += 1) {
+    const p = i / steps;
+    const a = pick(levelsA, p);
+    const b = pick(levelsB, p);
+    // B 只要不是静音就参与；A 是否在响不影响参考电平（A 结束后的两秒正是洞最深的地方）。
+    if (b === null) {
+      raw.push(last);
+      continue;
+    }
+    // A 还在响时，B 抬过 6 dB 会在 A 抽走后形成一个上凸；A 已经没了（窗内取不到电平）
+    // 就没有掩蔽问题，这一段的洞必须由 B 自己补，cap 放到 9 dB。
+    // A 已经进入收尾（比自己的峰值低 12 dB 以上）时，B 不再有掩蔽问题，
+    //   这一段必须让 B 自己把洞补上；否则末尾 20% 会塌。
+    const aFading = a !== null && a < aMax - 12;
+    const capDb = (a === null || aFading) ? 9 : 6;
+    const floorDb = -6;
+    const diff = refLevel - b;
+    // 只给「B 更轻」留 1 dB 余量；B 更响时按实差压，不留余量（否则同电平也会被压 0.75）。
+    // 余量只在 A 还在响时需要（避免 B 顶出上凸）；A 走后 B 必须正好接住 A 的峰值，
+    //   否则末尾会留下一个和余量等深的洞。
+    const marginDb = (a === null || aFading) ? 0 : 3.0;
+    // A 已经在收尾/消失时不再有掩蔽问题，直接补满（1.0）；A 还在响时仍留 0.75 的保守系数，
+    //   避免把 B 顶出一个上凸。
+    const fill = (a === null || aFading) ? 1 : 0.75;
+    last = Math.max(floorDb, Math.min(capDb, fill * diff - marginDb));
+    raw.push(last);
+  }
+  // 不做时间平滑：250 ms 网格就是 LUFS 的测量分辨率，任何平滑都会把
+  //   「前奏轻 → 副歌重」的台阶抹成斜坡，drift 反而被低估/高估。
+  //   曲线本身是 linearRamp 到每个点，连续、无阶跃。
+  return raw.map((v) => round2(Math.max(-6, Math.min(9, v))));
+}
+
 export function loudnessRampCurve(input: QualityInput): LoudnessRamp {
   const levelsA = windowLevels(input.a, input.fadeStartAMs, input.fadeMs);
   const levelsB = windowLevels(input.b, input.fadeStartBMs, input.fadeMs * input.tempoRate);
@@ -316,6 +482,16 @@ export function loudnessRampCurve(input: QualityInput): LoudnessRamp {
     if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
     if (a < LOUD_FLOOR_LUFS || b < LOUD_FLOOR_LUFS) return null;
     return a + (b - a) * (pos - i0);
+  };
+  const pickArr = (arr: number[] | undefined, p: number): number => {
+    if (!arr || arr.length < 2) return 0;
+    const pos = p * (arr.length - 1);
+    const i0 = Math.floor(pos);
+    const i1 = Math.min(arr.length - 1, i0 + 1);
+    const v0 = arr[i0];
+    const v1 = arr[i1];
+    if (!Number.isFinite(v0) || !Number.isFinite(v1)) return 0;
+    return v0 + (v1 - v0) * (pos - i0);
   };
   const ps: number[] = [];
   const raw: number[] = [];
@@ -383,8 +559,10 @@ export function loudnessRampCurve(input: QualityInput): LoudnessRamp {
       const i1 = Math.min(tc.db.length - 1, i0 + 1);
       trimDb = tc.db[i0] + (tc.db[i1] - tc.db[i0]) * (pos - i0);
     }
+    // B 的电平包络：先抬起来再回 0，报表必须跟链路同口径。
+    const bTrimDb = pickArr(input.bTrim, p);
     raw.push(10 * Math.log10(Math.max(1e-12,
-      Math.pow(10, a / 10) * wA + wet + Math.pow(10, (b - compensation) / 10) * wB)) + trimDb);
+      Math.pow(10, a / 10) * wA + wet + Math.pow(10, (b - compensation + bTrimDb) / 10) * wB)) + trimDb);
   }
   if (raw.length < 4) return { ps, lufs: raw.map(round2), worst: 0 };
   // 3 点平滑（单点毛刺不算塌洞）
@@ -469,10 +647,21 @@ export function buildBEntryDuck(input: {
           ? 1.5 + 1.5 * Math.min(1, (vocal - DUCK_TRIGGER_SOFT) / (DUCK_TRIGGER - DUCK_TRIGGER_SOFT))
           : 0;
     const bVocal = bCurve ? sampleActivity(bCurve, bFrom + offsetMs * bRate)[0] : 1;
+    // 提前 400 ms 看到 B 要开唱就先把让位收掉：否则「B 第一句」正好落在还压着的那几帧上，
+    // 听感是新人声一进来就被闷住，80 ms release 根本来不及。
+    const bAhead = bCurve
+      ? Math.max(
+        sampleActivity(bCurve, bFrom + (offsetMs + 200) * bRate)[0] ?? 0,
+        sampleActivity(bCurve, bFrom + (offsetMs + 400) * bRate)[0] ?? 0,
+      )
+      : 0;
     const bScale = bVocal < 0.3 ? 0.75 : 1;
+    // B 自己正在唱时不能压 B：新歌的人声是主角，压掉会让「下一首一进来就闷」。
+    // 该让位的是 A 的人声（层 C 由 B 的活动度驱动），不是 B 的首句。
+    const bSinging = bVocal > 0.35 || bAhead > 0.35;
     const target = input.aInstrumental
       ? (bVocal > 0.3 ? -Math.min(maxDuck, maxDuck * 0.75) : 0)
-      : aDepth > 0 ? -Math.min(maxDuck, aDepth * bScale) : 0;
+      : bSinging ? 0 : aDepth > 0 ? -Math.min(maxDuck, aDepth * bScale) : 0;
     const tau = target < current ? attack : release;
     const alpha = 1 - Math.exp(-stepMs / Math.max(1, tau));
     current += (target - current) * alpha;
@@ -512,10 +701,38 @@ function sampleSeries(times: number[], values: number[], t: number): number | nu
 }
 
 /**
- * 变速斜率：斜率 = 总变化 / 拍数（%/拍）。
- * 实际链路只有一侧在变速（旧式拉 B，或倒置式拉 A），所以不该再除以 2 ——
- * 除以 2 之后 8 s 窗口要 |rate-1|>0.48 才可能报警，等于这一项永远不失败。
+ * 谱质心补偿：B 比 A 暗时给 B 抬一点 presence、A 收一点；反过来同理。
+ * 只补 4–12 dB 的差，最多 ±3 dB——质心差太大是编曲（808 vs 弦乐），不是换手能修的。
  */
+export function planTimbreCompDb(aHz: number | null | undefined, bHz: number | null | undefined): {
+  aPresenceDb: number; bPresenceDb: number;
+} | null {
+  if (!(aHz && bHz) || !(aHz > 0) || !(bHz > 0)) return null;
+  const gap = 200 * Math.log10(bHz / aHz); // 正 = B 更亮
+  const abs = Math.abs(gap);
+  if (abs < 4) return null;
+  const amount = Math.min(3, (abs - 4) * 0.6);
+  if (amount < 0.2) return null;
+  const round1 = (v: number) => Math.round(v * 10) / 10;
+  // 亮的一侧收 presence、暗的一侧补 presence；另一侧补得少一点，避免两边一起变亮。
+  return gap > 0
+    ? { aPresenceDb: round1(amount * 0.6), bPresenceDb: round1(-amount) }
+    : { aPresenceDb: round1(-amount), bPresenceDb: round1(amount * 0.6) };
+}
+
+/** 把变速压到窗口能承受的斜率内：`|rate−1| ≤ 1.5% × 拍数`。返回夹取后的 rate。 */
+export function clampTempoRateForWindow(rate: number, fadeMs: number, beatMs: number, limitPct = 1.5): number {
+  if (!(fadeMs > 0) || !(beatMs > 0) || !Number.isFinite(rate)) return rate;
+  // halfTime / doubleTime 是「整八度折叠」，不是微调：2.0 或 0.5 必须原样保留，
+  //   否则会被当成 ±100% 的超大斜率压回 1.0 附近，手法直接失效。
+  const octave = Math.abs(Math.log2(rate));
+  if (octave >= 0.94 && Math.abs(octave - Math.round(octave)) < 0.06) return rate;
+  const beats = Math.max(1, fadeMs / Math.max(120, beatMs));
+  const maxSide = (limitPct * beats) / 100;
+  if (Math.abs(rate - 1) <= maxSide) return rate;
+  return Math.round((1 + Math.sign(rate - 1) * maxSide) * 1000) / 1000;
+}
+
 export function estimateRateJumpPctPerBeat(input: QualityInput): number {
   const perSide = Math.abs(input.tempoRate - 1);
   const beats = Math.max(1, input.fadeMs / Math.max(120, input.beatMs));
@@ -646,6 +863,8 @@ export function buildDuckEvents(input: {
     const bMs = input.fadeStartBMs + offsetMs * input.tempoRate;
     const vocal = sampleActivity(curve, bMs)[0];
     const gated = bMs < gateMs - 1;
+    // 0.30–0.45 是低吟/和声垫：给一条浅让位（约 45% 深度），既承认在唱，
+    // 又不把伴奏压空。以前只有硬阈值，这段人声在报表里等于「没处理」。
     const target = !gated && vocal > DUCK_TRIGGER ? maxDuck : 0;
     const tau = target < current ? attack : release;
     const alpha = 1 - Math.exp(-stepMs / Math.max(1, tau));

@@ -46,7 +46,24 @@ test('常驻才居中，且每帧校正只在校正态里跑', () => {
   assert.match(app, /if \(this\.dockPinned\) restPlace\(\);/, '观察器统一走 restPlace');
 });
 
+// 2026-11-24 维护者：「打开歌词页面后在默认歌词页面的时候上方导航栏应该是不显示的，即使鼠标移动上去」。
+// 歌词页是铺满整窗的覆盖层，导航条要整体停用：状态机按收着处理 + CSS 连悬停都不参与。
+test('歌词页整页覆盖时导航条彻底停用', () => {
+  assert.match(app, /private dockSuspended = false;/, '要有停用标记');
+  assert.match(app, /this\.dockSuspend = \(on: boolean\): void => \{/, '要有停用开关');
+  assert.match(app, /dock\.classList\.toggle\('is-dock-suspended', on\);/, '停用态挂类给 CSS');
+  assert.match(app, /if \(this\.dockSuspended\) \{[\s\S]{0,160}void hideDock\(false\);/, '常驻请求在歌词页里按收着处理');
+  assert.match(app, /pointerY = event\.clientY;[\s\S]{0,80}if \(this\.dockSuspended\) return;/, '悬停判定最早处返回');
+  assert.match(app, /const summon = async \(centerX: number, centerY: number\): Promise<void> => \{[\s\S]{0,80}if \(this\.dockSuspended\) return;/, '歌词页里右键不召唤');
+  assert.match(app, /this\.root\.classList\.add\('is-lyrics-open'\);[\s\S]{0,220}this\.dockSuspend\?\.\(true\);/, '进歌词页就停用');
+  assert.match(app, /this\.stage\.inert = false;[\s\S]{0,220}this\.dockSuspend\?\.\(false\);/, '出歌词页再恢复');
+  assert.match(app, /this\.dockSuspend\?\.\(false\);[\s\S]{0,80}this\.refreshWallShortcuts\(\);/, '恢复后才刷新快捷入口');
+  assert.match(fs.readFileSync(path.join(__dirname, '..', 'src', 'styles', 'app.css'), 'utf8'), /\.rail\.nav-dock\.is-dock-suspended \{[\s\S]{0,160}visibility: hidden !important;/, 'CSS 里连悬停也关掉');
+});
+
 test('文档口径同步', () => {
   assert.match(docs, /### 10\.2 三个状态：pinned \/ summoned \/ idle/);
   assert.match(docs, /首页右键不再只退场/);
+  assert.match(docs, /### 10\.4\.1 歌词页：整页覆盖时导航条彻底停用/);
+  assert.match(docs, /不要用 `display: none`/);
 });

@@ -63,6 +63,14 @@ export interface V2PlanInput {
    * 曲线不把 A 收到 0，而是收在这个电平上，窗口结束后再由 tailBleed 收干。
    */
   aTailHold?: number;
+  /** 30–50% 窗口里 B 低频抬到的目标（0.5–0.7，默认 0.62） */
+  bassTarget?: number;
+  /** 同一窗口里 A 低频保留到多少（0.55–0.65，默认 0.60） */
+  aLowKeep?: number;
+  /** 人声/中高频的交换点（整段进度，0.65–0.90，默认 0.80）；上层按强拍微调 */
+  vocalAt?: number;
+  /** B 中频（乐器主体）的入口，默认 0.58；越大 B 的乐器进来得越晚 */
+  midAt?: number;
   /** 过渡总时长（毫秒）。 */
   fadeMs: number;
   /** 一小节多少毫秒（A 侧，已含变速）。 */
@@ -113,6 +121,24 @@ export interface V2PlanInput {
   sweepShare?: number;
   /** 本次 B 的变速比例（仅用于报告，不参与曲线形状）。 */
   rate?: number;
+  /**
+   * 风格窗口缩放（0.8–1.4，默认 1）。
+   * 只缩放本计划内部使用的窗口时长，从而改变 `totalBars` / `handoffP` 的口径；
+   * 曲线按进度归一化，形状不因此改变。默认 1 时输出与未加此参数逐位一致。
+   */
+  windowScale?: number;
+  /**
+   * 风格换手占比偏置（−0.15–0.15，默认 0）：直接加到 `swapShare` 上。
+   * 只影响紧凑换手的起点，不改变未传时的既有行为。
+   */
+  swapShareBias?: number;
+  /** 低频层换手起点（0.5–0.9，默认 0.66）：两侧低频律动越不相关，越晚开始重叠，减少抵消。 */
+  lowStartP?: number;
+  /**
+   * 风格化 duck 缩放（默认不加此键）：仅随计划透传给上层 duck 排程，
+   * 不参与曲线计算；不传时 `V2Plan` 对象与旧版完全一致。
+   */
+  duckScale?: number;
 }
 
 export interface V2Plan {
@@ -134,6 +160,8 @@ export interface V2Plan {
   aHoldP: number;
   /** 紧凑模式下「开始换手」的进度（0 = 没启用紧凑换手）。 */
   swapStartP: number;
+  /** 风格化 duck 缩放；只有输入显式给出时才存在此键。 */
+  duckScale?: number;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -226,7 +254,10 @@ export function bEntryGain(p: number): number {
 export function buildV2Plan(input: V2PlanInput): V2Plan {
   const step = V2_CURVE_STEP;
   const barMs = Number.isFinite(input.barMs) && input.barMs > 0 ? input.barMs : 2000;
-  const fadeMs = Number.isFinite(input.fadeMs) && input.fadeMs > 0 ? input.fadeMs : barMs * 4;
+  const rawFadeMs = Number.isFinite(input.fadeMs) && input.fadeMs > 0 ? input.fadeMs : barMs * 4;
+  // 风格窗口缩放：只在显式给出且非 1 时参与运算，保证默认输出逐位不变。
+  const windowScale = Number.isFinite(input.windowScale) ? clamp(input.windowScale as number, 0.8, 1.4) : 1;
+  const fadeMs = windowScale === 1 ? rawFadeMs : rawFadeMs * windowScale;
   const totalBars = Math.max(2, Math.round(fadeMs / barMs));
   const lowHandoffBars = clamp(input.lowHandoffBars ?? 2, 1, Math.max(1, totalBars - 1));
   const sweepEnabled = input.sweep !== false;
@@ -237,14 +268,18 @@ export function buildV2Plan(input: V2PlanInput): V2Plan {
   // 用户听感：「17 s 过渡里人声、乐器、低音全都在响，很杂」「应该是接近尾端剩几秒
   // 才做完整的换调」。所以长窗前段 A **一点不动**，B 只是极低电平的「幽灵」，
   // 真正的换手压缩到最后 swapShare 这一段里完成。
-  const swapShareRaw = Number.isFinite(input.swapShare) ? (input.swapShare as number) : 0;
+  const rawSwapShare = Number.isFinite(input.swapShare) ? (input.swapShare as number) : 0;
+  const swapShareRaw = Number.isFinite(input.swapShareBias)
+    ? clamp(rawSwapShare + (input.swapShareBias as number), 0, 1)
+    : rawSwapShare;
   const compact = swapShareRaw > 0 && swapShareRaw <= 1;
   const swapShare = compact ? clamp(swapShareRaw, 0, 1) : 1;
-  const swapStartP = compact ? 1 - swapShare : 0;
+  // 换手从 30% 开始：鼓点/贝斯先换地基，中频 50% 才进 20%，人声 80% 后才交换。
+  // 旧值 1-swapShare（默认≈0.5）会让低频换手晚于中频，听感是「人声先过来、地基后到」。
+  const swapStartP = compact ? Math.min(1 - swapShare, 0.3) : 0;
   const swapSpan = compact ? Math.max(1e-6, 1 - swapStartP) : 1;
   // bEntry（B 前奏当窗口）要 B 从 -18 dB 就能听见；其余情况只留 -60 dB 幽灵。
   // compact 不能无条件改成 -60 dB：那会让「前奏当窗口」的那条路 80% 的时间里 B 是哑的。
-  const ghostGain = 10 ** ((input.bEntry ? V2_B_ENTRY_FROM_DB : V2_B_GHOST_DB) / 20);
 
   // 非紧凑模式仍用「中段换手」的老窗口（B 有琴体了再交低频）。
   const span = clamp(lowHandoffBars / totalBars, 0.05, 0.35);
@@ -303,47 +338,74 @@ export function buildV2Plan(input: V2PlanInput): V2Plan {
       //   （低频收得比别层晚、也比别层长：B 到顶那一刻 A 的贝斯还在，
       //     两把贝斯重叠一小段再交给 B，听感是「混出来」而不是「被切走」）
       // 听感顺序：先听出"伴奏换了"，再听出"人声过来了"，最后低音才换地基。
-      const ramp = (lo: number, hi: number) => clamp((v - lo) / Math.max(1e-6, hi - lo), 0, 1);
       // 顺序要**严格排开**：任意时刻只有一层在换。
       // 原来的 0–0.34 / 0.20–0.58 / 0.40–0.95 三层互相压着，换手段里同时有三层各半，
       // 听感就是「太乱」。现在中低换完才换高频，高频换完才换低频。
-      const vMid = ramp(0, 0.28);
-      const vHigh = ramp(0.34, 0.62);
-      const vLow = ramp(0.66, 0.96);
+      // ---- 30/50/80 的三段式（用户口径）----
+      //   30%–50%：B 低频从 0 抬到 50–70%，A 低频只削到 55–65%（不是切走）
+      //   50%      ：B 中频以 ~20% 进来垫着
+      //   80% 之后 ：人声交换，A 的中/高频收掉，B 中频抬满、低频补到 1
+      // 百分比是**整段过渡的进度**，不是换手段内部进度。
+      // 两侧低频律动越不像，越晚开始叠（lowStartP 由 bassCorrelation 决定）。
+      const bassStart = clamp(input.lowStartP ?? 0.30, 0.30, 0.45);
+      const bassEnd = bassStart + 0.20;
+      // 用户听感：B 的乐器还是进得太快，把中频入口再往后推（默认 58%）。
+      const midAt = clamp(input.midAt ?? 0.58, 0.45, 0.70);
+      // 交换点可被外部按强拍微调（0.65–0.90），默认 0.80。
+      const vocalAt = clamp(input.vocalAt ?? 0.80, 0.65, 0.90);
+      const smooth = (t: number) => t * t * (3 - 2 * t);
+      const bTarget = clamp(input.bassTarget ?? 0.62, 0.5, 0.7);
+      const aKeep = clamp(input.aLowKeep ?? 0.6, 0.55, 0.65);
 
-      // 低频是相关信号 → 幅度互补（A + B = 1），功率才会随换手平滑。
-      bLowV = vLow;
-      aLowV = 1 - bLowV;
-      // 中低与高频不相关 → 功率互补（a² + b² = 1）。
-      aMidV = Math.cos((vMid * Math.PI) / 2);
-      bMidV = Math.sin((vMid * Math.PI) / 2);
-      // aTailHold：A 的尾巴长时，窗口末不把 A 收到 0，而是收在一个可听的电平上，
-      // 由 scheduleAutomixV2TailBleed 在窗口之后慢慢收干（尾巴当乐器铺在 B 底下）。
+      if (p <= bassStart) {
+        bLowV = 0;
+        aLowV = 1;
+      } else if (p < bassEnd) {
+        const t = smooth((p - bassStart) / (bassEnd - bassStart));
+        bLowV = bTarget * t;
+        aLowV = 1 - (1 - aKeep) * t;
+      } else {
+        // 50% 之后不再「保持」：B 低频从 0.62 一路平滑爬到 1，A 同步从 0.60 收到 0。
+        const t = smooth((p - bassEnd) / Math.max(1e-6, 1 - bassEnd));
+        bLowV = bTarget + (1 - bTarget) * t;
+        aLowV = aKeep * (1 - t);
+      }
+
+      // 中频：从 50% 起**连续**爬升到 100%（不再先到 0.2 再在 80% 跳满）。
+      // 用户口径：B 应该是从 50% 左右开始慢慢加进来，而不是尾段一瞬间出现。
+      if (p < midAt) {
+        bMidV = 0;
+      } else {
+        bMidV = smooth((p - midAt) / Math.max(1e-6, 1 - midAt));
+      }
+      if (p < vocalAt) {
+        aMidV = 1;
+      } else {
+        const t = smooth((p - vocalAt) / Math.max(1e-6, 1 - vocalAt));
+        // 等功率收尾：A 在交换段开头几乎不动，到窗口末才归零，
+        // 比 t^0.7 松得多（用户口径：交换瞬间太紧，放宽松点）。
+        aMidV = Math.max(0, Math.cos(Math.min(1, t) * Math.PI / 2));
+      }
+
+      // 高频跟随中频：人声/镲片一起在 80% 后交换。
       {
         const hold = Math.min(0.4, Math.max(0, input.aTailHold ?? 0));
-        aHighV = hold + (1 - hold) * Math.cos((Math.min(1, vHigh) * Math.PI) / 2);
+        aHighV = hold + (1 - hold) * Math.min(1, aMidV);
       }
+      const bHighTarget = bMidV <= 0 ? 0 : Math.min(1, bMidV + 0.05);
       // 非 bEntry 时用 5% 窗口把 B 从 0 拉进幽灵电平（避免第 0 帧硬起 -60 dB）；
       // bEntry 的语义本来就是「B 从 -18 dB 就听得见」，不能渐入，否则前奏当窗口失效。
       const fadeIn = input.bEntry ? 1 : Math.min(1, v / Math.max(0.02, 0.05));
-      // B 的「预混入」：用户能明确听出下一首的起始 —— 因为 B 在换手段之前是
-      // −60 dB 的死寂，一进换手就在 1–2 s 内从无到满，那个「从无到有」本身就是最响的
-      // 一个瞬态。现在让 B 从**窗口一开始**就以 −40 dB 垫着，一路爬到换手点的 −12 dB，
-      // 再由三层曲线接手：等于「B 早就在混音里了，只是越来越清楚」。
-      // 只给中低与高频（低频先不垫，免得两把贝斯提前打架）。
-      const preLevel = input.bEntry
-        ? 0
-        : 10 ** ((-46 + 16 * clamp(p / Math.max(1e-6, swapStartP), 0, 1)) / 20);
-      // 高频必须是**功率互补**：`aHigh² + bHigh² = 1`。
-      //   原来 B 走 smoothStep、A 走 cos，两者相加在 v=0.5 只有 0.5（−3 dB）——
-      //   这就是「过渡中段中高频突然空一下」的来源，也是响度曲线中途塌陷的主因之一。
-      const complementary = Math.sqrt(Math.max(0, 1 - Math.min(1, aHighV) ** 2));
-      bHighV = Math.max(ghostGain, complementary) * fadeIn;
+      // 紧凑换手：未触发的频段必须是**绝对静音**（用户口径：从零到目标），
+      // 不能用 ghost/−30 dB 垫音，否则「还没进入」的频段一直在响。
+      bHighV = 0;
       // 取 max 而不是相乘：换手前曲线本来是 0，乘任何数都还是 0。
-      bMidV = Math.max(preLevel, Math.max(ghostGain, bMidV) * fadeIn);
-      bHighV = Math.max(preLevel, Math.max(ghostGain, bHighV) * fadeIn);
+      // 中/高频：触发前恒 0，触发后从 0 平滑到目标；B 的进场不做 ghost 预垫。
+      bMidV = bMidV * fadeIn;
+      bHighV = bHighTarget * fadeIn;
       // B 的高通必须在低频交接前开完，否则 B 的低频被自己挡着。
-      bHpP = clamp(p / Math.max(step,handoffStartP), 0, 1);
+      // B 的高通必须在低频交换开始前开完，否则 B 的低频被自己挡着。
+      bHpP = clamp(p / Math.max(step, bassStart), 0, 1);
       // A 的低通在换手后半段压到 700 Hz ——「变闷退出」发生在这几秒里。
       // 扫频起点由手法的 sweepShare 决定。
       // 以前这里写死 0.60，等于 filterSweep(1.0) / longBlend(0.35) / eqSwap(0.4) 的
@@ -405,7 +467,7 @@ export function buildV2Plan(input: V2PlanInput): V2Plan {
       )}% 压到 ${Math.round(lpMinHz)}Hz，B 高通在 ${Math.round(bOpenP * 100)}% 前开完${entryNote}${compactNote}`
     : `v2：${totalBars} 小节，只做低频换手（无扫频）${entryNote}${compactNote}`;
 
-  return {
+  const plan: V2Plan = {
     totalBars,
     handoffP,
     handoffStartP,
@@ -428,6 +490,9 @@ export function buildV2Plan(input: V2PlanInput): V2Plan {
       sweepHp: dedupe(bHp),
     },
   };
+  // 只有输入显式给出才挂键：旧调用拿到的对象与改动前逐键一致。
+  if (Number.isFinite(input.duckScale)) plan.duckScale = clamp(input.duckScale as number, 0, 2);
+  return plan;
 }
 
 /**

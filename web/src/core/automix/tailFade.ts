@@ -39,9 +39,9 @@ export interface TailFadeInfo {
 }
 
 const WINDOW_MS = 30_000;
-const MIN_DROP_DB = 6;
+const MIN_DROP_DB = 5;
 const MIN_FADE_MS = 2_500;
-const MAX_LIFT_DB = 12;
+const MAX_LIFT_DB = 15;
 const LOUDNESS_FLOOR = -50;
 /** 补回后允许达到的最高瞬时电平：留 1 LU 余量，避免把渐隐尾音抬成削波。 */
 const TARGET_CEILING_LUFS = -1;
@@ -181,8 +181,10 @@ export function liftAt(points: TailFadePoint[], ms: number): number {
 export function clipLift(points: TailFadePoint[], fromMs: number, toMs: number): TailFadePoint[] {
   if (!points.length || !(toMs > fromMs)) return [];
   const out: TailFadePoint[] = [];
-  // 起点补一个点，保证抬升从淡化一开始就是「当前应有的值」
-  out.push({ ms: fromMs, liftDb: Math.round(liftAt(points, fromMs) * 100) / 100 });
+  // 起点先给 0、250 ms 后再到应有值：避免渐隐一开始就整段抬 6 dB 的台阶感。
+  const startLift = liftAt(points, fromMs);
+  out.push({ ms: fromMs, liftDb: 0 });
+  out.push({ ms: Math.min(toMs, fromMs + 250), liftDb: Math.round(startLift * 100) / 100 });
   for (const point of points) {
     if (point.ms <= fromMs || point.ms >= toMs) continue;
     out.push(point);

@@ -94,7 +94,7 @@ test('版式：紧凑 2×2 贴着右上区域，粗笔画、无 will-change', ()
 
 test('减弱动效时直接落字，不闪不滑', () => {
   assert.match(stage, /prefers-reduced-motion: reduce/, '没有处理 reduce motion');
-  assert.match(stage, /if \(reduce\) \{\n\s+settle\(\);/, 'reduce motion 下应直接落字');
+  assert.match(stage, /if \(reduce\) \{\s*settle\(\);/, 'reduce motion 下应直接落字');
 });
 
 test('顶部封面渐变：白色起头往下露出封面，没在播时自动轮换', () => {

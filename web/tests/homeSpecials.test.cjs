@@ -98,9 +98,9 @@ test('web 侧 kind 全档贯通到 /api/library/feed，相似歌曲能带 songId
 });
 
 test('首页：推荐行按平台分组出卡，播放全部不再去别处扩队列', () => {
-  assert.match(home, /export type HomeSpecialKind = 'roam' \| 'similar' \| 'guess' \| 'million' \| 'newsong';/);
+  assert.match(home, /export type HomeSpecialKind = 'netNew' \| 'roam' \| 'similar' \| 'guess' \| 'million' \| 'newsong';/);
   assert.match(home, /onSpecial\(kind: HomeSpecialKind\): void;/);
-  assert.match(home, /for \(const section of this\.buildSpecialSections\(data\.specials\)\) this\.root\.append\(section\);/);
+  assert.match(home, /for \(const section of this\.buildSpecialSections\(data\.specials\.filter\(item => item\.source === 'kugou'\)\)\) this\.root\.append\(section\);/);
   assert.match(home, /private buildSpecialSections\(items: HomeSpecial\[\]\): HTMLElement\[\]/);
   assert.match(home, /source === 'netease' \? '网易云推荐' : source === 'qq' \? 'QQ 音乐推荐' : '酷狗推荐'/);
   assert.match(home, /private buildSpecialCard\(item: HomeSpecial\)/);

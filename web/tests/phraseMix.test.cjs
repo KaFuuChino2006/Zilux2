@@ -56,3 +56,22 @@ test('matchDrumPhrase：没有唱词时仍可在头部 16 s 内找模式', () =>
   const picked = mod.matchDrumPhrase(a, b, 192000, 150000, 0, 0, Infinity, 2000);
   if (picked) assert.ok(picked.y <= 16000, '超出头部窗口');
 });
+
+// ── 入点清晰度：B 开唱要清楚，A 要收声 ────────────────────────────
+test('entryClarity：B 在落点后开唱、A 已收声 → 正分', () => {
+  const mod = load();
+  const x = 60000, span = 8000, y = 20000, bar = 2000;
+  const a = analysis({ durationMs: 200000, vocalAt: 0 });          // A 全程无唱
+  const b = analysis({ durationMs: 200000, vocalAt: y + bar * 0.6 }); // B 落点后一拍内开唱
+  const v = mod.entryClarity(a, b, x, y, span, bar);
+  assert.ok(v > 0.2, `v=${v}`);
+});
+
+test('entryClarity：A 还在拖音、B 又不唱 → 负分', () => {
+  const mod = load();
+  const x = 60000, span = 8000, y = 20000, bar = 2000;
+  const a = analysis({ durationMs: 200000, vocalAt: x + span - 1200 }); // A 拖到窗口末
+  const b = analysis({ durationMs: 200000, vocalAt: 0 });                 // B 没唱
+  const v = mod.entryClarity(a, b, x, y, span, bar);
+  assert.ok(v < -0.1, `v=${v}`);
+});

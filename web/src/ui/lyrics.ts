@@ -1341,6 +1341,8 @@ export class LyricsView {
   private coverWrapEl: HTMLDivElement;
   private metaEl: HTMLDivElement;
   private coverEl: HTMLImageElement;
+  private coverRetries = 0;
+  private coverRetryTimer = 0;
   /** 「封面在左」的模糊副本：贴在清晰封面下面，强度与背景歌词共用。 */
   private coverBlurEl: HTMLDivElement;
   private titleEl: HTMLDivElement;
@@ -1444,6 +1446,19 @@ export class LyricsView {
   constructor(private readonly onClose: () => void) {
     this.bgEl = h('div', { class: 'lyrics-bg' });
     this.coverEl = h('img', { class: 'lyrics-cover', alt: '' });
+    this.coverEl.decoding = 'async';
+    this.coverEl.onerror = () => {
+      const key = this.lastTrackKey;
+      const track = this.state?.track;
+      if (!track || this.disposed) return;
+      this.coverEl.src = onlineArtwork({ ...track, cover: '' });
+      window.clearTimeout(this.coverRetryTimer);
+      if (this.coverRetries >= 3) return;
+      this.coverRetryTimer = window.setTimeout(() => {
+        if (this.disposed || this.lastTrackKey !== key || !this.state?.track) return;
+        this.coverEl.src = onlineArtwork(this.state.track, this.coverRequestWidth());
+      }, 500 * 2 ** this.coverRetries++);
+    };
     this.titleEl = h('div', { class: 'lyrics-title', text: '未在播放' });
     this.artistEl = h('div', { class: 'lyrics-artist', text: '' });
     this.sourceEl = h('div', { class: 'lyrics-source', text: '' });
@@ -1463,24 +1478,11 @@ export class LyricsView {
     closeBtn.addEventListener('click', () => this.onClose());
 
     const scrim = h('div', { class: 'lyrics-scrim' });
-    this.lumiereText = createLumiereStage({ textOnly: true });
-    this.roomStage = createRoomStage();
-    this.vinylStage = createVinylStage();
-    this.flowStage = createFlowStage();
-    this.poemStage = createPoemStage();
-    this.pressureStage = createPressureStage();
-
     this.root = h(
       'div',
       { class: 'lyrics-view' },
       this.bgEl,
       scrim,
-      this.lumiereText.root,
-      this.roomStage.root,
-      this.vinylStage.root,
-      this.flowStage.root,
-      this.poemStage.root,
-      this.pressureStage.root,
       closeBtn,
       h(
         'div',
@@ -1513,11 +1515,16 @@ export class LyricsView {
       this.applyLyricStyle();
     });
     window.addEventListener('resize', this.onWindowResize);
+    let firstViewportObservation = true;
     this.domLayoutObserver = new ResizeObserver(() => {
+      if (firstViewportObservation) {
+        firstViewportObservation = false;
+        return;
+      }
       if (this.disposed || this.covered || this.browsing()) return;
       requestAnimationFrame(() => { if (!this.disposed && !this.covered) { this.measureLines(); this.syncProgress(true); this.recapEmphasis(); } });
     });
-    this.domLayoutObserver.observe(this.linesEl);
+    // Observe the viewport only. Animated lyric font sizes also resize the content.
     this.domLayoutObserver.observe(this.rightEl);
     this.settingsUnsub = onSettingsChange(() => {
       const before = this.lyricsSizeApplied;
@@ -1527,7 +1534,11 @@ export class LyricsView {
     });
 
     // 字体换上去以后字宽会变（同一句可能从两行变一行），落定后再校一次放大余量。
-    void document.fonts?.ready.then(() => this.recapEmphasis());
+    if (document.fonts?.status === 'loading') void document.fonts.ready.then(() => {
+      if (this.disposed) return;
+      this.measureLines();
+      this.recapEmphasis();
+    });
 
     // 「封面在左」：软件内歌词页和桌面背景歌词保持一致，共用 bgLyricsCover 里的样式选择。
     this.applyCoverStyle();
@@ -1545,7 +1556,7 @@ export class LyricsView {
 
     this.matchUnsub = onLyricMatch(() => {
       if (this.disposed) return;
-      if (lastDoc && lastDoc.trackKey === this.lastTrackKey) {
+      if (lastDoc && lastDoc.trackKey === this.lastTrackKey && this.doc !== lastDoc) {
         this.doc = lastDoc;
         this.render();
         // 匹配结果会替换整份歌词：画布效果的主题字体按新文本的主要语言重算一次，
@@ -1559,7 +1570,6 @@ export class LyricsView {
       this.state = state;
       this.syncTrack();
       this.syncLumiereSong();
-      this.syncProgress();
       this.schedule();
     });
 
@@ -1582,7 +1592,12 @@ export class LyricsView {
       this.bgEl.classList.add('is-switching');
       window.setTimeout(() => this.bgEl.classList.remove('is-switching'), 620);
     }
-    if (coverUrl !== this.bannerUrl) {
+    const coverChanged = coverUrl !== this.bannerUrl;
+    if (coverChanged || key !== this.lastTrackKey) {
+      window.clearTimeout(this.coverRetryTimer);
+      this.coverRetries = 0;
+    }
+    if (coverChanged) {
       this.bannerUrl = coverUrl;
       this.bgEl.style.backgroundImage = coverUrl ? `url("${coverUrl}")` : 'none';
       void this.refreshMetaTone(track, coverUrl);
@@ -1596,12 +1611,12 @@ export class LyricsView {
       this.metaEl.classList.remove('is-switching');
       this.metaEl.classList.add('is-switching');
       window.setTimeout(() => this.metaEl.classList.remove('is-switching'), 620);
-    } else {
+    } else if (coverChanged) {
       this.coverEl.src = coverUrl;
       this.coverBlurEl.style.backgroundImage = coverUrl ? `url("${coverUrl}")` : 'none';
     }
-    this.titleEl.textContent = track?.title ?? '未在播放';
-    this.artistEl.textContent = track?.artist ?? '';
+    if (this.titleEl.textContent !== (track?.title ?? '未在播放')) this.titleEl.textContent = track?.title ?? '未在播放';
+    if (this.artistEl.textContent !== (track?.artist ?? '')) this.artistEl.textContent = track?.artist ?? '';
     if (changed || key !== this.lastTrackKey) {
       this.lastTrackKey = key;
       void this.reload(track);
@@ -2068,6 +2083,24 @@ export class LyricsView {
     const anyOn = textOn || roomOn || vinylOn || flowOn || poemOn || pressureOn;
     // 纯字 / 房间 / 唱片都由 canvas 画歌词，DOM 歌词与封面栏让位；什么时候藏由 CSS 的 is-painted 门槛决定，
     // 画布还没出像时默认歌词页仍然可见，不会闪灰。
+    if (anyOn && !this.lumiereText) {
+      this.lumiereText = createLumiereStage({ textOnly: true });
+      this.roomStage = createRoomStage();
+      this.vinylStage = createVinylStage();
+      this.flowStage = createFlowStage();
+      this.poemStage = createPoemStage();
+      this.pressureStage = createPressureStage();
+      this.bgEl.nextElementSibling?.after(
+      this.lumiereText.root,
+      this.roomStage.root,
+      this.vinylStage.root,
+      this.flowStage.root,
+      this.poemStage.root,
+      this.pressureStage.root,
+      );
+      this.lumiereSongDoc = null;
+      this.applyLumiereTheme();
+    }
     this.root.classList.toggle('is-lumiere', anyOn);
     this.root.classList.toggle('is-lumiere-text', anyOn);
     this.root.classList.toggle('is-lumiere-pure', textOn);
@@ -2270,7 +2303,7 @@ export class LyricsView {
       this.applyLumiereTheme();
       this.paintActiveLineTint();
       this.colorKey = '';
-      this.paintLyricColors(this.browsing(), Math.max(0, this.activeIndex));
+      this.paintLyricColors(Math.max(0, this.activeIndex));
       return;
     }
     const track = this.state?.track ?? null;
@@ -2280,7 +2313,7 @@ export class LyricsView {
     this.applyLumiereTheme();
     this.paintActiveLineTint();
     this.colorKey = '';
-    this.paintLyricColors(this.browsing(), Math.max(0, this.activeIndex));
+    this.paintLyricColors(Math.max(0, this.activeIndex));
   }
 
   /** 混合两个 #rrggbb 颜色。 */
@@ -2541,13 +2574,14 @@ export class LyricsView {
       return;
     }
     const token = ++this.loadToken;
-    const doc = await loadLyricDoc(track);
+    const cached = lastDoc?.trackKey === trackKeyOf(track) && lastDoc.lines.length ? lastDoc : null;
+    const doc = await (cached ?? loadLyricDoc(track));
     if (this.disposed || token !== this.loadToken) return;
     this.doc = doc;
     lastDoc = doc;
     this.render();
     this.applyLumiereTheme();
-    if (track) startLyricMatch(track, doc);
+    if (track && !cached) startLyricMatch(track, doc);
   }
 
   /** 背景场景：直接应用外部（共享快照）送来的歌词文档。 */
@@ -2577,7 +2611,50 @@ export class LyricsView {
     this.applyLumiereTextSettings();
   }
 
+  private buildLineWords(line: LyricLine, lineEl: HTMLElement, chars: HTMLSpanElement[]): void {
+    const fragment = document.createDocumentFragment();
+    // 逐字数据优先；没有逐字数据的行（普通 LRC 的非 CJK 行）按「CJK 单字 / 外文词」切成可动 span，
+    // 让上浮/波浪/摇曳/打字机/旋入这些播放动画整首歌都有落点。--ci 是字在句内的序号，CSS 用它错开动画相位；
+    // --drift-x / --drift-y / --drift-rot / --drift-dur 是每个字稳定的随机「飘入」偏移（旋入用，随机方向飘回来组成句子）。
+    const tokens: Array<{ text: string; spaceBefore: boolean }> = line.words.length > 0
+      ? line.words.map((word) => ({ text: word.text, spaceBefore: word.spaceBefore === true }))
+      : splitPlainTokens(line.text);
+    tokens.forEach((token, index) => {
+      const gap = index > 0 && token.spaceBefore;
+      const lang = lyricLangOf(token.text);
+      const span = h('span', {
+        class: gap ? 'lyric-char has-gap' : 'lyric-char',
+        text: token.text,
+        'data-lang': lang || undefined,
+        'data-c': token.text,
+      });
+      const hash = scatterHash(line.text, index);
+      // 一次写完整条 style：setProperty 连写 5 次会让每个字触发 5 次样式失效，
+      // 452 个字就是 2000+ 次；合并成一条字符串只走一次解析。
+      span.setAttribute(
+        'style',
+        `--ci:${index};--drift-x:${(scatterRandom(hash, 0) * 3.2 - 1.6).toFixed(2)}em;`
+          + `--drift-y:${(scatterRandom(hash, 1) * 2.2 - 1.1).toFixed(2)}em;`
+          + `--drift-rot:${(scatterRandom(hash, 2) * 60 - 30).toFixed(1)}deg;`
+          + `--drift-dur:${(0.5 + scatterRandom(hash, 3) * 0.35).toFixed(2)}s`,
+      );
+      chars.push(span);
+      fragment.append(span);
+    });
+    if (tokens.length === 0) fragment.append(line.text || ' ');
+    if (lineEl.firstChild?.nodeType === Node.TEXT_NODE) lineEl.firstChild.replaceWith(fragment);
+    else lineEl.prepend(fragment);
+  }
+
+  private lineVisibility?: IntersectionObserver;
+
   private render(): void {
+    this.lineVisibility?.disconnect();
+    this.lineVisibility ??= new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        (entry.target as HTMLElement).style.visibility = entry.isIntersecting ? '' : 'hidden';
+      }
+    }, { root: this.rightEl, rootMargin: '180px 0px' });
     this.linesEl.textContent = '';
     this.lineEls = [];
     this.colorKey = '';
@@ -2586,6 +2663,7 @@ export class LyricsView {
     this.charStateLine = -1;
     this.charStateCache = [];
     this.activeIndex = -1;
+    this.bgOffsetSnapped = false;
     this.linesEl.style.transform = 'translateY(0px)';
     this.linesEl.style.transition = 'none';
     this.autoOffset = 0;
@@ -2609,38 +2687,16 @@ export class LyricsView {
     // 整首歌一次性建到 DocumentFragment 里再挂上去：原来每 append 一行都让浏览器重排一次，
     // 84 行 × 逐字 span 的歌曲在切歌时会掉一帧（用户感觉「卡一下」）。
     const frag = document.createDocumentFragment();
+    const initialIndex = activeIndexOf(this.doc.lines, (this.state?.positionMs ?? 0) + lyricOffsetOf(this.doc.trackKey));
     for (const line of this.doc.lines) {
       const lineEl = h('div', { class: 'lyric-line' });
+      if (Math.abs(this.lineEls.length - initialIndex) > 6) lineEl.style.visibility = 'hidden';
       const chars: HTMLSpanElement[] = [];
-      // 逐字数据优先；没有逐字数据的行（普通 LRC 的非 CJK 行）按「CJK 单字 / 外文词」切成可动 span，
-      // 让上浮/波浪/摇曳/打字机/旋入这些播放动画整首歌都有落点。--ci 是字在句内的序号，CSS 用它错开动画相位；
-      // --drift-x / --drift-y / --drift-rot / --drift-dur 是每个字稳定的随机「飘入」偏移（旋入用，随机方向飘回来组成句子）。
-      const tokens: Array<{ text: string; spaceBefore: boolean }> = line.words.length > 0
-        ? line.words.map((word) => ({ text: word.text, spaceBefore: word.spaceBefore === true }))
-        : splitPlainTokens(line.text);
-      tokens.forEach((token, index) => {
-        const gap = index > 0 && token.spaceBefore;
-        const lang = lyricLangOf(token.text);
-        const span = h('span', {
-          class: gap ? 'lyric-char has-gap' : 'lyric-char',
-          text: token.text,
-          'data-lang': lang || undefined,
-          'data-c': token.text,
-        });
-        const hash = scatterHash(line.text, index);
-        // 一次写完整条 style：setProperty 连写 5 次会让每个字触发 5 次样式失效，
-        // 452 个字就是 2000+ 次；合并成一条字符串只走一次解析。
-        span.setAttribute(
-          'style',
-          `--ci:${index};--drift-x:${(scatterRandom(hash, 0) * 3.2 - 1.6).toFixed(2)}em;`
-            + `--drift-y:${(scatterRandom(hash, 1) * 2.2 - 1.1).toFixed(2)}em;`
-            + `--drift-rot:${(scatterRandom(hash, 2) * 60 - 30).toFixed(1)}deg;`
-            + `--drift-dur:${(0.5 + scatterRandom(hash, 3) * 0.35).toFixed(2)}s`,
-        );
-        chars.push(span);
-        lineEl.append(span);
-      });
-      if (tokens.length === 0) lineEl.textContent = line.text || ' ';
+      if (Math.abs(this.lineEls.length - initialIndex) <= 3) {
+        this.buildLineWords(line, lineEl, chars);
+      } else {
+        lineEl.append(document.createTextNode(line.text || ' '));
+      }
       // 手动滚轮浏览歌词时，行首会显示这句的播放时间（见 .lyrics-view.is-manual）。
       // 放在行内绝对定位，跟着行一起滚，不需要额外同步位移。
       lineEl.append(h('span', { class: 'lyric-time', text: clockText(line.timeMs) }));
@@ -2654,6 +2710,7 @@ export class LyricsView {
       this.lineEls.push(lineEl);
       this.charEls.push(chars);
       frag.append(lineEl);
+      this.lineVisibility.observe(lineEl);
     }
     this.linesEl.append(frag);
     this.measureLines();
@@ -2683,7 +2740,7 @@ export class LyricsView {
       this.progressPercent = percent;
       this.progressFill.style.width = `${percent}%`;
     }
-    if (force || state.positionMs !== this.progressPosMs) {
+    if (force || Math.floor(state.positionMs / 1000) !== Math.floor(this.progressPosMs / 1000)) {
       this.progressPosMs = state.positionMs;
       this.progressCur.textContent = fmtTime(state.positionMs);
     }
@@ -2695,6 +2752,12 @@ export class LyricsView {
     const lyricPos = state.positionMs + lyricOffsetOf(this.lastTrackKey);
     const nextIndex = activeIndexOf(this.doc.lines, lyricPos);
     if (nextIndex !== this.activeIndex || force) {
+      for (let i = Math.max(0, nextIndex - 1); i <= Math.min(this.doc.lines.length - 1, nextIndex + 2); i++) {
+        const el = this.lineEls[i];
+        if (el?.firstChild?.nodeType === Node.TEXT_NODE && this.charEls[i]?.length === 0) {
+          this.buildLineWords(this.doc.lines[i], el, this.charEls[i]);
+        }
+      }
       const prev = this.activeIndex;
       const changed = nextIndex !== this.activeIndex;
       this.activeIndex = nextIndex;
@@ -2762,7 +2825,8 @@ export class LyricsView {
     if (activeEl && activeLine) {
       const spanMs = Math.max(240, activeLine.durationMs || 2600);
       const ratio = Math.min(1, Math.max(0, (lyricPos - activeLine.timeMs) / spanMs));
-      activeEl.style.setProperty('--p', ratio.toFixed(3));
+      const progress = ended ? '1' : ratio.toFixed(3);
+      if (activeEl.style.getPropertyValue('--p') !== progress) activeEl.style.setProperty('--p', progress);
       // 当前行的放大系数：起句快速弹入，冲过最大字号一点再平滑回落；
       // 计时用真实时间，跟播放进度的 40ms 跳变解耦，动起来是顺的。
       // 播放已结束时直接落到 1，避免停在收尾的缩放中间帧上。
@@ -2777,7 +2841,7 @@ export class LyricsView {
         this.applyGrowFrame(activeEl, quantized);
         this.lastGrowWritten = quantized;
       }
-      if (ended) activeEl.style.setProperty('--p', '1');
+
       if (this.bgMode === 'gradient') this.paintGradientFlow(performance.now());
     }
     if (activeLine && activeLine.words.length > 0) {
@@ -2918,6 +2982,7 @@ export class LyricsView {
   private progressDurMs = -1;
 
   private colorKey = '';
+  private paintedBase = -1;
   private gradPhase = 0;
   private gradTimer: number | null = null;
 
@@ -2941,7 +3006,7 @@ export class LyricsView {
       el.style.setProperty('--scatter', scatter.toFixed(3));
     });
 
-    this.paintLyricColors(browsing, base);
+    this.paintLyricColors(base);
   }
 
   /**
@@ -2953,7 +3018,7 @@ export class LyricsView {
    *  - 正在播放的行与待播放的行：统一「未播放颜色」。
    * 透明度只在手动浏览时强制为 1，其余交给样式表。
    */
-  private paintLyricColors(browsing: boolean, base: number): void {
+  private paintLyricColors(base: number): void {
     const solid = this.bgMode === 'solid' ? lyricSolidColor() : '';
     const palette = this.palette;
     const sungColorFor = (index: number): string => {
@@ -2971,11 +3036,16 @@ export class LyricsView {
       ),
     );
     const gradKey = palette && palette.length ? palette.join(',') : '';
-    const key = `${base}|${this.lineEls.length}|${browsing}|${this.bgMode}|${solid}|${unsung}|${gradKey}`;
-    if (key === this.colorKey) return;
+    const key = `${this.lineEls.length}|${this.bgMode}|${solid}|${unsung}|${gradKey}`;
+    const full = key !== this.colorKey;
+    if (!full && base === this.paintedBase) return;
+    const first = full ? 0 : Math.min(base, this.paintedBase);
+    const last = full ? this.lineEls.length - 1 : Math.max(base, this.paintedBase);
     this.colorKey = key;
+    this.paintedBase = base;
 
-    this.lineEls.forEach((el, index) => {
+    for (let index = first; index <= last; index++) {
+      const el = this.lineEls[index];
       const sungLine = index < base;
       const activeLine = index === base;
       const sung = sungColorFor(index);
@@ -2989,19 +3059,17 @@ export class LyricsView {
         if (color) el.style.setProperty('color', color, 'important');
         else el.style.removeProperty('color');
       }
-      if (browsing) el.style.setProperty('opacity', '1', 'important');
-      else el.style.removeProperty('opacity');
 
-      for (const ch of Array.from(el.querySelectorAll<HTMLElement>('.lyric-char'))) {
-        if (browsing) ch.style.setProperty('opacity', '1', 'important');
-        else ch.style.removeProperty('opacity');
+
+      for (const ch of this.charEls[index] ?? []) {
+
         if (gradient) continue;
         if (color && sungLine) ch.style.setProperty('--lyric-sung', color);
         else ch.style.removeProperty('--lyric-sung');
         if (color) ch.style.setProperty('color', color, 'important');
         else ch.style.removeProperty('color');
       }
-    });
+    }
 
     if (this.bgMode === 'solid' || !palette || palette.length === 0) this.stopGradientScan();
     else this.paintActiveGradient(this.bgMode === 'gradient');
@@ -3098,7 +3166,7 @@ export class LyricsView {
     // 桌面歌词窗刚打开时，首帧的行高与居中偏移是「边量边算」出来的：
     // 这一步若带着过渡，整块歌词会从上一帧的位置滑到新位置，看起来就是「闪现位移」。
     // 所以背景场景的第一趟偏移直接落位，之后的行切换照常滑动。
-    const snap = animate && !this.bgOffsetSnapped && this.root.classList.contains('is-background-lyrics');
+    const snap = animate && !this.bgOffsetSnapped;
     this.linesEl.style.transition = animate && !snap ? '' : 'none';
     // 取整到整数像素：autoOffset 是量出来的居中线，常带小数（实测 -1.17px 这种）。
     // 整块文字落在分数像素上，字形每一帧都按不同的子像素相位采样，看起来就是
@@ -3190,6 +3258,9 @@ export class LyricsView {
   }
 
   dispose(): void {
+    this.lineVisibility?.disconnect();
+    window.clearTimeout(this.coverRetryTimer);
+    this.coverEl.onerror = null;
     if (activeLyricsView === this) {
       activeLyricsView = null;
     }

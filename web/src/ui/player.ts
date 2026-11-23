@@ -22,6 +22,7 @@ import {
   crossfadeApplyPlaybackRate,
   crossfadeApplyVolume,
   crossfadeBridgeActive,
+  crossfadeExtensionActive,
   crossfadeTailBleedActive,
   crossfadeFinishNow,
   crossfadeIsFading,
@@ -924,6 +925,8 @@ function onEnded(element: HTMLAudioElement): void {
   // 进阶 v2 的结构桥接：A 的元素已经放完，但那几小节尾奏正由预渲染 buffer 顶着。
   // 这时收尾会把补出来的乐句切掉，等过渡自己走完。
   if (crossfadeBridgeActive()) return;
+  // A 尾自延长：元素放完了，补出来的循环还在响，等它和过渡一起走完。
+  if (crossfadeExtensionActive()) return;
   if (crossfadeTailBleedActive()) return;
   // 过渡进行中 A 先放完：直接收尾到 B，不要再 load 一次（自动/手动/单曲循环过渡同理）。
   if (crossfadeFinishNow('ended')) return;

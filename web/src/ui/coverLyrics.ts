@@ -13,7 +13,7 @@
  */
 
 import type { OnlineTrack } from '../online/types';
-import { loadLyricDoc, type LyricLine } from './lyrics';
+import { currentLyricDoc, lyricOffsetOf, onLyricMatch, primeLyrics, type LyricLine } from './lyrics';
 import { previewPositionMs } from './player';
 import { prefersReducedMotion } from './motion';
 
@@ -26,8 +26,8 @@ const ROLL_MS = 800;
 /** 一句歌词在某一刻的几何：位置 + 字号 + 不透明度。 */
 interface RowGeom {
   left: number;
-  /** 行盒竖直中心：位移必须按「中心」算——按 top 算会差半个高度差，缩小时就会在原来那一句的顶部缩。 */
-  centerY: number;
+  /** 行盒顶边：位移按顶边对齐——CSS 里 .fx-hero-lyric 的 transform-origin 是 left top，缩放不会把顶边挪开。 */
+  top: number;
   size: number;
   opacity: number;
 }
@@ -65,15 +65,15 @@ export class CoverLyrics {
 
   private lines: LyricLine[] = [];
   private activeIndex = -1;
-  private request = 0;
   private frame = 0;
   private trackKey = '';
   /** 取词状态：失败/空结果要允许重试（启动瞬间「在线源尚未就绪」很常见）。 */
-  private lyricLoading = false;
   private lyricTriedAt = 0;
   /** 当前行的填充进度（0–100）与它拆出来的词、总字数。 */
-  private fillPct = -1;
-  private fillLine: { timeMs: number; durationMs: number } | null = null;
+  private readonly sweeps = new WeakMap<HTMLElement, {
+    word: HTMLElement; from: number; duration: number; entry: number; exit: number;
+  }[]>();
+  /** 逐句扫光只用这几颗词节点；换句时重建，避免每帧 querySelectorAll。 */
 
   private disposed = false;
 
@@ -86,12 +86,20 @@ export class CoverLyrics {
   }
 
   /** 窗口尺寸变了：基准字号跟着变，按新基准重画一遍（不放动画）。 */
+  private visible = false;
+  private readonly visibility = new IntersectionObserver(entries => {
+    this.visible = entries[entries.length - 1]?.isIntersecting ?? false;
+    if (this.visible) this.start();
+    else this.stop();
+  });
+
   private readonly onResize = (): void => {
-    if (!this.disposed) this.paint(false);
+    if (!this.disposed && this.visible && !this.host.closest('.is-lyrics-open')) this.paint(false);
   };
 
   constructor(host: HTMLElement) {
     this.host = host;
+    this.visibility.observe(host);
     this.root = document.createElement('div');
     this.root.className = 'fx-hero-lyrics';
     // 左上角先摆歌名与歌手（参考 Apple Music 的封面歌词版式），歌词紧跟着往下排。
@@ -117,22 +125,23 @@ export class CoverLyrics {
     if (key === this.trackKey) {
       // 同一首歌：上次取词失败（例如刚启动时「在线源尚未就绪」）就隔一会儿再试，
       // 否则这首歌会一直空着——封面里没词，用户只会觉得「歌词没了」。
-      if (track && this.lines.length === 0 && !this.lyricLoading && Date.now() - this.lyricTriedAt > 4000) {
+      if (track && this.lines.length === 0 && Date.now() - this.lyricTriedAt > 4000) {
         this.loadLyrics(track);
       }
       this.start();
       return;
     }
     this.trackKey = key;
+    this.lines = [];
     this.stop();
     this.activeIndex = -1;
     if (!track) {
       this.lines = [];
-      this.request += 1;
       this.host.classList.remove('is-lyrics');
       this.paint(false);
       return;
     }
+    this.paint(false);
     this.host.classList.add('is-lyrics');
     this.headTitle.textContent = track.title;
     this.headArtist.textContent = track.artist;
@@ -141,34 +150,31 @@ export class CoverLyrics {
 
   /** 取这一首的歌词（带代次守卫；失败留给 setTrack 的退避重试）。 */
   private loadLyrics(track: OnlineTrack): void {
-    const tag = ++this.request;
-    const wanted = this.trackKey;
-    this.lyricLoading = true;
     this.lyricTriedAt = Date.now();
-    void loadLyricDoc(track)
-      .then((doc) => {
-        if (this.disposed || tag !== this.request || this.trackKey !== wanted) return;
-        this.lyricLoading = false;
-        this.lines = doc.lines;
-        this.activeIndex = -1;
-        this.paint(false);
-        this.start();
-      })
-      .catch((err: unknown) => {
-        if (this.disposed || tag !== this.request) return;
-        this.lyricLoading = false;
-        console.warn('[coverLyrics] lyric failed', wanted, err);
-        this.lines = [];
-        this.activeIndex = -1;
-        this.paint(false);
-      });
+    primeLyrics(track);
+    this.syncDocument();
   }
+
+  private readonly syncDocument = (): void => {
+    const doc = currentLyricDoc();
+    if (!doc || doc.trackKey !== this.trackKey || this.lines === doc.lines) return;
+    this.lines = doc.lines;
+    this.activeIndex = -1;
+    this.paint(false);
+    this.start();
+  };
+
+  private readonly offDocument = onLyricMatch(this.syncDocument);
 
   /** 逐帧对齐：只在「行变了」的时候重排，稳定时几乎不花时间。 */
   private readonly tick = (): void => {
     this.frame = 0;
     if (this.disposed) return;
-    const position = previewPositionMs();
+    if (this.host.closest('.is-lyrics-open')) {
+      this.frame = requestAnimationFrame(this.tick);
+      return;
+    }
+    const position = previewPositionMs() + lyricOffsetOf(this.trackKey);
     if (this.lines.length > 0) {
       // 暂停也留住这一句：Apple Music 暂停时歌词不会消失。
       const index = this.lines.length > 0 ? this.lineAt(position) : -1;
@@ -182,7 +188,7 @@ export class CoverLyrics {
   };
 
   private start(): void {
-    if (this.disposed || this.frame !== 0 || this.lines.length === 0) return;
+    if (this.disposed || !this.visible || this.frame !== 0 || this.lines.length === 0) return;
     this.frame = window.requestAnimationFrame(this.tick);
   }
 
@@ -210,44 +216,27 @@ export class CoverLyrics {
     return found;
   }
 
-  /**
-   * 逐句扫光：像 Apple Music 那样从左到右把这一句「染白」。
-   *
-   * 实现是整个词行铺一层横向渐变（`background-clip: text`），只用 `--fx-lyric-fill`
-   * 这个百分比控制分界点；每帧只改这一个自定义属性，而且变化不到 0.4% 就不写，
-   * 再交给 CSS 的 `transition: --fx-lyric-fill 120ms linear` 抹平——不碰布局、不动字号。
-   * 分界点按整句时间线性推进（Apple Music 那种一条扫光），不按字/词切段——
-   * 中文 QRC 里「词」常常就是单字，按词推进看起来会是一格一格点亮。
-   */
+  /** Adjacent words share a boundary speed; pauses ease to a stop. */
   private syncFill(positionMs: number): void {
-    const slot = this.activeSlot;
-    if (!slot || this.activeIndex < 0) return;
-    const line = this.fillLine;
-    if (!line) return;
-    // 按整句时间推进：分界点只跟「这句唱到哪儿」有关，不按字/词切段。
-    // 之前按词累加字符宽度，中文 QRC 里词=单字，边界一格格跳，看起来就是「逐字点亮」；
-    // 用户要的是 Apple Music 那种从左到右连续扫光，所以这里改成整句线性推进。
-    const total = Math.max(1, line.durationMs);
-    const pct = Math.max(0, Math.min(100, ((positionMs - line.timeMs) / total) * 100));
-    if (pct === this.fillPct) return;
-    this.fillPct = pct;
-    // 按行分摊：第一段亮完才轮到第二段，读起来是「顺着念下去」，而不是两行一起亮。
-    const rows = Array.from(slot.querySelectorAll<HTMLElement>('.fx-hero-lyric-row'));
-    if (rows.length === 0) {
-      slot.style.setProperty('--fx-lyric-fill', `${pct.toFixed(1)}%`);
-    } else {
-      const total = rows.reduce((sum, row) => sum + (row.dataset.text ?? '').length, 0) || 1;
-      let passed = 0;
-      for (const row of rows) {
-        const share = Math.max(1e-6, (row.dataset.text ?? '').length / total);
-        const local = Math.max(0, Math.min(100, ((pct / 100 - passed) / share) * 100));
-        passed += share;
-        row.style.setProperty('--fx-lyric-fill', `${local.toFixed(3)}%`);
+    if (!this.activeSlot) return;
+    for (const { word, from, duration, entry, exit } of this.sweeps.get(this.activeSlot) ?? []) {
+      const t = Math.max(0, Math.min(1, (positionMs - from) / duration));
+      // Ramp velocity only near the edges; sustain a steady sweep through a held note.
+      const ramp = Math.min(0.4, 150 / duration);
+      const cruise = (1 - ramp * (entry + exit) / 2) / (1 - ramp);
+      let progress = t * cruise + ramp * (entry - cruise) / 2;
+      if (t < ramp || t > 1 - ramp) {
+        const ending = t > 1 - ramp;
+        const edge = ending ? exit : entry;
+        const u = (ending ? 1 - t : t) / ramp;
+        // Integral of smoothstep velocity: acceleration is zero at both joins.
+        const traveled = ramp * (edge * u + (cruise - edge) * u ** 3 * (1 - u / 2));
+        progress = ending ? 1 - traveled : traveled;
       }
+      word.classList.toggle('is-lifted', positionMs >= from);
+      const value = (100 * progress).toFixed(2) + '%';
+      if (word.style.getPropertyValue('--fx-lyric-fill') !== value) word.style.setProperty('--fx-lyric-fill', value);
     }
-    // 播放期间白色辉光恒亮（用户要「发光是持续的」）：
-    // 只在离场那 320ms 由 .is-past 把覆层 opacity 过渡到 0。
-    slot.style.setProperty('--fx-lyric-glow', '1');
   }
 
   /**
@@ -281,7 +270,7 @@ export class CoverLyrics {
    * 第一段亮完再亮第二段，读起来就是一句话顺着念下去。
    * 两段还放不下就把字号按比例收一档，最多三轮。
    */
-  private layoutRows(node: HTMLElement, text: string, size: number): void {
+  private layoutRows(node: HTMLElement, text: string, size: number, line: LyricLine): void {
     const avail = Math.max(48, this.stack.clientWidth);
     const chars = Array.from(text);
     const canvas = (this.measureCtx ??= document.createElement('canvas').getContext('2d'));
@@ -345,7 +334,55 @@ export class CoverLyrics {
       fs = Math.max(floor, (fs * avail * 0.985) / Math.max(1, worst));
       rows = build(fs);
     }
-    for (const row of rows) row.style.setProperty('--fx-lyric-fill', '0%');
+    const ranges: { start: number; end: number; from: number; to: number }[] = [];
+    let cursor = 0;
+    for (const word of line.words) {
+      const token = word.text.trim();
+      const start = text.indexOf(token, cursor);
+      if (!token || start < 0) continue;
+      cursor = start + token.length;
+      ranges.push({ start, end: cursor, from: word.startMs, to: word.endMs });
+    }
+    cursor = 0;
+    for (const row of rows) {
+      const part = row.dataset.text!;
+      const start = text.indexOf(part, cursor);
+      cursor = start + part.length;
+      row.replaceChildren();
+      for (let i = 0; i < part.length;) {
+        const at = start+i;
+        const range = ranges.find(r => r.start <= at && at < r.end);
+        const fallback = part.slice(i).match(/^[A-Za-z0-9’'-]+|^\s+|^./u)?.[0] ?? part[i];
+        const token = range ? part.slice(i,i+range.end-at) : fallback;
+        i += token.length;
+        if (!token.trim()) { row.append(token); continue; }
+        const word = document.createElement('span');
+        word.className = 'fx-hero-lyric-word';
+        word.textContent = token;
+        word.dataset.from = String(range?.from ?? line.timeMs+line.durationMs*at/text.length);
+        word.dataset.to = String(range?.to ?? line.timeMs+line.durationMs*(at+token.length)/text.length);
+        const glow = document.createElement('span');
+        glow.className = 'fx-hero-lyric-glow';
+        glow.dataset.text = token;
+        glow.setAttribute('aria-hidden','true');
+        word.append(glow);
+        row.append(word);
+      }
+    }
+    const spans = Array.from(node.querySelectorAll<HTMLElement>('.fx-hero-lyric-word'), word => {
+      const from = Number(word.dataset.from);
+      const to = Number(word.dataset.to);
+      const duration = Math.max(1, to - from);
+      return { word, from, to, duration, speed: Math.max(1, word.offsetWidth) / duration, entry: 0, exit: 0 };
+    });
+    for (let i = 1; i < spans.length; i++) {
+      const left = spans[i - 1], right = spans[i];
+      if (Math.abs(right.from - left.to) > 1) continue;
+      const boundary = 2 * left.speed * right.speed / (left.speed + right.speed);
+      left.exit = boundary / left.speed;
+      right.entry = boundary / right.speed;
+    }
+    this.sweeps.set(node, spans);
   }
 
   /** 量文字宽度用的离屏 canvas（只用来挑断点，不进 DOM）。 */
@@ -451,7 +488,7 @@ export class CoverLyrics {
       const layoutKey = JSON.stringify([text, line.translation, this.stack.clientWidth, base]);
       if (node.dataset.layoutKey !== layoutKey) {
         node.style.fontWeight = '800';
-        this.layoutRows(node, text, this.planSize(text, base * SIZES[1]));
+        this.layoutRows(node, text, this.planSize(text, base * SIZES[1]), line);
         node.dataset.activeSize = node.style.fontSize;
         node.dataset.layoutKey = layoutKey;
         const translation = line.translation.trim();
@@ -466,8 +503,6 @@ export class CoverLyrics {
 
       if (isActive) {
         this.activeSlot = node;
-        this.fillLine = { timeMs: line.timeMs, durationMs: line.durationMs };
-        this.fillPct = -1;
         const prevTransition = node.style.transition;
         node.style.transition = 'none';
         node.style.setProperty('--fx-lyric-fill', '0%');
@@ -515,14 +550,13 @@ export class CoverLyrics {
 
   /** 一句歌词在某一刻的几何（FLIP 的「前一帧」）。 */
   private geomOf(node: HTMLElement, visual = false): RowGeom {
-    // 必须用布局坐标（offsetTop/offsetHeight），不能用 getBoundingClientRect——
-    // 后者会把「上一段还没播完的 WAAPI transform」算进去，量到的不是真实落位，
-    // 于是下一段 FLIP 的起点偏小，缩小时看着像在顶部原地缩。
+    // 顶边必须用 getBoundingClientRect 量：它带上「上一段还没播完的 WAAPI transform」，
+    // 被打断的那次交接才能从当前可见位置接着走；用 offsetTop 只拿到布局落位，会跳一下。
     const style = window.getComputedStyle(node);
     const matrix = visual && style.transform !== 'none' ? new DOMMatrixReadOnly(style.transform) : new DOMMatrixReadOnly();
     return {
       left: node.offsetLeft,
-      centerY: node.offsetTop + node.offsetHeight / 2 + matrix.m42,
+      top: node.getBoundingClientRect().top,
       size: (Number.parseFloat(style.fontSize) || this.baseFontSize()) * matrix.a,
       opacity: Number.parseFloat(style.opacity),
     };
@@ -537,12 +571,11 @@ export class CoverLyrics {
     // 缩放要双向都留着——下一句放大上来是 raw<1（0.55→1），
     // 唱完那句缩小退上去是 raw>1（1.5→1）。之前把它夹到 1 以内，
     // 结果是「放大有动画、缩小瞬间跳小」，出入不对称。
-    const scale = Math.min(2.4, Math.max(0.55, raw));
+    const scale = raw;
     const dx = 0;
-    // 只按中心对齐：缩放以 left center 为原点，中心不动，所以中心对上就正好落回原来那一句的位置。
-    // 夹取值按整摞高度给（不再按单行高），否则「缩到上面」这段位移会被截短、看着像在原地缩。
-    const limit = Math.max(120, this.stack.clientHeight * 1.2);
-    const dy = Math.min(limit, Math.max(-limit, before.centerY - after.centerY));
+    // The centered stack can move when the new line changes height. Both
+    // snapshots must include that movement, including an interrupted roll.
+    const dy = before.top - after.top;
     const moved = Math.abs(dx) > 0.4 || Math.abs(dy) > 0.4 || Math.abs(scale - 1) > 0.004;
     if (prefersReducedMotion() || !moved) {
       node.style.opacity = String(opacityTo);
@@ -607,8 +640,9 @@ export class CoverLyrics {
     this.pastTimers.clear();
     for (const anim of this.rollAnims.values()) anim.cancel();
     this.rollAnims.clear();
+    this.visibility.disconnect();
+    this.offDocument();
     this.disposed = true;
-    this.request += 1;
     this.stop();
     window.removeEventListener('resize', this.onResize);
     this.root.remove();

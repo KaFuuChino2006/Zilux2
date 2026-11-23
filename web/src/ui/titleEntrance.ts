@@ -53,8 +53,6 @@ export class TitleEntrance {
   private enterTimer = 0;
   private leaveTimer = 0;
   private leaveDone: (() => void) | null = null;
-  /** 入场收尾后待执行的「放手」帧（摘 `is-char-in`，让文字离开滤镜表面）。 */
-  private releaseFrames = new Set<number>();
 
   constructor(private readonly el: HTMLElement) {}
 
@@ -88,7 +86,6 @@ export class TitleEntrance {
       window.clearTimeout(this.enterTimer);
       this.enterTimer = 0;
     }
-    this.cancelRelease();
     for (let index = 0; index < this.cells.length; index += 1) {
       const cell = this.cells[index]!;
       const ch = (this.chars[index] ?? '') === ' ' ? '\u00a0' : (this.chars[index] ?? '');
@@ -127,39 +124,19 @@ export class TitleEntrance {
       () => {
         this.enterTimer = 0;
         for (const cell of this.cells) cell.style.removeProperty(ENTER_DELAY_VAR);
-        // 错帧变量摘掉之后再等两帧，才把 `is-char-in` 也摘掉。
-        //
-        // 类留着不放会一直吃到关键帧的最后一帧 `filter: blur(0)`：
-        // 只要元素上有一个 filter（哪怕 blur 0），文字就是先画进离屏纹理再合成，
-        // 拿到的是一份按动画期间比例栅格化的位图 —— 看着就是「字有点糊」，
-        // 而且取决于这段标题在哪、屏幕缩放多少，所以是概率性的（维护者 2026-11-22 报）。
-        // 但也不能在收尾那一帧直接摘：那一帧正在被合成，摘掉会重新 hint 一次（「微动」）。
-        // 等两帧，最后一帧先呈现出来，再放手让字回主线程按真实像素重画。
-        this.scheduleRelease();
+        // 字照旧停在 `is-char-in` 上（关键帧末帧是恒等位移），**不撤层**：
+        // 撤层那一帧，每个字都会从「合成层栅格」换回「主线程栅格」——位置吸附到设备像素、
+        // AA 从灰阶换成 LCD 次像素，整块标题看起来就「像素抖一下」。
+        // 层跟着类一起在 stop() / settle()（重播、离场、整页重开）里撤掉，那时正在演返程
+        // 或页已经藏起来，看不见这一下。
+        // 曾经担心「留层会糊」：那是关键帧还带 filter: blur(0) 的时代（离屏滤镜表面按动画
+        // 比例栅格化后不再重画）。现在标题关键帧只有 translate3d + opacity，纯 2D、
+        // 末帧恒等，实测留层的清晰度与撤层相差约 2%，肉眼不可见。
       },
       maxDelay + MOTION.base + 90,
     );
   }
 
-  /** 两帧后摘掉入场类，让每个字回到「无滤镜、无合成层」的静态渲染。 */
-  private scheduleRelease(): void {
-    this.cancelRelease();
-    const first = window.requestAnimationFrame(() => {
-      const second = window.requestAnimationFrame(() => {
-        this.releaseFrames.delete(second);
-        for (const cell of this.cells) cell.classList.remove(IN_CLASS);
-      });
-      this.releaseFrames.delete(first);
-      this.releaseFrames.add(second);
-    });
-    this.releaseFrames.add(first);
-  }
-
-  private cancelRelease(): void {
-    if (this.releaseFrames.size === 0) return;
-    for (const frame of this.releaseFrames) window.cancelAnimationFrame(frame);
-    this.releaseFrames.clear();
-  }
 
   /**
    * 出场：同一条轨迹反过来——逐字下沉淡出，越靠后的字先走。

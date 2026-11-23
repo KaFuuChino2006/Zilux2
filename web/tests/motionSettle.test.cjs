@@ -38,12 +38,12 @@ test('收尾不再抄动画最后一帧的矩阵与滤镜（抄 3D 矩阵再撤 
   assert.doesNotMatch(motion, /SETTLE_FILTER_VAR/);
 });
 
-test('落定类就是自然态：transform: none，不留 will-change', () => {
+test('落定类只留合成层，不写 transform（不压掉卡片自己的 hover 变换）', () => {
   const rule = css.slice(css.indexOf('.is-block-settled {'));
   const body = rule.slice(0, rule.indexOf('}') + 1);
-  assert.match(body, /transform: none;/);
-  assert.doesNotMatch(body, /will-change/, '留层会让文字按动画期间的栅格比例定格 → 发糊');
+  assert.doesNotMatch(body, /transform:/);
   assert.doesNotMatch(body, /filter:/);
+  assert.match(body, /will-change: transform;/, '落定后要留在合成层：撤层那一下整页会像素抖一次');
 
   const motionRule = css.slice(css.indexOf('.is-motion-settled {'));
   const motionBody = motionRule.slice(0, motionRule.indexOf('}') + 1);
@@ -61,7 +61,7 @@ test('逐块变体只许 2D、不许 filter（3D / filter 都会换渲染表面�
   assert.doesNotMatch(pool, /perspective\(/, '3D 会让文字进 3D 渲染表面');
   assert.doesNotMatch(pool, /rotate[XY]\(/, '不许用三维旋转');
   assert.doesNotMatch(pool, /filter:/, 'filter 会把文字画进离屏表面');
-  // 最后一帧必须是恒等变换，落定才敢直接写 none
+  // 最后一帧必须是恒等变换，落定换类时才不可能有位移
   assert.match(pool, /transform: translate3d\(0, 0, 0\) rotate\(0deg\) scale\(1\);/);
   assert.match(pool, /@keyframes block-in-soft \{/);
   assert.match(pool, /@keyframes block-in-haze \{/);
@@ -82,15 +82,14 @@ test('滚动容器不再做吸附（吸附会在入场结束后把整排挪几�
   assert.doesNotMatch(css, /scroll-snap-align:start/);
 });
 
-test('标题逐字入场结束后桥接两帧，再放手摘类', () => {
+test('标题逐字入场结束后留在合成层，收尾不撤层', () => {
   const enterTimer = title.slice(title.indexOf('this.enterTimer = window.setTimeout('));
   const body = enterTimer.slice(0, enterTimer.indexOf('maxDelay + MOTION.base + 90'));
   assert.match(body, /removeProperty\(ENTER_DELAY_VAR\)/);
-  assert.match(body, /this\.scheduleRelease\(\)/, '两帧后才放手，不能当场摘');
-  assert.doesNotMatch(body, /classList\.remove\(IN_CLASS\)/, '摘类交给 scheduleRelease 的下一帧');
-  const release = title.slice(title.indexOf('private scheduleRelease()'));
-  assert.match(release.slice(0, 600), /requestAnimationFrame\([\s\S]*requestAnimationFrame/);
-  assert.match(release.slice(0, 600), /classList\.remove\(IN_CLASS\)/);
+  assert.doesNotMatch(body, /classList\.remove\(IN_CLASS\)/, '收尾不能摘类：撤层那一下每个字都会像素抖');
+  assert.doesNotMatch(title, /scheduleRelease|releaseFrames/, '不再有「两帧后放手」这一步');
+  // 层跟着类在 stop() / settle() 里撤：那时正在演返程，或者页已经藏起来。
+  assert.match(title, /cell\.classList\.remove\(IN_CLASS, OUT_CLASS\);/);
 });
 
 test('标题关键帧同样不带模糊，单字基类不常驻 will-change', () => {
@@ -106,21 +105,23 @@ test('标题关键帧同样不带模糊，单字基类不常驻 will-change', ()
   assert.match(css, /\.title-char\.is-char-in[^{]*\{[^}]*will-change: transform, opacity/);
 });
 
-test('落定态只在桥接期间存在，两帧后必须放手回主线程重画', () => {
-  assert.match(block, /private releaseSettleSoon\(el: HTMLElement\)/);
-  assert.match(block, /private stopRelease\(\)/);
-  assert.match(block, /classList\.remove\(SETTLE_CLASS\)/);
+test('逐块落定后不放手：层只在换页 / 重播 / 销毁时随类一起撤', () => {
+  assert.doesNotMatch(block, /releaseSettleSoon|releaseFrames|settleTokens/, '不再有「两帧后放手」这一步');
+  assert.doesNotMatch(block, /classList\.remove\(SETTLE_CLASS\);\s*\}\)/, '收尾定时器里不许撤层');
+  // 唯一的撤销点是 resetMotion()（clearMotionClasses / leave / dispose 都走它）。
+  assert.match(block, /el\.classList\.remove\(IN_CLASS, OUT_CLASS, SETTLE_CLASS\);/);
   assert.match(motion, /const scheduleRelease = \(el: Element\): void => \{/);
   assert.match(motion, /const dropSettle = \(el: HTMLElement\): void => \{/);
-  assert.match(motion, /el\.classList\.add\(SETTLE_CLASS\);\s*\]?\s*scheduleRelease\(el\);/, '落定后必须排上「放手」');
+  assert.match(motion, /el\.classList\.add\(SETTLE_CLASS\);\s*\]?\s*scheduleRelease\(el\);/, '面板换层仍走两帧后放手');
 });
 
 test('标题落定时不改文本节点（换文本会重新排版）', () => {
   assert.match(title, /if \(cell\.textContent !== ch\) cell\.textContent = ch;/);
 });
 
-test('文档口径同步：变体只许 2D、落定回自然态', () => {
+test('文档口径同步：变体只许 2D、逐块落定留层', () => {
   assert.match(docs, /is-block-settled/);
   assert.match(docs, /is-motion-settled/);
   assert.match(docs, /2D/);
+  assert.match(docs, /留在合成层/);
 });

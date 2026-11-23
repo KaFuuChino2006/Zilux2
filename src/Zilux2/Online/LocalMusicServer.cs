@@ -313,6 +313,7 @@ internal sealed partial class LocalMusicServer : IDisposable
                 "/api/host/devtools" => isPost ? HandleHostDevTools(context) : MethodNotAllowed(context),
                 // 离线节拍分析（契约 docs/zilux2-beat-analysis-contract.md；本地 rel / 在线 id 共用）。
                 "/api/analysis" => isGet ? await HandleAnalysisAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
+                "/api/analysis/features" => isGet ? HandleAnalysisFeatures(context) : MethodNotAllowed(context),
                 // 离线 2 轨人声分离（契约 docs/zilux2-stems-contract.md）：算窗口 / 取窗口 WAV。
                 "/api/stems" => isGet ? await HandleStemsAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
                 "/api/stems/audio" => isGet
@@ -955,10 +956,14 @@ internal sealed partial class LocalMusicServer : IDisposable
                     string.Equals(query["force"], "true", StringComparison.OrdinalIgnoreCase);
         var cacheOnly = string.Equals(query["cacheOnly"], "1", StringComparison.Ordinal) ||
                         string.Equals(query["cacheOnly"], "true", StringComparison.OrdinalIgnoreCase);
+        var enrich = string.Equals(query["enrich"], "1", StringComparison.Ordinal) ||
+                     string.Equals(query["enrich"], "true", StringComparison.OrdinalIgnoreCase);
         try
         {
             var outcome = await analysis
-                .AnalyzeAsync(new AnalysisRequest(source, trackId, rel, quality, force, cacheOnly), _shutdown.Token)
+                .AnalyzeAsync(
+                    new AnalysisRequest(source, trackId, rel, quality, force, cacheOnly, enrich),
+                    _shutdown.Token)
                 .ConfigureAwait(false);
             if (outcome.Ok && outcome.Response is not null)
             {
@@ -981,6 +986,77 @@ internal sealed partial class LocalMusicServer : IDisposable
             return WriteAnalysisError(context, 500, "internal-error", "节拍分析失败：" + OnlineHttp.Describe(exception));
         }
     }
+
+    /// <summary>
+    /// 增强 features 的只读端点：基础 /api/analysis 绝不等待模型；页面拿到基础结果后轮询这里。
+    /// stages 逗号分隔（默认全部），未就绪的 stage 放进 pending。
+    /// </summary>
+    private int HandleAnalysisFeatures(HttpListenerContext context)
+    {
+        var analysis = _analysis;
+        if (analysis is null)
+        {
+            return WriteAnalysisError(context, 503, "internal-error", "节拍分析服务不可用");
+        }
+
+        var query = context.Request.QueryString;
+        var source = (query["source"] ?? string.Empty).Trim().ToLowerInvariant();
+        if (source.Length == 0)
+        {
+            return WriteAnalysisError(context, 400, "not-found", "缺少 source 参数");
+        }
+
+        string? trackId = null;
+        string? rel = null;
+        if (string.Equals(source, "local", StringComparison.Ordinal))
+        {
+            rel = (query["rel"] ?? string.Empty).Trim();
+            if (rel.Length is 0 or > 1024)
+            {
+                return WriteAnalysisError(context, 400, "not-found", "rel 参数非法");
+            }
+        }
+        else
+        {
+            trackId = (query["id"] ?? string.Empty).Trim();
+            if (trackId.Length is 0 or > 200)
+            {
+                return WriteAnalysisError(context, 400, "not-found", "id 参数非法");
+            }
+
+            if (GetProvider(source) is null)
+            {
+                return WriteAnalysisError(context, 404, "not-found", "暂不支持该音乐平台");
+            }
+        }
+
+        var stages = (query["stages"] ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        try
+        {
+            var key = analysis.BuildFeatureKey(source, trackId, rel);
+            var response = analysis.GetFeatures(key, stages);
+            WriteJson(context, 200, JsonSerializer.Serialize(response, EnrichmentJsonContext.Default.AnalysisFeaturesResponse));
+            return 200;
+        }
+        catch (Exception exception)
+        {
+            OnlineHttp.Error("api analysis features failed", exception);
+            return WriteAnalysisError(context, 500, "internal-error", "增强特征读取失败：" + OnlineHttp.Describe(exception));
+        }
+    }
+
+    /// <summary>
+    /// 可选模型库：只暴露「有没有、多大、许可是什么、下到哪一步」，下载由 ModelLibrary 在后台做。
+    /// 模型永不进安装包；GET 之外不接受任何写操作。
+    /// </summary>
+    /// <summary>
+    /// /api/analysis/feature-audio?file=features/&lt;hash&gt;/extend/&lt;start&gt;-&lt;len&gt;.wav
+    /// 只允许 analysis 根目录内的 .wav；生成式延长产物通过这里交给页面解码。
+    /// </summary>
+    
+
+    
 
     // Contract §2.2 的 code → HTTP 状态映射（页面主要看 ok/code，状态码只影响 fetch 错误分支）。
     private static int MapAnalysisStatus(string code) => code switch

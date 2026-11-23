@@ -73,7 +73,8 @@ function makeHarness() {
     const allowed = new Set(['phraseMix', 'transitionMath', 'transitionLoudness', 'loudness',
       'mixTransitionMode', 'vocalAnchor', 'introBridge', 'tailFade', 'v2Plan', 'v2Quality',
       'automixPlan', 'bridgePlan', 'pitchShift', 'melodyAnchor', 'echoTail', 'styleKit', 'vocalOverlay',
-      'backspin', 'loopRoll', 'dropEntry', 'doubling', 'genreProfile', 'appleRecipes']);
+      'backspin', 'loopRoll', 'dropEntry', 'doubling', 'genreProfile', 'appleRecipes',
+      'styleProfile', 'stylePolicy', 'extensionPlan', 'generativeTransition']);
     vm.runInNewContext(ts.transpileModule(source, { compilerOptions: {
       module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022,
     } }).outputText, {
@@ -119,6 +120,9 @@ function loadCaches() {
     if (!(durationMs > 30_000)) continue;
     out.push({
       file: name,
+      source: raw.source ?? null,
+      trackId: raw.trackId ?? null,
+      rel: raw.rel ?? a.rel ?? null,
       durationMs,
       audibleEndMs: Number(a.audibleEndMs ?? durationMs),
       analysis: { ...a, durationMs },
@@ -127,10 +131,95 @@ function loadCaches() {
   return out;
 }
 
+// ---------- 谱特征（style stage） ----------
+const FEATURE_DIR = path.join(process.env.LOCALAPPDATA || '', 'Zilux2', 'analysis', 'features');
+function loadStyleFeatures() {
+  const byKey = new Map();
+  if (!fs.existsSync(FEATURE_DIR)) return byKey;
+  for (const dir of fs.readdirSync(FEATURE_DIR)) {
+    const file = path.join(FEATURE_DIR, dir, 'style.json');
+    if (!fs.existsSync(file)) continue;
+    let raw;
+    try { raw = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, '')); } catch { continue; }
+    const p = raw?.payload;
+    if (!p || !Array.isArray(p.centroidHz) || !(p.hopMs > 0)) continue;
+    byKey.set(raw.inputKey, p);
+  }
+  return byKey;
+}
+const STYLE_FEATURES = loadStyleFeatures();
+
+// ---------- 生成段（extend stage）：按同一 inputKey 挂到 B 上，才能体检「垫底」决策 ----------
+function loadExtensions() {
+  const byKey = new Map();
+  if (!fs.existsSync(FEATURE_DIR)) return byKey;
+  for (const dir of fs.readdirSync(FEATURE_DIR)) {
+    const ext = path.join(FEATURE_DIR, dir, 'extend');
+    if (!fs.existsSync(ext)) continue;
+    for (const name of fs.readdirSync(ext)) {
+      if (!name.endsWith('.json')) continue;
+      let raw;
+      try { raw = JSON.parse(fs.readFileSync(path.join(ext, name), 'utf8').replace(/^﻿/, '')); } catch { continue; }
+      const p = raw?.payload;
+      if (!p?.file || !(p.durationMs > 0) || !raw.inputKey) continue;
+      const prev = byKey.get(raw.inputKey);
+      if (!prev || p.durationMs > prev.durationMs) byKey.set(raw.inputKey, p);
+    }
+  }
+  return byKey;
+}
+const EXTENSIONS = loadExtensions();
+function keyFor(track) {
+  if (!track) return null;
+  if (track.source && track.source !== 'local' && track.trackId != null) {
+    const k = `${track.source}:${track.trackId}`;
+    if (STYLE_FEATURES.has(k)) return k;
+  }
+  if (track.rel) {
+    const prefix = `local:${track.rel}:`;
+    for (const k of STYLE_FEATURES.keys()) if (k.startsWith(prefix)) return k;
+    for (const k of EXTENSIONS.keys()) if (k.startsWith(prefix)) return k;
+  }
+  return null;
+}
+
+function featuresFor(track) {
+  if (!track?.analysis) return null;
+  if (track.source && track.trackId === undefined && track.rel === undefined) return null;
+  if (track.source && track.source !== 'local' && track.trackId != null) {
+    const hit = STYLE_FEATURES.get(`${track.source}:${track.trackId}`);
+    if (hit) return hit;
+  }
+  if (track.rel) {
+    const prefix = `local:${track.rel}:`;
+    for (const [key, payload] of STYLE_FEATURES) {
+      if (key.startsWith(prefix)) return payload;
+    }
+  }
+  return null;
+}
+function centroidNear(features, ms, dir) {
+  if (!features) return null;
+  const hop = features.hopMs;
+  const idx = Math.round(ms / hop);
+  const out = [];
+  for (let k = 1; k <= 4; k += 1) {
+    const i = idx + dir * k;
+    const v = features.centroidHz[i];
+    if (Number.isFinite(v) && v > 50 && v < 16000) out.push(v);
+  }
+  if (!out.length) return null;
+  return out.reduce((x, y) => x + y, 0) / out.length;
+}
+
 // ---------- 体检规则 ----------
 function auditOne(engine, A, B, posMs) {
   const active = { currentTime: 0, readyState: 4, playbackRate: 1, volume: 1, paused: false, pause() {}, play() { return Promise.resolve(); } };
   const standby = { ...active };
+  const bKey = keyFor(B);
+  if (bKey && EXTENSIONS.has(bKey) && !B.analysis.extension) {
+    B.analysis.extension = EXTENSIONS.get(bKey);
+  }
   const options = {
     active, standby,
     current: { startAt: 0, track: { source: 'local', id: A.file, durationMs: A.durationMs } },
@@ -171,15 +260,155 @@ function auditOne(engine, A, B, posMs) {
     wallMs: Math.round((s.fadeMs ?? 0) * (s.tempoInverted ? Math.max(0.5, s.tempoRate ?? 1) : 1)),
     tempoInverted: !!s.tempoInverted,
     bleed: s.aTailBleedMs ?? 0, echo: !!s.echo?.enabled,
+    // 窗口关不住 A 末句时，引擎用 aTailHold+tailBleed 把最后一句唱完再淡出；
+    // 这段缺口不算「切断」，算「延长尾巴」（判规则时把它加进覆盖长度）。
+    tailGuard: s.tailGuardMs ?? 0,
+    splitHz: s.splitHz ?? 120,
+    lowCorr: s.lowCorr ?? null,
+    lowInvert: s.lowInvert === true,
+    bed: s.extensionPlan?.mode ?? null,
+    bTrimMax: s.bTrimMax ?? 0,
+    lowPlanOverlap: (() => {
+      const a = s.v2Plan && s.v2Plan.a && s.v2Plan.a.low;
+      const b = s.v2Plan && s.v2Plan.b && s.v2Plan.b.low;
+      if (!Array.isArray(a) || !Array.isArray(b) || a.length < 2) return null;
+      const sample = (pts, p) => {
+        for (let i = 1; i < pts.length; i += 1) {
+          if (p <= pts[i].t) {
+            const l = pts[i - 1], r = pts[i];
+            const span = r.t - l.t;
+            return span <= 0 ? r.v : l.v + ((r.v - l.v) * (p - l.t)) / span;
+          }
+        }
+        return pts[pts.length - 1].v;
+      };
+      let both = 0, n = 0;
+      for (let i = 0; i <= 200; i += 1) {
+        const p = i / 200;
+        if (sample(a, p) > 0.1 && sample(b, p) > 0.1) both += 1;
+        n += 1;
+      }
+      return Math.round((both / n) * 1000) / 1000;
+    })(),
+    lowBoth: (() => {
+      const ca = A.analysis.activity && A.analysis.activity.bass;
+      const cb = B.analysis.activity && B.analysis.activity.bass;
+      if (!Array.isArray(ca) || !Array.isArray(cb)) return null;
+      const ha = A.analysis.activity.hopMs || 250;
+      const hb = B.analysis.activity.hopMs || 250;
+      const ta = s.tempoRate || 1;
+      let both = 0, n = 0;
+      for (let t = s.fadeStartFileMs; t < s.fadeStartFileMs + s.fadeMs; t += 250) {
+        const va = ca[Math.floor(t / ha)] || 0;
+        const vb = cb[Math.floor((s.bStartFileMs + (t - s.fadeStartFileMs) / Math.max(0.5, ta)) / hb)] || 0;
+        if (va > 0.12 && vb > 0.12) both += 1;
+        n += 1;
+      }
+      return n ? Math.round((both / n) * 1000) / 1000 : null;
+    })(),
+    exitOff: (() => {
+      const db = A.analysis.downbeats;
+      const beat = A.analysis.beatIntervalMs;
+      if (!Array.isArray(db) || !db.length || !(beat > 0)) return null;
+      let best = Infinity;
+      for (const d of db) best = Math.min(best, Math.abs(d - s.fadeStartFileMs));
+      return Math.round((best / beat) * 100) / 100;
+    })(),
+    timbreDb: (() => {
+      const fa = featuresFor(A); const fb = featuresFor(B);
+      const aHz = centroidNear(fa, A.audibleEndMs, -1);
+      const bHz = centroidNear(fb, (s.bStartFileMs ?? 0), +1);
+      if (!aHz || !bHz) return null;
+      return Math.round(200 * Math.log10(bHz / aHz)) / 10;
+    })(),
     bDuck: Array.isArray(s.bDuck) ? s.bDuck.filter((e) => e.db < -1).length : 0,
     q: s.quality ? { pass: !!s.quality.pass, bass: +s.quality.bassBumpDb?.toFixed?.(2), vocal: +s.quality.vocalOverlapBeats?.toFixed?.(2), clash: +s.quality.vocalClashBeats?.toFixed?.(2), drift: +s.quality.loudnessDriftLu?.toFixed?.(2), rate: +s.quality.rateJumpPctPerBeat?.toFixed?.(2), fail: s.quality.failures ?? [], curve: s.quality.curve?.lufs } : null,
     swap: s.v2Plan ? { start: +s.v2Plan.handoffStartP?.toFixed(3), end: +s.v2Plan.handoffP?.toFixed(3) } : null,
+    // A 在「末句那一刻」还剩多少电平：low/high 的功率包络换算成 dB。
+    // 用来区分「被切走」与「已经在淡出、只是歌词还没唱完」。
+    // A 在末句那一刻被 duck 了多少：压到 ‑4 dB 以下说明人声正在交接，不算「切断」。
+    aDuckAtVocal: (() => {
+      const ev = Array.isArray(s.v2Duck) ? s.v2Duck : null;
+      if (!ev || !ev.length) return 0;
+      const last = Math.min(
+        lastVocalEnd(A.analysis, A.audibleEndMs),
+        A.audibleEndMs > 0 ? A.audibleEndMs : Number.POSITIVE_INFINITY,
+      );
+      if (!(last > 0)) return 0;
+      const t = last - s.fadeStartFileMs + 120;
+      let db = 0;
+      for (const e of ev) if (e.offsetMs <= t) db = Math.min(db, e.db);
+      return Math.round(db * 10) / 10;
+    })(),
+    aEnvVocalDb: (() => {
+      const cur = s.v2Plan && s.v2Plan.a;
+      if (!cur || !Array.isArray(cur.low) || !Array.isArray(cur.high)) return null;
+      const at = (arr, q) => {
+        const pos = q * (arr.length - 1);
+        const i0 = Math.floor(pos), i1 = Math.min(arr.length - 1, i0 + 1);
+        return (arr[i0] ?? 0) + ((arr[i1] ?? 0) - (arr[i0] ?? 0)) * (pos - i0);
+      };
+      const last = Math.min(
+        lastVocalEnd(A.analysis, A.audibleEndMs),
+        A.audibleEndMs > 0 ? A.audibleEndMs : Number.POSITIVE_INFINITY,
+      );
+      if (!(last > 0) || !(s.fadeMs > 0)) return null;
+      const q = Math.min(1, Math.max(0, (last - s.fadeStartFileMs) / s.fadeMs));
+      const lo = at(cur.low, q), hi = at(cur.high, q);
+      return Math.round(100 * 10 * Math.log10(Math.max(1e-6, (lo * lo + hi * hi) / 2))) / 100;
+    })(),
     note: s.autoNote ?? '',
     bPresence: presence ? presence(B.analysis) : 'unknown',
     aPresence: presence ? presence(A.analysis) : 'unknown',
     // A 最后一句唱到哪儿（曲内毫秒，和引擎同一个「唱句段」口径）。
-    // 别再自己扫 activity 下标：桶是按 hopMs 取的，直接乘回去会比引擎多出 2 小节。
-    aLastVocalMs: lastVocalEnd ? lastVocalEnd(A.analysis, A.audibleEndMs) : 0,
+    // 引擎把末句夹在 audibleEnd 之内（audibleEnd 之后是静音/母带残响，不算还在唱），
+    // 这里也必须同样夹，否则「末句越过可听结尾 10 s」会被误报成切断。
+    aLastVocalMs: lastVocalEnd
+      ? Math.min(
+        lastVocalEnd(A.analysis, A.audibleEndMs),
+        A.audibleEndMs > 0 ? A.audibleEndMs : Number.POSITIVE_INFINITY,
+      )
+      : 0,
+    // B 第一句真正开唱的位置，以及那一刻让位有多深。
+    // 只看「窗口里出现过让位」会把「前 0.5 s 垫底被压、2.5 s 才开唱」误判成 B 首句被压。
+    bDuckAtVocal: (() => {
+      const act = B.analysis && B.analysis.activity;
+      const vocal = act && act.vocal;
+      if (!Array.isArray(vocal) || !vocal.length || !Array.isArray(s.bDuck)) return 0;
+      const hop = act.hopMs || 250;
+      const from = s.bStartFileMs ?? 0;
+      const start = Math.max(0, Math.floor(from / hop));
+      const need = Math.max(2, Math.ceil(600 / hop));
+      let first = -1;
+      for (let i = start; i + need - 1 < vocal.length; i += 1) {
+        let ok = true;
+        for (let k = 0; k < need; k += 1) if ((vocal[i + k] || 0) < 0.35) { ok = false; break; }
+        if (ok) { first = i * hop; break; }
+      }
+      if (first < 0) return 0;
+      const rate = s.tempoRate > 0 ? s.tempoRate : 1;
+      const offset = (first - from) / rate;
+      // 只看开唱那一刻的让位值（最后一个不晚于它的点），不是整段窗口的最小值。
+      let at = -1;
+      let db = 0;
+      for (const e of s.bDuck) {
+        if (e.offsetMs <= offset + 120 && e.offsetMs >= at) { at = e.offsetMs; db = e.db || 0; }
+      }
+      return Math.round(db * 100) / 100;
+    })(),
+    // B 开播前 3 秒有没有在唱：决定「B 被压」到底是不是缺陷。
+    bEntryVocal: (() => {
+      const act = B.analysis && B.analysis.activity;
+      const vocal = act && act.vocal;
+      if (!Array.isArray(vocal) || !vocal.length) return 0;
+      const hop = act.hopMs || 250;
+      const from = s.bStartFileMs ?? 0;
+      const i0 = Math.max(0, Math.floor(from / hop));
+      const i1 = Math.min(vocal.length - 1, Math.floor((from + 3000) / hop));
+      let peak = 0;
+      for (let i = i0; i <= i1; i += 1) peak = Math.max(peak, vocal[i] || 0);
+      return Math.round(peak * 100) / 100;
+    })(),
   };
 }
 
@@ -228,11 +457,28 @@ function flagsFor(A, B, r) {
   //   有人声处理且真排了让位事件，就算合格，只做一条信息性标记。
   // B 本身是器乐（没唱词）时，「首句有没有对上」没有意义，不该判缺陷。
   if (r.handoff && !r.vocalAligned && r.bPresence !== 'instrumental') {
-    f.push(r.bDuck > 0 ? 'ENTRY_DUCKED' : 'HANDOFF_UNALIGNED');
+    // 只有「B 开播就在唱、同时被压」才是缺陷；压 B 的器乐垫底是设计内行为。
+    // B 被整段让位（A 还在唱、B 主动退到人声后面）是设计内的「A 优先」，
+    // 记成 B_YIELDS 信息项，不算缺陷 —— 否则 18% 的报表会把正确行为淹没（r5）。
+    if (r.bDuckAtVocal < -2) f.push('ENTRY_DUCKED');
+    else if (r.bDuck > 0) f.push('B_YIELDS');
+    else if (Number.isFinite(r.fadeStart)
+      && meanVocalInWindow(A.analysis, r.fadeStart, Math.min(2000, r.fadeMs ?? 2000)) < 0.3) {
+      // B 从窗口开头就唱、但 A 这一段本来没人声：没有「对齐」可谈，也没有冲突。
+      //   记信息项，不算缺陷（否则「B 提前开唱」会被当成漏处理）。
+      f.push('B_ENTRY_AHEAD');
+    } else f.push('HANDOFF_UNALIGNED');
   }
   // A 还在唱就开始收尾 = 唱到一半被切走。歌词缺失时这条以前完全没有守卫（48 对 / 最多 4 小节）。
-  if (r.aLastVocalMs > 0 && r.fadeStart + r.fadeMs + 600 < r.aLastVocalMs) {
-    f.push('A_VOCAL_CUT');
+  // r2 起：窗口关不住时引擎改为把 A 停在 −10 dB、用尾巴把这一句唱完再收（tailGuardMs），
+  // 只有连尾巴都盖不住才算「切断」。
+  if (r.aLastVocalMs > 0
+    && r.fadeStart + r.fadeMs + 600 + (r.tailGuard ?? 0) < r.aLastVocalMs) {
+    // 已经被压到 ‑12 dB 以下才断：那是「淡出收尾」，歌词只是还没唱完；
+    // 仍在 ‑12 dB 以上就断，才是真切断。
+    if ((r.aDuckAtVocal ?? 0) <= -4) f.push('A_VOCAL_YIELD');
+    else if (r.aEnvVocalDb !== null && r.aEnvVocalDb !== undefined && r.aEnvVocalDb <= -12) f.push('A_VOCAL_TAIL');
+    else f.push('A_VOCAL_CUT');
   }
   // A 是纯器乐时没有「末句」可交接（handoff 恒假），但 B 早唱仍会盖住 A 的乐器：
   // 这时走的是 B 侧常驻让位（aInstrumental）。单独记一条，便于确认它真的排上了。
@@ -248,6 +494,11 @@ function flagsFor(A, B, r) {
   if (r.q && Number.isFinite(r.q.vocal) && r.q.vocal > 2) f.push('VOCAL_OVERLAP');
   // 咬字冲突：两边都满嗓子 + 调性不兼容（Camelot ≥4）。同调重叠属编曲，单独统计。
   if (r.q && Number.isFinite(r.q.vocalClash) && r.q.vocalClash > 2) f.push('VOCAL_CLASH');
+  // 低频相位冲突：两边低频同时活跃且波形反相，120–180 Hz 分频只能减轻、不能消除。
+  if (r.lowCorr !== null) {
+    const effCorr = r.lowInvert ? -r.lowCorr : r.lowCorr;
+    if (effCorr < -0.3 && (r.lowBoth ?? 0) > 0.4) f.push('LOW_PHASE_CLASH');
+  }
   if (r.q && Number.isFinite(r.q.bass) && r.q.bass > 2) f.push('BASS_BUMP');
   if (r.fadeStart !== null && A.audibleEndMs && r.fadeStart + r.fadeMs > A.audibleEndMs + 100) f.push('PAST_END');
   // A 尾段本来就没唱词（末句离结尾 > 8 小节）时，「没人声可交接」不是缺陷。
@@ -295,7 +546,12 @@ const elapsed = Date.now() - t0;
 
 // ---------- 汇总 ----------
 const flagCounts = new Map();
-for (const r of rows) for (const f of r.flags) flagCounts.set(f, (flagCounts.get(f) ?? 0) + 1);
+const INFORMATIONAL = new Set(['B_YIELDS', 'A_VOCAL_TAIL', 'A_VOCAL_YIELD']);
+const flagInfo = new Map();
+for (const r of rows) for (const f of r.flags) {
+  if (INFORMATIONAL.has(f)) flagInfo.set(f, (flagInfo.get(f) ?? 0) + 1);
+  else flagCounts.set(f, (flagCounts.get(f) ?? 0) + 1);
+}
 // 质量门内部哪一条在拦（loudness-drift / vocal-overlap / bass-bump / rate-jump 各占多少）
 const failCounts = new Map();
 for (const r of rows) for (const f of r.q?.fail ?? []) failCounts.set(f, (failCounts.get(f) ?? 0) + 1);
@@ -334,6 +590,7 @@ console.log(`cueMode: ${JSON.stringify(out.cueModes)}`);
 console.log(`锚点: ${JSON.stringify(out.anchors)}`);
 console.log('\n规则命中:');
 for (const [f, n] of Object.entries(out.flags)) console.log(`  ${f.padEnd(20)} ${String(n).padStart(4)}  ${pct(n)}`);
+for (const [f, n] of [...flagInfo].sort((a, b) => b[1] - a[1])) console.log(`  (信息) ${f.padEnd(17)} ${String(n).padStart(4)}  ${pct(n)}`);
 if (failCounts.size) {
   console.log('  质量门内部:');
   for (const [f, n] of [...failCounts].sort((a, b) => b[1] - a[1])) console.log(`    ${f.padEnd(18)} ${String(n).padStart(4)}  ${pct(n)}`);
@@ -342,6 +599,16 @@ const driftSorted = rows.map((r) => r.q?.drift).filter((v) => Number.isFinite(v)
 if (driftSorted.length) {
   const dq = (p) => driftSorted[Math.min(driftSorted.length - 1, Math.floor(p * driftSorted.length))];
   console.log(`  drift LU: p50 ${dq(0.5)} / p75 ${dq(0.75)} / p90 ${dq(0.9)} / max ${driftSorted.at(-1)}`);
+  const exit = rows.map((r) => r.exitOff).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
+  if (exit.length) {
+    const at = (q) => exit[Math.min(exit.length - 1, Math.floor(exit.length * q))];
+    console.log(`  A 出点距强拍: n ${exit.length} / p50 ${at(0.5).toFixed(2)} 拍 / p90 ${at(0.9).toFixed(2)} 拍 / ≤0.1 拍 ${(100 * exit.filter((v) => v <= 0.1).length / exit.length).toFixed(1)}%`);
+  }
+  const timbre = rows.map((r) => r.timbreDb).filter((v) => Number.isFinite(v)).map(Math.abs).sort((a, b) => a - b);
+  if (timbre.length) {
+    const tq = (q) => timbre[Math.min(timbre.length - 1, Math.floor(timbre.length * q))].toFixed(1);
+    console.log(`  谱质心台阶 dB: n ${timbre.length} / p50 ${tq(0.5)} / p75 ${tq(0.75)} / p90 ${tq(0.9)} / max ${timbre.at(-1).toFixed(1)} / >6dB ${timbre.filter((v) => v > 6).length}`);
+  }
 }
 // ---------- 曲线诊断：--curves=N ----------
 const CURVES = Number(args.curves ?? 0);
@@ -465,7 +732,7 @@ if (PAIRDIFF && fs.existsSync(PAIRDIFF)) {
   }
 }
 
-const worst = rows.filter((r) => r.flags.length).sort((x, y) => y.flags.length - x.flags.length).slice(0, TOP);
+const worst = rows.filter((r) => r.flags.some((f) => !INFORMATIONAL.has(f))).sort((x, y) => y.flags.filter((f) => !INFORMATIONAL.has(f)).length - x.flags.filter((f) => !INFORMATIONAL.has(f)).length).slice(0, TOP);
 console.log(`\n问题最多的 ${worst.length} 对:`);
 for (const r of worst) {
   console.log(`  ${r.flags.join(',')} | ${r.a.slice(0, 8)}->${r.b.slice(0, 8)} fade=${r.fadeMs} bStart=${r.bStart} entry=${r.bEntry} form=${r.form} rate=${r.rate} tech=${r.technique ?? '-'} style=${r.style ?? '-'} q=${r.q ? (r.q.pass ? 'ok' : 'FAIL') : '-'}`);

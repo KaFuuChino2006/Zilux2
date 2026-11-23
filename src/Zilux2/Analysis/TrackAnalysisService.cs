@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -30,6 +30,7 @@ internal sealed class TrackAnalysisService : IDisposable
     private readonly Func<string?>? _qualityProvider;
     private readonly Func<string?, string?>? _localPathResolver;
     private readonly ConcurrentDictionary<string, Lazy<Task<AnalysisOutcome>>> _inflight = new(StringComparer.Ordinal);
+    private readonly AnalysisEnrichmentService _enrichment;
     private readonly CancellationTokenSource _shutdown = new();
     private int _disposed;
 
@@ -41,6 +42,9 @@ internal sealed class TrackAnalysisService : IDisposable
         _providers = providers;
         _qualityProvider = qualityProvider;
         _localPathResolver = localPathResolver;
+        _enrichment = new AnalysisEnrichmentService(
+            (source, trackId, rel, quality, tempDirectory, ct) =>
+                PrepareAudioAsync(source, trackId, rel, quality, tempDirectory, ct, "enrich"));
         try
         {
             Directory.CreateDirectory(AudioCacheDirectory);
@@ -141,7 +145,14 @@ internal sealed class TrackAnalysisService : IDisposable
 
         try
         {
-            return await task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            var outcome = await task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            if (outcome.Ok && outcome.Response is { } response)
+            {
+                var featureKey = BuildFeatureKey(request.Source, request.TrackId, request.Rel);
+                _enrichment.Request(response, request, featureKey);
+            }
+
+            return outcome;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -178,6 +189,32 @@ internal sealed class TrackAnalysisService : IDisposable
         string.Equals(request.Source, "local", StringComparison.OrdinalIgnoreCase)
             ? "local:" + (request.Rel ?? string.Empty).Trim()
             : request.Source + ":" + (request.TrackId ?? string.Empty).Trim();
+
+    /// <summary>
+    /// 增强 stage 的输入身份：与基础分析缓存同一口径（本地 rel+len+mtime、在线 source:id），
+    /// 但**不含** AnalyzerVersion——模型升级只失效对应 stage，不连带 73 首基础缓存。
+    /// </summary>
+    internal string BuildFeatureKey(string? source, string? trackId, string? rel)
+    {
+        var normalized = (source ?? string.Empty).Trim().ToLowerInvariant();
+        if (string.Equals(normalized, "local", StringComparison.Ordinal))
+        {
+            var localRel = (rel ?? string.Empty).Trim();
+            var resolved = _localPathResolver?.Invoke(localRel);
+            if (!string.IsNullOrWhiteSpace(resolved) && File.Exists(resolved))
+            {
+                var info = new FileInfo(resolved);
+                return $"local:{localRel}:{info.Length}:{info.LastWriteTimeUtc.Ticks}";
+            }
+
+            return "local:" + localRel;
+        }
+
+        return normalized + ":" + (trackId ?? string.Empty).Trim();
+    }
+
+    internal AnalysisFeaturesResponse GetFeatures(string trackKey, string[]? stages) =>
+        _enrichment.Get(trackKey, stages);
 
     private async Task<AnalysisOutcome> RunAsync(AnalysisRequest request, string flightKey)
     {
@@ -745,6 +782,15 @@ internal sealed class TrackAnalysisService : IDisposable
         catch (ObjectDisposedException)
         {
             // Already torn down.
+        }
+
+        try
+        {
+            _enrichment.Dispose();
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"analysis.enrichment-dispose: {exception.Message}");
         }
 
         _shutdown.Dispose();

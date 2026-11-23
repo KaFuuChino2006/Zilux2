@@ -48,3 +48,28 @@ test('cap 越大，补平后的漂移越小或不变', () => {
   const d6 = Q.evaluateQuality({ ...base, trimCurve: Q.loudnessTrimCurve(curve, 6) }).loudnessDriftLu;
   assert.ok(d6 <= d3 + 1e-6, `d6=${d6} d3=${d3}`);
 });
+
+test('clampTempoRateForWindow 把斜率压到上限内', () => {
+  // 4s 窗口、500ms 一拍 = 8 拍；1.5%/拍 → |rate-1| ≤ 0.12
+  assert.ok(Math.abs(Q.clampTempoRateForWindow(1.18, 4000, 500) - 1.12) < 1e-6);
+  assert.ok(Math.abs(Q.clampTempoRateForWindow(0.84, 4000, 500) - 0.88) < 1e-6);
+  // 窗口够长就不动
+  assert.equal(Q.clampTempoRateForWindow(1.18, 24000, 500), 1.18);
+  // 非法输入原样返回
+  assert.equal(Q.clampTempoRateForWindow(1.18, 0, 500), 1.18);
+});
+
+test('clampTempoRateForWindow 不动 halfTime 的整八度', () => {
+  assert.equal(Q.clampTempoRateForWindow(2, 4000, 500), 2);
+  assert.equal(Q.clampTempoRateForWindow(0.5, 4000, 500), 0.5);
+});
+
+test('planTimbreCompDb：只补 4–12 dB 的质心差，最多 ±3 dB', () => {
+  assert.equal(Q.planTimbreCompDb(2000, 2020), null);           // 差太小不补
+  const brightB = Q.planTimbreCompDb(1200, 2400);               // B 更亮 → A 抬 presence
+  assert.ok(brightB && brightB.aPresenceDb > 0 && brightB.bPresenceDb < 0);
+  assert.ok(Math.abs(brightB.aPresenceDb) <= 3 && Math.abs(brightB.bPresenceDb) <= 3);
+  const darkB = Q.planTimbreCompDb(3000, 900);                  // B 更暗 → B 抬 presence
+  assert.ok(darkB && darkB.bPresenceDb > 0 && darkB.aPresenceDb < 0);
+  assert.equal(Q.planTimbreCompDb(0, 1000), null);
+});

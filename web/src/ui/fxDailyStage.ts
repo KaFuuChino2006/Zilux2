@@ -84,6 +84,8 @@ export const FX_DAILY_FINAL_FONT = '"SimHei", "Microsoft YaHei", "Microsoft YaHe
 const SCRAMBLE_GLYPHS = '今日推荐谱曲乐音律旋律节拍光影像梦境浮沉暖夜星野';
 
 export interface FxDailyDeps {
+  registerTrack?: (track: OnlineTrack) => string;
+  onTrackChange?: (key: string) => void;
   /** 拉今日推荐的歌曲；失败/空数组都按「没有内容」处理。 */
   load: () => Promise<OnlineTrack[]>;
   /** 点卡片时交给宿主 App 走既有的播放链路。 */
@@ -272,6 +274,7 @@ export function createFxDailyStage(deps: FxDailyDeps): FxDailyStage {
 
   /* 封面内歌词：点播之后封面里跟着唱（白色辉光、上下行被挤小）。 */
   const coverLyrics = new CoverLyrics(heroCard);
+  heroCard.classList.toggle('is-lyric-playing', playerState().playing);
   let disposed = false;
 
   /* 封面右缘到网格左缘之间那条纯色框：里面只有竖排的反向渐变歌名。 */
@@ -323,7 +326,9 @@ export function createFxDailyStage(deps: FxDailyDeps): FxDailyStage {
     card.type = 'button';
     card.className = 'fx-card';
     card.dataset.key = trackKey(track);
+    if (deps.registerTrack) card.dataset.trackKey = deps.registerTrack(track);
     card.dataset.index = String(index);
+    card.dataset.trackNumber = String(index + 1).padStart(3, '0');
     card.style.setProperty('--i', String(index));
     card.setAttribute('role', 'listitem');
     card.title = `${track.title} — ${track.artist}`;
@@ -502,9 +507,14 @@ export function createFxDailyStage(deps: FxDailyDeps): FxDailyStage {
   const syncHeroCover = (instantCover = false): void => {
     const first = tracks[heroIndex];
     if (!first) {
+      delete heroCard.dataset.trackKey;
       heroCard.classList.add('is-hidden');
       heroBarKey = '';
       return;
+    }
+    if (deps.registerTrack) {
+      heroCard.dataset.trackKey = deps.registerTrack(first);
+      heroCard.title = `${first.title} — ${first.artist}`;
     }
     paintHero(onlineArtwork(first, 900), instantCover);
     heroCard.classList.remove('is-hidden');
@@ -683,12 +693,19 @@ export function createFxDailyStage(deps: FxDailyDeps): FxDailyStage {
     grid.classList.add('is-loading');
     loading = loadTracks()
       .then((list) => {
+        if (disposed) return;
+        const displayed = tracks[heroIndex];
         tracks = list;
+        const playing = playerState().track;
+        const active = playing ? list.findIndex(item => trackKey(item) === trackKey(playing)) : -1;
+        const retained = displayed ? list.findIndex(item => trackKey(item) === trackKey(displayed)) : -1;
+        heroIndex = active >= 0 ? active : Math.max(0, retained);
         loading = null;
         // 空结果不当成「已经加载过」：下次切回今日推荐会再试一次。
         if (list.length === 0) loading = null;
         grid.classList.remove('is-loading');
         render();
+        syncCurrent(playing, !playerState().playing);
         if (list.length === 0) console.warn('[fx-daily] 今日推荐没有内容（接口空/未登录）');
       })
       .catch((err) => {
@@ -727,48 +744,17 @@ export function createFxDailyStage(deps: FxDailyDeps): FxDailyStage {
     }
   };
 
-  /* 滚动时上下挤压 + 松手弹回：按滚动速度压 scaleY，停手后弹簧回 1。 */
-  let lastScrollTop = 0;
-  let squashTimer = 0;
-
-  const applySquash = (): void => {
-    const top = grid.scrollTop;
-    const delta = top - lastScrollTop;
-    lastScrollTop = top;
-    const squash = Math.min(0.06, Math.max(0, Math.abs(delta) / 60));
-    grid.style.setProperty('--fx-squash', squash.toFixed(4));
-    // 往下滚时以顶边为原点压扁，往上滚时以底边为原点，视觉上都是「被推着走」。
-    grid.style.setProperty('--fx-squash-origin', delta >= 0 ? 'top center' : 'bottom center');
-    grid.classList.add('is-scrolling');
-    // 滚筒：离中线越远的卡片越往外翻、越淡，像贴在滚动的鼓面上。
-    const box = grid.getBoundingClientRect();
-    const half = box.height / 2 || 1;
-    const midY = box.top + half;
-    for (const card of cardNodes) {
-      const r = card.getBoundingClientRect();
-      const t = ((r.top + r.bottom) / 2 - midY) / half;
-      // 只让靠近上下边缘的卡片叠化，中间区域保持清晰。
-      const k = Math.min(1, Math.max(0, (Math.abs(t) - 0.52) / 0.48));
-      card.style.setProperty('--fx-drum', k.toFixed(3));
-    }
-    if (squashTimer) window.clearTimeout(squashTimer);
-    squashTimer = window.setTimeout(() => {
-      grid.classList.remove('is-scrolling');
-      grid.style.setProperty('--fx-squash', '0');
-      for (const card of cardNodes) card.style.setProperty('--fx-drum', '0');
-      squashTimer = 0;
-    }, 110);
+  const onScroll = (): void => {
+    if (disposed || leaving || root.classList.contains('is-hidden')) return;
+    if (!root.closest('.wall-daily-layout')) applyCollapse();
   };
-
-  grid.addEventListener('scroll', () => {
-    applyCollapse();
-    applySquash();
-  }, { passive: true });
-  window.addEventListener('resize', () => {
+  const onResize = (): void => {
     fitRailText();
     measureBand();
-    applyCollapse();
-  }, { passive: true });
+    if (!root.closest('.wall-daily-layout')) applyCollapse();
+  };
+  grid.addEventListener('scroll', onScroll, { passive: true });
+  window.addEventListener('resize', onResize, { passive: true });
 
   /* ---------- 3. 封面自动轮换（没有在播内容时） ---------- */
 
@@ -1069,53 +1055,36 @@ export function createFxDailyStage(deps: FxDailyDeps): FxDailyStage {
    * idleRotate = 当前没有在播放：封面带继续按歌单轮换，只把「正在播的那首」高亮出来。
    * 传 false（正在播放）时行为和以前一样——钉住这首歌的封面、停掉轮换。
    */
+  let syncedList: OnlineTrack[] | undefined;
+  let syncedPlayerKey: string | undefined;
   const syncCurrent = (nextTrack: OnlineTrack | null, idleRotate = false): void => {
-    const key = nextTrack ? trackKey(nextTrack) : '';
-    if (key === currentKey && idleRotate === idleRotating) return;
-    idleRotating = idleRotate && Boolean(nextTrack);
+    const playerKey = nextTrack ? trackKey(nextTrack) : '';
+    const paused = Boolean(nextTrack) && idleRotate;
+    if (syncedList === tracks && syncedPlayerKey === playerKey && paused === idleRotating) return;
+    syncedList = tracks;
+    syncedPlayerKey = playerKey;
+    idleRotating = paused;
+    const index = nextTrack ? tracks.findIndex(item => trackKey(item) === playerKey) : -1;
+    const member = tracks[index];
+    const key = member ? playerKey : '';
+    if (key !== currentKey) deps.onTrackChange?.(key);
     currentKey = key;
-    coverLyrics.setTrack(nextTrack);
-    for (const card of cardNodes) card.classList.toggle('is-on', card.dataset.key === key);
-    // 横条列表里选歌只高亮、不重排：不要因为切歌把那一行又提到左侧大封面。
-    if (nextTrack && grid.classList.contains('is-list')) {
+    coverLyrics.setTrack(member ?? null);
+    heroCard.classList.toggle('is-on', Boolean(member));
+    if (member) {
       stopRotate();
-      // 列表态不重排，但大封面 / 歌曲条 / 高亮要跟着当前这首走。
-      const at = tracks.findIndex((item) => trackKey(item) === key);
-      if (at >= 0) {
-        heroIndex = at;
-        paintCover(onlineArtwork(nextTrack, 900));
-        syncHeroCover();
-      }
-      for (const card of cardNodes) card.classList.toggle('is-on', card.dataset.key === key);
-      return;
-    }
-    if (nextTrack && idleRotating) {
-      // 暂停状态：先把这首的封面挂上去，然后继续按歌单轮换。
-      const index = tracks.findIndex((item) => trackKey(item) === key);
-      if (index >= 0) rotateIndex = index + 1;
-      paintCover(onlineArtwork(nextTrack, 900));
-      heroCard.classList.add('is-on');
-      if (tracks.length > 1) startRotate();
-      else stopRotate();
-      return;
-    }
-    if (nextTrack) {
-      stopRotate();
-      const index = tracks.findIndex((item) => trackKey(item) === key);
-      // 外部切歌（播放条下一首 / 其它入口）也把这首歌提到左侧大封面，网格跟着补位。
-      if (index >= 0 && index !== heroIndex) {
-        const before = captureRects();
+      if (heroIndex !== index) {
+        const list = grid.classList.contains('is-list');
+        const before = list ? undefined : captureRects();
         heroIndex = index;
-        render({ flipFrom: before });
-      } else if (index >= 0) {
-        rotateIndex = index + 1;
+        if (list) syncHeroCover();
+        else render({ flipFrom: before });
       }
-      paintCover(onlineArtwork(nextTrack, 900));
-      heroCard.classList.add('is-on');
-      return;
+      paintCover(onlineArtwork(member, 900));
+      rotateIndex = index + 1;
     }
-    heroCard.classList.remove('is-on');
-    startRotate();
+    for (const card of cardNodes) card.classList.toggle('is-on', Boolean(member) && card.dataset.key === key);
+    if ((!member || paused) && tracks.length > 1) startRotate();
   };
 
   const reload = (): void => {
@@ -1129,6 +1098,7 @@ export function createFxDailyStage(deps: FxDailyDeps): FxDailyStage {
   // 播到下一首时封面歌词还停在上一次进页的歌上（歌名条已经换了、歌词没换）。
   const offPlayer = onPlayer(() => {
     if (disposed) return;
+    heroCard.classList.toggle('is-lyric-playing', playerState().playing);
     syncCurrent(playerState().track, !playerState().playing);
   });
 
@@ -1154,6 +1124,8 @@ export function createFxDailyStage(deps: FxDailyDeps): FxDailyStage {
     syncCurrent,
     cards: () => cardNodes.slice(),
     dispose: () => {
+      window.removeEventListener('resize', onResize);
+      grid.removeEventListener('scroll', onScroll);
       disposed = true;
       offPlayer();
       stop();
