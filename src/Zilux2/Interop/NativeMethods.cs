@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
 namespace Zilux2.Interop;
@@ -24,6 +24,13 @@ internal static class NativeMethods
     public const uint MonitorDefaultToNearest = 2;
     public const uint SwpNoZOrder = 0x0004;
     public const uint SwpNoActivate = 0x0010;
+    public const uint SwpNoSize = 0x0001;
+    public const uint SwpNoMove = 0x0002;
+    public const uint SwpFrameChanged = 0x0020;
+
+    // 窗口样式：WindowChrome 会把 WS_CAPTION 摘掉，这里在句柄建好后补回来（见 MainWindow.EnsureCaptionStyle）。
+    public const int GwlStyle = -16;
+    public const int WsCaption = 0x00C00000;
 
     // 全局热键（RegisterHotKey / WM_HOTKEY）
     public const int WmHotkey = 0x0312;
@@ -348,13 +355,6 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool ShowWindow(IntPtr hWnd, int command);
-
-    public const int AwHide = 0x00010000;
-    public const int AwBlend = 0x00080000;
-
-    [DllImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool AnimateWindow(IntPtr hWnd, int durationMs, int flags);
 
     [DllImport("gdi32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]

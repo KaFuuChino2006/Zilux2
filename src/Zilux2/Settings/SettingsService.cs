@@ -118,6 +118,18 @@ internal sealed class SettingsService : IDisposable
         }
     }
 
+    /// <summary>点右上角 × 时的行为：tray=隐藏到托盘；exit=直接退出软件。</summary>
+    internal string CloseAction
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _state.General.CloseAction;
+            }
+        }
+    }
+
     /// <summary>本地曲库目录自动监控开关（LocalMusicService.Watch 的启停依据）。</summary>
     internal bool WatchLocalFolder
     {
@@ -208,17 +220,6 @@ internal sealed class SettingsService : IDisposable
             lock (_gate)
             {
                 return _state.Playback.AudioReactive;
-            }
-        }
-    }
-
-    internal string WindowAnimation
-    {
-        get
-        {
-            lock (_gate)
-            {
-                return _state.Appearance.WindowAnimation;
             }
         }
     }
@@ -771,9 +772,9 @@ internal sealed class SettingsService : IDisposable
             or "desktopLyricsWeight" or "desktopLyricsBackdropOpacity" or "backgroundLyrics"
             or "desktopLyricsLeft" or "desktopLyricsTop" or "systemOutputRotation"
             or "desktopLyricsStyle" or "desktopLyricsFanLines" or "desktopLyricsFanWidth"
-            or "uiTemplate",
+            or "uiTemplate" or "closeAction",
         "appearance" => name is "theme" or "reduceMotion" or "glow" or "lyricsSize"
-            or "windowAnimation" or "playerBarExpanded" or "miniSize" or "miniAlwaysOnTop",
+            or "playerBarExpanded" or "miniSize" or "miniAlwaysOnTop",
         "playback" => name is "defaultSource" or "searchLimit" or "volume" or "audioReactive" or "quality"
             or "eqEnabled" or "eqPreset" or "eqGains" or "fadeEnabled" or "fadeMs"
             or "fadeOutMs" or "fadeInMs" or "fadeCurve" or "fadeVocal" or "fadeVocalTailMs"
@@ -973,6 +974,9 @@ internal sealed class SettingsService : IDisposable
             state.General.UiTemplate = ReadEnum(
                 general, "uiTemplate", GeneralSettings.UiTemplates,
                 state.General.UiTemplate, "general.uiTemplate", keys);
+            state.General.CloseAction = ReadEnum(
+                general, "closeAction", GeneralSettings.CloseActions,
+                state.General.CloseAction, "general.closeAction", keys);
         }
 
         if (TryGetObject(document, "appearance", out var appearance))
@@ -983,12 +987,6 @@ internal sealed class SettingsService : IDisposable
             state.Appearance.Glow = ReadBool(appearance, "glow", state.Appearance.Glow, "appearance.glow", keys);
             state.Appearance.LyricsSize = ReadEnum(
                 appearance, "lyricsSize", AppearanceSettings.LyricsSizes, state.Appearance.LyricsSize, "appearance.lyricsSize", keys);
-            state.Appearance.WindowAnimation = ReadEnum(
-                appearance, "windowAnimation",
-                AppearanceSettings.WindowAnimations,
-                state.Appearance.WindowAnimation,
-                "appearance.windowAnimation",
-                keys);
             state.Appearance.PlayerBarExpanded = ReadBool(
                 appearance, "playerBarExpanded", state.Appearance.PlayerBarExpanded, "appearance.playerBarExpanded", keys);
             state.Appearance.MiniSize = ReadEnum(

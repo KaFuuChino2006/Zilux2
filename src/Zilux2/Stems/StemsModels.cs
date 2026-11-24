@@ -31,6 +31,9 @@ internal enum StemsState
     Computing,
     Busy,
     ModelMissing,
+
+    /// <summary>模型没随包发布：宿主正在按需下载，前端继续轮询即可。</summary>
+    ModelDownloading,
     Error,
 }
 
@@ -92,6 +95,13 @@ internal sealed class StemsOutcome
     /// <summary>四轨残差归位后的重建误差（dBFS）；2 轨或旧缓存为 NaN。</summary>
     public double ReconErrorDbfs { get; set; } = double.NaN;
 
+    /// <summary>按需下载模型时的进度（0~1）；其余状态为 0。</summary>
+    public double Progress { get; init; }
+
+    public long DownloadedBytes { get; init; }
+
+    public long TotalBytes { get; init; }
+
     internal static StemsOutcome Ready(StemsRequest request, long frames, bool cached, long elapsedMs, long durationMs) =>
         new()
         {
@@ -127,6 +137,21 @@ internal sealed class StemsOutcome
 
     internal static StemsOutcome ModelMissing(StemsRequest? request = null) =>
         new() { State = StemsState.ModelMissing, Stems = request?.Stems ?? 2 };
+
+    internal static StemsOutcome ModelDownloading(StemsRequest? request, StemModelStatus status)
+    {
+        var total = status.TotalBytes > 0 ? status.TotalBytes : 0;
+        var progress = total > 0 ? Math.Clamp((double)status.Bytes / total, 0, 1) : 0;
+        return new()
+        {
+            State = StemsState.ModelDownloading,
+            Stems = request?.Stems ?? 2,
+            RetryAfterMs = 700,
+            Progress = progress,
+            DownloadedBytes = status.Bytes,
+            TotalBytes = total,
+        };
+    }
 
     internal static StemsOutcome Fail(StemsRequest request, string code, string message) =>
         new()
@@ -184,6 +209,12 @@ internal static class StemsJson
                     writer.WriteString("downloadUrl", StemSeparationService.ModelDownloadUrl);
                     writer.WriteString("sha256", StemSeparationService.ModelSha256);
                     break;
+                case StemsState.ModelDownloading:
+                    writer.WriteNumber("retryAfterMs", outcome.RetryAfterMs);
+                    writer.WriteNumber("progress", Math.Round(outcome.Progress, 4));
+                    writer.WriteNumber("bytes", outcome.DownloadedBytes);
+                    writer.WriteNumber("total", outcome.TotalBytes);
+                    break;
                 default:
                     writer.WriteString("message", outcome.Message);
                     break;
@@ -217,6 +248,7 @@ internal static class StemsJson
         StemsState.Computing => "computing",
         StemsState.Busy => "busy",
         StemsState.ModelMissing => "model-missing",
+        StemsState.ModelDownloading => "model-downloading",
         _ => "error",
     };
 }

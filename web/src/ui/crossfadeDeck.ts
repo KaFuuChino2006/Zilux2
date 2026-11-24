@@ -3234,11 +3234,14 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
     })();
     // 层 C 人声让位：以前只声明了 v2Duck 字段，从来没人生成过（全库体检才发现）。
     //   A 在 B 唱的地方把 1.5–4 kHz 压 6 dB，两条咬字就不会互相盖住。
+    // 只在「A、B 两边都真的在唱」时收 A 的存在感，且深度封顶 3.5 dB（2026-11-24）：
+    //   以前只看 B，B 每唱一句就压 A 一次，长窗里就是「压下去、松开、再压」。
     const phraseDuck = buildDuckEvents({
+      a: analysis, fadeStartAMs: x,
       b: nextAnalysis, fadeStartBMs: y, fadeMs: span, tempoRate: rate,
       gateBeforeMs: entryUsable ? entryAnchor : 0,
       aInstrumental: vocalPresence(analysis) === 'instrumental',
-      maxDuckDb: phraseDuckDb,
+      maxDuckDb: Math.max(-3.5, phraseDuckDb),
     });
     // B 一开播就唱（首句 < 3.2 s）：没有窗口能把首句摆到接缝上，但也不能就这么算了。
     //   反过来压 B —— A 还在唱的时候 B 的 1.5–4 kHz 压 6 dB，A 唱完立刻放开，
@@ -4204,10 +4207,13 @@ function meanVocalInWindow(analysis: BeatAnalysis, startMs: number, lengthMs: nu
   // 补平的上限也收：整窗补 6 dB 会让 A 听起来被「拉高」。
   // 通用路径以前完全不生成让位事件，质量门却按「A 已压 6 dB」算重叠 —— 听感与报表
   //   都对不上。这里补上真实的让位：B 唱就压 A 的 1.5–4 kHz，深度同乐句路径。
+  // A 的让位只在两边的人声真的撞上时才排，深度封顶 3.5 dB：
+  //   A 是主角，长窗（20 s）里按 B 的每一句去压它，听感就是「被按住」。
   const plannedDuck = plannedV2
     ? buildDuckEvents({
+        a: analysis, fadeStartAMs: fadeStartFile,
         b: nextAnalysis, fadeStartBMs: bStartFileMs, fadeMs, tempoRate,
-        maxDuckDb: -12,
+        maxDuckDb: -3.5,
         aInstrumental: vocalPresence(analysis) === 'instrumental',
       })
     : [];

@@ -71,7 +71,14 @@ GET /api/stems/audio?source=&id=&rel=&window=0&stem=vocals|instrumental
 
 - 优先 `ZILUX2_STEMS_MODEL` 环境变量；否则
   `%LOCALAPPDATA%\Zilux2\models\htdemucs-dft-fp16-transparent.onnx`。
-- 缺失时返回 `model-missing`；宿主不自动下载（安装器或手动放置）。
+- 缺失时按「按需下载」处理：宿主自动开始下载（约 130 MB，镜像 hf-mirror → huggingface），
+  期间 `/api/stems` 返回 `{ "state": "model-downloading", "retryAfterMs": 700, "progress": 0.42, "bytes": 55…, "total": 130… }`，页面照常轮询；
+- `GET /api/stems/model` 查状态（`idle|downloading|verifying|ready|failed`，含 `bytes/total/message`），
+  `POST /api/stems/model` 开始或复用一次下载（202 + 同样结构）；下载完成用内置 SHA-256 校验后才改名落盘；
+- 设 `ZILUX2_STEMS_NO_DOWNLOAD=1` 可退回旧行为（只回 `model-missing` + `downloadUrl`/`sha256`）。
+- ORT 运行库必须是 **CPU 包** `Microsoft.ML.OnnxRuntime`（1.31.1）：DirectML 包（1.24.x）加载本模型会报
+  `/dft_istft/DFT_6 … is_onesided and inverse attributes cannot be enabled at the same time`，
+  所有窗口直接 `stems.fail`（1.2.1 踩过）。改 `Zilux2.csproj` 时别换成 DirectML 版本。
 - ORT 会话：`EnableCpuMemArena=true`、`EnableMemoryPattern=false`、
   `IntraOpNumThreads=clamp(ProcessorCount/2,4,12)`；空闲 60 s 后释放会话。
 

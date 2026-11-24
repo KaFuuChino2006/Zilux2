@@ -42,6 +42,7 @@ internal sealed class StemSeparationService : IDisposable
     private static readonly TimeSpan IdleSweepPeriod = TimeSpan.FromSeconds(10);
 
     private readonly TrackAnalysisService _analysis;
+    private readonly StemModelInstaller _installer = new();
     private readonly ConcurrentDictionary<string, Lazy<Task<StemsOutcome>>> _inflight = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _computeGate = new(1, 1);
     private readonly CancellationTokenSource _shutdown = new();
@@ -98,6 +99,17 @@ internal sealed class StemSeparationService : IDisposable
     internal static bool ModelExists() => File.Exists(ResolveModelPath());
 
     /// <summary>
+    /// 允许按需下载模型：默认开；设 ZILUX2_STEMS_NO_DOWNLOAD=1 时退回旧行为（只报 model-missing）。
+    /// </summary>
+    internal static bool AutoDownloadEnabled =>
+        Environment.GetEnvironmentVariable("ZILUX2_STEMS_NO_DOWNLOAD") is not ("1" or "true");
+
+    internal StemModelStatus ModelStatus => _installer.Status;
+
+    /// <summary>前端点「下载模型」或首次分离时调用；已有下载在跑就复用。</summary>
+    internal StemModelStatus EnsureModel() => _installer.Ensure();
+
+    /// <summary>
     /// 给增强 stage（分轨活动度 / 后续生成式延长）读一段 44.1 kHz 立体声窗口。
     /// 与分离管线共用同一套解码下混，避免两条链的参数漂移。
     /// </summary>
@@ -124,7 +136,21 @@ internal sealed class StemSeparationService : IDisposable
         var modelPath = ResolveModelPath();
         if (!File.Exists(modelPath))
         {
-            return StemsOutcome.ModelMissing(request);
+            // 安装包不再带模型：第一次要用分离时由宿主按需下载（约 130 MB），
+            // 期间返回 model-downloading + 进度，页面继续轮询即可。
+            if (!AutoDownloadEnabled)
+            {
+                return StemsOutcome.ModelMissing(request);
+            }
+
+            var status = _installer.Ensure();
+            var downloaded = ResolveModelPath();
+            if (status.State != StemModelInstaller.Ready || !File.Exists(downloaded))
+            {
+                return StemsOutcome.ModelDownloading(request, status);
+            }
+
+            modelPath = downloaded;
         }
 
         var trackKey = BuildTrackKey(request);
@@ -949,6 +975,7 @@ internal sealed class StemSeparationService : IDisposable
         }
 
         session?.Dispose();
+        _installer.Dispose();
         // 注意：不 Dispose _computeGate / _shutdown，避免正在跑的 finally 与
         // CancelAfter 注册撞上 ObjectDisposedException；它们没有非托管句柄，代价可忽略。
     }

@@ -461,3 +461,17 @@ AirPlay 投送的是**页面自己音频图的 PCM**，不走 WASAPI 回环。�
 - 宿主日志前缀 `[netease]` / `[http]`：成功 `GET netease/library radar ok <N> total`；歌单标题校验失败 `GET netease/library radar unexpected playlist id=... title=... tracks=...`（此时仍返回数据，可能歌单 id 被平台变更，需改用 eapi 发现新 id）；上游错误会转成 502/4xx 并带中文 message。
 - 降级与限制：私人雷达依赖网易云登录 cookie；未登录或歌单 id 失效时前端不显示卡片（`HomeData.radarAvailable=false`）。响应不进歌单缓存（每日变化）；同一数据同时供首页卡片（`limit=12`）与「查看全部」雷达墙（`limit=120`）使用。
 - 页面侧：首页「私人雷达」卡片与「今日推荐」并排（`.home-daily-row` 两列，≤1120px 单列）；`查看全部` 打开 `showRadarWall()` 列表墙；「播放全部」把当前歌曲加入队列并从第 1 首开始播放。
+
+## 18. 附加：整窗动画（截图叠层，宿主内部，无协议）
+
+窗口动画只剩这一套截图叠层，没有开关：关闭到托盘、从托盘回来、右上角三个按钮（最小化 / 最大化-还原 / 关闭）全都走它。系统补间不参与——本窗口用 `SetWindowRgn` 画了圆角，带窗口区域的窗口 DWM 不做缩放动画（`SC_MAXIMIZE` / `SC_MINIMIZE` 实测 37ms 就到终态，210ms 里零中间帧）。
+
+- 实现：`src/Zilux2/Interop/WindowFade.cs` 的截图叠层。
+  - 关闭到托盘：`Capture(GetWindowRect)` 截整窗 → `ShowCover()` 盖一层同像素的置顶透明窗口 → `HideToTray()` 立刻把真窗口停到屏幕外 → `FadeAway(cover, 200ms)`。
+  - 从托盘回来：窗口还停在屏幕外时先 `Capture()` 那块桌面 → `ShowCover()` 盖住 → `Reveal()` 里挪回原位并 `Show()` → `RefreshSurface()` 后 `FadeAway(cover, 190ms)`。
+  - 三个按钮（`MainWindow.AnimateWindowMotion(kind, apply)`）：先 `Capture` + `ShowCover` 盖住当前画面 → `apply()` 把窗口切到终态（`WindowState` / `TrySetWindowRect`）→ 下一拍 `Zoom(cover, 旧矩形, 新矩形, 210ms)`，末段淡出后关闭叠层。最小化落点取工作区底部中央约九分之一大小（`MinimizeTargetRect`）。
+- 三条走不通的老路（都实测过，不要再试）：
+  1. `Window.Opacity` 动画：WebView2 是独立子 HWND，layered 窗口里不参与合成，只淡掉 WPF 自绘的那圈；
+  2. 页面 CSS 透明度（`document.documentElement.animate`）：页面变透明后露出宿主浅色底，先泛白再切桌面；
+  3. `AnimateWindow(AW_BLEND)`：本机带 `WS_EX_LAYERED` 的窗口上直接失败，210ms 内一帧中间态都没有（截帧亮度全程等于桌面）。
+- 验收方式：连续截帧复核（`CopyFromScreen` 取小块 5–8ms 一帧）。关闭/显示方向要有 3 帧以上灰阶插值；最大化/还原要能看到截图边缘扫过、旧内容被放大/缩小；最小化要看到向工作区底部中央收拢。

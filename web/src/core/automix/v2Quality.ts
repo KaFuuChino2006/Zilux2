@@ -831,7 +831,16 @@ export interface DuckEvent {
  */
 export function buildDuckEvents(input: {
   b: BeatAnalysis;
+  /**
+   * A 的活动度曲线。给了就只在「两边真的同时有人声」时让位——
+   * 这是 1.2.11 的修正：以前只看 B，B 每唱一句就把 A 的存在感压一次，
+   * 20 s 的长窗里听感就是「A 被按下去 → 松开 → 又按下去」。
+   * 不给则退回只看 B 的旧行为（老调用方与测试兼容）。
+   */
+  a?: BeatAnalysis;
   fadeStartBMs: number;
+  /** A 侧同刻的文件毫秒起点（默认 0）；只在给了 `a` 时有意义。 */
+  fadeStartAMs?: number;
   fadeMs: number;
   tempoRate: number;
   maxDuckDb?: number;
@@ -849,23 +858,41 @@ export function buildDuckEvents(input: {
 }): DuckEvent[] {
   const curve = input.b.activity;
   if (!curve || !Array.isArray(curve.vocal) || curve.vocal.length === 0) return [];
+  const aCurve = input.a?.activity;
+  const aVocal = aCurve && Array.isArray(aCurve.vocal) && aCurve.vocal.length > 0 ? aCurve : null;
   const stepMs = input.stepMs ?? 40;
-  const attack = input.attackMs ?? 20;
-  const release = input.releaseMs ?? 80;
+  const attack = input.attackMs ?? 30;
+  const release = input.releaseMs ?? 140;
   const baseDuck = input.maxDuckDb ?? DUCK_MAX_DB;
   const maxDuck = input.aInstrumental ? Math.max(baseDuck, DUCK_MAX_DB / 2) : baseDuck;
   const gateMs = Number.isFinite(input.gateBeforeMs) ? (input.gateBeforeMs as number) : 0;
+  const aStartMs = input.fadeStartAMs ?? 0;
+  // A 也要在唱才算「撞上」：A 是器乐尾奏/换气时，把它的 2.5 kHz 收下去只会变闷。
+  const A_COLLIDE = 0.28;
+  // 撞上要连续一小段才算数：前奏里的呼吸、切片只有一两个采样点，一碰就压是「抽一下」。
+  const sustainMs = Math.max(80, Math.min(240, stepMs * 3));
   const events: DuckEvent[] = [];
   let current = 0;
+  let overlapMs = 0;
+  let ducking = false;
   const steps = Math.max(1, Math.floor(input.fadeMs / stepMs));
   for (let i = 0; i <= steps; i += 1) {
     const offsetMs = i * stepMs;
     const bMs = input.fadeStartBMs + offsetMs * input.tempoRate;
     const vocal = sampleActivity(curve, bMs)[0];
+    const aLevel = aVocal ? sampleActivity(aVocal, aStartMs + offsetMs)[0] : 1;
     const gated = bMs < gateMs - 1;
-    // 0.30–0.45 是低吟/和声垫：给一条浅让位（约 45% 深度），既承认在唱，
-    // 又不把伴奏压空。以前只有硬阈值，这段人声在报表里等于「没处理」。
-    const target = !gated && vocal > DUCK_TRIGGER ? maxDuck : 0;
+    const collide = !gated && vocal > DUCK_TRIGGER_SOFT && aLevel > A_COLLIDE;
+    if (collide) overlapMs += stepMs;
+    else overlapMs = 0;
+    if (!ducking && overlapMs >= sustainMs) ducking = true;
+    // 滞回：B 掉到软阈值以下 15%，或 A 已经不在唱，才松手——唱句里换气不再「一回一压」。
+    if (ducking && (gated || vocal < DUCK_TRIGGER_SOFT * 0.85 || (aVocal && aLevel < A_COLLIDE * 0.8))) ducking = false;
+    // 深度跟着两边的演唱强度走：两边都唱得实才压到底，否则只压三分之一。
+    const depth = ducking
+      ? Math.max(0.35, Math.min(1, (vocal - DUCK_TRIGGER_SOFT) / 0.5) * Math.min(1, aLevel / 0.6))
+      : 0;
+    const target = ducking ? maxDuck * depth : 0;
     const tau = target < current ? attack : release;
     const alpha = 1 - Math.exp(-stepMs / Math.max(1, tau));
     current += (target - current) * alpha;

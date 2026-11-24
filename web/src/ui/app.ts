@@ -99,6 +99,7 @@ import {
   SLEEP_FADE_SECONDS_CHOICES,
   SLEEP_TIMER_ACTIONS,
   shortcutBindingFromEvent,
+  type CloseAction,
   type DesktopLyricsStyle,
   type DesktopLyricsWeight,
   type EqPreset,
@@ -150,6 +151,7 @@ import {
   subscribeCrossfadeDebug,
   suppressNextCrossfade,
   crossfadeLiveSnapshot,
+  crossfadeIsFading,
 } from './crossfadeDeck';
 import { createMixHud, type MixHudHandle } from './mixHud';
 import { confirmDialog } from './confirmDialog';
@@ -326,9 +328,11 @@ import { heartRadioActive, startHeartRadio, stopHeartRadio } from './heartRadio'
 import { openSongInfo, setSongInfoView, songInfoView } from './songInfo';
 import { createUpNextToast, type UpNextToastHandle } from './upNextToast';
 import { MOTION, cancel as cancelMotion, enter as enterMotion, leave as leaveMotion, prefersReducedMotion } from './motion';
-import { startStemMode, hasStemWindow, prefetchStemWindows, type StemModeHandle, type StemPlaybackMode } from '../core/stemsDeck';
+import { startStemMode, prefetchStemWindows, onStemWindowProgress, type StemModeHandle, type StemPlaybackMode } from '../core/stemsDeck';
 import { readMixTransitionMode, wantsStemSwap } from '../core/mixTransitionMode';
-import { estimateStemWaitSeconds, STEM_WINDOW_SEC } from '../core/stemsClient';
+import { ensureStemModel, type StemModelStatus } from '../core/stemsClient';
+import { styleLabel } from '../core/automix/styleKit';
+import { ProgressDock, formatMib } from './progressDock';
 import {
   beginQueueDownload,
   closeDownloadPanel,
@@ -524,7 +528,7 @@ const SETTINGS_SUBNAV: Record<string, SettingsSubGroupSpec[]> = {
     fallback: group.id === 'basic',
   })),
   general: [
-    { key: 'startup', label: '启动', labels: ['启动动画', '启动标题', '启动副标题', '启动时最大化', '开机自启', '自启动时不显示窗口'] },
+    { key: 'startup', label: '启动', labels: ['启动动画', '启动标题', '启动副标题', '启动时最大化', '开机自启', '自启动时不显示窗口', '关闭按钮'] },
     {
       key: 'desktop',
       label: '桌面歌词',
@@ -542,7 +546,7 @@ const SETTINGS_SUBNAV: Record<string, SettingsSubGroupSpec[]> = {
     {
       key: 'ui',
       label: '界面',
-      labels: ['歌曲信息样式', '歌词字号', '窗口动画', '播放条常驻展开', '系统字体', '主题配色'],
+      labels: ['歌曲信息样式', '歌词字号', '播放条常驻展开', '系统字体', '主题配色'],
     },
     { key: 'mini', label: '迷你播放器', labels: ['迷你播放器尺寸', '迷你播放器置顶'] },
     { key: 'background', label: '页面背景', labels: ['页面背景'] },
@@ -979,6 +983,23 @@ export class App {
   private stemMode: 'off' | StemPlaybackMode = 'off';
   private stemHandle: StemModeHandle | null = null;
   private stemBusy = false;
+
+  /** 左下角的常驻进度卡：模型下载 / 人声分离 / 切歌过渡共用一张（首次需要时创建）。 */
+  private stemDock: ProgressDock | null = null;
+  /** 模型下载网速的平滑状态（两次采样差分 + 指数平滑）。 */
+  private modelDlBytes = -1;
+  private modelDlAt = 0;
+  private modelDlSpeed = 0;
+  /** 当前正在算的分离窗口：窗口号、开始时间、已就绪窗数。 */
+  private stemProgressWindow = -1;
+  private stemProgressAt = 0;
+  private stemProgressDone = 0;
+  private stemProgressTimer = 0;
+  /** 正在播的这一次切歌过渡（false→true 的那一下才出一张手法卡）。 */
+  private transitionLive = false;
+  private transitionLabel = '';
+  /** 手法卡的收卡定时器（显示 2.4 秒，不等淡化结束）。 */
+  private dockPoll = 0;
   private stemPoll = 0;
   private pbStemBtn: HTMLButtonElement | null = null;
   private localDispose: (() => void) | null = null;
@@ -1256,6 +1277,16 @@ export class App {
       this.stemPoll = 0;
       this.stopStemPlayback(40);
     });
+    // 分离进度：宿主按窗口算（一窗约 7 s），这里把「正在算第几窗 / 已就绪几窗」接到左下角进度卡。
+    this.disposers.add(onStemWindowProgress((phase, window) => this.onStemWindowEvent(phase, window)));
+    // 进度卡统一刷新节拍（120 ms 足够顺，且只有值变化才写 DOM）。
+    this.dockPoll = window.setInterval(() => this.syncProgressDock(), 120);
+    this.disposers.add(() => {
+      if (this.dockPoll) window.clearInterval(this.dockPoll);
+      this.dockPoll = 0;
+      this.stemDock?.dispose();
+      this.stemDock = null;
+    });
     // 过渡计划变化（准备完成/取消）不一定伴随播放器状态变化（分析慢、暂停时），
     // 这里主动重绘进度条上的渐变与高潮标记，避免显示上一份计划的旧位置。
     this.disposers.add(
@@ -1417,7 +1448,6 @@ export class App {
         setVolume(next);
         patchSettings({ playback: { volume: next } });
         reportAppVolume(next * 100, next === 0);
-        toast(`音量 ${Math.round(next * 100)}%`);
       } else if (action === 'mute') this.toggleMute();
       else if (action === 'like') {
         void toggleLiked().then((result) => {
@@ -1615,25 +1645,57 @@ export class App {
       h('div', { class: 'peek-right' }, this.accountWrap, winBtns),
     );
     const peek = h('div', { class: 'top-peek' });
-    let peekTimer = 0;
     const showPeek = (): void => {
-      window.clearTimeout(peekTimer);
       topbar.classList.add('is-peek');
       this.root.classList.add('is-topbar-peek');
     };
-    const hidePeek = (): void => {
-      window.clearTimeout(peekTimer);
-      peekTimer = window.setTimeout(() => {
-        if (peekBar.matches(':hover') || peekBar.contains(document.activeElement)) return;
-        if (this.accountPanelOpen) return;
-        topbar.classList.remove('is-peek');
-        this.root.classList.remove('is-topbar-peek');
-      }, 420);
+    // 指针离开后留 200 ms 再收起：手从热区往下滑到按钮时不会「刚露头就缩回去」，
+    // 又不会拖成一段可见的等待。收之前再复核一次落点/悬浮面板/输入焦点。
+    let peekHideTimer = 0;
+    const hidePeekNow = (): void => {
+      window.clearTimeout(peekHideTimer);
+      peekHideTimer = 0;
+      topbar.classList.remove('is-peek');
+      this.root.classList.remove('is-topbar-peek');
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && peekBar.contains(active)) active.blur();
+    };
+    const shouldKeepPeek = (): boolean => {
+      if (this.accountPanelOpen) return true;
+      if (peekBar.matches(':hover') || peek.matches(':hover')) return true;
+      const active = document.activeElement;
+      return Boolean(active instanceof HTMLElement && peekBar.contains(active) && active.matches('input, textarea, select'));
+    };
+    const schedulePeekHide = (): void => {
+      window.clearTimeout(peekHideTimer);
+      peekHideTimer = window.setTimeout(() => {
+        peekHideTimer = 0;
+        if (shouldKeepPeek()) return;
+        hidePeekNow();
+      }, 200);
+    };
+    this.disposers.add(() => window.clearTimeout(peekHideTimer));
+    const hidePeek = (event: PointerEvent): void => {
+      const next = event.relatedTarget;
+      if (next instanceof Node && (peekBar.contains(next) || peek.contains(next))) return;
+      schedulePeekHide();
     };
     peek.addEventListener('pointerenter', showPeek);
     peek.addEventListener('pointerleave', hidePeek);
     peekBar.addEventListener('pointerenter', showPeek);
     peekBar.addEventListener('pointerleave', hidePeek);
+    // 兜底：指针从窗口边缘快速划出、或者从通栏与内容之间的缝隙溜走时，pointerleave 可能不触发；
+    // 只要指针已经明显离开顶部（纵向超过通栏高度），就强制收起，避免通栏一直挂在上面。
+    const onPeekWatch = (event: PointerEvent): void => {
+      if (!this.root.classList.contains('is-topbar-peek')) return;
+      if (this.accountPanelOpen) return;
+      if (event.clientY <= 44) return;
+      const target = event.target;
+      if (target instanceof Node && (peekBar.contains(target) || peek.contains(target))) return;
+      schedulePeekHide();
+    };
+    document.addEventListener('pointermove', onPeekWatch, { passive: true });
+    this.disposers.add(() => document.removeEventListener('pointermove', onPeekWatch));
     this.root.append(peek);
     this.root.append(peekBar);
 
@@ -1817,6 +1879,7 @@ export class App {
     rail.classList.add('nav-dock');
     this.root.append(rail);
     this.installNavDockDrag(rail);
+    // 窗口级动画（最大/还原/最小/关闭）走系统原生补间：宿主补回 WS_CAPTION，页面这边不参与。
     window.requestAnimationFrame(() => this.moveRailThumb(false));
     window.setTimeout(() => this.moveRailThumb(false), 160);
     this.scheduleNavDockGuide(rail);
@@ -7211,6 +7274,16 @@ export class App {
         toggleField('启动时最大化', '下次启动直接铺满屏幕', settings.general.startMaximized, (value) => {
           patchSettings({ general: { startMaximized: value } });
         }),
+        segField<CloseAction>(
+          '关闭按钮',
+          [
+            { value: 'tray', label: '缩小到后台' },
+            { value: 'exit', label: '直接退出' },
+          ],
+          settings.general.closeAction,
+          (value) => patchSettings({ general: { closeAction: value } }),
+          '右上角 × 的行为：缩小到后台会继续播放并驻留托盘；直接退出会结束进程（托盘菜单「退出」始终是直接退出）。',
+        ),
         toggleField(
           '开机自启',
           '登录 Windows 后自动启动 Zilux2（也会出现在任务管理器的「启动」页，可在那里关闭）',
@@ -7427,16 +7500,6 @@ export class App {
           ],
           settings.appearance.lyricsSize,
           (value) => patchSettings({ appearance: { lyricsSize: value } }),
-        ),
-        segField(
-          '窗口动画',
-          [
-            { value: 'custom', label: '应用内' },
-            { value: 'native', label: '系统原生' },
-          ],
-          settings.appearance.windowAnimation,
-          (value) => patchSettings({ appearance: { windowAnimation: value } }),
-          '最大化、还原和最小化统一交给 Windows 平滑处理，避免页面在窗口缩放中反复重排；应用内模式会让关闭到托盘时整窗短暂淡出，系统原生模式则直接隐藏。',
         ),
         toggleField(
           '播放条常驻展开',
@@ -13235,6 +13298,209 @@ export class App {
     this.setStemMode(next, true);
   }
 
+  /** 懒建进度卡：模型下载失败时点「重试」会重新走一次分离流程。 */
+  private progressDock(): ProgressDock {
+    if (!this.stemDock) {
+      this.stemDock = new ProgressDock({
+        onRetry: (id) => {
+          if (id === 'model' || id === 'stem') void this.refreshStemPlayback(true);
+        },
+      });
+    }
+    return this.stemDock;
+  }
+
+  /** 模型下载状态 → 进度卡（网速做 0.35 权重的指数平滑，数字不至于乱跳）。 */
+  private updateModelDownload(status: StemModelStatus): void {
+    const dock = this.progressDock();
+    const total = status.total ?? 0;
+    const bytes = status.bytes ?? 0;
+    const now = performance.now();
+    if (status.state === 'downloading' && this.modelDlBytes >= 0 && now - this.modelDlAt >= 120 && total > 0) {
+      const instant = Math.max(0, ((bytes - this.modelDlBytes) * 1000) / (now - this.modelDlAt));
+      this.modelDlSpeed = this.modelDlSpeed > 0 ? this.modelDlSpeed * 0.65 + instant * 0.35 : instant;
+    }
+    if (status.state !== 'downloading') this.modelDlSpeed = 0;
+    this.modelDlBytes = bytes;
+    this.modelDlAt = now;
+
+    if (status.state === 'failed') {
+      dock.fail('model', '下载失败');
+      return;
+    }
+    const ratio = total > 0 ? Math.min(1, bytes / total) : status.state === 'ready' ? 1 : null;
+    dock.setTask({
+      id: 'model',
+      title: '人声分离模型',
+      stage:
+        status.state === 'verifying'
+          ? '校验中'
+          : status.state === 'ready'
+            ? '已就绪'
+            : status.state === 'downloading'
+              ? total > 0
+                ? `下载中 · ${formatMib(total)}`
+                : '下载中'
+              : '准备中',
+      meta: status.state === 'downloading' && this.modelDlSpeed > 0 ? `${formatMib(this.modelDlSpeed)}/s` : '',
+      detail: total > 0 ? `${formatMib(bytes)} / ${formatMib(total)}` : '',
+      ratio,
+    });
+  }
+
+  /** 分离窗口事件：记下正在算的窗口，120 ms 的 tick 负责把「已用时间/约 7 s」画成进度。 */
+  private onStemWindowEvent(phase: 'start' | 'done' | 'fail', windowIndex: number): void {
+    window.clearTimeout(this.stemProgressTimer);
+    if (phase === 'start') {
+      this.stemProgressWindow = windowIndex;
+      this.stemProgressAt = performance.now();
+      return;
+    }
+    if (phase === 'done') this.stemProgressDone += 1;
+    // 一窗算完/失败后稍等一下：宿主是串行的，下一窗通常紧接着开始；没有就收卡。
+    this.stemProgressTimer = window.setTimeout(() => {
+      this.stemProgressWindow = -1;
+      this.progressDock().clearTask('stem');
+    }, 900);
+  }
+
+  /**
+   * 把这一次过渡实际用的东西翻成人话。
+   *
+   * 以前只报「进阶形态 + 低频换手 + 人声对齐」三档，实际调度里还有：styleKit 选中的具体手法
+   * （16 种）、变速/反向对齐、A 尾或 B 前奏的循环桥接、回声尾巴、混响收尾、尾段渐隐补回、
+   * 质量兜底。这些字段都在 `crossfadeLiveSnapshot()` 里，这里按「手法 → 长度 → 速度 →
+   * 低频 → 人声 → 尾巴」挑最多 6 项拼成一到两行，卡片放不下会自然截断。
+   */
+  private mixMoveLabel(): string {
+    const live = crossfadeLiveSnapshot();
+    const formText: Record<string, string> = {
+      cut: '直接切',
+      fade: '等功率交叉',
+      warp: '速度对齐',
+      loopBridge: '循环桥接',
+      doubleDrop: '双段落点',
+    };
+    const parts: string[] = [];
+    if (live.technique?.id) {
+      // 手法卡要的是短名；`technique.label` 是整段 why，留着做 tooltip 用。
+      parts.push(styleLabel(live.technique.id));
+    } else if (live.style === 'am' && live.form) {
+      parts.push(`进阶混音 · ${formText[live.form] ?? live.form}`);
+    } else {
+      parts.push(live.style === 'cut' ? '硬切' : '等功率交叠');
+    }
+
+    if (live.bridge) {
+      const unit = live.bridge.unitBars > 0 ? ` ${live.bridge.unitBars} 小节` : '';
+      parts.push(`${live.bridgeKind === 'intro' ? 'B 前奏循环' : 'A 尾循环'}${unit}`);
+    }
+
+    const tempo = live.tempo;
+    if (tempo) {
+      if (tempo.sameTempo) parts.push('同速');
+      else {
+        const rate = tempo.startRate || tempo.liveRate || 1;
+        const pct = Math.abs(rate - 1) * 100;
+        if (pct >= 0.3) parts.push(`${rate > 1 ? '提速' : '降速'} ${pct.toFixed(1)}%`);
+        if (tempo.inverted) parts.push('反向对齐');
+      }
+    }
+
+    if (live.style === 'cut') parts.push('无重叠');
+    else parts.push(live.handoff ? '低频换手' : '低频交叠');
+
+    const anchor = live.vocalAnchor?.kind;
+    if (live.vocalAligned || anchor === 'vocal') parts.push('人声对齐');
+    else if (anchor === 'instrumental') parts.push('器乐接缝');
+    else if (anchor === 'structure') parts.push('结构接缝');
+
+    // 链路细节：双扫 / 人声避让 / 节拍咬合，这几个是听感上最容易被听出来的动作。
+    const sweepA = live.a?.chain?.sweepLpHz;
+    const sweepB = live.b?.chain?.sweepHpHz;
+    if ((sweepA != null && sweepA < 19_000) || (sweepB != null && sweepB > 24)) parts.push('滤波双扫');
+    if (live.duckActive && live.duckEvents > 0) parts.push('人声避让');
+    if (live.pllActive) parts.push('节拍咬合');
+    if (live.swap && live.swap.introMs >= 900) parts.push(`B 前奏补 ${Math.round(live.swap.introMs / 100) / 10} 秒`);
+
+    // 调性 / BPM 差：不是「手法」，但决定为什么选这个手法。
+    const camelotA = live.a?.camelot;
+    const camelotB = live.b?.camelot;
+    if (camelotA && camelotB && camelotA !== camelotB) parts.push(`调性 ${camelotA}→${camelotB}`);
+    if (live.bpmDeltaPct != null && Math.abs(live.bpmDeltaPct) >= 1) {
+      parts.push(`BPM 差 ${Math.abs(live.bpmDeltaPct).toFixed(1)}%`);
+    }
+
+    if (live.echoLive) {
+      const div = live.echoLive.divBeats;
+      parts.push(div && div < 1 ? `回声 1/${Math.round(1 / div)} 拍` : '回声尾巴');
+    } else if (live.reverb) parts.push('混响收尾');
+    else if (live.tailFade) parts.push(`尾段补 ${live.tailFade.maxLiftDb.toFixed(1)} dB`);
+
+    if (live.instSeam) parts.push('结构接缝');
+    if (live.aUnfadeDb > 0.5) parts.push(`A 尾补 ${live.aUnfadeDb.toFixed(1)} dB`);
+    if (live.quality && !live.quality.pass) parts.push('质量兜底');
+
+    // 选型理由只取第一条、且要短：16 种手法的 why 都在 styleKit 里，这里只解释「为什么是它」。
+    const why = live.technique?.reasons?.[0];
+    if (why && why.length <= 22) parts.push(why);
+
+    const unique: string[] = [];
+    for (const part of parts) {
+      if (part && !unique.some((kept) => kept === part || kept.includes(part) || part.includes(kept))) {
+        unique.push(part);
+      }
+    }
+    return unique.slice(0, 6).join(' · ');
+  }
+
+  /** 手法卡的右侧补充：过渡一共多长（小节优先，算不出给秒）。 */
+  private mixMoveMeta(): string {
+    const live = crossfadeLiveSnapshot();
+    const bars = Math.round(live.totalBars || 0);
+    if (bars > 0) return `${bars} 小节`;
+    const ms = live.fadeMs || 0;
+    return ms > 0 ? `${(ms / 1000).toFixed(1)} 秒` : '';
+  }
+
+  /** 120 ms tick：分离进度 + 切歌过渡（手法 / 剩余秒数 / 进度）都写进同一张卡。 */
+  private syncProgressDock(): void {
+    if (this.stemMode === 'off' && this.stemProgressWindow < 0) {
+      this.stemDock?.clearTask('stem');
+    }
+    if (this.stemProgressWindow >= 0) {
+      const elapsed = performance.now() - this.stemProgressAt;
+      const dock = this.progressDock();
+      dock.setTask({
+        id: 'stem',
+        title: '人声分离',
+        stage: `正在分离第 ${this.stemProgressWindow + 1} 窗`,
+        meta: elapsed < 7000 ? `约 ${Math.max(1, Math.ceil((7000 - elapsed) / 1000))} 秒` : '收尾中',
+        detail: this.stemProgressDone > 0 ? `已就绪 ${this.stemProgressDone} 窗` : '',
+        ratio: Math.min(0.94, elapsed / 7000),
+      });
+    }
+    // 切歌手法卡：从开始淡化一直挂到过渡完成，完成后停 FINISH_HOLD_MS 再收；
+    // 手法在开始那一下记下来，途中形态变化不跟着跳字。
+    if (crossfadeIsFading()) {
+      if (!this.transitionLive) {
+        this.transitionLive = true;
+        this.transitionLabel = this.mixMoveLabel();
+        this.progressDock().setTask({
+          id: 'transition',
+          title: '本次切歌',
+          stage: this.transitionLabel,
+          meta: this.mixMoveMeta(),
+          ratio: 1,
+          plain: true,
+        });
+      }
+    } else if (this.transitionLive) {
+      this.transitionLive = false;
+      this.progressDock().finish('transition', '已完成');
+    }
+  }
+
   private setStemMode(mode: 'off' | 'instrumental' | 'vocals', announce: boolean): void {
     if (this.stemMode === mode) return;
     this.stemMode = mode;
@@ -13249,18 +13515,7 @@ export class App {
       if (announce) toast('已切回原声');
       return;
     }
-    // 只有当前窗口还没分离过才提示等待；已经缓存/分析过的曲目直接静默切换。
-    if (announce) {
-      const state = playerState();
-      const element = activeAudioElement();
-      const track = state.track;
-      const windowIndex = element && track ? Math.floor(element.currentTime / STEM_WINDOW_SEC) : -1;
-      const cached = Boolean(track && windowIndex >= 0 && hasStemWindow(track, windowIndex));
-      if (!cached) {
-        const seconds = estimateStemWaitSeconds();
-        toast(mode === 'vocals' ? `人声：首次分离约需 ${seconds} 秒…` : `伴奏：首次分离约需 ${seconds} 秒…`);
-      }
-    }
+    // 等待与进度统一走左下角的进度卡，不再用 toast 报「约需 N 秒」。
     void this.refreshStemPlayback(true);
   }
 
@@ -13333,6 +13588,14 @@ export class App {
     this.stemBusy = true;
     let attached: StemModeHandle | null = null;
     try {
+      // 安装包不带分离模型：首次切换时请宿主按需下载（约 130 MB），下载期间保持原声。
+      // 进度走左下角的常驻卡片（网速/进度/已下载量），不用 toast 刷屏。
+      const ready = await ensureStemModel((status) => this.updateModelDownload(status));
+      if (!ready) {
+        this.progressDock().fail('model', '下载失败');
+        return;
+      }
+      this.progressDock().finish('model', '模型已就绪');
       // 先把当前窗与下一窗排进宿主队列，跨窗时才不用干等一整窗。
       prefetchStemWindows(track, element.currentTime, 2);
       const handle = await startStemMode({

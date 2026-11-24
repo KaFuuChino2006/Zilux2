@@ -45,8 +45,11 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.0" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" />
-    <!-- 离线 2 轨人声分离（docs/zilux2-stems-contract.md）：CPU EP，原生 DLL 走 runtimes/win-x64。 -->
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.24.4" />
+    <!-- 离线 2 轨人声分离（docs/zilux2-stems-contract.md）：CPU EP，原生 DLL 走 runtimes/win-x64。
+         别换成 Microsoft.ML.OnnxRuntime.DirectML：1.24.x 的内核加载本模型会报
+         「/dft_istft/DFT_6 … is_onesided and inverse attributes cannot be enabled at the same time」，
+         整段分离失败（1.2.1 踩过，见 host.log 的 stems.fail）。 -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.31.1" />
     <!-- 动态壁纸：D3D11 / DXGI / 着色器编译（scene 与 video 自研渲染，docs/wallpaper-architecture.md §3）。 -->
     <PackageReference Include="Vortice.Direct3D11" Version="3.6.2" />
     <PackageReference Include="Vortice.Dxgi" Version="3.6.2" />

@@ -122,18 +122,20 @@ jobs:
       # -SkipWebBuild：前端已在上一步构建好，避免 publish.ps1 再跑一遍。
       # -UpdateRepo：把实际仓库名编译进 exe，替换 Directory.Build.props 里的占位
       # zilux2/Zilux2（见 docs/zilux2-update-channel.md §1）。
-      - name: 下载人声分离模型
+      # 安装包不再带人声分离模型（约 130 MB）：宿主在首次分离时按需下载，
+      # 镜像先 hf-mirror、再 huggingface。这里只准备一份模型作为 Release 资产备用。
+      - name: 准备人声分离模型资产（不打包）
         shell: pwsh
         run: |
           $name = 'htdemucs-dft-fp16-transparent.onnx'
-          $dir = Join-Path $PWD 'models'
+          $dir = Join-Path $PWD 'dist'
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
           $file = Join-Path $dir $name
           if (-not (Test-Path $file)) {
             $url = 'https://hf-mirror.com/itamiArika/htdemucs-int8-memory/resolve/main/' + $name
             Invoke-WebRequest -Uri $url -OutFile $file -MaximumRetryCount 3 -RetryIntervalSec 5
           }
-          Write-Host ("model: {0:N0} bytes" -f (Get-Item $file).Length)
+          Write-Host ("model asset: {0:N0} bytes (仅作 Release 资产，不进安装包)" -f (Get-Item $file).Length)
       - name: 发布宿主程序（tools/publish.ps1）
         shell: pwsh
         env:
@@ -205,4 +207,5 @@ jobs:
             dist/Zilux2-Setup-${{ steps.version.outputs.version }}.exe
             dist/Zilux2-Setup-${{ steps.version.outputs.version }}.exe.sha256
             dist/Zilux2-Portable-${{ steps.version.outputs.version }}.zip
+            dist/htdemucs-dft-fp16-transparent.onnx
 

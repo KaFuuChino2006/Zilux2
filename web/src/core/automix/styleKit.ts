@@ -843,6 +843,13 @@ const STYLE_DESCRIPTIONS: Readonly<Record<TransitionStyleId, string>> = {
 };
 
 /** 取某种风格的中文说明；未知 id 也给一句可用的兜底文案。 */
+/** 手法的短名（「低频换手」「双扫」这种人话），不带括号里的英文注释。 */
+export function styleLabel(id: TransitionStyleId): string {
+  const spec = STYLE_CATALOG.find((s) => s.id === id);
+  if (!spec) return String(id);
+  return spec.label.replace(/（.*?）/g, '').trim();
+}
+
 export function describeStyle(id: TransitionStyleId): string {
   const text: string | undefined = STYLE_DESCRIPTIONS[id];
   if (typeof text === 'string' && text.length > 0) return text;

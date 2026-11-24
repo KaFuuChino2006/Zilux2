@@ -243,6 +243,25 @@ test('人声让位：A 是器乐时深度减半', () => {
   assert.ok(Math.min(...instA.map((e) => e.db)) >= -3.5);
 });
 
+test('人声让位：两边都有人声才压，且深度封顶 3.5 dB（1.2.11）', () => {
+  const vocalB = new Array(160).fill(0.9);
+  const b = { activity: { hopMs: 250, vocal: vocalB, drum: [], bass: [] } };
+  // A 也在唱 → 有让位，但最深不超过 3.5 dB
+  const aSing = { activity: { hopMs: 250, vocal: new Array(160).fill(0.9), drum: [], bass: [] } };
+  const got = mod2.buildDuckEvents({
+    a: aSing, fadeStartAMs: 0, b, fadeStartBMs: 0, fadeMs: 6_000, tempoRate: 1, maxDuckDb: -3.5,
+  });
+  const low = Math.min(...got.map((e) => e.db));
+  assert.ok(low <= -2.5, `两边都在唱时应该让位：${low}`);
+  assert.ok(low >= -3.55, `深度不该超过 3.5 dB：${low}`);
+  // A 是静音 → 完全不压（这就是「A 被按住」的根治点）
+  const aQuiet = { activity: { hopMs: 250, vocal: new Array(160).fill(0), drum: [], bass: [] } };
+  const none = mod2.buildDuckEvents({
+    a: aQuiet, fadeStartAMs: 0, b, fadeStartBMs: 0, fadeMs: 6_000, tempoRate: 1, maxDuckDb: -3.5,
+  });
+  assert.equal(Math.min(...none.map((e) => e.db)), 0);
+});
+
 test('18 秒前奏：前 30% 保留 A，30–50% 只换低频，80% 后才动人声', () => {
   const plan = mod.buildV2Plan({ fadeMs: 18000, barMs: 2000, swapShare: 4/18, bEntry: true });
   // 进入过渡时 B 的未触发频段必须是绝对静音，不再有 −18 dB 的前奏垫音

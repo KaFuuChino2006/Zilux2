@@ -53,14 +53,11 @@ public partial class MainWindow : Window
     private long _dragGeneration;
     private bool _dragPending;
 
-    // 常规窗口状态由 Windows 合成器负责。逐帧改窗口大小会让 WebView2 每帧重新布局，
-    // 屏幕截图过渡又会拍到遮挡窗口，均不适合作为常规窗口动画。
-    // 应用内模式只为「关闭到托盘」补一个短暂整窗淡出。
-    // 设置项在「设置 → 外观 → 窗口动画」，这里每次动作时读取，切换后立即生效。
-    private bool NativeWindowAnim =>
-        string.Equals(_settings?.WindowAnimation, AppearanceSettings.WindowAnimationNative, StringComparison.Ordinal);
-
-    private const int CloseAnimationMs = 150;
+    // 窗口动画全部走页面侧（web/src/ui/windowMotion.ts），没有开关：
+    // - 最大化：页面盖一层纯色 → 窗口瞬间最大化 → 纯色淡出（内容已经是最大化后的版面）；
+    // - 还原：纯色 → 窗口瞬间还原 → 蒙版从左往右切掉；
+    // - 最小化 / 关闭到托盘：整页向下折叠，折完再真正最小化/停车。
+    // 不再用窗口截图缩放：整屏位图每帧重采样，实测卡（维护者反馈「卡的一批」）。
     private DispatcherTimer? _windowAnim;
     private EventHandler? _windowAnimRendering;
     private long _windowAnimGeneration;
@@ -236,6 +233,7 @@ public partial class MainWindow : Window
         HwndSource.FromHwnd(_hwnd)?.AddHook(WndProc);
         ApplyWindowCornerPreference();
         ApplyWindowCornerRegion();
+        EnsureCaptionStyle();
         // Explorer 重启后 Progman/WorkerW 会重建，桌面背景歌词窗口会被连带销毁；
         // 任务栏重建时会广播 TaskbarCreated，收到后重新挂一层。
         _taskbarCreatedMessage = NativeMethods.RegisterWindowMessage("TaskbarCreated");
@@ -245,6 +243,42 @@ public partial class MainWindow : Window
         InstallMediaKeyHook();
     }
 
+    /// <summary>
+    /// 把 WS_CAPTION 补回窗口样式。
+    ///
+    /// WindowChrome 为了让页面接管标题栏，会把窗口的 WS_CAPTION 摘掉；窗口一旦没有标题栏语义，
+    /// Windows 就不再给它播最小化 / 最大化 / 还原的系统动画（实测：补回 WS_CAPTION 后立刻恢复
+    /// DWM 补间，有 3–4 帧中间态；不补时是一帧瞬切）。这里在句柄建好后补回去——WindowChrome 的
+    /// WM_NCCALCSIZE 仍把客户区铺满整窗，所以视觉上还是无边框，系统只是重新把它当普通窗口对待
+    /// （系统动画、贴边、Alt+Tab 缩略图都回来）。
+    /// </summary>
+    private void EnsureCaptionStyle()
+    {
+        if (_hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        var style = NativeMethods.GetWindowLong(_hwnd, NativeMethods.GwlStyle);
+        if ((style & NativeMethods.WsCaption) == NativeMethods.WsCaption)
+        {
+            return;
+        }
+
+        NativeMethods.SetWindowLong(_hwnd, NativeMethods.GwlStyle, style | NativeMethods.WsCaption);
+        NativeMethods.SetWindowPos(
+            _hwnd,
+            IntPtr.Zero,
+            0,
+            0,
+            0,
+            0,
+            NativeMethods.SwpNoMove | NativeMethods.SwpNoSize | NativeMethods.SwpNoZOrder | NativeMethods.SwpFrameChanged);
+        HostLog.Info("window.style caption");
+    }
+
+    /// <summary>
+    /// Win11：让 DWM 画窗口圆角
     /// <summary>
     /// Win11：让 DWM 画窗口圆角（DWMWCP_ROUND），并用 DWMWA_BORDER_COLOR=COLOR_NONE 去掉
     /// 系统给无边框窗口补的那条 1px 边框。失败不致命（只是保持直角），Win10 直接跳过。
@@ -391,37 +425,6 @@ public partial class MainWindow : Window
             StartupVeil.Opacity = 0;
         };
         StartupVeil.BeginAnimation(OpacityProperty, animation);
-    }
-
-    /// <summary>窗口从不可见/空白状态恢复时淡入；窗口本身已经可见时不做任何事。</summary>
-    private void FadeWindowIn(string reason)
-    {
-        if (_isHiddenToTray)
-        {
-            return;
-        }
-
-        var from = Opacity;
-        if (from >= 1)
-        {
-            return;
-        }
-
-        // 起新淡入前先停掉可能还在跑的旧动画，并把当前值固化成基准，避免叠加。
-        BeginAnimation(Window.OpacityProperty, null);
-        Opacity = from;
-
-        HostLog.Info($"window.fadeIn reason={reason} from={from:0.00}");
-        var animation = new DoubleAnimation(from, 1, TimeSpan.FromMilliseconds(140))
-        {
-            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
-        };
-        animation.Completed += (_, _) =>
-        {
-            BeginAnimation(Window.OpacityProperty, null);
-            Opacity = 1;
-        };
-        BeginAnimation(Window.OpacityProperty, animation);
     }
 
     /// <summary>钩子线程只用来看按键，触发动作要回到 UI 线程；启动失败不影响 RegisterHotKey。</summary>
@@ -1484,6 +1487,7 @@ public partial class MainWindow : Window
                 _restoreRect = current;
                 _hasRestoreRect = true;
             }
+
             WindowState = WindowState.Maximized;
             HostLog.Info("window.compositor maximize");
         }
@@ -1495,6 +1499,7 @@ public partial class MainWindow : Window
             {
                 TrySetWindowRect(target.Left, target.Top, target.Right - target.Left, target.Bottom - target.Top);
             }
+
             HostLog.Info("window.compositor restore");
         }
     }
@@ -1508,8 +1513,8 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 页面标题栏的关闭按钮：隐藏到托盘（后台继续播放），不销毁窗口/WebView2。真正退出只有
-    /// 托盘菜单「退出」和更新安装两条路径（都走 <see cref="ExitApplication"/>）。
+    /// 页面标题栏的关闭按钮：默认隐藏到托盘（后台继续播放），不销毁窗口/WebView2；
+    /// 设置 → 通用 → 关闭按钮 选「直接退出」时走 <see cref="ExitApplication"/>。
     /// </summary>
     public void CloseFromPage()
     {
@@ -1523,16 +1528,16 @@ public partial class MainWindow : Window
             return;
         }
 
-        _closePending = true;
-        if (!NativeWindowAnim && _hwnd != IntPtr.Zero)
+        if (string.Equals(_settings?.CloseAction, GeneralSettings.CloseActionExit, StringComparison.Ordinal))
         {
-            // AnimateWindow 淡出整个 HWND（包括 WebView2 子窗口），不截取屏幕，也不创建置顶浮层。
-            // 若系统关闭了动画或调用失败，直接隐藏即可。
-            NativeMethods.AnimateWindow(_hwnd, CloseAnimationMs,
-                NativeMethods.AwBlend | NativeMethods.AwHide);
+            HostLog.Info("window.close -> exit");
+            ExitApplication("closeButton");
+            return;
         }
-        Dispatcher.BeginInvoke(new Action(HideToTray));
-        HostLog.Info(NativeWindowAnim ? "window.native close -> tray" : "window.fade close -> tray");
+
+        _closePending = true;
+        HideToTray();
+        HostLog.Info("window.close -> tray");
     }
 
     // ---------------------------------------------------------------------------------------
@@ -1979,14 +1984,13 @@ public partial class MainWindow : Window
         {
             // 不能真的 Hide()/最小化：WebView2 里的页面会变成 document.hidden，
             // Chromium 随即暂停媒体播放与计时器 —— 表现就是「状态显示在播、却没声音」，
-            // 必须把窗口点回前台才恢复。改成挪到屏幕外 + 全透明，页面始终 visible。
+            // 必须把窗口点回前台才恢复。改成挪到屏幕外，页面始终 visible。
             _parkedLeft = Left;
             _parkedTop = Top;
             ShowInTaskbar = false;
             WindowState = WindowState.Normal;
             Left = SystemParameters.VirtualScreenLeft - Math.Max(ActualWidth, 800) - 4000;
             Top = SystemParameters.VirtualScreenTop;
-            Opacity = 0;
             Show();
             HostLog.Info($"tray.hide parked offscreen left={Left:0} top={Top:0}");
         }
@@ -1999,9 +2003,6 @@ public partial class MainWindow : Window
 
         // 隐藏到托盘不再暂停音频：用户要的是后台继续放。
         StopAirPlayStreaming("hide");
-        // 隐藏期间把未结束的淡入停掉并复位不透明度，下次显示重新走「先透明、内容就绪再淡入」。
-        BeginAnimation(Window.OpacityProperty, null);
-        Opacity = 1;
         HiddenToTray?.Invoke(this, EventArgs.Empty);
     }
 
@@ -2020,10 +2021,7 @@ public partial class MainWindow : Window
                 WindowState = WindowState.Normal;
             }
 
-            // 恢复时先透明显示（WebView2 需要窗口已加载才能继续/重画），把表面顶一下再淡入，
-            // 避免任务栏/托盘回来先看到一块空窗壳。
-            BeginAnimation(Window.OpacityProperty, null);
-            // 从「屏幕外停靠」回来：先把位置放回原处，再走透明淡入。
+            // 从「屏幕外停靠」回来：先把位置放回原处。
             if (_parkedLeft != 0)
             {
                 Left = _parkedLeft;
@@ -2031,7 +2029,6 @@ public partial class MainWindow : Window
                 _parkedLeft = 0;
             }
 
-            Opacity = 0;
             ShowInTaskbar = true;
             Show();
             // ShowInTaskbar 变化后 WPF 可能重建 HWND，这里重新取一次句柄再激活。
@@ -2053,16 +2050,11 @@ public partial class MainWindow : Window
 
             _isHiddenToTray = false;
             _audio?.SetPaused(WindowState == WindowState.Minimized);
-            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
-            {
-                _host?.RefreshSurface();
-                FadeWindowIn("tray");
-            }));
+            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() => _host?.RefreshSurface()));
             HostLog.Info("tray.show");
         }
         catch (Exception exception)
         {
-            Opacity = 1;
             HostLog.Error("tray.show failed", exception);
         }
     }

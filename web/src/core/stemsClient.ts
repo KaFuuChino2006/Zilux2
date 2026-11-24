@@ -16,7 +16,7 @@ import type { OnlineTrack } from '../online/types';
 /** 分离窗口长度（秒），与宿主契约 §2 一致。 */
 export const STEM_WINDOW_SEC = 30;
 
-export type StemsState = 'ready' | 'computing' | 'busy' | 'model-missing' | 'error';
+export type StemsState = 'ready' | 'computing' | 'busy' | 'model-missing' | 'model-downloading' | 'error';
 
 export interface StemsPrepareResponse {
   state: StemsState;
@@ -29,8 +29,24 @@ export interface StemsPrepareResponse {
   message?: string;
   downloadUrl?: string;
   sha256?: string;
+  /** model-downloading 时的下载进度（0~1）与字节数。 */
+  progress?: number;
+  bytes?: number;
+  total?: number;
   /** 四轨残差归位前的重建误差（dBFS）；2 轨请求与旧缓存没有这个字段。 */
   reconErrorDbfs?: number;
+}
+
+/** /api/stems/model 的状态体（模型随包发布时恒为 ready）。 */
+export interface StemModelStatus {
+  state: 'idle' | 'downloading' | 'verifying' | 'ready' | 'failed';
+  ready: boolean;
+  bytes?: number;
+  total?: number;
+  attempt?: number;
+  message?: string;
+  downloadUrl?: string;
+  sha256?: string;
 }
 
 /** 可取的轨：2 轨模式是 vocals/instrumental；4 轨模式另有 drums/bass/other。 */
@@ -71,8 +87,42 @@ export function estimateStemWaitSeconds(): number {
   return Math.min(30, Math.max(3, Math.round(210 / Math.sqrt(Math.max(2, cores)))));
 }
 
-export function stemWindowIndex(positionSec: number): number {
-  if (!Number.isFinite(positionSec) || positionSec < 0) return 0;
+/**
+ * 确认分离模型可用：随包发布时一次 GET 就返回 ready；安装包不带模型时
+ * 走 POST /api/stems/model 触发宿主下载（约 130 MB），期间按 retryAfterMs 轮询并回报进度。
+ * 返回 false 表示下载失败（调用方回退到原声并提示）。
+ */
+let stemsModelReady = false;
+
+export async function ensureStemModel(
+  onProgress?: (status: StemModelStatus) => void,
+): Promise<boolean> {
+  if (stemsModelReady) return true;
+  let status = await api<StemModelStatus>('/api/stems/model', {}, 15_000);
+  if (status.ready) {
+    stemsModelReady = true;
+    return true;
+  }
+  if (status.state !== 'downloading' && status.state !== 'verifying') {
+    status = await api<StemModelStatus>('/api/stems/model', {}, 15_000, 'POST');
+  }
+  onProgress?.(status);
+  // 130 MB：慢网也要给足时间，15 分钟封顶；每次失败由宿主换镜像重试。
+  const deadline = Date.now() + 15 * 60_000;
+  while (Date.now() < deadline) {
+    if (status.ready) {
+      stemsModelReady = true;
+      return true;
+    }
+    if (status.state === 'failed') return false;
+    await new Promise<void>((resolve) => globalThis.setTimeout(resolve, 600));
+    status = await api<StemModelStatus>('/api/stems/model', {}, 15_000);
+    onProgress?.(status);
+  }
+  return false;
+}
+
+export function stemWindowIndex(positionSec: number): number {  if (!Number.isFinite(positionSec) || positionSec < 0) return 0;
   return Math.floor(positionSec / STEM_WINDOW_SEC);
 }
 
@@ -113,8 +163,7 @@ export async function prepareStemsWindow(
   return response;
 }
 
-/** 取一个窗口的一轨 WAV 并解码；未就绪时抛错（调用方按状态回退）。 */
-export async function loadStemWindow(
+/** 取一个窗口的一轨 WAV 并解码；未就绪时抛错（调用方按状态回退）。 */export async function loadStemWindow(
   context: AudioContext,
   track: OnlineTrack,
   window: number,

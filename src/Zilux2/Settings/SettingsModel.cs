@@ -137,6 +137,18 @@ internal sealed class GeneralSettings
     };
 
     public string UiTemplate { get; set; } = UiTemplateStandard;
+
+    public const string CloseActionTray = "tray";
+    public const string CloseActionExit = "exit";
+
+    internal static readonly string[] CloseActions =
+    {
+        CloseActionTray,
+        CloseActionExit,
+    };
+
+    /// <summary>点右上角 × 时做什么：tray=隐藏到托盘继续播放（默认）；exit=直接退出软件。</summary>
+    public string CloseAction { get; set; } = CloseActionTray;
 }
 
 internal sealed class AppearanceSettings
@@ -150,11 +162,6 @@ internal sealed class AppearanceSettings
 
     internal static readonly string[] LyricsSizes = { "small", LyricsSizeMedium, "large" };
 
-    public const string WindowAnimationCustom = "custom";
-    public const string WindowAnimationNative = "native";
-
-    internal static readonly string[] WindowAnimations = { WindowAnimationCustom, WindowAnimationNative };
-
     // 仅兼容旧数据：v1.1 起界面固定白色磨砂（frost），宿主只持久化/回传该值，不再驱动主题切换。
     public string Theme { get; set; } = ThemeDark;
 
@@ -163,10 +170,6 @@ internal sealed class AppearanceSettings
     public bool Glow { get; set; } = true;
 
     public string LyricsSize { get; set; } = LyricsSizeMedium;
-
-    // 常规状态变化交给 Windows；custom 为关闭到托盘补整窗淡出，native 直接隐藏。
-    // 追加在最后，保证旧 settings.json 的字段顺序不变。
-    public string WindowAnimation { get; set; } = WindowAnimationCustom;
 
     // 底部播放条常驻展开：开着时不再依赖鼠标悬停，播放条始终保持展开形态。
     // 追加在最后，保证旧 settings.json 的字段顺序不变。

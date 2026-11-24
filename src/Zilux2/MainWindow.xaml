@@ -1,4 +1,4 @@
-<Window x:Class="Zilux2.MainWindow"
+﻿<Window x:Class="Zilux2.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
@@ -13,9 +13,14 @@
         UseLayoutRounding="True"
         SnapsToDevicePixels="True">
 
+    <!-- GlassFrameThickness 必须是 -1（玻璃框架铺满整窗），不能是 0：
+         0 时 WindowChromeWorker 会把 WS_CAPTION 摘掉，窗口就没有标题栏语义，
+         Windows 也就**不给最小化 / 最大化 / 还原补间**（实测加回 WS_CAPTION 立刻有动画）。
+         -1 让系统认为这是普通带标题栏的窗口（保留 DWM 缩放动画、贴边、Alt+Tab 缩略图），
+         同时 WM_NCCALCSIZE 把客户区铺满整窗，视觉上仍然是无边框。 -->
     <shell:WindowChrome.WindowChrome>
         <shell:WindowChrome CaptionHeight="0"
-                            GlassFrameThickness="0"
+                            GlassFrameThickness="-1"
                             ResizeBorderThickness="6"
                             CornerRadius="0"
                             UseAeroCaptionButtons="False" />

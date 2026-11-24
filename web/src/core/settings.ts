@@ -8,7 +8,6 @@ import type { StreamQuality } from '../online/types';
 export type Theme = 'frost';
 export const STREAM_QUALITIES = ['standard', 'high', 'lossless'] as const;
 export type LyricsSize = 'small' | 'medium' | 'large';
-export type WindowAnimation = 'custom' | 'native';
 /** 迷你播放器尺寸预设：compact=360×100、standard=420×120、wide=520×150。 */
 export type MiniSize = 'compact' | 'standard' | 'wide';
 
@@ -24,6 +23,9 @@ export type DesktopLyricsStyle = 'classic' | 'fan';
  */
 export type UiTemplate = 'standard' | 'fx';
 export const UI_TEMPLATES: readonly UiTemplate[] = ['standard', 'fx'];
+/** 右上角 × 的行为：tray=隐藏到托盘（默认）；exit=直接退出软件。 */
+export type CloseAction = 'tray' | 'exit';
+export const CLOSE_ACTIONS: readonly CloseAction[] = ['tray', 'exit'];
 export const UI_TEMPLATE_LABELS: ReadonlyArray<readonly [UiTemplate, string]> = [
   ['standard', '标准界面'],
   ['fx', 'FX 界面'],
@@ -368,14 +370,14 @@ export interface Settings {
     systemOutputRotation: string[];
     /** 界面模板：standard=现有完整界面（默认）；fx=新界面样板，只保留底部播放条。 */
     uiTemplate: UiTemplate;
+    /** 右上角 × 的行为：tray=隐藏到托盘继续播放（默认）；exit=直接退出软件。 */
+    closeAction: CloseAction;
   };
   appearance: {
     theme: Theme;
     reduceMotion: boolean;
     glow: boolean;
     lyricsSize: LyricsSize;
-    /** 窗口过渡：常规状态由 Windows 处理；custom 为关闭到托盘补整窗淡出。 */
-    windowAnimation: WindowAnimation;
     /** 底部播放条常驻展开：开着时不再依赖鼠标悬停，播放条始终保持展开形态。 */
     playerBarExpanded: boolean;
     /** 迷你播放器尺寸预设。 */
@@ -456,13 +458,12 @@ export type SettingsPatch = {
 
 export const DEFAULT_SETTINGS: Settings = {
   version: 1,
-  general: { splash: true, splashTitle: 'ZILUX2', splashSubtitle: '新一代创意播放器', startMaximized: false, autoLaunch: false, autoStartHidden: true, watchLocalFolder: true, mediaSession: true, desktopLyrics: false, desktopLyricsLocked: false, desktopLyricsFontSize: 40, desktopLyricsWeight: 'normal', desktopLyricsBackdropOpacity: 40, desktopLyricsTopmost: true, desktopLyricsStyle: 'classic', desktopLyricsFanLines: 9, desktopLyricsFanWidth: 240, backgroundLyrics: false, systemOutputRotation: [], uiTemplate: 'standard' },
+  general: { splash: true, splashTitle: 'ZILUX2', splashSubtitle: '新一代创意播放器', startMaximized: false, autoLaunch: false, autoStartHidden: true, watchLocalFolder: true, mediaSession: true, desktopLyrics: false, desktopLyricsLocked: false, desktopLyricsFontSize: 40, desktopLyricsWeight: 'normal', desktopLyricsBackdropOpacity: 40, desktopLyricsTopmost: true, desktopLyricsStyle: 'classic', desktopLyricsFanLines: 9, desktopLyricsFanWidth: 240, backgroundLyrics: false, systemOutputRotation: [], uiTemplate: 'standard', closeAction: 'tray' },
   appearance: {
     theme: 'frost',
     reduceMotion: false,
     glow: true,
     lyricsSize: 'medium',
-    windowAnimation: 'custom',
     playerBarExpanded: false,
     miniSize: 'standard',
     miniAlwaysOnTop: true,
@@ -499,7 +500,6 @@ const LOCAL_SAVE_DELAY = 200;
 
 const THEMES: readonly Theme[] = ['frost'];
 const LYRICS_SIZES: readonly LyricsSize[] = ['small', 'medium', 'large'];
-const WINDOW_ANIMATIONS: readonly WindowAnimation[] = ['custom', 'native'];
 const UPDATE_MODES: readonly UpdateMode[] = ['auto', 'notify'];
 // 默认平台只校验非空字符串；具体可用平台由宿主 /api/sources 决定。
 const SEARCH_LIMITS = [10, 20, 30] as const;
@@ -666,13 +666,13 @@ export function normalizeSettings(raw: unknown): Settings {
       backgroundLyrics: asBool(general.backgroundLyrics, DEFAULT_SETTINGS.general.backgroundLyrics),
       systemOutputRotation: asDeviceIdList(general.systemOutputRotation),
       uiTemplate: asEnum(general.uiTemplate, UI_TEMPLATES, DEFAULT_SETTINGS.general.uiTemplate),
+      closeAction: asEnum(general.closeAction, CLOSE_ACTIONS, DEFAULT_SETTINGS.general.closeAction),
     },
     appearance: {
       theme: asEnum(appearance.theme, THEMES, DEFAULT_SETTINGS.appearance.theme),
       reduceMotion: asBool(appearance.reduceMotion, DEFAULT_SETTINGS.appearance.reduceMotion),
       glow: asBool(appearance.glow, DEFAULT_SETTINGS.appearance.glow),
       lyricsSize: asEnum(appearance.lyricsSize, LYRICS_SIZES, DEFAULT_SETTINGS.appearance.lyricsSize),
-      windowAnimation: asEnum(appearance.windowAnimation, WINDOW_ANIMATIONS, DEFAULT_SETTINGS.appearance.windowAnimation),
       playerBarExpanded: asBool(appearance.playerBarExpanded, DEFAULT_SETTINGS.appearance.playerBarExpanded),
       miniSize: asEnum(appearance.miniSize, MINI_SIZES, DEFAULT_SETTINGS.appearance.miniSize),
       miniAlwaysOnTop: asBool(appearance.miniAlwaysOnTop, DEFAULT_SETTINGS.appearance.miniAlwaysOnTop),

@@ -316,6 +316,12 @@ internal sealed partial class LocalMusicServer : IDisposable
                 "/api/analysis/features" => isGet ? HandleAnalysisFeatures(context) : MethodNotAllowed(context),
                 // 离线 2 轨人声分离（契约 docs/zilux2-stems-contract.md）：算窗口 / 取窗口 WAV。
                 "/api/stems" => isGet ? await HandleStemsAsync(context).ConfigureAwait(false) : MethodNotAllowed(context),
+                // 按需下载分离模型（安装包不再带它）：GET 查进度，POST 开始/复用下载。
+                "/api/stems/model" => isGet
+                    ? HandleStemsModelStatus(context)
+                    : isPost
+                        ? HandleStemsModelStart(context)
+                        : MethodNotAllowed(context),
                 "/api/stems/audio" => isGet
                     ? await HandleStemsAudioAsync(context).ConfigureAwait(false)
                     : MethodNotAllowed(context),
@@ -1121,6 +1127,67 @@ internal sealed partial class LocalMusicServer : IDisposable
         }
     }
 
+    /// <summary>
+    /// GET /api/stems/model：模型状态（未安装 / 下载中 + 百分比 / 就绪 / 失败）。
+    /// 模型随包发布时这里恒为 ready，前端据此决定要不要显示下载进度。
+    /// </summary>
+    private int HandleStemsModelStatus(HttpListenerContext context)
+    {
+        var stems = _stems;
+        if (stems is null)
+        {
+            return WriteStemsError(context, 503, 0, "internal-error", "人声分离服务不可用");
+        }
+
+        WriteJson(context, 200, SerializeStemModel(stems));
+        return 200;
+    }
+
+    /// <summary>POST /api/stems/model：开始（或复用）一次按需下载，立即回当前状态。</summary>
+    private int HandleStemsModelStart(HttpListenerContext context)
+    {
+        var stems = _stems;
+        if (stems is null)
+        {
+            return WriteStemsError(context, 503, 0, "internal-error", "人声分离服务不可用");
+        }
+
+        if (!StemSeparationService.AutoDownloadEnabled)
+        {
+            return WriteStemsError(context, 501, 0, "download-disabled", "已禁用模型下载（ZILUX2_STEMS_NO_DOWNLOAD=1）");
+        }
+
+        stems.EnsureModel();
+        WriteJson(context, 202, SerializeStemModel(stems));
+        return 202;
+    }
+
+    private static string SerializeStemModel(StemSeparationService stems)
+    {
+        var status = stems.ModelStatus;
+        var ready = StemSeparationService.ModelExists();
+        var buffer = new System.Buffers.ArrayBufferWriter<byte>(256);
+        using (var writer = new System.Text.Json.Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("state", ready ? StemModelInstaller.Ready : status.State);
+            writer.WriteBoolean("ready", ready);
+            writer.WriteNumber("bytes", status.Bytes);
+            writer.WriteNumber("total", status.TotalBytes);
+            writer.WriteNumber("attempt", status.Attempt);
+            if (status.Error.Length > 0)
+            {
+                writer.WriteString("message", status.Error);
+            }
+
+            writer.WriteString("downloadUrl", StemSeparationService.ModelDownloadUrl);
+            writer.WriteString("sha256", StemSeparationService.ModelSha256);
+            writer.WriteEndObject();
+        }
+
+        return System.Text.Encoding.UTF8.GetString(buffer.WrittenSpan);
+    }
+
     // Contract §3.2：只发已经算好并落盘的窗口；未就绪 404、busy 409、模型缺失 501。
     private async Task<int> HandleStemsAudioAsync(HttpListenerContext context)
     {
@@ -1298,6 +1365,8 @@ internal sealed partial class LocalMusicServer : IDisposable
         // 契约没写 computing 的状态码；同步实现里通常见不到它，按 200 处理最安全。
         StemsState.Computing => 200,
         StemsState.ModelMissing => 501,
+        // 模型在按需下载：不是错误，给 202 让页面继续轮询（契约新增状态，旧客户端按非 200 处理）。
+        StemsState.ModelDownloading => 202,
         StemsState.Busy => 503,
         _ => 500,
     };

@@ -87,6 +87,29 @@ function cacheKey(track: OnlineTrack, window: number): string {
   return `${track.source}:${track.id}:${window}`;
 }
 
+export type StemWindowPhase = 'start' | 'done' | 'fail';
+type StemWindowListener = (phase: StemWindowPhase, window: number) => void;
+const stemWindowListeners = new Set<StemWindowListener>();
+
+/**
+ * 订阅「某一窗开始算 / 算完 / 失败」。宿主是串行算的（一窗约 7 s），
+ * 界面靠这三个事件画左下角进度卡；解绑函数记得在 dispose 里调用。
+ */
+export function onStemWindowProgress(listener: StemWindowListener): () => void {
+  stemWindowListeners.add(listener);
+  return () => stemWindowListeners.delete(listener);
+}
+
+function emitStemWindow(phase: StemWindowPhase, window: number): void {
+  for (const listener of stemWindowListeners) {
+    try {
+      listener(phase, window);
+    } catch {
+      /* 界面回调出错不影响分离流程 */
+    }
+  }
+}
+
 /** 只让宿主把这一窗算出来（不解码、不需要音频图）；用于还没建图时的后台预热。 */
 export function primeStemWindow(track: OnlineTrack, window: number): void {
   void prepareStemsWindow(track, window).catch(() => null);
@@ -125,6 +148,7 @@ export async function prefetchStemWindow(
   const running = inflight.get(key);
   if (running) return await running.catch(() => null);
   const task = (async (): Promise<WindowBuffers> => {
+    emitStemWindow('start', window);
     let status = await prepareStemsWindow(track, window);
     // 宿主单 worker：上一次过渡/其它曲目还没算完时会回 busy/computing。
     // 后台预热不能就此放弃，按宿主给的 retryAfterMs 重试几次。
@@ -156,12 +180,14 @@ export async function prefetchStemWindow(
       if (oldest !== undefined) cache.delete(oldest);
     }
     cache.set(key, buffers);
+    emitStemWindow('done', window);
     return buffers;
   })();
   inflight.set(key, task);
   try {
     return await task;
   } catch {
+    emitStemWindow('fail', window);
     return null;
   } finally {
     inflight.delete(key);

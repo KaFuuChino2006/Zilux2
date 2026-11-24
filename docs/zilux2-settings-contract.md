@@ -46,7 +46,6 @@
     "reduceMotion": false,
     "glow": true,
     "lyricsSize": "medium",
-    "windowAnimation": "custom",
     "playerBarExpanded": false,
     "miniSize": "standard",
     "miniAlwaysOnTop": true
@@ -123,6 +122,7 @@
 | `general.desktopLyricsTop` | number\|null | `null` | `-200000 ~ 200000`，有限数 | 同上，Y 坐标 |
 | `general.systemOutputRotation` | string[] | `[]` | ≤32 项、每项 ≤512 字符、去重 | 「系统输出轮换」快捷键参与的设备（WASAPI 端点 ID，按勾选顺序）；空数组 = 全部活动播放设备 |
 | `general.uiTemplate` | enum | `"standard"` | `standard` / `fx` | 界面模板：`standard`=完整界面；`fx`=新界面样板（当前只保留底部播放条，顶栏/分类栏/内容区与背景层全部移除）。只切前端的 `.app.is-fx` 类，播放器与过渡共用同一实例，切换不中断播放；宿主只做持久化与白名单校验（v1.7）|
+| `general.closeAction` | enum | `"tray"` | `tray` / `exit` | 右上角 × 的行为：`tray`=隐藏到托盘、后台继续播放；`exit`=直接退出软件。托盘菜单「退出」不受影响，始终直接退出（v1.8）|
 
 > 歌词互斥（v1.6）：`patch` 同时把两个歌词开关设为 `true` 时，`backgroundLyrics` 优先，宿主把 `desktopLyrics` 改回 `false` 并在同一次 ACK 中回推；加载时若文件里两者都为 `true`，同样保留 `backgroundLyrics`、关闭 `desktopLyrics`，日志 `[settings] load: desktopLyrics disabled because backgroundLyrics was enabled`。
 
@@ -134,7 +134,6 @@
 | `appearance.reduceMotion` | bool | `false` | — | 减少动效（前端消费） |
 | `appearance.glow` | bool | `true` | — | 背景氛围光晕（前端消费） |
 | `appearance.lyricsSize` | enum | `"medium"` | `small` / `medium` / `large` | 歌词面板字号（前端消费） |
-| `appearance.windowAnimation` | enum | `"custom"` | `custom` / `native` | 窗口过渡；宿主每次创建/切换窗口时读取 |
 | `appearance.playerBarExpanded` | bool | `false` | — | 底部播放条常驻展开（前端消费） |
 | `appearance.miniSize` | enum | `"standard"` | `compact` / `standard` / `wide` | 迷你播放器尺寸；宿主在进入迷你模式时读取 |
 | `appearance.miniAlwaysOnTop` | bool | `true` | — | 迷你播放器置顶；宿主在进入迷你模式时读取 |
@@ -216,7 +215,8 @@
 > 版本变更：v1.2 新增 `updates`；v1.3 新增 `shortcuts`；v1.4 新增 `autoLaunch` / `watchLocalFolder`；
 > v1.5 新增 `autoStartHidden` / `alwaysHandleMediaKeys`；v1.6 补齐 `mediaSession`、桌面/背景歌词、
 > 迷你播放器、`audioReactive`、睡眠定时、下载段、`quality`、`directConnection`、八个扩展快捷键，
-> 并明确加载/patch 的校验语义；v1.7 新增 `general.uiTemplate`（界面模板：`standard` / `fx`）。
+> 并明确加载/patch 的校验语义；v1.7 新增 `general.uiTemplate`（界面模板：`standard` / `fx`）；
+> v1.8 新增 `general.closeAction`（关闭按钮：隐藏到托盘 / 直接退出）。
 
 ## 3. 消息协议（复用 host 通道 `{v:1,type,...}`）
 

@@ -19,6 +19,10 @@ param(
 
     [switch]$SelfContained,
     [switch]$SkipWebBuild,
+
+    # 安装包默认不带人声分离模型（约 130 MB）：首次使用时由宿主按需下载。
+    # 需要离线包时加 -WithModel，模型会复制到 <out>\models\。
+    [switch]$WithModel,
     [switch]$SkipRestore,
 
     # 版本号与更新仓库来源：默认取根目录 Directory.Build.props，CI 用 -Version/-UpdateRepo 覆盖。
@@ -153,27 +157,38 @@ if (-not (Test-Path (Join-Path $OutputDirectory 'web\index.html'))) {
 Get-ChildItem $OutputDirectory -Filter 'Microsoft.Web.WebView2.*.xml' -File |
     Remove-Item -Force -ErrorAction SilentlyContinue
 
-# ---- 3b) 人声分离模型随包发布（约 130 MB）----
+# ---- 3b) 人声分离模型（可选，约 130 MB）----
+# 默认不随包：安装包只留 exe + web，首次用分离时宿主按需下载到 %LOCALAPPDATA%\Zilux2\models\。
+# 需要离线包时用 -WithModel 把模型复制进 models\。
 $modelName = 'htdemucs-dft-fp16-transparent.onnx'
-$modelCandidates = @(
-    (Join-Path $repoRoot "models\$modelName"),
-    (Join-Path $env:LOCALAPPDATA "Zilux2\models\$modelName")
-)
-$modelSource = $modelCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-if (-not $modelSource) {
-    throw "人声分离模型缺失：$modelName。请放到仓库 models\ 或 %LOCALAPPDATA%\Zilux2\models\ 后重新发布（CI 会自动下载）。"
-}
 $modelOut = Join-Path $OutputDirectory 'models'
-New-Item -ItemType Directory -Force -Path $modelOut | Out-Null
-Copy-Item $modelSource (Join-Path $modelOut $modelName) -Force
-Write-Host "model: $modelSource"
+$modelBytes = 0
+if ($WithModel) {
+    $modelCandidates = @(
+        (Join-Path $repoRoot "models\$modelName"),
+        (Join-Path $env:LOCALAPPDATA "Zilux2\models\$modelName")
+    )
+    $modelSource = $modelCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $modelSource) {
+        throw "人声分离模型缺失：$modelName。请放到仓库 models\ 或 %LOCALAPPDATA%\Zilux2\models\ 后重新发布。"
+    }
+    New-Item -ItemType Directory -Force -Path $modelOut | Out-Null
+    Copy-Item $modelSource (Join-Path $modelOut $modelName) -Force
+    $modelBytes = (Get-Item (Join-Path $modelOut $modelName)).Length
+    Write-Host "model: $modelSource (bundled)"
+} else {
+    if (Test-Path $modelOut) {
+        Remove-Item $modelOut -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Write-Host "model: skipped (按需下载)"
+}
 $launcher = Join-Path $OutputDirectory '启动 Zilux2.cmd'
 $launcherBody = "@echo off`r`nstart `"`" `"%~dp0Zilux2.exe`"`r`n"
 [IO.File]::WriteAllText($launcher, $launcherBody, (New-Object Text.UTF8Encoding $false))
 
 $exeSize = (Get-Item $exe).Length
 $webSize = (Get-ChildItem (Join-Path $OutputDirectory 'web') -Recurse -File | Measure-Object Length -Sum).Sum
-Write-Host ("publish ok: {0} ({1:N0} bytes) + web payload {2:N0} bytes + model {3:N0} bytes" -f $exe, $exeSize, $webSize, (Get-Item (Join-Path $OutputDirectory "models\$modelName")).Length)
+Write-Host ("publish ok: {0} ({1:N0} bytes) + web payload {2:N0} bytes + model {3:N0} bytes" -f $exe, $exeSize, $webSize, $modelBytes)
 Write-Host "folder: $OutputDirectory"
 
 
