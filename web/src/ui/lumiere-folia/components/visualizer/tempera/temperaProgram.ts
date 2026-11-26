@@ -115,12 +115,12 @@ interface ParagraphDraft {
     boundary: TemperaParagraphBoundary;
 }
 
-const splitOversizedDraft = (draft: ParagraphDraft): ParagraphDraft[] => {
+const splitOversizedDraft = (draft: ParagraphDraft, maxLines = 6): ParagraphDraft[] => {
     const output: ParagraphDraft[] = [];
     let remaining = draft.lines;
     let boundary = draft.boundary;
     let loopGuard = 0;
-    while (remaining.length > 6 || (remaining.length > 1 && (remaining.at(-1)!.renderEndTime - remaining[0].line.startTime) > 18)) {
+    while (remaining.length > maxLines || (remaining.length > 1 && (remaining.at(-1)!.renderEndTime - remaining[0].line.startTime) > 18)) {
         if (loopGuard++ > 1000) {
             console.error('splitOversizedDraft: Infinite loop detected, breaking');
             break;
@@ -185,8 +185,6 @@ const isSingleHanWord = (segment: TemperaSegment) => segment.isWordLike && SINGL
  */
 const buildShotChunks = (
     lines: TemperaCompiledLine[],
-    seed: string,
-    paragraphIndex: number,
     wholeLineLyrics: boolean,
 ): ShotChunk[] => {
     const chunks: ShotChunk[] = [];
@@ -215,8 +213,9 @@ const buildShotChunks = (
         let words = 0;
         usable.forEach((entry, order) => {
             words += 1;
-            const chunkSeed = hashTemperaSeed(`${seed}:${paragraphIndex}:${line.sourceIndex}:${chunks.length}`);
-            const target = 2 + Math.floor(temperaHash01(chunkSeed, 1, 179) * 3);
+            // Chunk size is derived from the line, not random: a long line used to break into
+            // twenty tiny shots, and a paragraph of those took half a second to build.
+            const target = Math.max(2, Math.ceil(usable.length / 6));
             const spent = entry.segment.endTime - startTime;
             const isLast = order === usable.length - 1;
             if (!isLast && words < target && spent < 2.2) return;
@@ -381,7 +380,7 @@ const buildShots = (
     let lastMotif = previousMotif;
     let lastFlow = previousFlow;
     const paragraphEnd = lines.at(-1)?.renderEndTime ?? 0;
-    const chunks = buildShotChunks(lines, seed, paragraphIndex, wholeLineLyrics);
+    const chunks = buildShotChunks(lines, wholeLineLyrics);
     const byIndex = new Map(lines.map(line => [line.sourceIndex, line]));
 
     return chunks.map((chunk, shotIndex) => {
@@ -539,6 +538,9 @@ export const compileTemperaProgram = (
         segments: buildTemperaSegments(line),
     }));
     const paragraphGapThreshold = resolveTemperaParagraphGapThreshold(lines);
+    // Split lyrics turn one authored line into several shots, so a six-line paragraph can hold
+    // sixty glyph-heavy shots and take half a second to build. Cap the source lines instead.
+    const maxLinesPerParagraph = options.wholeLineLyrics ? 6 : 3;
     const drafts: ParagraphDraft[] = [];
     let current: ParagraphDraft = { lines: [], boundary: 'song-start' };
 
@@ -551,12 +553,12 @@ export const compileTemperaProgram = (
                 ? 'time-gap'
                 : null;
         if (boundary && current.lines.length > 0) {
-            drafts.push(...splitOversizedDraft(current));
+            drafts.push(...splitOversizedDraft(current, maxLinesPerParagraph));
             current = { lines: [], boundary };
         }
         current.lines.push(line);
     });
-    if (current.lines.length > 0) drafts.push(...splitOversizedDraft(current));
+    if (current.lines.length > 0) drafts.push(...splitOversizedDraft(current, maxLinesPerParagraph));
 
     const resolvedSeed = String(seed);
     let previousShot: TemperaShotKind | null = null;

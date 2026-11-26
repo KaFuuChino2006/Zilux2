@@ -912,11 +912,14 @@ internal sealed class WallpaperHost : IDisposable
                     {
                         try
                         {
-                            _desktop.Detach();
+                            // 必须 Dispose 而不是只 Detach：Detach 只摘掉 HWND、停两个定时器，
+                            // WPF 窗口本身仍在 Application.Windows 里，连带它的画布位图
+                            // 一直到进程退出都回收不掉（每次兜底层→WebView2 切换漏一份）。
+                            _desktop.Dispose();
                         }
                         catch (Exception exception)
                         {
-                            HostLog.Warn($"[wallpaper] fallback desktop detach failed: {exception.Message}");
+                            HostLog.Warn($"[wallpaper] fallback desktop dispose failed: {exception.Message}");
                         }
 
                         _desktop = null;
@@ -1004,7 +1007,9 @@ internal sealed class WallpaperHost : IDisposable
         try
         {
             _desktopPlayer.Stop();
-            _desktop?.Detach();
+            // 同上：关掉桌面层要把兜底表面整个释放掉，只 Detach 会留下一个再也用不到的隐藏窗口。
+            _desktop?.Dispose();
+            _desktop = null;
             _runtime?.Dispose();
             _runtime = null;
             _webSurfacesFailed = false;

@@ -42,10 +42,11 @@ for (const profile of LUMIERE_PROFILES) profile.typography = 'horizontal';
 
 
 /** 播放效果：关闭 / 纯字 / 房间 / 唱片 / 拼合（声压、长镜流诗已从当前版本移除）。 */
-export type LumiereMode = 'off' | 'text' | 'room' | 'vinyl' | 'flow' | 'poem' | 'pressure';
+export type LumiereMode = 'off' | 'text' | 'room' | 'vinyl' | 'overlap' | 'flow' | 'poem' | 'pressure';
 
 export const LUMIERE_MODES: Array<{ id: LumiereMode; label: string; hint: string }> = [
   { id: 'flow', label: '拼合', hint: '按句分镜排版、镜头连续推移，歌词逐字入场；网点几何底纹配反色大字，强节奏的歌最带感' },
+  { id: 'overlap', label: '重合', hint: '逐字运镜，上一句留在画面中，隔一句再退出' },
   { id: 'off', label: '默认', hint: '默认歌词页：不叠加播放效果' },
   { id: 'text', label: '纯字', hint: '发光大字、关键字自动染色、逐字点亮；到「文字设置」里还能加背景光柱与雾' },
   { id: 'room', label: '房间', hint: '薄荷绿纵深 + 长条地毯：每句歌词拆成词散落在前方空间里，镜头跟着正在唱的那句推进；到「快捷设置 → 房间设置」可细调歌词风格、颜色与离散度' },
@@ -62,7 +63,7 @@ export function lumiereMode(): LumiereMode {
     // 「绘光」被「纯字」取代，存档直接落到纯字。
     if (raw === 'room') return 'room';
     if (raw === 'vinyl') return 'vinyl';
-    if (raw === 'flow') return 'flow';
+    if (raw === 'flow' || raw === 'overlap') return raw;
     // 声压 / 长镜流诗已从当前版本移除，旧存档统一回落到关闭。
     if (raw === 'poem' || raw === 'pressure') return 'off';
     if (raw === 'off' || raw === 'lightfield') return 'off';

@@ -31,6 +31,8 @@ uniform vec3 uTintB;
 uniform vec3 uTintC;
 uniform vec3 uTintD;
 uniform float uTintAmount;
+uniform mat3 uTintMatrix;
+uniform float uAnchoredTint;
 
 // Four-stop ramp sampled across the filter's own bounds, so the colour sweeps the whole line
 // rather than repeating inside every glyph.
@@ -42,6 +44,7 @@ vec3 sampleTint(float position) {
 }
 
 float tintPosition(vec2 uv) {
+    if (uAnchoredTint > 0.5) return (uTintMatrix * vec3(uv, 1.0)).x;
     return clamp(uv.x * uInputSize.x / max(uOutputFrame.z, 1.0), 0.0, 1.0);
 }
 `;
@@ -118,6 +121,7 @@ export interface TemperaDifferenceOptions {
     threshold?: number;
     /** Four-stop hue ramp swept across the line; omit for a plain ink/paper inversion. */
     tint?: string[] | null;
+    tintAnchor?: import('pixi.js').Sprite;
     /**
      * Default true. False builds the tint-only form: the ramp still colours the lyric, but no
      * backdrop is sampled, so `textInversion` can be switched off without gradient mode losing
@@ -137,6 +141,8 @@ export const createTemperaDifferenceFilter = (
         tint ? toNormalizedRgb(tint[Math.min(index, tint.length - 1)], ink) : ink
     ));
     const uniforms = new pixi.UniformGroup({
+        uTintMatrix: { value: new pixi.Matrix(), type: 'mat3x3<f32>' },
+        uAnchoredTint: { value: options.tintAnchor ? 1 : 0, type: 'f32' },
         uInkColor: { value: new Float32Array(ink), type: 'vec3<f32>' },
         uTintA: { value: new Float32Array(stops[0]), type: 'vec3<f32>' },
         uTintB: { value: new Float32Array(stops[1]), type: 'vec3<f32>' },
@@ -149,7 +155,7 @@ export const createTemperaDifferenceFilter = (
         uBias: { value: (options.threshold ?? 0.5) - 0.5, type: 'f32' },
     });
     const inversion = options.inversion ?? true;
-    return new pixi.Filter({
+    const filter = new pixi.Filter({
         glProgram: pixi.GlProgram.from({
             vertex,
             fragment: inversion ? inversionFragment : tintOnlyFragment,
@@ -172,4 +178,13 @@ export const createTemperaDifferenceFilter = (
         // canvas resolution and upscale it.
         resolution: 'inherit',
     });
+    const anchor = options.tintAnchor;
+    if (anchor) {
+        const apply = filter.apply.bind(filter);
+        filter.apply = (manager, input, output, clearMode) => {
+            manager.calculateSpriteMatrix(uniforms.uniforms.uTintMatrix, anchor);
+            apply(manager, input, output, clearMode);
+        };
+    }
+    return filter;
 };

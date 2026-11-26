@@ -18,7 +18,7 @@ test('countdown has 12 deterministic styles, follows the lyric clock and fades o
  assert.ok(flowCueFrame(delayed,5500));assert.equal(flowCueFrame(delayed,6220),null);
  const styles=new Set();for(let i=0;i<200;i++)styles.add(flowCueFrame(song(String(i)),3000).style);assert.equal(styles.size,12);
 });
-test('handoff keeps an opaque moving predecessor and reuses the preloaded next surface',async()=>{
+for(const mode of ['flow','overlap'])test(mode+' hands off to the preloaded next surface',async()=>{
  let now=0,nextTrack={source:'qq',id:'B',title:'B',artist:'Artist'},state={track:{source:'qq',id:'A'},positionMs:6000,playing:true};
  const listeners=new Set(),raf=new Map(),scenes=[];let nextRaf=0,loads=0;
  const node=()=>({style:{},classList:{add(){},remove(){},toggle(){}},append(){},remove(){}});
@@ -29,16 +29,24 @@ test('handoff keeps an opaque moving predecessor and reuses the preloaded next s
   require:specifier=>{
    if(specifier==='./flowHandoff')return pure('flowHandoff');
    if(specifier==='./player')return {playerState:()=>state,onPlayer:fn=>{listeners.add(fn);fn();return()=>listeners.delete(fn);},peekUpcoming:()=>nextTrack?{track:nextTrack}:null,getTransitionTarget:()=>null};
-   if(specifier==='./lyrics')return {preloadLyricSong:async track=>{loads++;return song(track.id);}};
+   if(specifier==='./lyrics')return {preloadLyricSong:async track=>{loads++;return song(track.id);},lyricsBackgroundMode:()=>'paper'};
+   if(specifier==='./perfProbe')return {perfOn:()=>false,perfEvent(){},perfMark(){},perfMarkSlow(){},perfTime:(n,run)=>run(),perfTimeAsync:(n,run)=>run(),startPerfMonitor(){}};
+   if(specifier==='./lumiere')return {lumiereThemeForCover:()=>({backgroundColor:'#000000',primaryColor:'#ffffff',accentColor:'#ffffff',secondaryColor:'#ffffff',fontStyle:'sans',animationIntensity:1})};
    if(specifier==='./crossfadeDeck')return {readCrossfadeDebug:()=>({phase:'prepared',nextTitle:'B',bStartFileMs:2500})};
    if(specifier==='./coverColors')return {coverColorsOf:async()=>({palette:['#123456']}),fallbackColors:()=>({palette:['#123456']})};
-   if(specifier==='./flowScene')return {createFlowScene:(onPainted,_onError,recordUsage)=>{
-    const value={root:node(),disposed:false,usage:recordUsage,positions:[],setSong:input=>value.song=input,setPalette(){},setUsageRecording:enabled=>value.usage=enabled,resize:()=>Promise.resolve().then(onPainted),update:position=>value.positions.push(position),dispose:()=>{value.disposed=true;}};scenes.push(value);return value;
+   if(specifier==='./flowScene'||specifier==='./overlapScene')return {[specifier==='./flowScene'?'createFlowScene':'createOverlapScene']:(onPainted,_onError,recordUsage)=>{
+    const value={root:node(),disposed:false,usage:recordUsage,positions:[],setSong:input=>value.song=input,setPalette(){},setTheme(){},refresh(){},setUsageRecording:enabled=>value.usage=enabled,resize:()=>Promise.resolve().then(onPainted),update:position=>value.positions.push(position),dispose:()=>{value.disposed=true;}};scenes.push(value);return value;
    }};
    throw new Error(specifier);
   },
  });
- const stage=exports.createFlowStage();stage.setSong(song('A'));stage.activate();await flush();
+ const stage=exports.createFlowStage();stage.setMode(mode);
+ if(mode==='overlap'){
+  stage.setSong({...song('A'),lines:[]});stage.activate();await flush();
+  assert.equal(scenes.length,0);assert.equal(loads,0);
+ }
+ stage.setSong(song('A'));stage.activate();await flush();
+ listeners.forEach(fn=>fn());await flush();
  assert.equal(loads,1);assert.equal(scenes.length,2);assert.equal(scenes[1].song.trackKey,'qq:B');
  assert.ok(scenes[1].positions.includes(2500),'planned crossfade entry was not pre-rendered');assert.equal(scenes[1].usage,false);
  const step=time=>{now=time;const pending=[...raf.values()];raf.clear();pending.forEach(fn=>fn());};
@@ -50,12 +58,16 @@ test('handoff keeps an opaque moving predecessor and reuses the preloaded next s
  step(325);assert.ok(Number(scenes[1].root.style.opacity)>0&&Number(scenes[1].root.style.opacity)<1);
  assert.ok(scenes[0].positions.at(-1)>oldPosition,'outgoing animation stopped during handoff');
  assert.equal(Number(scenes[0].root.style.opacity),1);
- step(600);assert.equal(scenes[0].disposed,true);assert.equal(scenes[1].disposed,false);assert.equal(scenes[1].root.style.opacity,'1');
+ // 2026-11 起退场舞台不再销毁，而是留成 spare 复用（新建一只 Pixi 运行时≈430ms、复用≈0）。
+ // 契约因此从「outgoing 被 dispose」改成「outgoing 被 retire：透明、停用录制、留在池里」。
+ step(600);assert.equal(scenes[0].disposed,false,'retired surface must stay alive as spare');
+ assert.equal(scenes[0].root.style.opacity,'0');assert.equal(scenes[0].usage,false);
+ assert.equal(scenes[1].disposed,false);assert.equal(scenes[1].root.style.opacity,'1');
  nextTrack={source:'qq',id:'C',title:'C',artist:'Artist'};listeners.forEach(fn=>fn());await flush();
- assert.equal(scenes.length,3);assert.equal(scenes.filter(scene=>!scene.disposed).length,2);
+ assert.equal(scenes.length,2,'pooling must reuse the spare instead of building a third surface');
+ assert.equal(scenes.filter(scene=>!scene.disposed).length,2);
  state={...state,track:{source:'qq',id:'D'},positionMs:0};nextTrack=null;listeners.forEach(fn=>fn());stage.setSong(song('D'));await flush();
- assert.equal(scenes[2].disposed,true,'wrong queued scene survived manual skip');
  assert.equal(scenes.filter(scene=>!scene.disposed).length,2,'manual skip created a third live surface');
- step(1200);assert.equal(scenes.filter(scene=>!scene.disposed).length,1);
+ step(1200);assert.equal(scenes.filter(scene=>!scene.disposed).length,2,'after handoff exactly current + spare may stay alive');
  stage.dispose();assert.ok(scenes.every(scene=>scene.disposed));assert.equal(listeners.size,0);
 });

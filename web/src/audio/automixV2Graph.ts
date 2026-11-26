@@ -686,6 +686,7 @@ export function scheduleAutomixV2(
 export function scheduleAutomixV2Duck(
   deck: AutomixV2Deck,
   events: readonly { atSec: number; db: number }[],
+  releaseAtSec?: number,
 ): void {
   if (!events.length) return;
   const param = deck.duck.gain;
@@ -700,6 +701,21 @@ export function scheduleAutomixV2Duck(
       param.linearRampToValueAtTime(clampDb(events[i]!.db), events[i]!.atSec);
     } catch {
       return;
+    }
+  }
+  // 让位必须在窗口收尾前自己回 0 dB。
+  //
+  // 以前最后一条事件就停在那儿：人声撞完停唱、曲线也不再有新点，
+  // `duck.gain` 就一直挂在 −2…−3 dB（2500 Hz 咬字区），
+  // 直到 `tap.restore()` 把整条链旁路才一步恢复 ——
+  // 听感就是「过渡完成的一瞬间，压着人声/高音的那层东西突然消失」。
+  const last = events[events.length - 1]!;
+  const end = Number.isFinite(releaseAtSec) ? (releaseAtSec as number) : NaN;
+  if (Number.isFinite(end) && end > last.atSec + 0.05) {
+    try {
+      param.linearRampToValueAtTime(0, end);
+    } catch {
+      /* 忽略 */
     }
   }
 }
@@ -945,17 +961,25 @@ export function scheduleAutomixV2Press(
     deck.aDarken.frequency.cancelScheduledValues(startSec);
     deck.aPress.gain.setValueAtTime(1, Math.max(0, startSec));
     deck.aDarken.frequency.setValueAtTime(20_000, Math.max(0, startSec));
+    // 回正必须留出一段真斜坡。`risingPressure` 的尾巴会把 `p≈1` 的点也带进来，
+    // 若最后一条 ramp 和 `at(1)` 落在同一时刻，WebAudio 看到的是「0 时长阶跃」：
+    // 低通从 6 kHz 一步弹回 20 kHz、压音量一步回到 0 dB ——
+    // 听感就是过渡完成的那一瞬间，之前被削掉的高音/电平「啪」地回来。
+    // 所以最后 `releaseSec` 之内不再写压点，把它们夹到回正起点上，再线性放开。
+    const releaseAt = at(1);
+    const releaseSec = Math.min(0.45, Math.max(0.12, durSec * 0.12));
+    const clampUntil = Math.max(startSec, releaseAt - releaseSec);
     let lastDrive = 0;
     for (const point of points) {
       const drive = Math.max(0, Math.min(1, point.drive));
       if (Math.abs(drive - lastDrive) < 0.02) continue;
       lastDrive = drive;
-      const t = at(point.p);
+      const t = Math.min(at(point.p), clampUntil);
       deck.aPress.gain.linearRampToValueAtTime(gainOf(drive), t);
       deck.aDarken.frequency.linearRampToValueAtTime(hzOf(drive), t);
     }
-    deck.aPress.gain.linearRampToValueAtTime(1, at(1));
-    deck.aDarken.frequency.linearRampToValueAtTime(20_000, at(1));
+    deck.aPress.gain.linearRampToValueAtTime(1, releaseAt);
+    deck.aDarken.frequency.linearRampToValueAtTime(20_000, releaseAt);
   } catch {
     deck.aPress.gain.value = 1;
     deck.aDarken.frequency.value = 20_000;
@@ -1158,6 +1182,55 @@ export function releaseAutomixV2Tail(deck: AutomixV2Deck, seconds = 0.95): void 
   } catch {
     /* 参数已排空时忽略 */
   }
+}
+
+/**
+ * 过渡收尾的「链上放平」：把还挂在节点上的过渡状态用一段真斜坡送回中性。
+ *
+ * 为什么必须有：`tap.restore()` 是 0 时长的旁路（gate/input 直接 disconnect，
+ * 元素 gain 一步接回干路）。链上只要还剩一点扫频、压音、让位、风格 EQ，
+ * 这一步就会把「过渡期间被削掉的部分」一次性弹回来 —— 听感是过渡结束的瞬间
+ * 高音/电平突然恢复，像是有一个压低声音的东西凭空消失。
+ *
+ * 曲线正常排完时这里基本是空操作（参数本来就在中性位）；
+ * 真正救的是三种收尾：手动取消、图被激活时的硬切、以及进度与曲线差几十毫秒的收尾。
+ */
+export function relaxAutomixV2Chain(deck: AutomixV2Deck, seconds = 0.18, continuing = false): void {
+  const ctx = deck.sweepLp.context;
+  const now = Math.max(0, ctx.currentTime);
+  const end = now + Math.max(0.02, seconds);
+  const glide = (param: AudioParam, target: number): void => {
+    try {
+      if (typeof param.cancelAndHoldAtTime === 'function') param.cancelAndHoldAtTime(now);
+      else {
+        const held = param.value;
+        param.cancelScheduledValues(now);
+        param.setValueAtTime(held, now);
+      }
+      param.linearRampToValueAtTime(target, end);
+    } catch {
+      /* 参数已排空 / 上下文已关闭时忽略 */
+    }
+  };
+  glide(deck.sweepLp.frequency, ctx.sampleRate / 2);
+  glide(deck.sweepHp.frequency, 0);
+  glide(deck.duck.gain, 0);
+  glide(deck.aPress.gain, 1);
+  glide(deck.aDarken.frequency, ctx.sampleRate / 2);
+  if (continuing) {
+    glide(deck.lowGain.gain, 1);
+    glide(deck.midGain.gain, 1);
+    glide(deck.highGain.gain, 1);
+    glide(deck.lowTrim.gain, 1);
+  }
+  glide(deck.loudnessTrim.gain, 1);
+  glide(deck.bTrim.gain, 1);
+  glide(deck.unfade.gain, 1);
+  glide(deck.aStyleHigh.gain, 0);
+  glide(deck.aStylePresence.gain, 0);
+  glide(deck.bStyleHigh.gain, 0);
+  glide(deck.bStylePresence.gain, 0);
+  glide(deck.bStyleLow.gain, 0);
 }
 
 export function scheduleAutomixV2TailBleed(

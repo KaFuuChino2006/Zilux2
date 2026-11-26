@@ -49,6 +49,7 @@ public partial class MainWindow : Window
     private bool _lastShownAsTransition;
     private DispatcherTimer? _systemAudioWatch;
     private SystemAudioOutputDevice? _lastSystemAudioDevice;
+    private string? _lastSystemAudioDeviceId;
     private IntPtr _hwnd;
     private long _dragGeneration;
     private bool _dragPending;
@@ -117,7 +118,17 @@ public partial class MainWindow : Window
     {
         if (_startupRevealed || !IsVisible) return;
         var splash = _settings?.SplashEnabled ?? true;
-        if (!splash || StartupVeil is null) return;
+        if (StartupVeil is null) return;
+
+        if (!splash)
+        {
+            // 关掉启动画面时遮罩必须一并撤掉：它是整窗不透明的底色，
+            // 留着就会变成「纯白/纯米色方块盖住窗口直到内容就绪」——正是旧的假启动画面。
+            StartupVeil.BeginAnimation(OpacityProperty, null);
+            StartupVeil.Visibility = Visibility.Collapsed;
+            StartupVeil.Opacity = 0;
+            return;
+        }
 
         var title = _settings?.SplashTitle?.Trim() ?? string.Empty;
         SplashTitleText.Text = title.Length == 0 ? "ZILUX2" : title;
@@ -546,6 +557,8 @@ public partial class MainWindow : Window
         }
 
         _lastSystemAudioDevice = to;
+        // 手动切换后同步轮询基线，否则下一次 tick 会把这次切换当成「设备变了」再弹一次 OSD。
+        _lastSystemAudioDeviceId = to.Id;
         HostLog.Info($"[audioOsd] show from={from?.Name ?? "?"} to={to.Name}");
         try
         {
@@ -567,12 +580,23 @@ public partial class MainWindow : Window
         }
 
         _lastSystemAudioDevice = SystemAudioOutputService.CurrentDefault();
+        _lastSystemAudioDeviceId = _lastSystemAudioDevice?.Id;
         _systemAudioWatch = new DispatcherTimer(DispatcherPriority.Background)
         {
-            Interval = TimeSpan.FromMilliseconds(2500),
+            // 每 1.5s 只比一个端点 ID：CurrentDefaultId 不开属性存储、不枚举全部端点，
+            // 单次成本在微秒级；旧的 CurrentDefault()（=List()）每次要枚举所有活动端点并读友好名，
+            // 空闲时也能吃掉约 10% 单核。
+            Interval = TimeSpan.FromMilliseconds(1500),
         };
         _systemAudioWatch.Tick += (_, _) =>
         {
+            var currentId = SystemAudioOutputService.CurrentDefaultId();
+            if (currentId is null || string.Equals(currentId, _lastSystemAudioDeviceId, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            // ID 变了才做一次完整枚举，拿到友好名给 OSD 用。
             var current = SystemAudioOutputService.CurrentDefault();
             if (current is null)
             {
@@ -580,13 +604,11 @@ public partial class MainWindow : Window
             }
 
             var previous = _lastSystemAudioDevice;
+            _lastSystemAudioDevice = current;
+            _lastSystemAudioDeviceId = current.Id;
             if (previous is not null && !string.Equals(previous.Id, current.Id, StringComparison.Ordinal))
             {
                 ShowSystemAudioOsd(previous, current);
-            }
-            else
-            {
-                _lastSystemAudioDevice = current;
             }
         };
         _systemAudioWatch.Start();
@@ -742,6 +764,9 @@ public partial class MainWindow : Window
         ApplyDesktopLyricsSettings();
         ApplyBackgroundLyricsSettings();
         StartWallpaperHost();
+        // 启动时就是最大化（设置项 startMaximized）时，StateChanged 发生在 _hwnd 赋值之前，
+        // 那一次 Snap 会被守卫挡掉；这里补一次。
+        Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(ApplyMaximizedInset));
     }
 
     // 动态壁纸 v2（docs/wallpaper-v2-spec.md §3）：软件内画布只建一次，扫描与首张壁纸由 host
@@ -1339,6 +1364,7 @@ public partial class MainWindow : Window
 
         if (!maximized)
         {
+            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(ApplyMaximizedInset));
             // Keep the rect the user would expect to come back to, including when the window was
             // maximized/restored by Windows itself (Win+Up / taskbar) instead of the page buttons.
             if (_windowAnim is null && _hwnd != IntPtr.Zero &&
@@ -1351,6 +1377,13 @@ public partial class MainWindow : Window
             // The saved normal rect can be off screen (monitor unplugged, resolution change);
             // WPF restores it verbatim, so re-clamp it once the state is settled.
             Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(ClampWindowToWorkArea));
+        }
+        else
+        {
+            // Win11 给最大化窗口加了一圈 invisible border（本机 96 DPI 8 px）：MINMAXINFO 只声明
+            // 工作区大小，系统仍会把这圈外扩加上去；我们的 WM_NCCALCSIZE 让客户区等于整窗，
+            // 于是内容被推出屏幕（用户看到「顶部露不出来」）。状态落定后把矩形对齐回工作区。
+            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(ApplyMaximizedInset));
         }
 
         Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(ApplyWindowCornerRegion));
@@ -1894,6 +1927,57 @@ public partial class MainWindow : Window
         return new NativeMethods.Rect { Left = left, Top = top, Right = left + width, Bottom = top + height };
     }
 
+    /// <summary>
+    /// Win11 最大化会给窗口加一圈 invisible border：窗口矩形被撑到工作区外（本机 96 DPI 各 8 px），
+    /// 而 WM_NCCALCSIZE 让客户区等于整窗，所以页面内容也被推出屏幕 —— 用户看到「顶部露不出来」。
+    /// 最大化窗口的 SetWindowPos 会被系统按最大化重放，改不动矩形；这里改成给 RootGrid 让出
+    /// 同样厚度的边距：窗口外扩多少，页面就内缩多少，屏幕上正好是内容贴边。
+    /// </summary>
+    private void ApplyMaximizedInset()
+    {
+        if (RootGrid is null)
+        {
+            return;
+        }
+
+        if (_hwnd == IntPtr.Zero || !IsMaximized)
+        {
+            RootGrid.Margin = new Thickness(0);
+            return;
+        }
+
+        var monitor = NativeMethods.MonitorFromWindow(_hwnd, NativeMethods.MonitorDefaultToNearest);
+        if (monitor == IntPtr.Zero || !NativeMethods.GetWindowRect(_hwnd, out var window))
+        {
+            return;
+        }
+
+        var info = new NativeMethods.MonitorInfo { Size = Marshal.SizeOf<NativeMethods.MonitorInfo>() };
+        if (!NativeMethods.GetMonitorInfo(monitor, ref info))
+        {
+            return;
+        }
+
+        var work = info.Work;
+        var left = work.Left - window.Left;
+        var top = work.Top - window.Top;
+        var right = window.Right - work.Right;
+        var bottom = window.Bottom - work.Bottom;
+        if (left <= 0 && top <= 0 && right <= 0 && bottom <= 0)
+        {
+            RootGrid.Margin = new Thickness(0);
+            return;
+        }
+
+        var (scaleX, scaleY) = CurrentDpiScale();
+        RootGrid.Margin = new Thickness(
+            Math.Max(0, left) / scaleX,
+            Math.Max(0, top) / scaleY,
+            Math.Max(0, right) / scaleX,
+            Math.Max(0, bottom) / scaleY);
+        HostLog.Info($"window.inset maximized {left},{top},{right},{bottom}");
+    }
+
     private bool TrySetWindowRect(int left, int top, int width, int height)
     {
         if (_hwnd == IntPtr.Zero)
@@ -1993,6 +2077,8 @@ public partial class MainWindow : Window
             Top = SystemParameters.VirtualScreenTop;
             Show();
             HostLog.Info($"tray.hide parked offscreen left={Left:0} top={Top:0}");
+            // 停放期间整窗离屏，页面里的壁纸 <video> 没必要继续解码（1080p 约一个核）。
+            _host?.PostTrayParked(true);
         }
         catch (Exception exception)
         {
@@ -2021,13 +2107,15 @@ public partial class MainWindow : Window
                 WindowState = WindowState.Normal;
             }
 
-            // 从「屏幕外停靠」回来：先把位置放回原处。
+            // 从「屏幕外停靠」回来：先把位置放回原处，并让页面恢复壁纸解码。
             if (_parkedLeft != 0)
             {
                 Left = _parkedLeft;
                 Top = _parkedTop;
                 _parkedLeft = 0;
             }
+
+            _host?.PostTrayParked(false);
 
             ShowInTaskbar = true;
             Show();
@@ -3007,6 +3095,9 @@ public partial class MainWindow : Window
         info.MinTrackSize.Y = (int)Math.Ceiling(MinHeight * scaleY);
 
         // A borderless window maximizes over the taskbar by default; clamp it to the work area.
+        // 补回 WS_CAPTION 后（1.2.1 为了系统补间），Win11 最大化会给窗口加一圈「invisible border」
+        // 外扩（本机 96 DPI 8 px），而 WM_NCCALCSIZE 让客户区等于整窗，这圈外扩就变成内容被推出屏幕。
+        // MINMAXINFO 管不住它（系统仍会再加外扩），所以最大化之后再 SnapMaximizedToWorkArea() 校正。
         var monitor = NativeMethods.MonitorFromWindow(hwnd, NativeMethods.MonitorDefaultToNearest);
         if (monitor != IntPtr.Zero)
         {

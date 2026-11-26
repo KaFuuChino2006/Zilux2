@@ -663,3 +663,71 @@
     max-height: 136px;
   }
 }
+
+/* Printed corner ornaments, clipped to the existing decorative surface. */
+.home-host .home .daily-card::before {
+  background:
+    repeating-radial-gradient(circle at 100% 100%, transparent 0 14px, var(--print-color) 15px 16px, transparent 17px 23px),
+    radial-gradient(circle, var(--print-color) 1px, transparent 1.4px) right bottom / 6px 6px;
+}
+.home-host .home .radar-card::before {
+  background:
+    repeating-conic-gradient(from 12deg at 100% 100%, transparent 0 16deg, var(--print-color) 16deg 17deg, transparent 17deg 25deg),
+    repeating-radial-gradient(circle at 100% 100%, transparent 0 16px, var(--print-color) 17px 18px);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .home-host .home .daily-card::before { animation: corner-print 6s ease-in-out infinite alternate; }
+  .home-host .home .daily-card::after { animation: corner-star 4s ease-in-out infinite alternate; }
+  .home-host .home :nth-child(even) > .daily-card::after { animation-delay: -2s; }
+}
+@keyframes corner-print {
+  /* 原来动的是 background-position，每帧都要重画整块渐变底（16 张卡片 = 每秒几十次大面重绘）。
+     改成整体位移：图案一次性画好，动画只走合成层，视觉上仍是「网点在轻微移动」。 */
+  from { translate: 0 0; }
+  to { translate: -8px 5px; }
+}
+@keyframes corner-star {
+  from { rotate: -14deg; scale: .82; }
+  to { rotate: 35deg; scale: 1.06; }
+}
+
+.home-host .home .daily-card {
+  border-radius: 2px 14px 2px 2px;
+  border-bottom: 2px solid var(--print-ink);
+  background:
+    linear-gradient(112deg, transparent 76%, var(--print-color) 76% 76.6%, transparent 76.6% 78%, color-mix(in srgb,var(--print-color) 23%,transparent) 78%),
+    var(--home-card);
+}
+.home-host .home .daily-deck .daily-cover-0 {
+  border-radius: 1px;
+  box-shadow: 1px 1px 0 2px var(--print-ink), 6px 6px 0 var(--print-color);
+}
+.home-host .home .daily-card::after {
+  width: 36px;
+  height: 12px;
+  top: 10px;
+  right: 9px;
+  background: repeating-linear-gradient(115deg,var(--print-ink) 0 2px,transparent 2px 5px);
+  clip-path: polygon(16% 0,100% 0,84% 100%,0 100%);
+  animation: none;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .home-host .home .daily-card::after { animation: print-register 5s ease-in-out infinite alternate; }
+}
+@keyframes print-register { to { translate: -6px 0; } }
+
+/* 卡片右上角的网点/印花两条无限动画只在「鼠标悬停这张卡」时跑：
+   首页 16 张卡各 2 条（alternate + 无限），在 200Hz 屏上等于空闲时也有 30 多条合成层在动。
+   静止态与动画首帧一致，视觉上只有「悬停时才开始轻微移动」。 */
+@media (prefers-reduced-motion: no-preference) {
+  .home-host .home .daily-card::before,
+  .home-host .home .daily-card::after {
+    animation-play-state: paused;
+  }
+  .home-host .home .daily-card:hover::before,
+  .home-host .home .daily-card:hover::after,
+  .home-host .home .daily-card:focus-visible::before,
+  .home-host .home .daily-card:focus-visible::after {
+    animation-play-state: running;
+  }
+}

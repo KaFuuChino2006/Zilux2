@@ -221,6 +221,7 @@ export function createFxDailyStage(deps: FxDailyDeps): FxDailyStage {
   let heroSettleTimer = 0;
 
   const paintHero = (src: string, instant = false): void => {
+    if (src) heroCard.style.setProperty('--lyric-cover-image', 'url(' + JSON.stringify(src) + ')');
     const front = heroLayers[heroFront]!;
     const back = heroLayers[1 - heroFront]!;
     if (!src) return;
@@ -328,6 +329,7 @@ export function createFxDailyStage(deps: FxDailyDeps): FxDailyStage {
     card.dataset.key = trackKey(track);
     if (deps.registerTrack) card.dataset.trackKey = deps.registerTrack(track);
     card.dataset.index = String(index);
+    card.dataset.duration = track.durationMs > 0 ? formatDuration(track.durationMs) : '';
     card.dataset.trackNumber = String(index + 1).padStart(3, '0');
     card.style.setProperty('--i', String(index));
     card.setAttribute('role', 'listitem');
@@ -507,6 +509,7 @@ export function createFxDailyStage(deps: FxDailyDeps): FxDailyStage {
   const syncHeroCover = (instantCover = false): void => {
     const first = tracks[heroIndex];
     if (!first) {
+      delete root.dataset.sleeveTitle;
       delete heroCard.dataset.trackKey;
       heroCard.classList.add('is-hidden');
       heroBarKey = '';
@@ -532,6 +535,7 @@ export function createFxDailyStage(deps: FxDailyDeps): FxDailyStage {
       if (nameRailText.textContent !== (name || '未知曲目')) setRailText(name || '未知曲目');
       return;
     }
+    root.dataset.sleeveTitle = name;
     heroBarKey = key;
     // 维护者：下方纯色条与右侧渐变条的动画要等封面入场动画结束再触发。
     const applyHeroText = (): void => {

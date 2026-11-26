@@ -389,19 +389,21 @@ public partial class SystemAudioOsdWindow : Window
     private void StartDismiss(int milliseconds, long generation)
     {
         _dismissTimer?.Stop();
-        _dismissTimer = new DispatcherTimer(DispatcherPriority.Background)
+        // 捕获局部 timer：旧定时器晚一拍触发时不能去 Stop 新的那个字段。
+        var timer = new DispatcherTimer(DispatcherPriority.Background)
         {
             Interval = TimeSpan.FromMilliseconds(milliseconds),
         };
-        _dismissTimer.Tick += (_, _) =>
+        _dismissTimer = timer;
+        timer.Tick += (_, _) =>
         {
-            _dismissTimer?.Stop();
+            timer.Stop();
             if (generation == _generation)
             {
                 Dismiss();
             }
         };
-        _dismissTimer.Start();
+        timer.Start();
     }
 
     private static string FirstGlyph(string text)
@@ -563,30 +565,34 @@ public partial class SystemAudioOsdWindow : Window
     private void RestartDismissTimer(int milliseconds, long generation)
     {
         _dismissTimer?.Stop();
-        _dismissTimer = new DispatcherTimer(DispatcherPriority.Background)
+        // 捕获局部 timer：旧定时器晚一拍触发时不能去 Stop 新的那个字段。
+        var timer = new DispatcherTimer(DispatcherPriority.Background)
         {
             Interval = TimeSpan.FromMilliseconds(milliseconds),
         };
-        _dismissTimer.Tick += (_, _) =>
+        _dismissTimer = timer;
+        timer.Tick += (_, _) =>
         {
-            _dismissTimer?.Stop();
+            timer.Stop();
             if (generation == _generation)
             {
                 Dismiss();
             }
         };
-        _dismissTimer.Start();
+        timer.Start();
     }
 
     private void StartTimers(long generation, IEasingFunction easeOut)
     {
-        _phaseTimer = new DispatcherTimer(DispatcherPriority.Background)
+        _phaseTimer?.Stop();
+        var phase = new DispatcherTimer(DispatcherPriority.Background)
         {
             Interval = TimeSpan.FromMilliseconds(650),
         };
-        _phaseTimer.Tick += (_, _) =>
+        _phaseTimer = phase;
+        phase.Tick += (_, _) =>
         {
-            _phaseTimer?.Stop();
+            phase.Stop();
             if (generation != _generation)
             {
                 return;
@@ -607,7 +613,7 @@ public partial class SystemAudioOsdWindow : Window
                     EasingFunction = easeOut,
                 });
         };
-        _phaseTimer.Start();
+        phase.Start();
 
         StartDismiss(ShowMs, generation);
     }
@@ -858,15 +864,17 @@ public partial class SystemAudioOsdWindow : Window
         Detail.Width = Math.Max(1, _expandedWidth - 40);
     }
 
-    /// <summary>主窗所在显示器的可用区域（DIP）；没设过就退回主屏。</summary>
+    /// <summary>
+    /// 胶囊位置固定用主屏可用区域（DIP）。
+    /// 维护者 2026-11-25：「这个桌面悬浮的胶囊位置显示设置为始终在主屏幕，因为有时候会跑到其他屏幕去」
+    /// —— 以前跟着主窗口所在屏幕走，主窗拖到副屏时胶囊也跟着跑，所以这里不再接受外部工作区。
+    /// </summary>
     private Rect _workArea = SystemParameters.WorkArea;
 
+    /// <summary>保留调用点，但一律以主屏为准（见上面维护者要求）。</summary>
     internal void SetWorkArea(Rect area)
     {
-        if (area.Width > 0 && area.Height > 0)
-        {
-            _workArea = area;
-        }
+        _workArea = SystemParameters.WorkArea;
     }
 
     private void PositionAtTopCenter()

@@ -82,14 +82,17 @@ test('滚动容器不再做吸附（吸附会在入场结束后把整排挪几�
   assert.doesNotMatch(css, /scroll-snap-align:start/);
 });
 
-test('标题逐字入场结束后留在合成层，收尾不撤层', () => {
+test('标题逐字入场结束后撤掉合成层，落成静态类', () => {
   const enterTimer = title.slice(title.indexOf('this.enterTimer = window.setTimeout('));
   const body = enterTimer.slice(0, enterTimer.indexOf('maxDelay + MOTION.base + 90'));
   assert.match(body, /removeProperty\(ENTER_DELAY_VAR\)/);
-  assert.doesNotMatch(body, /classList\.remove\(IN_CLASS\)/, '收尾不能摘类：撤层那一下每个字都会像素抖');
+  // 2026-11-25：原来故意留 is-char-in 保合成层，79 个字在 200Hz 屏上每帧都要合一次；
+  // 现在收尾换 is-char-settled（无 animation / will-change），字回到普通排版层。
+  assert.match(body, /classList\.remove\(IN_CLASS\)/, '收尾必须摘掉动画类');
+  assert.match(body, /classList\.add\(SETTLED_CLASS\)/, '换成立定类：不挂动画、不留合成层');
   assert.doesNotMatch(title, /scheduleRelease|releaseFrames/, '不再有「两帧后放手」这一步');
-  // 层跟着类在 stop() / settle() 里撤：那时正在演返程，或者页已经藏起来。
-  assert.match(title, /cell\.classList\.remove\(IN_CLASS, OUT_CLASS\);/);
+  // 重播 / 离场 / 销毁时三个类一起撤。
+  assert.match(title, /cell\.classList\.remove\(IN_CLASS, OUT_CLASS, SETTLED_CLASS\);/);
 });
 
 test('标题关键帧同样不带模糊，单字基类不常驻 will-change', () => {

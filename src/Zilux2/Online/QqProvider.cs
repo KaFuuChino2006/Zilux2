@@ -139,6 +139,16 @@ internal sealed class QqProvider : IOnlineMusicProvider
         OnlineHttp.Warn(
             $"qq search failed: primary={primaryStatus} ({primaryError ?? "no tracks"}) " +
             $"fallback={fallbackStatus} ({(fallbackFailure is null ? "no tracks" : OnlineHttp.Describe(fallbackFailure))})");
+
+        // 两端都正常返回 200、只是没有命中曲目 —— 这是「搜不到」，不是上游故障。
+        // 以前这里抛 502，页面只能弹错误；正确语义是返回空列表，让界面显示「没有结果」。
+        if (fallbackFailure is null &&
+            primaryStatus.StartsWith("200", StringComparison.Ordinal) &&
+            fallbackStatus.StartsWith("200", StringComparison.Ordinal))
+        {
+            return new List<OnlineTrack>();
+        }
+
         throw new OnlineUpstreamException(
             $"QQ 搜索主备端点均失败 (primary={primaryStatus}, fallback={fallbackStatus})",
             502);

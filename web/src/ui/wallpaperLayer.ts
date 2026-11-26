@@ -10,7 +10,7 @@
  */
 
 import type { WallpaperLayerState } from '../core/bridge';
-import { onWallpaperLayer } from '../core/bridge';
+import { host, onWallpaperLayer } from '../core/bridge';
 import { onlineEndpoint } from '../online/client';
 import { onBeat, startBeatClock } from '../core/beatClock';
 import { getSettings } from '../core/settings';
@@ -75,6 +75,10 @@ export class WallpaperLayer {
   private resumeTimer = 0;
   /** 上一次真正应用过的显隐状态：轮询只在变化时才动 DOM，否则每 250ms 一次强制布局会把主线程喂满。 */
   private hiddenState = false;
+  /** 宿主把窗口收进托盘（离屏停放）时暂停解码，避免后台白烧一个核；回来再续播。 */
+  private hostParked = false;
+  /** 停放期间被我们暂停的页面动画：只恢复自己停过的那批。 */
+  private readonly parkedAnimations = new Set<Animation>();
 
   constructor() {
     this.root = document.createElement('div');
@@ -152,7 +156,8 @@ export class WallpaperLayer {
   /** 每 4 秒一次：把被系统节流暂停的 video 续上，顺便看住「画面定住但元素没暂停」的情况。 */
   private resumePlayback(): void {
     const layer = this.lastLayer;
-    if (!layer || layer.paused || !layerVisible(layer)) return;
+    // 托盘停放期间不要续播：4s 巡检会把刚暂停的解码器又拉起来，离屏白烧一个核。
+    if (!layer || layer.paused || !layerVisible(layer) || this.hostParked) return;
     for (const video of Array.from(this.root.querySelectorAll('video'))) {
       const time = video.currentTime;
       const last = Number(video.dataset.lastTime ?? '-1');
@@ -656,6 +661,52 @@ export class WallpaperLayer {
     }, 30_000);
   }
 
+  /** 宿主收进托盘 / 从托盘回来：暂停解码与页面装饰动画（窗在屏幕外，没人看得见）。 */
+  setHostParked(parked: boolean): void {
+    this.hostParked = parked;
+    // 给页面级循环一个可观察的开关：舞台光效等 rAF 自循环靠这个类休眠，
+    // 否则整窗离屏时仍在按 200Hz 续订 rAF，白白烧一个核。
+    document.documentElement.classList.toggle('is-host-parked', parked);
+
+    // 页面上的装饰动画（卡片网点/印花/星标等几十条无限 alternate）在 200Hz 屏幕上
+    // 合计能吃掉半个核；停放期间整窗离屏，全部暂停，回来再按记录恢复。
+    if (parked) {
+      for (const anim of document.getAnimations()) {
+        if (anim.playState !== 'running') continue;
+        try {
+          anim.pause();
+          this.parkedAnimations.add(anim);
+        } catch {
+          // 已经被移除的动画忽略。
+        }
+      }
+    } else {
+      for (const anim of this.parkedAnimations) {
+        try {
+          anim.play();
+        } catch {
+          // 元素已卸载忽略。
+        }
+      }
+      this.parkedAnimations.clear();
+    }
+
+    if (!(this.current instanceof HTMLVideoElement)) {
+      return;
+    }
+
+    if (parked) {
+      if (!this.current.paused) {
+        this.current.pause();
+      }
+      return;
+    }
+
+    if (this.current.paused) {
+      void this.current.play().catch(() => undefined);
+    }
+  }
+
   /** 停掉这一层（清媒体、隐藏 DOM），可再被 start/apply 唤醒。 */
   clear(): void {
     window.clearTimeout(this.parkTimer);
@@ -921,6 +972,13 @@ export function startWallpaperLayer(): WallpaperLayer {
   if (!shared) {
     shared = new WallpaperLayer();
     shared.start();
+    // 宿主 windowState 里的 parked：托盘停放时暂停壁纸解码（窗已经在屏幕外，没人看得见）。
+    host.onMessage((message) => {
+      if (message.type !== 'host') return;
+      if ((message.event === 'windowState' || message.event === 'ready') && typeof message.parked === 'boolean') {
+        shared?.setHostParked(message.parked);
+      }
+    });
     // 只盯 .app 自己的 class（页面级导航会改它），不再观察整棵 document：
     // 歌词逐字高亮、进度条、卡片动画每帧都在改 class，subtree 观察器会被打成
     // 每帧一次回调，回调里再强制回流，主线程直接卡死（双击歌词页复现）。

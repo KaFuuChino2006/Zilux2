@@ -224,6 +224,9 @@ internal sealed partial class DesktopSurface : IDisposable
         try
         {
             _health.Stop();
+            // 叠层时钟也要停：它按秒回调并写 _overlay，窗口关掉后还在跑
+            // 既拿不到画面，也会让 Dispatcher 一直持有这个表面（内存/句柄不回收）。
+            _overlayTimer.Stop();
         }
         catch
         {

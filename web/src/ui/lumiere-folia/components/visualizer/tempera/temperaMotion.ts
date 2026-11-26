@@ -63,6 +63,14 @@ const ECHO_ALPHA = 0.5;
  * behaves exactly as it did.
  */
 const MAX_REVEAL_WINDOW = 1.35;
+/**
+ * Longest window the glyph's *landing* spring runs over. Position and rotation keep the full
+ * stretched window above, but the overshoot that makes an arrival feel weighted has to happen
+ * on the beat, not across the whole line: a phrase whose entrance is stretched over three
+ * seconds turned its spring into an invisible creep. Capped here, every style still lands the
+ * same way it did before the settle window grew.
+ */
+const MAX_SETTLE_SPRING = 0.62;
 /** How much wider the sung block gets. Deliberately small: this is tracking, not drift. */
 const RELEASE_TRACKING = 0.055;
 
@@ -77,7 +85,9 @@ export const resolveTemperaGlyphMotion = (
     const window = Math.max(glyph.settleTime - glyph.startTime, 0.08);
     const linear = clamp01((time - glyph.startTime) / window);
     const travel = 1 - easeTemperaEnter(linear);
-    const entrance = resolveTemperaEnterFrame(glyph.enterStyle, glyph, travel, linear);
+    // The landing spring runs on its own short clock so the overshoot stays a snap.
+    const springLinear = clamp01((time - glyph.startTime) / Math.max(Math.min(window, MAX_SETTLE_SPRING), 0.08));
+    const entrance = resolveTemperaEnterFrame(glyph.enterStyle, glyph, travel, linear, springLinear);
     // Opacity and the echo run on their own capped window; position and scale keep the full
     // stretched one, which is what turns a long line into one continuous move.
     const reveal = clamp01((time - glyph.startTime) / Math.min(window, MAX_REVEAL_WINDOW));

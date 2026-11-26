@@ -257,6 +257,8 @@ export interface TemperaShot {
      * has to use this instead, or the graphics are still arriving long after the type landed.
      */
     lyricEndTime: number;
+    /** Optional playback time at which a retained lyric begins to leave. */
+    holdUntil?: number;
     slices: TemperaShotSlice[];
     /**
      * A bridge shot carries an instrumental gap between paragraphs: it has no lyric slices,

@@ -78,6 +78,23 @@ const curves = () => ({
   sweepHp: [{ t: 0, v: 12_000 }, { t: 1, v: 20 }],
 });
 
+test('摘链前两只低通完全打开，仅继续播放的一侧恢复分频增益', () => {
+  for (const continuing of [false, true]) {
+    const deck = fakeDeck();
+    deck.sweepLp.context = ctx;
+    for (const key of ['bTrim', 'aStyleHigh', 'aStylePresence', 'bStyleHigh', 'bStylePresence', 'bStyleLow']) {
+      deck[key] = { gain: param(0) };
+    }
+    G.relaxAutomixV2Chain(deck, 0.18, continuing);
+    for (const filter of [deck.sweepLp, deck.aDarken]) {
+      assert.deepEqual(filter.frequency.calls.at(-1), ['lin', 24_000, 0.18]);
+    }
+    for (const band of [deck.lowGain, deck.midGain, deck.highGain, deck.lowTrim]) {
+      assert.deepEqual(band.gain.calls.at(-1), continuing ? ['lin', 1, 0.18] : undefined);
+    }
+  }
+});
+
 test('主曲线只排线性斜坡，且增益从 0 起（不会满音量漏出来）', () => {
   const deck = fakeDeck();
   G.scheduleAutomixV2(deck, 10, 8, curves());

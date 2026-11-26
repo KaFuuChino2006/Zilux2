@@ -1,4 +1,6 @@
 import { applyFlowPalette, type FlowSettings } from '../../../../flowSettings';
+import { overlapFx } from '../../../../overlapSettings';
+import { perfMark, perfOn } from '../../../../perfProbe';
 import type { TemperaTuning, Theme } from '../../../types';
 import { resolveThemeFontStack, resolveThemeFontWeight } from '../../../utils/fontStacks';
 import { buildWordColorRangesFromMatchers, prepareWordColorMatchers } from '../wordColoring';
@@ -8,6 +10,7 @@ import { easeTemperaEnter } from './temperaMotion';
 import { resolveTemperaPalette, type TemperaPalette } from './temperaPalette';
 import { buildTemperaBlocks, type TemperaBlocksView } from './temperaBlocks';
 import { isTemperaLayoutSegment, resolveTemperaLayout } from './temperaLayout';
+import type { TemperaGlyphPlacement } from './temperaLayout';
 import {
     buildTemperaFragmentViews,
     buildTemperaTextViews,
@@ -56,26 +59,149 @@ const createTemperaTextFilter = (
     pixi: PixiModule,
     palette: TemperaPalette,
     inversion: boolean,
+    tintAnchor?: import('pixi.js').Sprite,
 ): import('pixi.js').Filter | null => {
     if (!inversion && !palette.textGradient) return null;
     return createTemperaDifferenceFilter(pixi, {
         ink: palette.ink,
         paper: palette.paper,
         tint: palette.textGradient,
+        tintAnchor,
         inversion,
     });
 };
+
+export interface TemperaBracketView {
+    /** Turns and travels with the shot; both ends are its children. */
+    group: import('pixi.js').Container;
+    /** The closing end, which travels along the line as it is sung (bracket style only). */
+    right: import('pixi.js').Graphics | null;
+    /** Which mark this line drew: the two ends, or the four corner crosses. */
+    style: 'bracket' | 'cross';
+    /** Cross style: the two horizontal rules, drawn left to right first. */
+    horizontal: import('pixi.js').Graphics | null;
+    /** Cross style: the two vertical rules, drawn top to bottom a beat after the horizontals. */
+    vertical: import('pixi.js').Graphics | null;
+    /** Half the frame's height and the corner overshoot, in writing-space pixels. */
+    top: number;
+    bottom: number;
+    overshoot: number;
+    /** Half the sentence's width, padding included, in writing-space pixels. */
+    half: number;
+    /** Softens the frame as the line dissolves, so it dries out with the type. */
+    blur: import('pixi.js').BlurFilter;
+    /** Seconds after the first word before this frame starts to open. */
+    delay: number;
+}
+
+export interface TemperaFieldView {
+    /** Short strokes flicked around each character as it lands. */
+    graphics: import('pixi.js').Graphics;
+}
+
+export interface TemperaMaskView {
+    /** A paper plate that hides the type it covers. */
+    bar: import('pixi.js').Graphics;
+    /** Centre of the covered word, in shot-local pixels. */
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    /** Playback time the plate arrives at (a touch before the word is sung). */
+    start: number;
+    /** Playback time the covered word finishes; the plate leaves from here. */
+    end: number;
+    /** 0 slide+fade, 1 unfold from one end, 2 bloom, 3 stamp. */
+    variant: number;
+    /** 0 left, 1 right, 2 top, 3 bottom - the side the plate enters from. */
+    direction: number;
+    /** Extra distance the slide variant travels, so it starts clear of the word. */
+    travel: number;
+    /** The line's writing angle; the plate's long edge lies along the baseline. */
+    orientation: number;
+    /** When the plate was first drawn; the entrance starts here, so a late first frame still plays it. */
+    shownAt?: number;
+    /** 0 rectangle, 1 capsule, 2 thin rule, 3 slanted band, 4 framed band. */
+    shape: number;
+    /** Height fraction the band actually paints (the thin rule is a slice of the block). */
+    slice: number;
+    /** Shear for the slanted band, in x per unit y. */
+    slant: number;
+    /** Paper tone the covered glyphs are repainted to; only the type reacts, nothing else. */
+    paper: string;
+    /** The 2-4 glyphs under the plate. */
+    covered: TemperaGlyphView[];
+}
+
+export interface TemperaUnderlineView {
+    /** Turns with the sentence; the rail and its head are its children. */
+    group: import('pixi.js').Container;
+    /** A left-anchored rule, scaled along x as the words are sung. */
+    rail: import('pixi.js').Graphics;
+    /** The bright nib that rides the end of the rule. */
+    head: import('pixi.js').Graphics;
+    /** Half the sentence's width, so the rail starts at the left edge. */
+    half: number;
+    x: number;
+    y: number;
+    /** Softens the rule as it lets go, matching the type's exit. */
+    blur: import('pixi.js').BlurFilter;
+    /** Seconds after the first word before the rule starts to write. */
+    delay: number;
+}
 
 export interface TemperaShotView {
     shot: TemperaShot;
     container: import('pixi.js').Container;
     glyphs: TemperaGlyphView[];
+
     blocks: TemperaBlocksView;
     images: TemperaImageLayerView;
     baseX: number;
     baseY: number;
+    /** This frame's composition drift (shot camera path + breathing), in viewport pixels.
+     * The shared follow camera adds it to the line's anchor; without it the camera aims at
+     * where the glyphs were laid out and a line that pans inside its own plate drifts off
+     * centre while it is sung. */
+    frameX: number;
+    frameY: number;
+    /** The shot camera's zoom this frame (applied about the viewport centre). */
+    frameScale: number;
+    /** Quarter turns this line is written at, in radians, unbounded. The follow camera unwinds
+     * it so the line is upright while it is sung. */
+    orientation: number;
     /** Carries the difference inversion filter; the runtime clears it on destroy. */
     textLayer: import('pixi.js').Container;
+    /** Grains of ink flicked off each character as it lands; 重合 only, null elsewhere. */
+    specks: import('pixi.js').Graphics | null;
+    /** Colour of those grains: the palette's ink, so they read as spray off the type. */
+    speckColor: string;
+    /** The sentence's own frame, turned with the type; 重合 only, null elsewhere. */
+    bracket: TemperaBracketView | null;
+    /** A paper plate that sweeps across one word; 重合 only, null elsewhere. */
+    mask: TemperaMaskView | null;
+    /** The rule under the sentence, written from left to right as it is sung. */
+    underline: TemperaUnderlineView | null;
+    /** Under the type: a thin frame under each character, like a block of movable type. */
+    moulds: import('pixi.js').Graphics | null;
+    /** The glyphs picked to sit in a compositor's forme, as indexes into `glyphs`. */
+    mouldGlyphs: number[];
+    /** The disturbance field: short strokes around each character as it lands; 重合 only. */
+    field: TemperaFieldView | null;
+    progressArc: import('pixi.js').Graphics | null;
+    interGlyph: import('pixi.js').Graphics | null;
+    interGlyphStyles: ('ticks' | 'beads' | 'stitch' | 'rings' | 'chevron' | 'diamond')[];
+    lyricMarks: import('pixi.js').Container | null;
+    progressHalo: import('pixi.js').Graphics | null;
+    accentColor: string;
+    /** A chop mark stamped at the end of the line; 重合 only, null elsewhere. */
+    seal: import('pixi.js').Graphics | null;
+    sealX: number;
+    sealY: number;
+    sealSize: number;
+    sealRotation: number;
+    sealStart: number;
+    sealColor: string;
     revealDoneTime: number;
 }
 
@@ -91,6 +217,7 @@ export interface TemperaSceneView extends TemperaSceneFilterTarget {
 
 export interface TemperaSceneBuildOptions {
     programSeed: string;
+    followingLine?: number;
     host: HTMLDivElement;
     theme: Theme;
     tuning: TemperaTuning;
@@ -102,6 +229,9 @@ export interface TemperaSceneBuildOptions {
     renderResolution: number;
     lyricsFontScale: number;
     staticMode: boolean;
+    /** "重合" stage: every lyric line gets its own place on the page, and the camera centres
+     * the line being sung. Off for the flow stage, whose compositions own their layout. */
+    lyricsOnly?: boolean;
     /** Cover-art colours for the gradient colour mode; empty falls back to the theme hues. */
     coverColors: string[];
     /** Loaded textures for the user's placed images, keyed by placement id. */
@@ -371,18 +501,348 @@ const applyTemperaScenePostProcess = (
     return filters;
 };
 
-export const buildTemperaScene = (
+/** Hex mix used for the overlap ink wash; palette colours are always #rrggbb. */
+const mixHex = (from: string, to: string, amount: number): string => {
+    const parse = (value: string) => {
+        const hex = value.replace('#', '');
+        const full = hex.length === 3 ? hex.split('').map(c => c + c).join('') : hex;
+        return [0, 2, 4].map(index => parseInt(full.slice(index, index + 2), 16));
+    };
+    const a = parse(from);
+    const b = parse(to);
+    const channel = (index: number) => Math.round(a[index] + (b[index] - a[index]) * amount);
+    return `#${[0, 1, 2].map(index => channel(index).toString(16).padStart(2, '0')).join('')}`;
+};
+
+/**
+ * 重合的歌词不再是一整块平色：整句从主墨色向强调色走一层很浅的渐变，最后一个字最暖。
+ * 关键字仍然优先（`placement.color` 覆盖 tint），所以重点词不会被这层洗掉。
+ */
+const applyOverlapInkTint = (
+    placements: TemperaGlyphPlacement[],
+    palette: { ink: string; accent: string },
+    enabled: boolean | undefined,
+) => {
+    if (!enabled) return placements;
+    const strength = overlapFx().lyricTint;
+    const last = Math.max(1, placements.length - 1);
+    return placements.map((placement, index) => ({
+        ...placement,
+        tint: strength > 0.001
+            ? mixHex(palette.ink, palette.accent, strength * (index / last))
+            : null,
+    }));
+};
+
+/** Where a line is written: a seeded random spot a short way off centre, not a fixed corner.
+ *
+ * The offset is stable for a line (same seed, same spot on replay) but successive lines scatter
+ * around the frame instead of walking a cycle, so the type never reads as pinned to the corners.
+ * Keeping it within ~15% also keeps the follow camera's pan short: the corners demanded a
+ * three-quarter-frame shove that read as a hard cut every line. */
+const resolveOverlapAnchor = (lineIndex: number, width: number, height: number, seed: number) => {
+    const index = Math.abs(lineIndex);
+    const angle = temperaHash01(seed, index, 307) * Math.PI * 2;
+    // Spread is the dial in the panel; the 2.2 factor opens the ring up so a mid setting already
+    // reaches the edges of the frame instead of clustering around the centre.
+    const radius = 0.07 + temperaHash01(seed, index, 311) * overlapFx().scatter * 2.2;
+    return {x: Math.cos(angle) * radius * width, y: Math.sin(angle) * radius * height};
+};
+
+/** How often a line is written out of the stage's current angle. The turn is an accent, not the
+ * rule: roughly one line in ten gets it, and the rest are written upright and are simply glided
+ * to the middle by the follow camera. */
+const resolveOverlapOrientation = (lineIndex: number, seed: number) => {
+    const fx = overlapFx();
+    const chance = Math.min(1, Math.max(0, fx.turnChance));
+    const minDeg = Math.min(fx.turnMinDeg, fx.turnMaxDeg);
+    const maxDeg = Math.max(fx.turnMinDeg, fx.turnMaxDeg);
+    let previousPrevious = 0;
+    let previous = 0;
+    let turn = 0;
+    for (let index = 1; index <= Math.abs(lineIndex); index += 1) {
+        // No turn on this line: the stage keeps the angle it already has, so the line reads
+        // upright exactly like it did before the turn accent existed.
+        if (temperaHash01(seed, index, 211) >= chance) continue;
+        const direction = previous !== 0 && previous === previousPrevious
+            ? -previous
+            : (temperaHash01(seed, index, 223) < 0.5 ? -1 : 1);
+        const magnitude = (minDeg + temperaHash01(seed, index, 227) * (maxDeg - minDeg)) * Math.PI / 180;
+        turn += direction * magnitude;
+        previousPrevious = previous;
+        previous = direction;
+    }
+    return lineIndex < 0 ? -turn : turn;
+};
+
+/** Lays one line out for 重合: a seeded turn about the block's own centre (positions and glyph
+ * orientation together, so the line really runs at that angle), then the block is nudged to its
+ * seeded spot. Rotating the block instead of the plate keeps the type at a readable size; the
+ * camera does the righting, not the layout.
+ *
+ * The returned `bracket` is the line's own frame, in writing space: the two ends are measured
+ * before the turn so they sit at the ends of the sentence, and the group is turned with the type.
+ *
+ * `placementIndex` is the shot's serial position in the song (paragraph * 32 + shot), not the
+ * lyric line: with 拆句 on, one sung line becomes several chunks, and keying the spot on the line
+ * put every chunk of it on exactly the same anchor - the chunks then read as one pile of type.
+ * The turn still comes from `lineIndex`, so a split line keeps a single tilt. */
+const resolveOverlapPlacement = (
+    placementIndex: number,
+    lineIndex: number,
+    placements: TemperaGlyphPlacement[],
+    width: number,
+    height: number,
+    seed: number,
+): {
+    placements: TemperaGlyphPlacement[];
+    orientation: number;
+    bracket: {x: number; y: number; halfWidth: number; halfHeight: number; rotation: number} | null;
+    underline: {x: number; y: number; halfWidth: number; bottom: number; rotation: number} | null;
+} => {
+    if (!placements.length) return {placements, orientation: 0, bracket: null, underline: null};
+    let minX = Number.POSITIVE_INFINITY, maxX = Number.NEGATIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY, maxY = Number.NEGATIVE_INFINITY;
+    for (const placement of placements) {
+        if (placement.x < minX) minX = placement.x;
+        if (placement.x > maxX) maxX = placement.x;
+        if (placement.y < minY) minY = placement.y;
+        if (placement.y > maxY) maxY = placement.y;
+    }
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+    const orientation = resolveOverlapOrientation(lineIndex, seed);
+    const cos = Math.cos(orientation);
+    const sin = Math.sin(orientation);
+    const rotated = placements.map(placement => {
+        const dx = placement.x - centerX;
+        const dy = placement.y - centerY;
+        return {
+            ...placement,
+            x: centerX + dx * cos - dy * sin,
+            y: centerY + dx * sin + dy * cos,
+            rotation: placement.rotation + orientation,
+        };
+    });
+    let rMinX = Number.POSITIVE_INFINITY, rMaxX = Number.NEGATIVE_INFINITY;
+    let rMinY = Number.POSITIVE_INFINITY, rMaxY = Number.NEGATIVE_INFINITY;
+    for (const placement of rotated) {
+        if (placement.x < rMinX) rMinX = placement.x;
+        if (placement.x > rMaxX) rMaxX = placement.x;
+        if (placement.y < rMinY) rMinY = placement.y;
+        if (placement.y > rMaxY) rMaxY = placement.y;
+    }
+    const margin = Math.max(24, Math.min(width, height) * 0.05);
+    const fx = overlapFx();
+    // Where the block sits. Three ways, all measured on the block's own bounding box:
+    //
+    // scatter - the original seeded spot. A wide line (half-width up to ~0.3W) leaves almost no
+    //   sideways room, so two clamped offsets can pile onto the same wall; that is the old look,
+    //   kept for anyone who preferred it.
+    // grid - shots take turns in a 2x3 grid laid on the frame; two rows is the most that still
+    //   guarantees the next line cannot sit on the previous one, whatever its size, and columns
+    //   step every two shots so the line after next lands beside it instead of on it.
+    const boxX = (rMinX + rMaxX) / 2 - centerX, boxY = (rMinY + rMaxY) / 2 - centerY;
+    const halfW = (rMaxX - rMinX) / 2, halfH = (rMaxY - rMinY) / 2;
+    const reachX = Math.max(0, width / 2 - margin - halfW);
+    // Asymmetric clamp: the block may be off-centre inside its own layout box, so "keep it inside
+    // the frame" is not the same as "shift it at most reachX/reachY".
+    const limitX = (shift: number): number => {
+        const base = centerX + boxX - width / 2;
+        return Math.max(margin + halfW - width / 2 - base, Math.min(width - margin - halfW - width / 2 - base, shift));
+    };
+    const limitY = (shift: number): number => {
+        const base = centerY + boxY - height / 2;
+        return Math.max(margin + halfH - height / 2 - base, Math.min(height - margin - halfH - height / 2 - base, shift));
+    };
+    const rowPhase = Math.floor(temperaHash01(seed, 0, 401) * 2);
+    const colPhase = Math.floor(temperaHash01(seed, 0, 409) * 3);
+    const grid = (index: number): {shiftX: number; shiftY: number} => {
+        const step = Math.abs(index);
+        const row = (step + rowPhase) % 2;
+        const column = (Math.floor(step / 2) + colPhase) % 3;
+        // Cell centres in frame space; ±quarter frame for the rows keeps both of them a whole
+        // half-frame apart, which is as much room as a block can need.
+        const cellX = (column - 1) * reachX * 0.85
+            + (temperaHash01(seed, index, 307) - 0.5) * reachX * 0.15;
+        const cellY = (row === 0 ? -1 : 1) * (height / 4 - margin / 2)
+            + (temperaHash01(seed, index, 311) - 0.5) * height * 0.04;
+        return {shiftX: limitX(cellX - boxX), shiftY: limitY(cellY - boxY)};
+    };
+    let spot: {shiftX: number; shiftY: number};
+    if (fx.placement === 'scatter') {
+        const anchor = resolveOverlapAnchor(placementIndex, width, height, seed);
+        spot = {shiftX: limitX(anchor.x - boxX), shiftY: limitY(anchor.y - boxY)};
+    } else {
+        spot = grid(placementIndex);
+    }
+    const {shiftX, shiftY} = spot;
+    if (perfOn()) {
+        const bucket = ((window as unknown as {__overlapSpots?: {i: number; x: number; y: number; s: number; h: number; w: number; bh: number; bx: number; by: number}[]}).__overlapSpots ??= []);
+        if (bucket.length < 4000) bucket.push({
+            i: placementIndex,
+            x: Math.round(shiftX),
+            y: Math.round(shiftY),
+            s: seed % 100000,
+            h: Math.round(height),
+            w: Math.round(rMaxX - rMinX),
+            bh: Math.round(rMaxY - rMinY),
+            bx: Math.round(boxX),
+            by: Math.round(boxY),
+        });
+    }
+    return {
+        placements: rotated.map(placement => ({
+            ...placement,
+            x: placement.x + shiftX,
+            y: placement.y + shiftY,
+        })),
+        orientation,
+        bracket: {
+            x: centerX + shiftX,
+            y: centerY + shiftY,
+            halfWidth: (maxX - minX) / 2,
+            halfHeight: (maxY - minY) / 2,
+            rotation: orientation,
+        },
+        underline: {
+            x: centerX + shiftX,
+            y: centerY + shiftY,
+            halfWidth: (maxX - minX) / 2,
+            // The rule sits below the writing frame's own bottom edge, in the sentence's frame.
+            bottom: (maxY - minY) / 2 + Math.max(5, (placements[0]?.fontSize ?? 16) * 0.18),
+            rotation: orientation,
+        },
+    };
+};
+
+/**
+ * Picks one contiguous run of glyphs and the plate that covers it. The run length is random per
+ * line (two to four characters), and the plate is measured from the real glyph boxes so it
+ * wraps the whole word - a single character gives a short square, four give a long bar. The plate
+ * rides the line's rotation, so it reads as a mask laid on the type rather than a UI rectangle.
+ */
+const resolveOverlapMask = (
+    pixi: PixiModule,
+    lineIndex: number,
+    glyphs: TemperaGlyphView[],
+    palette: TemperaPalette,
+    seed: number,
+    orientation: number,
+): TemperaMaskView | null => {
+    const fx = overlapFx();
+    if (!fx.showMask || glyphs.length === 0) return null;
+    if (temperaHash01(seed, lineIndex, 401) >= fx.maskChance) return null;
+    const count = glyphs.length;
+    const minSpan = Math.min(2, count);
+    const maxSpan = Math.min(4, count);
+    const span = minSpan + Math.floor(temperaHash01(seed, lineIndex, 409) * (maxSpan - minSpan + 1));
+    const first = Math.min(count - span, Math.floor(temperaHash01(seed, lineIndex, 413) * (count - span + 1)));
+    const covered = glyphs.slice(first, first + span);
+    const originX = covered.reduce((sum, glyph) => sum + glyph.baseX, 0) / span;
+    const originY = covered.reduce((sum, glyph) => sum + glyph.baseY, 0) / span;
+    const cos = Math.cos(orientation);
+    const sin = Math.sin(orientation);
+    let minX = Number.POSITIVE_INFINITY, maxX = Number.NEGATIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY, maxY = Number.NEGATIVE_INFINITY;
+    let fontSize = 0;
+    for (const glyph of covered) {
+        // Measure in the line's own writing frame, so the plate's long edge runs along the
+        // baseline instead of cutting across a turned line as a screen-aligned box would.
+        const dx = glyph.baseX - originX;
+        const dy = glyph.baseY - originY;
+        const localX = dx * cos + dy * sin;
+        const localY = -dx * sin + dy * cos;
+        const halfWidth = glyph.display.width / 2;
+        const halfHeight = glyph.display.height / 2;
+        minX = Math.min(minX, localX - halfWidth);
+        maxX = Math.max(maxX, localX + halfWidth);
+        minY = Math.min(minY, localY - halfHeight);
+        maxY = Math.max(maxY, localY + halfHeight);
+        fontSize = Math.max(fontSize, glyph.display.height);
+    }
+    const pad = Math.max(4, fontSize * 0.08);
+    const width = maxX - minX + pad * 2;
+    const height = maxY - minY + pad * 2;
+    const centreX = (minX + maxX) / 2;
+    const centreY = (minY + maxY) / 2;
+    const x = originX + centreX * cos - centreY * sin;
+    const y = originY + centreX * sin + centreY * cos;
+    const direction = Math.floor(temperaHash01(seed, lineIndex, 419) * 4) % 4;
+    // Four seeded entrances so consecutive masks do not all arrive the same way.
+    const variant = Math.floor(temperaHash01(seed, lineIndex, 421) * 4) % 4;
+    // Five cuts of the same band: proof rectangle, capsule, thin rule, slanted strip, framed
+    // band. The ellipse was dropped — over a line of type it read as a smudge, not a gesture.
+    const shape = Math.floor(temperaHash01(seed, lineIndex, 431) * 5) % 5;
+    const slice = shape === 2 ? 0.34 : 1;
+    const slant = (temperaHash01(seed, lineIndex, 433) - 0.5) * 0.36;
+    const travel = (direction < 2 ? width : height) * 0.62 + 36;
+    const start = Math.min(...covered.map(glyph => glyph.motion.startTime));
+    // The plate holds until the line is sung out, not just until its own fragment is: only then
+    // does it begin to fade.
+    const end = Math.max(...glyphs.map(glyph => glyph.motion.endTime));
+    const bar = new pixi.Graphics();
+    // A translucent accent band, nothing more. The inversion is applied to the glyphs it covers
+    // (see the frame pass), so arcs, trails, specks and the ruler underneath are only tinted,
+    // never inverted. Keyword glyphs are left alone entirely.
+    const fill = {color: palette.accent, alpha: 1};
+    if (shape === 1) {
+        bar.roundRect(-width / 2, -height / 2, width, height, Math.min(height / 2, width * 0.18)).fill(fill);
+    } else if (shape === 2) {
+        const h = height * slice;
+        bar.rect(-width / 2, -h / 2, width, h).fill(fill);
+    } else if (shape === 3) {
+        const shear = slant * height / 2;
+        bar.poly([
+            -width / 2 - shear, -height / 2,
+            width / 2 - shear, -height / 2,
+            width / 2 + shear, height / 2,
+            -width / 2 + shear, height / 2,
+        ]).fill(fill);
+    } else {
+        bar.rect(-width / 2, -height / 2, width, height).fill(fill);
+        if (shape === 4) {
+            bar.rect(-width / 2, -height / 2, width, height)
+                .stroke({color: palette.ink, width: 1.6, alpha: 0.9, alignment: 0.5});
+        }
+    }
+    bar.position.set(x, y);
+    bar.rotation = orientation;
+    bar.visible = false;
+    return {
+        bar, x, y, width, height, start, end, variant, direction, travel, orientation,
+        shape, slice, slant, paper: palette.paper, covered,
+    };
+};
+
+/**
+ * Builds one paragraph scene a shot at a time.
+ *
+ * The body is unchanged from the synchronous builder; the only difference is the `yield` at
+ * the end of every shot, which lets the runtime spend a fixed slice per frame instead of
+ * paying 200 ms in a single frame when a dense paragraph is being prepared. Everything the
+ * generator touches stays invisible until the caller adopts the finished view, so pausing
+ * between shots cannot be seen.
+ */
+export function* temperaSceneSteps(
     pixi: PixiModule,
     options: TemperaSceneBuildOptions,
     paragraph: TemperaParagraph,
-): TemperaSceneView => {
+    holder?: { container?: import('pixi.js').Container },
+): Generator<void, TemperaSceneView, void> {
     const { Container, Graphics } = pixi;
+    const buildAt = perfOn() ? performance.now() : 0;
+    let blocksMs = 0, imageMs = 0, layoutMs = 0, glyphMs = 0;
     const width = Math.max(options.host.clientWidth, 320);
     const height = Math.max(options.host.clientHeight, 240);
     const container = new Container();
+    // Handed out before the first yield so a cancelled build can still free what it created.
+    if (holder) holder.container = container;
     const { tuning } = options;
     const palette = resolveTemperaPalette(options.theme, tuning, options.coverColors);
     const sceneSeed = hashTemperaSeed(`${options.programSeed}:${paragraph.id}`);
+    // `tempera-p<index>`; only used to keep spots apart across paragraphs (see placementIndex).
+    const paragraphIndex = Number(/p(\d+)$/.exec(paragraph.id)?.[1] ?? 0);
     const flowStyle=(options.theme as Theme & {flowStyle?:FlowSettings}).flowStyle;
     if(flowStyle) applyFlowPalette(palette,flowStyle,options.coverColors??[],sceneSeed);
     const fontFamily = resolveThemeFontStack(options.theme);
@@ -423,7 +883,9 @@ export const buildTemperaScene = (
 
     // Threaded so two neighbouring shots do not land on the same picture.
     let lastImageId: string | null = null;
-    const shots = paragraph.shots.map((shot, shotIndex) => {
+    const shots: TemperaSceneView['shots'] = [];
+    for (let shotIndex = 0; shotIndex < paragraph.shots.length; shotIndex += 1) {
+        const shot = paragraph.shots[shotIndex];
         const shotContainer = new Container();
         // A shot normally shows one half-phrase slice; whole-line mode deliberately trades
         // some of that type scale for keeping the source lyric line together.
@@ -449,6 +911,7 @@ export const buildTemperaScene = (
         ) * 1.5)) * options.lyricsFontScale * (flowStyle?.sizeScale ?? 1);
 
         const shotSeed = sceneSeed + shotIndex * 97;
+        const phaseAt = perfOn() ? performance.now() : 0;
         const blocks = buildTemperaBlocks(pixi, {
             kind: shot.kind,
             mg: shot.mgVariants?.map(variant => ({variant,density:flowStyle?.mgDensity??1,scale:flowStyle?.mgScale??1,opacity:flowStyle?.mgOpacity??.8,stagger:flowStyle?.mgStagger??.65})),
@@ -463,7 +926,9 @@ export const buildTemperaScene = (
             flowAngle: shot.flowAngle,
         });
         blocks.container.visible = tuning.showBlocks;
+        if (phaseAt) { blocksMs += performance.now() - phaseAt; }
 
+        const imageAt = perfOn() ? performance.now() : 0;
         const images = buildTemperaImageLayer(pixi, {
             pool: tuning.layerImages,
             frequency: tuning.layerImageFrequency,
@@ -476,6 +941,7 @@ export const buildTemperaScene = (
             previousId: lastImageId,
         });
         lastImageId = images.chosenId ?? lastImageId;
+        if (imageAt) { imageMs += performance.now() - imageAt; }
         const watermarkLayer = new Container();
         const textLayer = new Container();
         const echoLayer = new Container();
@@ -496,7 +962,12 @@ export const buildTemperaScene = (
             keywordLayer,
             images.front,
         );
+        // Wet-ink specks sit in front of everything: they are the only mark allowed over the
+        // type, and at this size they read as paper spray rather than as a layer on top.
+        const specks = options.lyricsOnly && overlapFx().specks > 0 ? new Graphics() : null;
+        if (specks) shotContainer.addChild(specks);
 
+        const layoutAt = perfOn() ? performance.now() : 0;
         const placements = resolveTemperaLayout({
             lines: linesSegments,
             shotKind: shot.kind,
@@ -509,17 +980,202 @@ export const buildTemperaScene = (
             segmentColors,
             settleStretch: tuning.glyphSettleStretch,
         });
+        if (layoutAt) { layoutMs += performance.now() - layoutAt; }
+        // Serial position in the song, not the lyric line: with 拆句 on, one line is several shots
+        // and each one needs its own spot (see resolveOverlapPlacement).
+        const placementIndex = paragraphIndex * 32 + shotIndex;
+        const placement = options.lyricsOnly
+            ? resolveOverlapPlacement(
+                placementIndex,
+                shot.slices[0]?.lineIndex ?? shotIndex,
+                placements, width, height,
+                hashTemperaSeed(options.programSeed),
+            )
+            : {placements, orientation: 0, bracket: null, underline: null};
+        const placedGlyphs = applyOverlapInkTint(placement.placements, palette, options.lyricsOnly);
+        let bracket: TemperaBracketView | null = null;
+        const lineIndex = shot.slices[0]?.lineIndex ?? shotIndex;
+        const accentSeed = hashTemperaSeed(options.programSeed);
+        if (placement.bracket && overlapFx().showBracket
+            && temperaHash01(accentSeed, lineIndex, 271) < overlapFx().bracketChance) {
+            const frame = placement.bracket;
+            const group = new Container();
+            group.position.set(frame.x, frame.y);
+            group.rotation = frame.rotation;
+            const half = frame.halfWidth + 14;
+            const top = -(frame.halfHeight + 10);
+            const bottom = frame.halfHeight + 10;
+            const arm = Math.min(16, Math.max(8, frame.halfHeight * 0.6));
+            const stroke = {width: 1.1, color: palette.ink, alpha: 1, cap: 'round' as const, join: 'round' as const};
+            // Two marks share this slot. The default is the pair of ends: the opening end stays
+            // at the start of the sentence, the closing end is moved by the frame pass as the
+            // lyric is sung, so the frame opens along the words instead of appearing whole.
+            // The alt is a crop-mark frame - four sides that overshoot their corners, like the
+            // registration crosses a print shop draws around a plate. It is revealed by a mask
+            // that walks left to right on the same progress, so both read as one gesture.
+            const cross = temperaHash01(accentSeed, lineIndex, 331) < overlapFx().bracketCrossChance;
+            const overshoot = 13;
+            let right: import('pixi.js').Graphics | null = null;
+            let horizontal: import('pixi.js').Graphics | null = null;
+            let vertical: import('pixi.js').Graphics | null = null;
+            if (cross) {
+                // The two axes are separate beats, not one box: the horizontals are ruled
+                // first, left to right, and the verticals follow top to bottom a beat later,
+                // the way a compositor would lay a register frame down in two passes.
+                horizontal = new Graphics();
+                vertical = new Graphics();
+                group.addChild(horizontal, vertical);
+            } else {
+                const left = new Graphics();
+                left.moveTo(arm, top).lineTo(0, top).lineTo(0, bottom).lineTo(arm, bottom)
+                    .stroke(stroke);
+                left.position.x = -half;
+                right = new Graphics();
+                right.moveTo(-arm, top).lineTo(0, top).lineTo(0, bottom).lineTo(-arm, bottom)
+                    .stroke(stroke);
+                // Starts closed against the opening end; the frame pass walks it outwards.
+                right.position.x = -half;
+                group.addChild(left, right);
+            }
+            // The frame is drawn on the paper as ink too: when the line is let go it should
+            // soften and dry out with the glyphs instead of staying razor sharp beside them.
+            const blur = new pixi.BlurFilter({strength: 0, quality: 2, resolution: 1});
+            group.alpha = 0;
+            // Behind the type but in front of the paper: the frame is drawn around the line, not
+            // over it.
+            shotContainer.addChildAt(group, 3);
+            // Not everything on the page arrives on the same beat: each mark waits its own
+            // seeded turn inside the stagger window, so a line assembles instead of snapping.
+            const delay = overlapFx().stagger * temperaHash01(accentSeed, lineIndex, 311);
+            bracket = {group, right, style: cross ? 'cross' : 'bracket', horizontal, vertical, top, bottom, overshoot, half, blur, delay};
+        }
+        let underline: TemperaUnderlineView | null = null;
+        if (placement.underline && overlapFx().showUnderline
+            && temperaHash01(accentSeed, lineIndex, 277) < overlapFx().underlineChance) {
+            const frame = placement.underline;
+            const group = new Container();
+            group.position.set(frame.x, frame.y);
+            group.rotation = frame.rotation;
+            const rail = new Graphics();
+            rail.moveTo(0, 0).lineTo(frame.halfWidth * 2, 0)
+                .stroke({width: 1.6, color: palette.ink, alpha: 0.55, cap: 'round'});
+            rail.position.set(-frame.halfWidth, frame.bottom);
+            const head = new Graphics();
+            head.circle(0, 0, 1.9).fill({color: palette.accent, alpha: 0.95});
+            head.position.set(-frame.halfWidth, frame.bottom);
+            const blur = new pixi.BlurFilter({strength: 0, quality: 2, resolution: 1});
+            group.addChild(rail, head);
+            group.alpha = 0;
+            // Under the type, on the same paper as the frame.
+            shotContainer.addChildAt(group, 3);
+            const delay = overlapFx().stagger * temperaHash01(accentSeed, lineIndex, 313);
+            underline = {group, rail, head, half: frame.halfWidth, x: frame.x, y: frame.y, blur, delay};
+        }
+        const glyphAt = perfOn() ? performance.now() : 0;
         const glyphs = buildTemperaTextViews(pixi, {
-            placements,
+            placements: placedGlyphs,
             palette,
             fontFamily,
             fontWeight,
+            blurAfterSinging: shot.holdUntil !== undefined,
             shadowEnabled: tuning.showDecor,
             echoCount: tuning.showDecor && !options.staticMode ? 2 : 0,
             textLayer,
             echoLayer,
             keywordLayer,
         });
+        if (glyphAt) { glyphMs += performance.now() - glyphAt; }
+        // Under the type: one hairline block per character, the way a compositor sets type
+        // into a forme. It is drawn under the text so the character sits in the box rather than
+        // on top of a rectangle, and it uses the rendered bounds so a turned glyph's box turns
+        // with it.
+        const overlap = overlapFx();
+        let moulds: import('pixi.js').Graphics | null = null;
+        const mouldGlyphs: number[] = [];
+        if (options.lyricsOnly && overlap.showMould && glyphs.length > 0
+            && temperaHash01(accentSeed, lineIndex, 357) < overlap.mouldChance) {
+            // A forme is never the whole sentence: the compositor sets one short run of type
+            // into the box and leaves the rest on the page. Two or three adjacent characters,
+            // picked per line, read as a deliberate selection rather than a grid over the type.
+            const span = Math.min(glyphs.length, 2 + Math.floor(temperaHash01(accentSeed, lineIndex, 361) * 2));
+            const start = Math.min(
+                glyphs.length - span,
+                Math.floor(temperaHash01(accentSeed, lineIndex, 359) * Math.max(1, glyphs.length - span + 1)),
+            );
+            for (let index = start; index < start + span; index += 1) mouldGlyphs.push(index);
+            moulds = new Graphics();
+            shotContainer.addChildAt(moulds, 3);
+        }
+        // The disturbance field: each character, as it lands, flicks a few very short
+        // strokes out around itself. They are particles only in behaviour - a handful of
+        // hairlines, deterministic per line, that drift out, turn a little and fade. Nothing
+        // is simulated frame to frame, so scrubbing back replays the same field.
+        let field: TemperaFieldView | null = null;
+        if (options.lyricsOnly && overlap.showField && glyphs.length > 0
+            && temperaHash01(accentSeed, lineIndex, 371) < overlap.fieldChance) {
+            const graphics = new Graphics();
+            shotContainer.addChild(graphics);
+            field = {graphics};
+        }
+        // A chop mark at the end of the line: a small square, inked in the accent, stamped
+        // with a quick press once the last character has landed. It is drawn as strokes rather
+        // than a glyph so it needs no font and reads at any size.
+        let seal: import('pixi.js').Graphics | null = null;
+        let sealX = 0;
+        let sealY = 0;
+        let sealSize = 0;
+        let sealRotation = 0;
+        let sealStart = 0;
+        if (options.lyricsOnly && overlap.showSeal && glyphs.length > 0
+            && temperaHash01(accentSeed, lineIndex, 367) < overlap.sealChance) {
+            // The seal belongs at the bottom-right corner of the *last character*, not at the
+            // bounding box of the whole line: measure inside the line's own writing frame, then
+            // rotate that corner back onto the stage. Using the stage-space max X/Y made the
+            // chop drift off the last glyph whenever the line was turned or parked far from
+            // the centre.
+            const last = glyphs[glyphs.length - 1];
+            let centreX = 0;
+            let centreY = 0;
+            for (const glyph of glyphs) {
+                centreX += glyph.baseX;
+                centreY += glyph.baseY;
+            }
+            centreX /= glyphs.length;
+            centreY /= glyphs.length;
+            const theta = placement.orientation;
+            const cos = Math.cos(theta);
+            const sin = Math.sin(theta);
+            sealSize = Math.max(15, Math.min(30, baseFontSize * 0.42));
+            const half = baseFontSize * 0.5;
+            const gap = sealSize * 0.5 + 5;
+            const dx = last.baseX - centreX;
+            const dy = last.baseY - centreY;
+            const localX = dx * cos + dy * sin + half + gap;
+            const localY = -dx * sin + dy * cos + half + gap;
+            sealX = centreX + localX * cos - localY * sin;
+            sealY = centreY + localX * sin + localY * cos;
+            sealRotation = (temperaHash01(accentSeed, lineIndex, 369) - 0.5) * 0.24;
+            sealStart = Math.max(...glyphs.map(glyph => glyph.motion.endTime)) - 0.04;
+            seal = new Graphics();
+            shotContainer.addChild(seal);
+        }
+        // Above the type: the plate inverts whatever it covers. Its box is measured in the
+        // line's own writing frame, so a turned or vertical line is wrapped along the baseline
+        // rather than by a screen-aligned box cutting across it.
+        const mask = options.lyricsOnly
+            ? resolveOverlapMask(
+                pixi,
+                shot.slices[0]?.lineIndex ?? shotIndex,
+                glyphs,
+                palette,
+                hashTemperaSeed(options.programSeed),
+                placement.orientation,
+            )
+            : null;
+        // Under the type: the plate is a tinted ground the glyphs are knocked out of. Drawn on
+        // top it would wash the paper-toned glyphs back into the band and the inversion would
+        // disappear, which is exactly what a 55% film does.
+        if (mask) shotContainer.addChildAt(mask.bar, 0);
         if (shot.decor.watermark && tuning.showDecor) {
             buildTemperaWatermark(pixi, {
                 watermark: shot.decor.watermark,
@@ -549,7 +1205,27 @@ export const buildTemperaScene = (
         // colour mode the ramp rides along as a tint - the filter still decides the luminance,
         // which is the only thing keeping the lyric readable over arbitrary artwork. With the
         // inversion switched off the same ramp is applied on its own, with no backdrop read.
-        const textFilter = createTemperaTextFilter(pixi, palette, tuning.textInversion);
+        let tintAnchor: import('pixi.js').Sprite | undefined;
+        if (palette.textGradient && glyphs.length) {
+            // Map the ramp across the finished layout, including letters revealed later.
+            const cos = Math.cos(placement.orientation);
+            const sin = Math.sin(placement.orientation);
+            let left = Infinity;
+            let right = -Infinity;
+            for (const glyph of glyphs) {
+                const center = glyph.baseX * cos + glyph.baseY * sin;
+                const half = glyph.display.width / 2;
+                left = Math.min(left, center - half);
+                right = Math.max(right, center + half);
+            }
+            tintAnchor = new pixi.Sprite(pixi.Texture.WHITE);
+            tintAnchor.renderable = false;
+            tintAnchor.position.set(left * cos, left * sin);
+            tintAnchor.rotation = placement.orientation;
+            tintAnchor.width = Math.max(1, right - left);
+            textLayer.addChild(tintAnchor);
+        }
+        const textFilter = createTemperaTextFilter(pixi, palette, tuning.textInversion, tintAnchor);
         if (textFilter) {
             textLayer.filters = [textFilter];
             postProcessFilters.push(textFilter);
@@ -561,11 +1237,48 @@ export const buildTemperaScene = (
             : shot.startTime;
 
         shotContainer.pivot.set(width / 2, height / 2);
+        const penStyles = ['ticks', 'beads', 'stitch', 'rings', 'chevron', 'diamond'] as const;
+        const interGlyphStyles = options.lyricsOnly ? penStyles.filter((style, index) =>
+            temperaHash01(accentSeed, lineIndex, 953 + index * 47) < overlap[`${style}Chance`]) : [];
+        const progressArc = options.lyricsOnly && overlap.showProgressArc && glyphs.length
+            && temperaHash01(accentSeed, lineIndex, 1291) < overlap.progressArcChance
+            ? new Graphics() : null;
+        const progressHalo = progressArc ? new Graphics() : null;
+        const interGlyph = glyphs.length && interGlyphStyles.length ? new Graphics() : null;
+        if (interGlyph) shotContainer.addChild(interGlyph);
+        let lyricMarks: import('pixi.js').Container | null = null;
+        if (options.lyricsOnly && overlap.showLyricMarks && glyphs.length
+            && temperaHash01(accentSeed, lineIndex, 817) < 0.45) {
+            const nextLine = paragraph.lines.find(line => line.sourceIndex > lineIndex)?.sourceIndex ?? options.followingLine;
+            if (nextLine !== undefined) {
+                const here = resolveOverlapAnchor(placementIndex, width, height, accentSeed);
+                const there = resolveOverlapAnchor(placementIndex + 1, width, height, accentSeed);
+                const unit = Math.min(32, Math.max(12, baseFontSize * 0.33));
+                lyricMarks = new Container();
+                lyricMarks.addChild(
+                    new Graphics().roundRect(-1.02, -0.18, 0.42, 0.42, 0.05).fill({color: palette.ink, alpha: 0.28}),
+                    new Graphics().poly([-0.71, -0.26, 0.04, -0.26, 0.19, -0.1, 0.19, 0.24, -0.71, 0.24])
+                        .fill({color: palette.ink, alpha: 0.48}),
+                    new Graphics().poly([-0.12, -0.32, 0.46, -0.32, 0.79, 0, 0.46, 0.32, -0.12, 0.32])
+                        .fill(mixHex(palette.accent, palette.paper, 0.28)),
+                );
+                lyricMarks.rotation = Math.atan2(there.y - here.y, there.x - here.x);
+                lyricMarks.scale.set(unit);
+                shotContainer.addChild(lyricMarks);
+            }
+        }
+        if (progressArc && progressHalo) {
+            const blur = new pixi.BlurFilter({strength: 3.5, quality: 3, resolution: 1});
+            blur.padding = 16;
+            progressHalo.filters = [blur];
+            postProcessFilters.push(blur);
+            shotContainer.addChild(progressHalo, progressArc);
+        }
         shotContainer.position.set(width / 2, height / 2);
         // The runtime opts shots into rendering from absolute playback time.
         shotContainer.visible = false;
         container.addChild(shotContainer);
-        return {
+        shots.push({
             shot,
             container: shotContainer,
             glyphs,
@@ -573,13 +1286,39 @@ export const buildTemperaScene = (
             images,
             baseX: shotContainer.x,
             baseY: shotContainer.y,
+            frameX: 0,
+            frameY: 0,
+            frameScale: 1,
+            orientation: placement.orientation,
             textLayer,
+            specks,
+            speckColor: palette.ink,
+            bracket,
+            mask,
+            underline,
+            moulds,
+            mouldGlyphs,
+            field,
+            progressArc,
+            interGlyph,
+            interGlyphStyles,
+            lyricMarks,
+            progressHalo,
+            accentColor: palette.accent,
+            seal,
+            sealX,
+            sealY,
+            sealSize,
+            sealRotation,
+            sealStart,
+            sealColor: palette.accent,
             revealDoneTime,
-        };
-    });
+        });
+        yield;
+    }
 
     const baseFilters: import('pixi.js').Filter[] = [];
-    if (tuning.postProcessEnabled && !options.staticMode) {
+    if (tuning.postProcessEnabled && !options.staticMode && !options.lyricsOnly) {
         const sceneFilters = applyTemperaScenePostProcess(pixi, container, tuning, sceneSeed, options.renderResolution);
         if (sceneFilters.length > 0) {
             // Keep full-scene shaders in viewport space even when visible bounds are smaller.
@@ -606,6 +1345,15 @@ export const buildTemperaScene = (
         postProcessFilters.push(transitionBlurFilter);
     }
     container.visible = false;
+    if (buildAt) {
+        perfMark('scene.build', buildAt, {
+            shots: paragraph.shots.length,
+            blocks: Math.round(blocksMs),
+            image: Math.round(imageMs),
+            layout: Math.round(layoutMs),
+            glyph: Math.round(glyphMs),
+        });
+    }
     return {
         paragraph,
         container,
@@ -617,4 +1365,16 @@ export const buildTemperaScene = (
         transitionBlurAttached: false,
         activeShotIndex: -1,
     };
+}
+
+/** Synchronous build: drives the shot generator to completion in one frame. */
+export const buildTemperaScene = (
+    pixi: PixiModule,
+    options: TemperaSceneBuildOptions,
+    paragraph: TemperaParagraph,
+): TemperaSceneView => {
+    const steps = temperaSceneSteps(pixi, options, paragraph);
+    let step = steps.next();
+    while (!step.done) step = steps.next();
+    return step.value;
 };

@@ -28,6 +28,7 @@ import { createLumiereStage, lumiereMode, lumiereThemeForCover, setLumiereMode, 
 import { createRoomStage, applyRoomStyleSettings, setRoomLyricTintProvider, type RoomStage } from './room';
 import { createVinylStage, applyVinylStyleSettings, setVinylLyricTintProvider, type VinylStage } from './vinyl';
 import { createFlowStage, type FlowStage } from './flow';
+import { perfEvent, perfMark, perfOn } from './perfProbe';
 import { createPoemStage, type PoemStage } from './poem';
 import { createPressureStage, type PressureStage } from './pressure';
 import type { Theme } from './lumiere-folia/types';
@@ -615,7 +616,21 @@ export function prefetchUpcomingLyric(track: OnlineTrack | null): void {
       if (readManual()[key]) return;
       const baseLines = input.lines as LyricLine[];
       return matchWordLyrics(track, baseLines).then((result) => {
-        if (result?.lines) return;
+        if (result?.lines) {
+          // 预匹配到的逐字歌词要写回缓存：备场舞台是按 preloadLyricSong 的这份歌词建的，
+          // 若这里丢掉匹配结果，切歌后 startLyricMatch 再匹配一次就会换掉整份文本，
+          // 触发一次整场重建（实测 95~375ms，正好落在切歌后第一秒）。
+          const cached = upcomingLyrics.get(key);
+          if (cached) {
+            cached.doc = {
+              ...cached.doc,
+              kind: result.kind === 'lrc' ? cached.doc.kind : result.kind,
+              lines: result.lines,
+            };
+            if (result.label) cached.label = result.label;
+          }
+          return;
+        }
         const baseHasTranslation = baseLines.some((line) => (line.translation ?? '').trim().length > 0);
         if (baseHasTranslation) return;
         return matchTranslation(track, baseLines);
@@ -1399,6 +1414,8 @@ export class LyricsView {
   private pressureStage: PressureStage | null = null;
   /** 进页时等画布第一次出像的监听（见 watchStagePaint）。 */
   private stageObserver: MutationObserver | null = null;
+  /** 已出像但 is-covered 还没挂上时，撤「准备中」的短计时器。 */
+  private stagePaintTimer = 0;
   /** 默认歌词页的播放样式（见 lyricStyle.ts）：只切 root 上的 lyric-style-<id> class，动画全在 CSS 里。 */
   private styleUnsub: (() => void) | null = null;
   /** 「封面在左」样式与桌面背景歌词共用，快捷设置里改了要当场切换。 */
@@ -1554,23 +1571,48 @@ export class LyricsView {
     window.addEventListener(BG_COVER_EVENT, onCoverStyle);
     this.coverStyleUnsub = () => window.removeEventListener(BG_COVER_EVENT, onCoverStyle);
 
+    // 切歌瞬间匹配结果会分几批回调（每批一份 doc）。以前每批都立刻 render 一次，
+    // 一帧里连做三遍整份歌词 DOM 重建（实测 3×20~40ms = 70ms+，正好压在切歌帧上）。
+    // 现在只记最新 doc，同一帧内多次回调合并成一次绘制。
+    let docPaint = 0, docPaintAt = 0, docKey = '';
+    // 匹配只在「真的换了内容」时才重画：预匹配结果写回缓存后，切歌后的再次匹配内容相同，
+    // 不该再重建一遍整份歌词 DOM 与画面。
+    const contentKey = (doc: LyricDoc | null): string => doc
+      ? [doc.kind, doc.trackKey, doc.lines.length,
+        doc.lines.reduce((sum, line) => sum + line.text.length + (line.translation?.length ?? 0) + (line.words?.length ?? 0) * 4, 0),
+        doc.lines[0]?.text ?? '', doc.lines[doc.lines.length - 1]?.text ?? ''].join('|')
+      : '';
     this.matchUnsub = onLyricMatch(() => {
       if (this.disposed) return;
       if (lastDoc && lastDoc.trackKey === this.lastTrackKey && this.doc !== lastDoc) {
         this.doc = lastDoc;
-        this.render();
-        // 匹配结果会替换整份歌词：画布效果的主题字体按新文本的主要语言重算一次，
-        // 否则会沿用上一首/上一版歌词的语言字体。
-        this.applyLumiereTheme();
+        const key = contentKey(lastDoc);
+        if (key === docKey) return;
+        docKey = key;
+        // 匹配结果是「粗匹配 → 精匹配」连着来的：只留最后一次，90ms 内的中间稿不画，
+        // 否则切歌帧要连做两遍整份歌词 DOM 重建（实测 47ms + 29ms 全落在这一帧）。
+        const now = performance.now();
+        if (docPaint) window.clearTimeout(docPaint); else docPaintAt = now;
+        const delay = now - docPaintAt > 200 ? 0 : 90;
+        docPaint = window.setTimeout(() => {
+          docPaint = 0;
+          if (this.disposed) return;
+          this.render();
+          // 匹配结果会替换整份歌词：画布效果的主题字体按新文本的主要语言重算一次，
+          // 否则会沿用上一首/上一版歌词的语言字体。
+          this.applyLumiereTheme();
+        }, delay);
       }
     });
 
     this.unsubscribe = onPlayer((state) => {
       if (this.disposed) return;
+      const playerAt=perfOn()?performance.now():0;
       this.state = state;
       this.syncTrack();
       this.syncLumiereSong();
       this.schedule();
+      if(playerAt)perfMark('lyrics.onPlayer',playerAt);
     });
 
     // 滚轮手动浏览歌词：临时脱离自动居中，停手几秒后回到当前行
@@ -2073,11 +2115,15 @@ export class LyricsView {
     if (this.disposed) return;
     this.stageObserver?.disconnect();
     this.stageObserver = null;
+    if (this.stagePaintTimer) {
+      window.clearTimeout(this.stagePaintTimer);
+      this.stagePaintTimer = 0;
+    }
     const mode = lumiereMode();
     const textOn = mode === 'text';
     const roomOn = mode === 'room';
     const vinylOn = mode === 'vinyl';
-    const flowOn = mode === 'flow';
+    const flowOn = (mode === 'flow' || mode === 'overlap');
     const poemOn = mode === 'poem';
     const pressureOn = mode === 'pressure';
     const anyOn = textOn || roomOn || vinylOn || flowOn || poemOn || pressureOn;
@@ -2109,6 +2155,16 @@ export class LyricsView {
     this.root.classList.toggle('is-flow', flowOn);
     this.root.classList.toggle('is-poem', poemOn);
     this.root.classList.toggle('is-pressure', pressureOn);
+    // 进页暗场里那句「… · 准备中」按当前播放效果写：canvas 舞台全走 is-lumiere-text，
+    // 固定写「纯字」会让重合 / 拼合也显示成纯字。CSS 里用 attr() 读这个属性。
+    const stageLabel =
+      mode === 'overlap' ? '重合'
+      : mode === 'flow' ? '拼合'
+      : mode === 'text' ? '纯字'
+      : mode === 'room' ? '房间'
+      : mode === 'vinyl' ? '唱片'
+      : '歌词';
+    this.root.dataset.lumiereHint = anyOn ? `${stageLabel} · 准备中` : '';
     // 播放效果开启/关闭会改变「封面在左」是否生效，切完模式立即重算一次。
     if (this.coverEl) {
       this.applyCoverStyle();
@@ -2135,7 +2191,7 @@ export class LyricsView {
     // 刚进歌词页时先别露默认封面：等画布第一次出像再撤 is-lumiere-fresh（进页那一瞬是暗场 + 加载提示）。
     const flow = this.flowStage;
     if (flow) {
-      flow.setMode(flowOn ? 'flow' : 'off');
+      flow.setMode(flowOn ? mode : 'off');
       if (flowOn) flow.activate();
       else flow.deactivate();
     }
@@ -2200,6 +2256,18 @@ export class LyricsView {
         observer.disconnect();
         if (this.stageObserver === observer) this.stageObserver = null;
         this.root.classList.remove('is-lumiere-fresh');
+        return;
+      }
+      // 已经出像、但 is-covered 迟迟没挂上（画布在播、DOM 歌词早已淡出）时别把
+      // 「准备中」留在屏幕上等 6 秒兜底：给淡出 320ms，然后就撤。
+      if (stageRoot.classList.contains('is-painted') && !this.stagePaintTimer) {
+        this.stagePaintTimer = window.setTimeout(() => {
+          this.stagePaintTimer = 0;
+          if (this.stageObserver !== observer) return;
+          observer.disconnect();
+          this.stageObserver = null;
+          this.root.classList.remove('is-lumiere-fresh');
+        }, 320);
       }
     });
     observer.observe(stageRoot, { attributes: true, attributeFilter: ['class'] });
@@ -2246,7 +2314,7 @@ export class LyricsView {
     lumiereThemeNow = lumiereThemeForCover(this.bgMode, this.palette, this.doc.lines.map((line) => line.text).join(' '));
     lumierePaletteNow = this.palette ? [...this.palette] : null;
     this.lumiereText?.setTheme(lumiereThemeNow, lumierePaletteNow);
-    this.flowStage?.setTheme(lumiereThemeNow);
+    {perfEvent('lyrics.theme.flow');const startedAt=perfOn()?performance.now():0;this.flowStage?.setTheme(lumiereThemeNow);if(startedAt)perfMark('lyrics.theme.flow',startedAt);}
   }
 
   /** 「歌词字体」变了：主题、房间/唱片布局与两张画布效果都按新字面刷新。 */
@@ -2277,7 +2345,7 @@ export class LyricsView {
     this.lumiereText?.setSong(input);
     this.roomStage?.setSong(input);
     this.vinylStage?.setSong(input);
-    this.flowStage?.setSong(input);
+    {perfEvent('lyrics.song.flow');const startedAt=perfOn()?performance.now():0;this.flowStage?.setSong(input);if(startedAt)perfMark('lyrics.song.flow',startedAt);}
     this.poemStage?.setSong(input);
     this.pressureStage?.setSong(input);
   }
@@ -2290,7 +2358,7 @@ export class LyricsView {
     void coverColorsOf(flowTrack).then(colors => {
       if (!this.disposed && token === this.bgToken) {
         const palette = (colors ?? fallbackColors(`${flowTrack?.title ?? ""}|${flowTrack?.artist ?? ""}`)).palette;
-        this.flowStage?.setPalette(palette);
+        {perfEvent('lyrics.palette.flow');const startedAt=perfOn()?performance.now():0;this.flowStage?.setPalette(palette);if(startedAt)perfMark('lyrics.palette.flow',startedAt);}
         this.poemStage?.setPalette(palette);
       }
     }).catch(() => {});
@@ -2649,6 +2717,7 @@ export class LyricsView {
   private lineVisibility?: IntersectionObserver;
 
   private render(): void {
+    const renderAt=perfOn()?performance.now():0;
     this.lineVisibility?.disconnect();
     this.lineVisibility ??= new IntersectionObserver(entries => {
       for (const entry of entries) {
@@ -2715,6 +2784,7 @@ export class LyricsView {
     this.linesEl.append(frag);
     this.measureLines();
     this.syncProgress(true);
+    if(renderAt)perfMark('lyrics.render',renderAt,{lines:this.doc.lines.length});
     window.requestAnimationFrame(() => {
       if (!this.disposed) this.linesEl.style.transition = '';
     });
@@ -2924,7 +2994,7 @@ export class LyricsView {
   private lumiereCoversLyrics(): boolean {
     const mode = lumiereMode();
     if (mode === 'off') return false;
-    const stage = mode === 'pressure' ? this.pressureStage : mode === 'poem' ? this.poemStage : mode === 'flow' ? this.flowStage : mode === 'room' ? this.roomStage : mode === 'vinyl' ? this.vinylStage : this.lumiereText;
+    const stage = mode === 'pressure' ? this.pressureStage : mode === 'poem' ? this.poemStage : (mode === 'flow' || mode === 'overlap') ? this.flowStage : mode === 'room' ? this.roomStage : mode === 'vinyl' ? this.vinylStage : this.lumiereText;
     if (!stage) return false;
     const classes = stage.root.classList;
     return classes.contains('is-on') && classes.contains('is-ready')
@@ -2976,6 +3046,8 @@ export class LyricsView {
    */
   private transCheckIndex = -2;
   private transCheckAt = 0;
+  /** 底部译文条的 DOM 跟随定时器：只要高亮行变了就同步，不依赖 activeIndex 的内部推进。 */
+  private transSyncTimer = 0;
 
   private progressPercent = -1;
   private progressPosMs = -1;
@@ -3115,6 +3187,55 @@ export class LyricsView {
    * 在播放条上方补一条，保证任何动效下都能看到翻译。
    */
   private updateTranslationBar(text: string): void {
+    // 兜底同步：以 DOM 里带 is-active 的那一行为准。
+    // 这套歌词有两套推进（内部 activeIndex 与 DOM 高亮类），画布/封面舞台上内部索引可能不推进，
+    // 于是底部条永远停在第一次写入的句子上。这里每 250ms 直接读高亮行的行内译文，
+    // 变了就刷新，和内部状态解耦。
+    if (!this.transSyncTimer) {
+      this.transSyncTimer = window.setInterval(() => {
+        if (this.disposed) { window.clearInterval(this.transSyncTimer); this.transSyncTimer = 0; return; }
+        // 画布接管后 DOM 歌词整棵停止更新（隐藏且不再刷），此时必须按播放时间从
+        // 数据里取当前行的译文，不能再去读 DOM（那会永远读到停住的那一行）。
+        let next = '';
+        if (this.lumiereCoversLyrics() && this.state) {
+          const index = activeIndexOf(this.doc.lines, this.state.positionMs + lyricOffsetOf(this.lastTrackKey));
+          next = (this.doc.lines[index]?.translation ?? '').trim();
+        } else {
+          const line = document.querySelector('.lyric-line.is-active');
+          next = (line?.querySelector('.lyric-trans')?.textContent ?? '').trim();
+        }
+        if (!next) {
+          if (this.transBarTarget) {
+            this.transBarTarget = '';
+            this.transBarVisible = false;
+            this.transBar.classList.add('is-empty');
+            this.transBar.textContent = '';
+          }
+          return;
+        }
+        if (next === this.transBarTarget) return;
+        this.transBarTarget = next;
+        this.transBarVisible = true;
+        this.transBar.classList.remove('is-empty');
+        // 走和常规路径同一套换句动画：旧句先淡出，140ms 后换字，新句再进入。
+        if (this.transBarTimer !== null) {
+          window.clearTimeout(this.transBarTimer);
+          this.transBarTimer = null;
+        }
+        if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+          this.transBar.classList.remove('is-changing');
+          this.transBar.textContent = next;
+          return;
+        }
+        this.transBar.classList.add('is-changing');
+        this.transBarTimer = window.setTimeout(() => {
+          this.transBarTimer = null;
+          if (this.disposed) return;
+          this.transBar.textContent = this.transBarTarget;
+          this.transBar.classList.remove('is-changing');
+        }, 140);
+      }, 250);
+    }
     const value = (text ?? '').trim();
     const inline = value
       ? this.lineEls[this.activeIndex]?.querySelector('.lyric-trans') as HTMLElement | null
@@ -3141,6 +3262,11 @@ export class LyricsView {
       this.transBarVisible = false;
       this.transBar.classList.remove('is-changing');
       this.transBar.classList.add('is-empty');
+      // 顺手把旧句清掉：这一分支以前只挂 is-empty 不清文本，一旦 inlineVisible 判定
+      // 在封面/画布舞台上误判成「行内译文可见」，条上就会永远停在上一句（甚至停在
+      // TME 那条版权声明上）。清空后即使判定反复摇摆，也不会显示过期译文。
+      this.transBar.textContent = '';
+      this.transBarTarget = '';
       return;
     }
     if (!this.transBarVisible || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
@@ -3279,6 +3405,8 @@ export class LyricsView {
     this.settingsUnsub = null;
     window.clearTimeout(this.coverSwitchTimer);
     window.clearTimeout(this.resizeTimer);
+    window.clearInterval(this.transSyncTimer);
+    this.transSyncTimer = 0;
     window.removeEventListener('resize', this.onWindowResize);
     this.domLayoutObserver?.disconnect();
     this.domLayoutObserver = null;

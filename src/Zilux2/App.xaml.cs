@@ -5,6 +5,7 @@ using Zilux2.AirPlay.Audio;
 using Zilux2.AirPlay.Discovery;
 using Zilux2.Audio;
 using Zilux2.DevTest.AirPlay;
+using Zilux2.Interop;
 using Zilux2.Local;
 using Zilux2.Media;
 using Zilux2.Online;
@@ -81,6 +82,11 @@ public partial class App : Application
             Shutdown(0);
             return;
         }
+
+        // 多显示器调度：主屏全屏游戏会按进程抢占 GPU 队列，副屏窗口先被饿死。
+        // 把本进程树（含稍后创建的 WebView2 GPU/renderer 子进程）抬到 ABOVE_NORMAL、
+        // 关掉 EcoQoS，并开 1ms 定时器精度；细节见 Interop/ProcessScheduling.cs。
+        ProcessScheduling.Apply("startup");
 
         // docs/zilux2-settings-contract.md §5: settings exist before WebView2 and a broken file
         // only costs persistence, never the window.
@@ -336,6 +342,9 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        // 退还 1ms 定时器精度并停掉 WebView2 子进程巡检；进程退出前做，避免托管计时器落在收尾阶段。
+        ProcessScheduling.Dispose();
+
         try
         {
             // 托盘图标要最先撤掉：它持有主窗口引用，也能在退出过程中再发命令。

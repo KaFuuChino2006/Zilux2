@@ -48,7 +48,7 @@ internal sealed class GeneralSettings
     // 启动画面文案（设置 → 启动可改）；标题短一些，避免超出画面。
     public string SplashTitle { get; set; } = "ZILUX2";
 
-    public string SplashSubtitle { get; set; } = "新一代创意播放器";
+    public string SplashSubtitle { get; set; } = "Welcome";
 
     public bool StartMaximized { get; set; }
 
@@ -237,8 +237,8 @@ internal sealed class PlaybackSettings
 
     public int[] EqGains { get; set; } = new int[EqBandCount];
 
-    // 播放/暂停音量渐变：默认关闭，保持原有的瞬时暂停。
-    public bool FadeEnabled { get; set; }
+    // 播放/暂停音量渐变：默认开启（维护者 2026-11-26 要求）。
+    public bool FadeEnabled { get; set; } = true;
 
     // 旧版单一渐变时长；新版本分别使用 FadeOutMs / FadeInMs，读取旧配置时作为两者缺省值。
     public int FadeMs { get; set; } = 450;
@@ -262,7 +262,7 @@ internal sealed class PlaybackSettings
     public string FadeCurve { get; set; } = FadeCurveSmooth;
 
     /// <summary>人声保留淡出：暂停时先压低低频与高频，让人声所在的频段多停留一会儿。</summary>
-    public bool FadeVocal { get; set; }
+    public bool FadeVocal { get; set; } = true;
 
     /// <summary>人声保留尾音（毫秒，0..3000）：淡出总时长 = FadeOutMs + 该值。</summary>
     public int FadeVocalTailMs { get; set; } = 600;

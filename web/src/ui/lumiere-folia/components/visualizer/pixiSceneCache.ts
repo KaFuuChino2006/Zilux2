@@ -65,11 +65,21 @@ export class PixiSceneCache<TScene> {
         this.scenes.set(index, scene);
     }
 
-    /** 销毁离 index 超过一段、且不在 keep 里的场景。 */
+    /** 销毁离 index 超过一段、且不在 keep 里的场景。
+     *
+     * 摘离就现在做（不能让它多留一帧在画面上），但**不在这里销毁**：段落切换那一帧正好
+     * 是新句开口的那一帧，同步走一遍每个 Text、滤镜和贴图的销毁会掉帧，跟随镜头随即按
+     * 跳过去的时间重算，看着就是"卡一下、画面突然位移"。推进 retired，交给 drainRetired
+     * 一帧一个地释放。没有 detach 钩子的调用方保持原来的同步销毁。 */
     prune(index: number, keep?: ReadonlySet<number>) {
         this.scenes.forEach((scene, sceneIndex) => {
             if (Math.abs(sceneIndex - index) <= 1 || keep?.has(sceneIndex)) return;
-            this.hooks.destroy(scene);
+            if (this.hooks.detach) {
+                this.hooks.detach(scene);
+                this.retired.push(scene);
+            } else {
+                this.hooks.destroy(scene);
+            }
             this.scenes.delete(sceneIndex);
         });
     }

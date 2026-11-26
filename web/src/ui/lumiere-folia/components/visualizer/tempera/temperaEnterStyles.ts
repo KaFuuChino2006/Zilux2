@@ -63,14 +63,20 @@ const directional = (
  * Resolves one style's offset/rotation/scale at a point in its entrance.
  * `travel` runs 1 -> 0 across the window and `linear` is the raw 0 -> 1 progress; styles that
  * need their own curve re-ease `linear` rather than reusing the shared travel.
+ *
+ * `settleLinear` is the progress of the *landing* only. The entrance window is stretched to the
+ * shot's lyric end (`glyphSettleStretch`), which on a slow phrase is seconds long: reusing that
+ * progress for the spring smeared the overshoot over the whole line and the landing lost its
+ * snap entirely. The caller feeds a short capped window here instead.
  */
 export const resolveTemperaEnterFrame = (
     style: TemperaEnterStyle,
     input: TemperaEnterInput,
     travel: number,
     linear: number,
+    settleLinear: number = linear,
 ): TemperaEnterFrame => {
-    const settle = easeTemperaSoftBack(linear);
+    const settle = easeTemperaSoftBack(settleLinear);
     const uniform = input.enterScale + (1 - input.enterScale) * settle;
 
     switch (style) {

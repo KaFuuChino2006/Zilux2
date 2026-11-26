@@ -80,6 +80,20 @@ export function readMixTransitionMode(): MixTransitionMode {
   }
 }
 
+/**
+ * 首次启动补写默认档「自动」（维护者 2026-11-26 要求）。
+ *
+ * 只补「没有这个键」的情况：用户在面板里手动选过标准/进阶，键就在，永远以他选的为准。
+ * 读数本身仍回落 standard —— 单元测试与无 App 外壳的场景（壁纸页、桌面歌词页）保持旧语义。
+ */
+export function seedMixTransitionModeDefault(): void {
+  try {
+    if (!localStorage.getItem(MIX_TRANSITION_KEY)) localStorage.setItem(MIX_TRANSITION_KEY, 'auto');
+  } catch {
+    /* localStorage 被禁用：本次会话仍按 read 的回落值走 */
+  }
+}
+
 /** 是否是进阶混音 v2（低频换手路径）。 */
 export function isAutomixV2(mode: MixTransitionMode): boolean {
   return mode === 'automixV2';

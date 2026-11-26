@@ -569,17 +569,18 @@ window.addEventListener('storage', (event) => {
   // WebView2 在窗口被收起时会把 rAF 停掉，恢复后第一帧的时间差会很大。
   // 用它当「刚被显示出来」的信号重放一次进场，避免动画在看不见的时候播完、一露脸就是糊的终态。
   {
+    // 原来是一个常驻 rAF 看门狗（每秒 60 次只为判断「刚才是不是被宿主收起了」）。
+    // 改成 1Hz 检查：同样能发现 >1200ms 的时间跳变，空闲开销从 60fps 降到 1 次/秒。
     let lastFrame = performance.now();
-    const watchFrames = (now: number): void => {
+    window.setInterval(() => {
+      const now = performance.now();
       if (now - lastFrame > 1200 && coverMode()) {
         const layer = coverLayers[activeCoverLayer];
         fadeCoverLayer(layer, true);
         introCover(layer);
       }
       lastFrame = now;
-      window.requestAnimationFrame(watchFrames);
-    };
-    window.requestAnimationFrame(watchFrames);
+    }, 1000);
   }
 
   // 换歌时先让上一首的歌词/封面淡出 200ms，再换文档淡入；同一首（例如歌词来源刷新）直接替换。

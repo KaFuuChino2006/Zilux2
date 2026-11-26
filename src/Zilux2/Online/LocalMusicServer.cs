@@ -52,6 +52,8 @@ internal sealed partial class LocalMusicServer : IDisposable
     // 登录状态检测（第四十六轮）：一次 verify 最多问两个平台各一个接口，留足上游抖动余量。
     private static readonly TimeSpan AccountVerifyTimeout = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan CoverCacheLifetime = TimeSpan.FromHours(1);
+    /// <summary>磁盘二级缓存的保鲜期：超过就回源刷新（上游换图能跟上）。</summary>
+    private static readonly TimeSpan CoverDiskLifetime = TimeSpan.FromDays(7);
     private const int CoverCacheLimit = 200;
 
     // 封面按字节预算淘汰，不是只按条数：单张原图实测 5.2 MB、2.8 MB，
@@ -261,7 +263,10 @@ internal sealed partial class LocalMusicServer : IDisposable
             var isWallpaperPath = path.StartsWith("/api/wallpaper/v2/", StringComparison.OrdinalIgnoreCase);
             if (!isGet && !isPost && !(isWallpaperPath && (isPut || isDelete)))
             {
-                status = WriteError(context, 405, "bad-request", "只支持 GET/POST 请求");
+                // 壁纸 v2 走 REST（PUT/DELETE），这里的分支只会在方法确实不支持时命中，
+                // 提示语要按路径区分，否则排查时会误以为 PUT 没被支持。
+                status = WriteError(context, 405, "bad-request",
+                    isWallpaperPath ? "壁纸接口只支持 GET/POST/PUT/DELETE" : "只支持 GET/POST 请求");
                 return;
             }
 
@@ -402,7 +407,15 @@ internal sealed partial class LocalMusicServer : IDisposable
         catch (Exception exception)
         {
             status = status == 0 ? 500 : status;
-            OnlineHttp.Error($"request failed {method} {path}", exception);
+            // 页面切歌/换页时会主动 abort 请求，这类取消不是宿主故障，不该占 ERROR 位。
+            if (exception is OperationCanceledException && !_shutdown.IsCancellationRequested)
+            {
+                OnlineHttp.Info($"request cancelled {method} {path}");
+            }
+            else
+            {
+                OnlineHttp.Error($"request failed {method} {path}", exception);
+            }
             try
             {
                 WriteError(context, 500, "internal-error", "宿主内部错误");
@@ -3101,6 +3114,15 @@ internal sealed partial class LocalMusicServer : IDisposable
             return 200;
         }
 
+        // 二级缓存：重启/内存淘汰后不必再回源。命中时直接回内存 + 落内存缓存。
+        if (TryReadCoverFromDisk(cacheKey, out var diskBytes, out var diskType))
+        {
+            StoreCover(cacheKey, diskBytes, diskType);
+            WriteBinary(context, 200, diskBytes, diskType);
+            OnlineHttp.Info($"GET cover source={source} disk-hit {diskBytes.Length}B");
+            return 200;
+        }
+
         try
         {
             var upstream = await OnlineHttp.FetchBytesAsync(upstreamUrl, referer, CoverTimeout, _shutdown.Token)
@@ -3141,7 +3163,15 @@ internal sealed partial class LocalMusicServer : IDisposable
         }
         catch (Exception exception)
         {
-            OnlineHttp.Error($"GET cover source={source} failed", exception);
+            // 页面滚出视野/换歌会 abort 封面请求，取消与超时同级处理，不进 ERROR。
+            if (exception is OperationCanceledException)
+            {
+                OnlineHttp.Info($"GET cover source={source} cancelled");
+            }
+            else
+            {
+                OnlineHttp.Error($"GET cover source={source} failed", exception);
+            }
             return WriteError(context, 502, "upstream-failed", "封面获取失败，请稍后重试");
         }
     }
@@ -3904,6 +3934,90 @@ internal sealed partial class LocalMusicServer : IDisposable
         }
 
         _coverCache[cacheKey] = new CoverCacheEntry(bytes, contentType, DateTimeOffset.UtcNow + CoverCacheLifetime);
+        StoreCoverOnDisk(cacheKey, bytes, contentType);
+    }
+
+    /// <summary>
+    /// 封面二级缓存目录：%LOCALAPPDATA%\Zilux2\cache\covers。
+    /// 页面滚动/重启会反复要同一批封面，落盘后这些请求就变成一次 2ms 的文件读。
+    /// </summary>
+    private static string CoverDiskRoot
+    {
+        get
+        {
+            var root = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Zilux2",
+                "cache",
+                "covers");
+            Directory.CreateDirectory(root);
+            return root;
+        }
+    }
+
+    private static string CoverDiskPath(string cacheKey)
+    {
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(cacheKey));
+        return Path.Combine(CoverDiskRoot, Convert.ToHexString(hash, 0, 16).ToLowerInvariant() + ".img");
+    }
+
+    private static bool TryReadCoverFromDisk(string cacheKey, out byte[] bytes, out string contentType)
+    {
+        bytes = Array.Empty<byte>();
+        contentType = "image/jpeg";
+        try
+        {
+            var path = CoverDiskPath(cacheKey);
+            if (!File.Exists(path))
+            {
+                return false;
+            }
+
+            var info = new FileInfo(path);
+            // 太旧就当没有（上游可能已经换图），交给回源刷新。
+            if (DateTime.UtcNow - info.LastWriteTimeUtc > CoverDiskLifetime)
+            {
+                return false;
+            }
+
+            bytes = File.ReadAllBytes(path);
+            if (bytes.Length == 0)
+            {
+                return false;
+            }
+
+            // 类型靠魔数判断，避免为每个文件再存元数据。
+            contentType = bytes.Length > 8 && bytes[0] == 0x89 && bytes[1] == 0x50
+                ? "image/png"
+                : bytes.Length > 3 && bytes[0] == 0x52 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x46
+                    ? "image/webp"
+                    : "image/jpeg";
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private static void StoreCoverOnDisk(string cacheKey, byte[] bytes, string contentType)
+    {
+        if (bytes.LongLength > CoverCacheMaxEntryBytes)
+        {
+            return;
+        }
+
+        try
+        {
+            var path = CoverDiskPath(cacheKey);
+            var temp = path + ".tmp";
+            File.WriteAllBytes(temp, bytes);
+            File.Move(temp, path, overwrite: true);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // 磁盘满/无权限都只是少一层缓存，不影响这次响应。
+        }
     }
 
     private long CoverCacheBytes()

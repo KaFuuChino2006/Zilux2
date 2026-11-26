@@ -21,6 +21,8 @@ import { MOTION, prefersReducedMotion } from './motion';
 const CELL_CLASS = 'title-char';
 const IN_CLASS = 'is-char-in';
 const OUT_CLASS = 'is-char-out';
+/** 入场动画结束后的静态类：撤掉动画与 will-change，字不再常驻合成层（200Hz 屏上 79 个字是实打实的开销）。 */
+const SETTLED_CLASS = 'is-char-settled';
 const ENTER_DELAY_VAR = '--char-delay';
 const LEAVE_DELAY_VAR = '--char-out-delay';
 
@@ -91,7 +93,7 @@ export class TitleEntrance {
       const ch = (this.chars[index] ?? '') === ' ' ? '\u00a0' : (this.chars[index] ?? '');
       // 只在真的不一样时写：换文本节点会重新排版，收尾那一下就会被看成「字动了一下」。
       if (cell.textContent !== ch) cell.textContent = ch;
-      cell.classList.remove(IN_CLASS, OUT_CLASS);
+      cell.classList.remove(IN_CLASS, OUT_CLASS, SETTLED_CLASS);
       cell.style.removeProperty(ENTER_DELAY_VAR);
       cell.style.removeProperty(LEAVE_DELAY_VAR);
     }
@@ -117,21 +119,26 @@ export class TitleEntrance {
       const delay = Math.round(delayMs + stagger);
       if (delay > maxDelay) maxDelay = delay;
       cell.style.setProperty(ENTER_DELAY_VAR, `${delay}ms`);
-      cell.classList.remove(OUT_CLASS);
+      cell.classList.remove(OUT_CLASS, SETTLED_CLASS);
       cell.classList.add(IN_CLASS);
     });
     this.enterTimer = window.setTimeout(
       () => {
         this.enterTimer = 0;
-        for (const cell of this.cells) cell.style.removeProperty(ENTER_DELAY_VAR);
-        // 字照旧停在 `is-char-in` 上（关键帧末帧是恒等位移），**不撤层**：
-        // 撤层那一帧，每个字都会从「合成层栅格」换回「主线程栅格」——位置吸附到设备像素、
-        // AA 从灰阶换成 LCD 次像素，整块标题看起来就「像素抖一下」。
-        // 层跟着类一起在 stop() / settle()（重播、离场、整页重开）里撤掉，那时正在演返程
-        // 或页已经藏起来，看不见这一下。
-        // 曾经担心「留层会糊」：那是关键帧还带 filter: blur(0) 的时代（离屏滤镜表面按动画
-        // 比例栅格化后不再重画）。现在标题关键帧只有 translate3d + opacity，纯 2D、
-        // 末帧恒等，实测留层的清晰度与撤层相差约 2%，肉眼不可见。
+        for (const cell of this.cells) {
+          cell.style.removeProperty(ENTER_DELAY_VAR);
+          // 动画已经演完：撤掉 is-char-in（连带 will-change 与 animation）换成静态类。
+          // 每个字常驻合成层时，200Hz 屏幕上光这 79 个字就能吃掉可观的一帧时间。
+          if (cell.classList.contains(IN_CLASS)) {
+            cell.classList.remove(IN_CLASS);
+            cell.classList.add(SETTLED_CLASS);
+          }
+        }
+        // 演完就换成立定类：撤掉 animation 与 will-change，字回到普通排版层。
+        // 早先为了避开「撤层那一帧像素抖一下」故意不撤，代价是 79 个字常驻合成层，
+        // 200Hz 屏幕上每帧都要合成一遍（见 docs/Zilux2-性能基线.md）。
+        // 现在末尾一帧是关键帧终态（translate3d 归零 + opacity 1），与立定类一致，
+        // 没有可见跳变。
       },
       maxDelay + MOTION.base + 90,
     );

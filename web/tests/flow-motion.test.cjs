@@ -128,19 +128,24 @@ test('scene records only rendered shots and applies same-window/cross-window set
  const base=harness();const rotation=base.load('flowRotation');const motion=base.load('flowMotion');
  const settings={motion:'horizontal',horizontalDirection:'random',wholeLineLyrics:false,mgSelection:[0,1,2],mgPlayback:'rotate',fontWeight:800};
  let savedSettings={...settings};const handlers=new Map(),swaps=[];
+ // flowScene 现在把 setStyle/setPalette 的失效合并到下一帧（rAF），测试里手动泵一帧再断言。
+ let rafQueue=[];let rafSeq=0;const pump=()=>{const pending=rafQueue;rafQueue=[];pending.forEach(fn=>fn(0));};
  let nonce=0;
  const exports={};
  const source=fs.readFileSync(path.join(__dirname,'../src/ui/flowScene.ts'),'utf8');
  vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{
   exports,console,AbortController,crypto:{getRandomValues:array=>{array[0]=++nonce;return array;}},
+  performance:{now:()=>0},localStorage:{getItem:()=>null,setItem(){},removeItem(){}},requestAnimationFrame:fn=>{fn(0);return 1;},cancelAnimationFrame(){},setTimeout:fn=>{fn();return 1;},clearTimeout(){},
   document:{hidden:false,fonts:{ready:Promise.resolve()},createElement:()=>({style:{},isConnected:true,remove(){}})},
-  window:{addEventListener:(name,fn)=>{if(!handlers.has(name))handlers.set(name,new Set());handlers.get(name).add(fn);},removeEventListener:(name,fn)=>handlers.get(name)?.delete(fn)},
+  window:{addEventListener:(name,fn)=>{if(!handlers.has(name))handlers.set(name,new Set());handlers.get(name).add(fn);},removeEventListener:(name,fn)=>handlers.get(name)?.delete(fn),requestAnimationFrame:fn=>{rafQueue.push(fn);return rafSeq += 1;},cancelAnimationFrame:id=>{rafQueue = rafQueue.filter((_,index)=>index+1!==id);}},
   require:specifier=>{
    if(specifier==='./flowMotion')return motion;if(specifier==='./flowRotation')return rotation;
    if(specifier==='./flowHandoff')return base.load('flowHandoff');
    if(specifier==='./flowCountdown')return {createFlowCountdown:()=>({update(){}})};
    if(specifier==='./flowSettings')return {FLOW_SETTINGS_EVENT:'zilux2:flow-settings',FLOW_SETTINGS_KEY:'zilux2.flowSettings',flowSettings:()=>({...savedSettings}),flowTuning:()=>({}),normalizeFlowSettings:value=>value};
    if(specifier==='./flowMg')return {FLOW_COMPOSITION_ORDER:[0,1,2],FLOW_ORIGINAL_START:10,FLOW_ORIGINAL_END:13,FLOW_ORIGINAL_STYLES:[],flowMgVariantForId:id=>id};
+   if(specifier==='./perfProbe')return {perfOn:()=>false,perfEvent(){},perfMark(){},perfMarkSlow(){},perfTime:(n,run)=>run(),perfTimeAsync:(n,run)=>run(),startPerfMonitor(){}};
+   if(specifier==='./keywords')return {extractLyricKeywords:()=>[]};
    if(specifier.includes('baseThemes'))return {DEFAULT_THEME:{}};
    if(specifier.includes('framer-motion'))return {MotionValue:class{constructor(value){this.value=value;}get(){return this.value;}set(value){this.value=value;}}};
    if(specifier.includes('temperaProgram'))return {compileTemperaProgram:()=>({paragraphs:[{shots:Array.from({length:3},(_,index)=>({...shot(),id:`shot-${index}`,startTime:index,endTime:index+1}))}]})};
@@ -161,12 +166,12 @@ test('scene records only rendered shots and applies same-window/cross-window set
  assert.equal(rotation.readFlowHistory().step,2);
  const send=(name,event)=>handlers.get(name)?.forEach(fn=>fn(event));
  send('zilux2:flow-settings',{detail:{...settings,motion:'rotation',rotationDirection:'clockwise',rotationZoom:'out'}});
- await Promise.resolve();await Promise.resolve();
+ pump();await Promise.resolve();await Promise.resolve();
  assert.equal(swaps.at(-1).program.paragraphs[0].shots[0].cameraMotion,'rotation');
  assert.ok(swaps.at(-1).program.paragraphs[0].shots[0].camera.zoom>swaps.at(-1).program.paragraphs[0].shots[0].cameraEnd.zoom);
  savedSettings={...settings,motion:'vertical',verticalDirection:'down'};
  const count=swaps.length;send('storage',{key:'unrelated'});assert.equal(swaps.length,count);
- send('storage',{key:'zilux2.flowSettings'});await Promise.resolve();await Promise.resolve();
+ send('storage',{key:'zilux2.flowSettings'});pump();await Promise.resolve();await Promise.resolve();
  assert.equal(swaps.at(-1).program.paragraphs[0].shots[0].cameraMotion,'slide');
  assert.ok(swaps.at(-1).program.paragraphs[0].shots[0].camera.y>0);
  scene.dispose();assert.equal(handlers.get('storage').size,0);assert.equal(handlers.get('zilux2:flow-settings').size,0);

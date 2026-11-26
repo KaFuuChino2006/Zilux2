@@ -40,6 +40,7 @@ const POS_KEY = 'advancedPanelPos';
 const STYLE_ID = 'advanced-panel-style';
 
 let panel: HTMLElement | null = null;
+let dragAbort: AbortController | null = null;
 
 function ensureStyle(): void {
   if (document.getElementById(STYLE_ID)) return;
@@ -364,16 +365,21 @@ function buildPanel(): HTMLElement {
     offsetY = event.clientY - wrap.offsetTop;
     event.preventDefault();
   });
+  // 拖拽监听挂在 window 上，面板关掉必须一起撤，否则每开关一次就多两条监听器，
+  // 而且它们闭包着 wrap —— 整个面板 DOM 都回收不掉。
+  dragAbort?.abort();
+  dragAbort = new AbortController();
+  const dragSignal = dragAbort.signal;
   window.addEventListener('mousemove', (event) => {
     if (!dragging) return;
     wrap.style.left = `${Math.max(0, event.clientX - offsetX)}px`;
     wrap.style.top = `${Math.max(0, event.clientY - offsetY)}px`;
-  });
+  }, { signal: dragSignal });
   window.addEventListener('mouseup', () => {
     if (!dragging) return;
     dragging = false;
     savePos(wrap);
-  });
+  }, { signal: dragSignal });
 
   // 过渡发生时能立刻在窗里看到原因：状态每 3 s 自动刷一次。
   const timer = window.setInterval(() => {
@@ -398,6 +404,9 @@ export function openAdvancedPanel(): void {
 }
 
 export function closePanel(): void {
+  // 先撤 window 级拖拽监听，再摘 DOM：顺序反了会留下闭包住已移除节点的监听器。
+  dragAbort?.abort();
+  dragAbort = null;
   if (panel) {
     const timer = Number(panel.dataset.timer ?? 0);
     if (timer) window.clearInterval(timer);

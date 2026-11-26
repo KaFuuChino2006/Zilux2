@@ -24,6 +24,8 @@ import { startAppearanceLink } from './ui/wallpaperAutoPreset';
 import { bootWallpaperScene, isWallpaperScene } from './ui/wallpaperScene';
 import { initAudio } from './core/audio';
 import { bootBackgroundLyricsScene, installBackgroundLyricsPublisher, isBackgroundLyricsScene } from './ui/backgroundLyrics';
+import { installGpuStarvationGuard } from './core/gpuGuard';
+import { seedMixTransitionModeDefault } from './core/mixTransitionMode';
 
 // 更新提示去重：同一个版本只提示一次，宿主重复推送也不会反复弹窗。
 let availablePromptedVersion: string | null = null;
@@ -161,6 +163,10 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  // 掉帧兜底：主屏全屏游戏抢 GPU 时，副屏页面的 rAF 间隔会被拉长。
+  // 采到持续掉帧就摘掉全站 backdrop-filter（core/gpuGuard.ts + styles/gpu-guard.css），
+  // 恢复后自动加回来。必须最早安装，否则启动阶段的卡顿会被算进首屏。
+  installGpuStarvationGuard();
   // 音频特征：宿主 30Hz 推送 bins/bands/level/peak/beat/strength/bpm。
   // 这个订阅必须早于任何消费端（壁纸节拍脉冲、可视化、歌词动效），否则它们永远拿到空帧。
   initAudio();
@@ -174,6 +180,8 @@ async function main(): Promise<void> {
   refreshPageWallpaperSwitches();
   startLyricVisualizer();
   startAppearanceLink();
+  // 混音过渡：新装/重置后默认走「自动（按两首判断）」；用户手动切过档就不再覆盖。
+  seedMixTransitionModeDefault();
 
   // 桌面背景歌词：宿主把这块页面挂在桌面壁纸层下，只需要演出，不启动整套 App。
   // 桌面壁纸层：挂在 Progman 下的第二个页面，只演壁纸，不启动整套 App。

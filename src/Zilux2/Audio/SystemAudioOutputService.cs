@@ -34,6 +34,39 @@ internal static class SystemAudioOutputService
         return List().FirstOrDefault(device => device.IsDefault);
     }
 
+    /// <summary>
+    /// 只取「当前默认播放设备」的端点 ID，不枚举全部端点、不读友好名。
+    ///
+    /// 用于 2.5s 一次的设备变化轮询：<see cref="List"/> 会枚举所有活动端点并逐个读
+    /// PKEY_Device_FriendlyName（COM + 属性存储，单次数毫秒），空闲时也能吃掉约 10% 单核。
+    /// </summary>
+    public static string? CurrentDefaultId()
+    {
+        LoopbackCapture.IMMDeviceEnumerator? enumerator = null;
+        LoopbackCapture.IMMDevice? device = null;
+        try
+        {
+            enumerator = (LoopbackCapture.IMMDeviceEnumerator)new LoopbackCapture.MMDeviceEnumeratorComObject();
+            if (enumerator.GetDefaultAudioEndpoint(DataFlowRender, RoleConsole, out device) < 0 || device is null)
+            {
+                return null;
+            }
+
+            var id = GetDeviceId(device);
+            return string.IsNullOrEmpty(id) ? null : id;
+        }
+        catch (Exception exception)
+        {
+            HostLog.Warn($"[audioOutput] default id failed: {exception.GetType().Name}: {exception.Message}");
+            return null;
+        }
+        finally
+        {
+            Release(device);
+            Release(enumerator);
+        }
+    }
+
     /// <summary>枚举全部活动播放设备（按系统枚举顺序，标记当前默认项）。</summary>
     public static IReadOnlyList<SystemAudioOutputDevice> List()
     {

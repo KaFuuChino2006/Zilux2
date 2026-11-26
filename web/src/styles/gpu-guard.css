@@ -1,0 +1,24 @@
+/*
+ * GPU 饥饿降级。由 core/gpuGuard.ts 在连续掉帧时给 <html> 挂 is-gpu-starved。
+ *
+ * 主屏全屏游戏抢占 GPU 时，backdrop-filter 每帧都要重采样并模糊背后的整块内容，
+ * 是合成队列里最先被饿死的开销。这里只关模糊、保留元素自己的半透明底色，
+ * 不做位移/尺寸变化，降级/恢复都不会让版面跳动。
+ *
+ * 不写进 ui-template.css：那条铁律只管 FX 界面样式；这里是全站性能兜底，
+ * 独立成文件，避免改既有规则。
+ */
+html.is-gpu-starved *,
+html.is-gpu-starved *::before,
+html.is-gpu-starved *::after {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+/* 大面积发光/投影在 GPU 排队时同样要重画整块区域；保留 1px 以内的紧凑投影，
+   只收掉散开的大半径。 */
+html.is-gpu-starved .app .stage,
+html.is-gpu-starved .app .topbar,
+html.is-gpu-starved .app .playerbar {
+  box-shadow: none !important;
+}

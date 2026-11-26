@@ -20,13 +20,40 @@ export function installStagePulse(target: HTMLElement): () => void {
   target.append(el);
 
   let frame = 0;
+  let wakeTimer = 0;
   let disposed = false;
   let lastPaint = 0;
   let currentKey = '';
   let barMs = 2400;
 
+  // 停放（收进托盘）/ 页面隐藏时整体休眠：rAF 一续订，合成器就要按显示器刷新率出帧
+  // （本机 200Hz），哪怕画面完全静止也是实打实的 CPU。醒来由 500ms 轮询接管。
+  const asleep = (): boolean =>
+    document.hidden || document.documentElement.classList.contains('is-host-parked');
+
+  const startWake = (): void => {
+    if (wakeTimer || disposed) return;
+    wakeTimer = window.setInterval(() => {
+      if (disposed) {
+        window.clearInterval(wakeTimer);
+        wakeTimer = 0;
+        return;
+      }
+      if (asleep()) return;
+      window.clearInterval(wakeTimer);
+      wakeTimer = 0;
+      frame = requestAnimationFrame(paint);
+    }, 500);
+  };
+
   const paint = (time: number): void => {
     if (disposed) return;
+    if (asleep()) {
+      frame = 0;
+      el.style.opacity = '0';
+      startWake();
+      return;
+    }
     frame = requestAnimationFrame(paint);
     if (time - lastPaint < 33) return; // ~30fps
     lastPaint = time;
@@ -92,6 +119,8 @@ export function installStagePulse(target: HTMLElement): () => void {
     disposed = true;
     if (frame) cancelAnimationFrame(frame);
     frame = 0;
+    if (wakeTimer) window.clearInterval(wakeTimer);
+    wakeTimer = 0;
     window.removeEventListener('beforeunload', onBeforeUnload);
     el.remove();
     if (document.documentElement.dataset.stage === 'live' || document.documentElement.dataset.stage === 'static') {

@@ -1,4 +1,5 @@
 import { openFlowSettingsSheet } from './flowSettingsPanel';
+import { openOverlapSettingsSheet } from './overlapSettingsPanel';
 /// <reference types="vite/client" />
 /**
  * 应用外壳：顶栏 / 左 rail / 墙面 / 播放条 / 弹层（搜索、设置、账号、登录）。
@@ -13,6 +14,7 @@ import '../styles/ui-template.css';
 import '../styles/responsive-layout.css';
 import '../styles/nav-guide.css';
 import '../styles/dev-tools.css';
+import '../styles/gpu-guard.css';
 import QRCode from 'qrcode';
 
 /** 迷你播放器状态记忆键：刷新/崩溃恢复后用来向宿主复核窗口态。 */
@@ -3818,10 +3820,11 @@ export class App {
     }) as HTMLButtonElement;
     this.wallToTopBtn.append(icon('chevronUp', 18));
     this.wallToTopBtn.addEventListener('click', () => {
-      this.wallHost.scrollTo({ top: 0, behavior: 'smooth' });
+      // 推荐式排版滚动的是 dailyView 里的 .fx-cards，不是 wallHost。
+      this.wallScrollHost().scrollTo({ top: 0, behavior: 'smooth' });
       const head = this.wallHost.querySelector<HTMLElement>('.wall-head');
       head?.classList.remove('is-scrolled-away');
-      this.refreshWallShortcuts();
+      this.wallToTopBtn.classList.add('is-idle');
     });
 
     this.wallLocateBtn = h('button', {
@@ -3837,9 +3840,34 @@ export class App {
         toast('先播放一首歌再定位', 'info');
         return;
       }
-      const nodes = Array.from(
-        this.wallHost.querySelectorAll<HTMLElement>('.poster[data-track-key],.track-row[data-track-key]'),
-      ).filter((node) => node.dataset.trackKey === `${current.source}:${current.id}`);
+      const needle = (current.title ?? '').trim();
+      const host = this.wallScrollHost();
+
+      // 1) 推荐式把第一首抽成左侧大封面（.fx-hero-cover），它不在 .fx-cards 里。
+      //    这首歌正在播时，定位目标就是它：滚到顶 + 光环 + 明确提示。
+      const hero = this.wallHost.querySelector<HTMLElement>('.fx-hero-cover');
+      if (hero && needle && (hero.title ?? '').startsWith(needle)) {
+        host.scrollTo({ top: 0, behavior: 'smooth' });
+        this.wallToTopBtn.classList.add('is-idle');
+        hero.classList.remove('is-located');
+        void hero.offsetWidth;
+        hero.classList.add('is-located');
+        window.clearTimeout(this.wallLocateTimer);
+        this.wallLocateTimer = window.setTimeout(() => hero.classList.remove('is-located'), 3500);
+        toast(`已定位到当前播放：${needle}`, 'info');
+        return;
+      }
+
+      // 2) 普通卡片：推荐式卡片真实 key 在 data-key（data-track-key 是预览 id）。
+      const wantKey = `${current.source}:${current.id}`;
+      const scope: ParentNode = host;
+      let nodes = Array.from(
+        scope.querySelectorAll<HTMLElement>('.poster[data-track-key],.track-row[data-track-key],.fx-card'),
+      ).filter((node) => (node.dataset.trackKey ?? node.dataset.key) === wantKey);
+      if (!nodes.length && needle) {
+        nodes = Array.from(scope.querySelectorAll<HTMLElement>('.fx-card,.poster,.track-row'))
+          .filter((node) => (node.textContent ?? '').includes(needle));
+      }
       if (!nodes.length) {
         toast('当前播放歌曲不在这个列表里', 'info');
         return;
@@ -3847,16 +3875,14 @@ export class App {
       const node = nodes[0];
       window.clearTimeout(this.wallLocateTimer);
       nodes.forEach((item) => item.classList.remove('is-located'));
-      // 重新触发 CSS animation：即使目标没有换，也要先清空类、强制一次布局再挂回。
+      // 重新触发 CSS 动画：即使目标没换，也要先清空类、强制布局再挂回。
       nodes.forEach((item) => void item.offsetWidth);
       nodes.forEach((item) => item.classList.add('is-located'));
-      const host = this.wallHost;
       const hostRect = host.getBoundingClientRect();
       const nodeRect = node.getBoundingClientRect();
       const centered =
         host.scrollTop + nodeRect.top - hostRect.top - (host.clientHeight - nodeRect.height) / 2;
       host.scrollTo({ top: Math.max(0, centered), behavior: 'smooth' });
-      // 动画 3.2s；多留 300ms，确保徽标和光环完全淡出后再摘类。
       this.wallLocateTimer = window.setTimeout(
         () => nodes.forEach((item) => item.classList.remove('is-located')),
         3500,
@@ -3872,27 +3898,49 @@ export class App {
     const current = playerState().track;
     if (!current) return null;
     const key = `${current.source}:${current.id}`;
-    const nodes = this.wallHost.querySelectorAll<HTMLElement>('.poster[data-track-key],.track-row[data-track-key]');
+    const scope = this.stageLayer === this.dailyView ? this.dailyView : this.wallHost;
+    // 推荐式的卡片是 data-key（data-track-key 里存的是预览 id），大封面只有 title。
+    const nodes = scope.querySelectorAll<HTMLElement>('.poster[data-track-key],.track-row[data-track-key],.fx-card');
     for (const node of Array.from(nodes)) {
-      if (node.dataset.trackKey === key) return node;
+      if ((node.dataset.trackKey ?? node.dataset.key) === key) return node;
     }
+    const hero = this.wallHost.querySelector<HTMLElement>('.fx-hero-cover');
+    const needle = (current.title ?? '').trim();
+    if (hero && needle && (hero.title ?? '').startsWith(needle)) return hero;
     return null;
+  }
+
+  /**
+   * 「推荐式」排版铺在 wallHost 里的 .wall-daily-layout 上，真正滚的是里面的 .fx-cards；
+   * 今日推荐整页（dailyView）同理。两种都要认，否则回到顶部/定位会滚错容器。
+   */
+  private wallScrollHost(): HTMLElement {
+    const grid = this.wallHost.querySelector<HTMLElement>('.wall-daily-layout .fx-cards');
+    if (grid) return grid;
+    if (this.stageLayer === this.dailyView) {
+      const dailyGrid = this.dailyView.querySelector<HTMLElement>('.fx-cards');
+      if (dailyGrid) return dailyGrid;
+    }
+    return this.wallHost;
   }
 
   /** 滚动时只更新「回到顶部」的暗显状态，避免每帧遍历整面歌曲墙。 */
   private refreshWallTopState(): void {
-    this.wallToTopBtn?.classList.toggle('is-idle', this.wallHost.scrollTop < 8);
+    this.wallToTopBtn?.classList.toggle('is-idle', this.wallScrollHost().scrollTop < 8);
   }
 
   /** 同步右下角两个按钮的可见/可用状态；滚动、换歌、换墙、开歌词都会调用。 */
   private refreshWallShortcuts(): void {
     if (!this.wallShortcuts) return;
-    const hasWall = !this.wallHost.classList.contains('is-hidden') && !this.root.classList.contains('is-lyrics-open');
+    const dailyOn = this.stageLayer === this.dailyView && !this.dailyView.classList.contains('is-hidden');
+    const hasWall =
+      !this.root.classList.contains('is-lyrics-open') &&
+      (dailyOn || !this.wallHost.classList.contains('is-hidden'));
     const hasTracks = this.wall.tracks.length > 0 && !['recommend', 'moods', 'stats', 'playlists'].includes(this.wall.kind);
     const visible = hasWall && hasTracks;
     this.wallShortcuts.classList.toggle('is-visible', visible);
     this.wallShortcuts.setAttribute('aria-hidden', visible ? 'false' : 'true');
-    this.wallToTopBtn.classList.toggle('is-idle', this.wallHost.scrollTop < 8);
+    this.wallToTopBtn.classList.toggle('is-idle', this.wallScrollHost().scrollTop < 8);
     const canLocate = !!this.currentWallTrackNode();
     this.wallLocateBtn.disabled = false;
     this.wallLocateBtn.classList.toggle('is-unavailable', !canLocate);
@@ -4292,39 +4340,25 @@ export class App {
 
     if (dailySelected) {
       const recent = this.wall.kind === 'recent';
-      const host = h('div', {class: 'wall-daily-layout ' + (recent ? 'library-history' : 'library-favorites')});
-      const masthead = h('div', {class:'library-masthead'},
-        h('div', {class:'library-imprint', text: recent ? 'ZILUX2  /  PLAY LOG' : 'ZILUX2  /  RECORD FILE'}),
-        h('div', {class:'library-display', text: recent ? 'On Repeat' : 'Favorites'}),
-        h('div', {class:'library-mark', 'aria-hidden':'true'},
-          ...['screen','blade','orbit','spark','ticks'].map(layer => h('i',{class:'sleeve-'+layer}))),
-      );
-      const folio = h('div', {class:'library-folio'},
-        h('span', {text: recent ? '播放记录　/　LISTENING HISTORY' : '私人收藏　/　PERSONAL COLLECTION'}),
-        h('i', {'aria-hidden':'true'}),
-        h('span', {class:'library-track-count',text: tracks.length + ' TRACKS'}),
-      );
+      const host = h('div', {class: 'wall-daily-layout library-lyric-layout'});
       const stage = createFxDailyStage({
         registerTrack: registerPreviewTrack,
-        onTrackChange: key => {
-          let hash = 0;
-          for (const char of key) hash = (hash*31+char.charCodeAt(0)) >>> 0;
-          host.dataset.composition = String(hash % 3);
-        },
         load: async () => tracks.slice(),
         play: (list,index) => this.playWithPreviewHandoff(list,index),
       });
       this.wallDaily = stage;
-      stage.setWord(this.wall.kind === 'recent' ? '最近播放' : '我的喜欢');
-      host.append(masthead,stage.root,folio);
+      stage.setWord(recent ? '最近播放' : '我的喜欢');
+      host.append(stage.root);
       this.wallHost.append(host);
       if (skipEnter && this.wallMotion().isVisible()) {
-        this.wallMotion().playOn([host, ...host.querySelectorAll<HTMLElement>('.library-imprint,.library-display,.library-mark,.library-folio')]);
+        this.wallMotion().playOn([host]);
       }
       stage.show('daily');
       stage.syncCurrent(playerState().track,!playerState().playing);
       const grid = stage.root.querySelector('.fx-cards');
       grid?.addEventListener('scroll', () => {
+        // 滚动发生在 .fx-cards 里，wallHost 不滚 —— 右下角两个按钮的状态得自己刷。
+        this.refreshWallTopState();
         if (this.wallDaily === stage && grid.scrollTop+grid.clientHeight >= grid.scrollHeight-500)
           void this.loadMoreWall();
       },{passive:true});
@@ -11756,6 +11790,7 @@ export class App {
           hint: '唱片：歌词字体/颜色/排布、盘面配色、转速、唱臂与尘埃',
         },
         flow: {action:'拼合设置…',hint:'背景与歌词独立配色、封面取色、段落换色、多角度运镜'},
+        overlap: {action:'重合设置…',hint:'配色、字号、跟随运镜、旋转概率与角度、落点散开、旧句消散、括号/轨迹/弧线/刻度尺'},
       };
       const effectSettingsBtn = h('button', {
         class: 'quick-value quick-text-settings-btn',
@@ -11771,11 +11806,12 @@ export class App {
         if (mode === 'off') return;
         this.closeQuick();
         const open =
-          mode === 'flow' ? openFlowSettingsSheet : mode === 'text'
-            ? openTextSettingsSheet
-            : mode === 'room'
-              ? openRoomSettingsSheet
-              : openVinylSettingsSheet;
+          mode === 'overlap' ? openOverlapSettingsSheet
+            : mode === 'flow' ? openFlowSettingsSheet : mode === 'text'
+              ? openTextSettingsSheet
+              : mode === 'room'
+                ? openRoomSettingsSheet
+                : openVinylSettingsSheet;
         window.setTimeout(() => open(), 140);
       });
       const effectSettingsHint = h('span', { class: 'quick-cell-hint', text: '' });

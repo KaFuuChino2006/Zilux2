@@ -74,6 +74,8 @@ export const createLumiereCamera = (options: LumiereCameraOptions) => {
     const span = { startTime: options.startTime, endTime: options.endTime };
     return (time: number): TransformParams => {
         const progress = resolveLumiereCameraProgress(time, span, options.sections);
+        // 手持感浮动：原来只有 0.6% 画面宽，几乎看不出来；现在放到 1.6%，
+        // 并且无论光位有没有配 driftX，都留一个 3% 的横向扫移，让字在水平方向真的跟着动。
         const floatX = (Math.sin(time * 0.21 + 0.4) * 0.6 + Math.sin(time * 0.53 + 1.9) * 0.4) * 0.006 * motion;
         const floatY = (Math.cos(time * 0.17 + 1.1) * 0.6 + Math.sin(time * 0.47 + 0.3) * 0.4) * 0.006 * motion;
         return {

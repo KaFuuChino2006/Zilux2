@@ -1,5 +1,5 @@
 import { setDeckMixGain, deckStemInput, scheduleElementEntry, deckAudioContext } from '../core/audioTap';
-import { ensureAutomixV2Deck, releaseAutomixV2Tail, scheduleAutomixV2, scheduleAutomixV2Duck, scheduleAutomixV2Echo, scheduleAutomixV2Presence, scheduleAutomixV2TailBleed, scheduleAutomixV2Unfade, scheduleAutomixV2Reverb, scheduleAutomixV2Hall, scheduleAutomixV2Press, scheduleAutomixV2WetBed, scheduleWetDuck, setWetHighpass, setCrossoverHz, setLowPolarity, setLowTrimDb, scheduleLoudnessTrim } from '../audio/automixV2Graph';
+import { ensureAutomixV2Deck, releaseAutomixV2Tail, relaxAutomixV2Chain, scheduleAutomixV2, scheduleAutomixV2Duck, scheduleAutomixV2Echo, scheduleAutomixV2Presence, scheduleAutomixV2TailBleed, scheduleAutomixV2Unfade, scheduleAutomixV2Reverb, scheduleAutomixV2Hall, scheduleAutomixV2Press, scheduleAutomixV2WetBed, scheduleWetDuck, setWetHighpass, setCrossoverHz, setLowPolarity, setLowTrimDb, scheduleLoudnessTrim } from '../audio/automixV2Graph';
 import { risingPressure, buildV2Plan } from '../core/automix/v2Plan';
 import { ECHO_MAX_FADE_MS, planEchoTail, type EchoTailPlan } from '../core/automix/echoTail';
 import { planBackspin, type BackspinPlan } from '../core/automix/backspin';
@@ -5277,14 +5277,6 @@ function startFade(plan: ActivePlan): void {
     setDeckVolume(plan.options.active, base);
     setDeckVolume(plan.options.standby, 0);
   }
-  // v2 链预热：B 还没起播，此刻建链听不到任何东西。等到 beginTimeline 再建，
-  // 图拓扑变更 + Convolver IR 分配就落在可听瞬间 —— 听感是「一进过渡卡一下」。
-  if (isAutomixV2(effectiveMode()) && audioTapGraphActive()) {
-    const warmAt = performance.now();
-    const warmB = ensureAutomixV2Deck(plan.options.standby);
-    if (warmB) setDeckGraphGain(plan.options.standby, 0);
-    logEvent('automix-v2-prewarm', `B 侧 v2 链预建 ${Math.round(performance.now() - warmAt)}ms（${warmB ? 'ok' : 'fail'}）`);
-  }
   // 准备期间 player 可能重设过 deck 属性，起播前再确保一次 WSOLA 速率与用户倍速。
   const startBaseRate = baseDeckRate(plan.options);
   setDeckPlaybackRate(plan.options.active, startBaseRate);
@@ -5487,8 +5479,7 @@ function qualityWithCurves(
 function startSplitMix(plan: ActivePlan, clock: number): boolean {
   const {active,standby} = plan.options;
   if (active === standby) return false;
-  // ensure 而不是 build：B 侧可能已经在 startFade 里预热过，重建会把 Convolver/Delay 的
-  // 分配又搬回可听瞬间（用户听到的「卡一下」）。
+  // 分频链初始静音，只有真正调度换手曲线时才接管元素。
   const a = ensureAutomixV2Deck(active);
   if (!a) return false;
   const b = ensureAutomixV2Deck(standby);
@@ -5639,8 +5630,18 @@ function startSplitMix(plan: ActivePlan, clock: number): boolean {
       if (plan.scheduleRef) plan.scheduleRef.quality = plan.quality;
     } catch { /* 质量门是诊断，不该挡住过渡 */ }
   }
-  scheduleAutomixV2(a,clock,plan.fadeMs/1000,curves.a);
-  scheduleAutomixV2(b,clock,plan.fadeMs/1000,curves.b);
+  // 排程时间轴必须和 `fadeStep` 判完成用的那条一致。
+  //
+  // `fadeStep` 用 `plan.fadeWallMs`（曲内时长 /(用户倍速 × 实际消耗速率)）算进度，
+  // 这里以前一律拿 `plan.fadeMs/1000` —— 把曲内毫秒当墙钟秒。倍速 ≠ 1 时曲线比
+  // 进度长（或短），进度先到 1 就 `releaseSplitMix()` + `tap.restore()` 摘链，
+  // 曲线上还剩着没走完的扫频/压音/风格 EQ，被 0 时长旁路一次性弹回 ——
+  // 听感就是「过渡完成的一瞬间，之前被压下去的高音突然回来」。
+  const mixSec = Math.max(0.2, (plan.fadeWallMs && plan.fadeWallMs > 0 ? plan.fadeWallMs : plan.fadeMs) / 1000);
+  // `offsetMs` 类事件是曲内毫秒 → 墙钟秒的换算系数（= 1 /(倍速 × 消耗速率)）。
+  const musicToWall = mixSec / Math.max(0.001, plan.fadeMs / 1000);
+  scheduleAutomixV2(a,clock,mixSec,curves.a);
+  scheduleAutomixV2(b,clock,mixSec,curves.b);
   // 分频点：规划期按两边低频相关性算，运行期只挪一次（不随帧改）。
   if (plan.splitHz && Number.isFinite(plan.splitHz)) {
     setCrossoverHz(a, plan.splitHz);
@@ -5664,8 +5665,8 @@ function startSplitMix(plan: ActivePlan, clock: number): boolean {
     // 风格 EQ 不许在过渡一开始就改 A：A 在 80% 之前保持原样。
     // B 从 30%（低频进入）开始补偿，A 只留最后 20% 的一半量，避免「一进过渡旧歌就变味」。
     const eq = plan.stylePolicy.eq;
-    scheduleAutomixV2Style(b, clock + plan.fadeMs * 0.3 / 1000, plan.fadeMs * 0.7 / 1000, { ...eq, side: 'b' });
-    scheduleAutomixV2Style(a, clock + plan.fadeMs * 0.8 / 1000, plan.fadeMs * 0.2 / 1000, {
+    scheduleAutomixV2Style(b, clock + mixSec * 0.3, mixSec * 0.7, { ...eq, side: 'b' });
+    scheduleAutomixV2Style(a, clock + mixSec * 0.8, mixSec * 0.2, {
       ...eq,
       side: 'a',
       aHighDb: (eq.aHighDb ?? 0) * 0.5,
@@ -5680,7 +5681,7 @@ function startSplitMix(plan: ActivePlan, clock: number): boolean {
     scheduleLoudnessTrim(
       a,
       clock,
-      plan.fadeMs / 1000,
+      mixSec,
       trimCurve.db.map((db, i: number) => ({ p: trimCurve.ps[i] ?? i / (trimCurve.db.length - 1), db })),
     );
     logEvent('automix-v2-loudtrim', `响度补平 ≤${Math.max(...trimCurve.db).toFixed(1)} dB（${trimCurve.db.length} 点）`);
@@ -5692,17 +5693,17 @@ function startSplitMix(plan: ActivePlan, clock: number): boolean {
     ? Math.max(0, Math.min(1, Math.abs(styleParams?.duckDb as number) / 6)) : 1;
   const duckScale = Math.max(0, Math.min(1.2, baseDuckScale * (plan.stylePolicy?.duckScale ?? 1)));
   if (plan.v2Duck?.length) {
-    scheduleAutomixV2Duck(a, plan.v2Duck.map((e) => ({ atSec: clock + e.offsetMs / 1000, db: Math.max(-15, e.db * duckScale) })));
+    scheduleAutomixV2Duck(a, plan.v2Duck.map((e) => ({ atSec: clock + (e.offsetMs / 1000) * musicToWall, db: Math.max(-15, e.db * duckScale) })), clock + mixSec);
     logEvent('automix-v2-duck', `A 在 B 唱句处让位 ${Math.abs(Math.min(...plan.v2Duck.map((e) => e.db))).toFixed(1)} dB（${plan.v2Duck.length} 点）`);
   }
   // B 的让位只有一条通路能写 `duck.gain`：acapellaOverlay 自己会排 presence 曲线，
   // 若这里再排一遍 bDuck，两条 `setValueAtTime` 序列会互相覆盖（后写的赢，深度和时机都不对）。
   if (plan.bDuck?.length && !plan.vocalOverlay?.enabled) {
-    scheduleAutomixV2Duck(b, plan.bDuck.map((e) => ({ atSec: clock + e.offsetMs / 1000, db: e.db })));
+    scheduleAutomixV2Duck(b, plan.bDuck.map((e) => ({ atSec: clock + (e.offsetMs / 1000) * musicToWall, db: e.db })), clock + mixSec);
     logEvent('automix-v2-duck-b', `B 在 A 唱句底下压 ${Math.abs(Math.min(...plan.bDuck.map((e) => e.db))).toFixed(1)} dB（${plan.bDuck.length} 点）`);
   }
   if (plan.aUnfade?.length) scheduleAutomixV2Unfade(a,clock+
-    Math.max(0,plan.aUnfade[0].ms-plan.fadeStartFileMs)/1000/baseDeckRate(options),plan.aUnfade);
+    Math.max(0,plan.aUnfade[0].ms-plan.fadeStartFileMs)/1000*musicToWall,plan.aUnfade);
   // 过渡尾巴的混响：两首歌都送，但 A 全量、B 减 9 dB 且更晚起送。
   // 只送 A 会听起来像「A 一个人在混响里消失」；只送 B 则新歌一开口就糊。
   const baseReverb = readReverbOptions();
@@ -5729,13 +5730,13 @@ function startSplitMix(plan: ActivePlan, clock: number): boolean {
   logEvent('automix-v2-wet-tap', wetPost ? '送出点：滤波后（尾巴跟主声道一起变暗）' : '送出点：全带宽');
   // A 的湿声再往后压：70% 才起送、只送一半量、返回电平也降 4 dB。
   // 之前 50% 起送、return +8 dB，是「进过渡一会后发糊」的第二个来源。
-  scheduleAutomixV2Reverb(a, clock, plan.fadeMs / 1000, {
+  scheduleAutomixV2Reverb(a, clock, mixSec, {
     ...reverb,
     fromP: Math.max(0.7, reverb.fromP),
     sendDb: Math.min(-14, reverb.sendDb - 6),
     returnDb: Math.min(4, reverb.returnDb - 4),
   });
-  scheduleAutomixV2Reverb(b, clock, plan.fadeMs / 1000, {
+  scheduleAutomixV2Reverb(b, clock, mixSec, {
     sendDb: reverb.sendDb - 9,
     returnDb: reverb.returnDb,
     fromP: Math.min(0.88, reverb.fromP + 0.12),
@@ -5744,7 +5745,7 @@ function startSplitMix(plan: ActivePlan, clock: number): boolean {
   // B 的「80% 前在混响里」：只把 300 Hz 以上送进湿声（低音保持干），
   // 50% 起送、80% 前保持、92% 前收干；B 自己唱的时候再把湿声压 8 dB（人声保持干）。
   try { setWetHighpass(a, 20); setWetHighpass(b, 300); } catch { /* 老 deck */ }
-  scheduleAutomixV2WetBed(b, clock, plan.fadeMs / 1000, {
+  scheduleAutomixV2WetBed(b, clock, mixSec, {
     sendDb: plan.styleId === 'reverbOut' ? -3 : -4,
     returnDb: 6,
     fromP: 0.5,
@@ -5763,7 +5764,7 @@ function startSplitMix(plan: ActivePlan, clock: number): boolean {
         const db = v > 0.45 ? -8 : 0;
         if (db !== lastDb) { points.push({ p: ms / plan.fadeMs, db }); lastDb = db; }
       }
-      if (points.length) scheduleWetDuck(b, clock, plan.fadeMs / 1000, points);
+      if (points.length) scheduleWetDuck(b, clock, mixSec, points);
     }
   } catch { /* 无活动度曲线就不压 */ }
   // B 顶上来的那一下压 A：陡升段同时下压 A 的电平并把它收闷，
@@ -5773,7 +5774,7 @@ function startSplitMix(plan: ActivePlan, clock: number): boolean {
     // 否则听感是「一进过渡旧歌就变糊」。深度也收到 -2 dB、低通只到 6 kHz。
     const pressure = risingPressure(plan.v2Plan?.b ?? { low: [], high: [] }).filter((pt) => pt.p >= 0.85);
     if (pressure.some((pt) => pt.drive > 0.05)) {
-      scheduleAutomixV2Press(a, clock, plan.fadeMs / 1000, pressure, {
+      scheduleAutomixV2Press(a, clock, mixSec, pressure, {
         pressDb: plan.styleId === 'dropSwap' || plan.styleId === 'doubleDrop' ? -3 : -2,
         floorHz: 6_000,
       });
@@ -5799,12 +5800,12 @@ function startSplitMix(plan: ActivePlan, clock: number): boolean {
       releaseP: 0.68,
       tailMs: Math.max(500, Math.min(900, Math.round(plan.fadeMs * 0.05))),
     };
-    scheduleAutomixV2Hall(a, clock, plan.fadeMs / 1000, {
+    scheduleAutomixV2Hall(a, clock, mixSec, {
       ...hall,
       fromP: Math.max(0.7, hall.fromP),
       sendDb: hall.sendDb - 6,
     });
-    scheduleAutomixV2Hall(b, clock, plan.fadeMs / 1000, {
+    scheduleAutomixV2Hall(b, clock, mixSec, {
       ...hall,
       sendDb: hall.sendDb - 4,
       fromP: Math.min(0.85, Math.max(0.5, hall.fromP + 0.1)),
@@ -5841,20 +5842,20 @@ function startSplitMix(plan: ActivePlan, clock: number): boolean {
   }
   if (echo.enabled) {
     plan.echo = echo;
-    scheduleAutomixV2Echo(a, clock, plan.fadeMs / 1000, echo);
+    scheduleAutomixV2Echo(a, clock, mixSec, echo);
     logEvent('automix-v2-echo', echo.note);
   }
   // 人声叠加：A 的中频存在感抬起来，B 的人声在 A 唱的时候让开（零分轨的 acapella 近似）。
   if (plan.vocalOverlay?.enabled) {
     const ov = plan.vocalOverlay;
-    scheduleAutomixV2Presence(a, clock, plan.fadeMs / 1000, {
+    scheduleAutomixV2Presence(a, clock, mixSec, {
       fromDb: 0,
       toDb: ov.aBoostDb,
       fromP: ov.fromP,
       releaseP: ov.releaseP,
     });
     if (ov.bDuckDb < 0) {
-      scheduleAutomixV2Presence(b, clock, plan.fadeMs / 1000, {
+      scheduleAutomixV2Presence(b, clock, mixSec, {
         fromDb: 0,
         toDb: ov.bDuckDb,
         fromP: Math.max(0, ov.fromP - 0.15),
@@ -5864,8 +5865,10 @@ function startSplitMix(plan: ActivePlan, clock: number): boolean {
     logEvent('automix-v2-presence', ov.note);
   }
   // A 的器乐尾巴：窗口末不切断，从这个电平继续铺在 B 底下，再缓慢收干。
+  // 收干必须赶在 `tap.restore()` 之前到听不见的位置（−80 dB 级），
+  // 否则摘链那一刻残余尾巴会被旁路一起抬起来，也是「过渡完突然变亮」的一条来源。
   if (aTailHold > 0 && plan.aTailBleedMs) {
-    scheduleAutomixV2TailBleed(a, clock + plan.fadeMs / 1000, plan.aTailBleedMs / 1000, aTailHold);
+    scheduleAutomixV2TailBleed(a, clock + mixSec, Math.max(0.15, (plan.aTailBleedMs / 1000) * 0.9), aTailHold);
     logEvent('automix-v2-tail-bleed', `A 的尾巴在过渡后继续铺 ${(plan.aTailBleedMs / 1000).toFixed(1)}s（-13 dB → 静音）`);
   }
   logEvent(
@@ -5876,8 +5879,8 @@ function startSplitMix(plan: ActivePlan, clock: number): boolean {
   );
   if (plan.introBridge && plan.introBuffer) {
     const ctx = b.tap.input.context as AudioContext;
-    const delaySec = Math.max(0,plan.fadeMs/1000 -
-      (plan.introBridge.firstVocalMs-plan.bStartFileMs)/1000/standby.playbackRate);
+    const delaySec = Math.max(0,mixSec -
+      (plan.introBridge.firstVocalMs-plan.bStartFileMs)/1000*musicToWall);
     const handle = delaySec > 0 ? startBridgePlayback({ctx,tap:b.tap,buffer:plan.introBuffer,
       atSec:clock,durationSec:delaySec,rate:standby.playbackRate}) : null;
     if (handle) {
@@ -5903,7 +5906,7 @@ function startSplitMix(plan: ActivePlan, clock: number): boolean {
   if (plan.doubling?.enabled && plan.doublingBuffer) {
     const dbl = plan.doubling;
     const ctx = a.tap.input.context as AudioContext;
-    const at = clock + Math.max(0, (plan.fadeMs - dbl.leadMs) / 1000);
+    const at = clock + Math.max(0, mixSec - (dbl.leadMs / 1000) * musicToWall);
     const handle = startOverlayPlayback({ ctx, tap: a.tap, buffer: plan.doublingBuffer, atSec: at, durationSec: dbl.leadMs / 1000 });
     if (handle) plan.v2.doubling = handle;
   }
@@ -5917,9 +5920,9 @@ function startSplitMix(plan: ActivePlan, clock: number): boolean {
   }
   if (plan.bridge && plan.bridgeBuffer) {
     const ctx = a.tap.input.context as AudioContext;
-    const delay = (plan.bridge.unitStartFileMs-active.currentTime*1000)/1000/baseDeckRate(options);
+    const delay = (plan.bridge.unitStartFileMs-active.currentTime*1000)/1000*musicToWall;
     if (delay >= 0) plan.v2.bridge = startBridgePlayback({ctx,tap:a.tap,buffer:plan.bridgeBuffer,
-      atSec:clock+delay,durationSec:Math.max(0,plan.fadeMs/1000-delay),rate:baseDeckRate(options)});
+      atSec:clock+delay,durationSec:Math.max(0,mixSec-delay),rate:baseDeckRate(options)});
   }
   // A 尾自延长 / 生成过渡垫底：buffer 接在 tap.input（绕过元素门、仍经过 v2 链）。
   // tail：从 A 的 audibleEnd 起播，补到主过渡收尾；bed：从 fadeStart 起播，整段垫在换手下面。
@@ -6055,7 +6058,7 @@ function playInstrumentBed(plan: ActivePlan, clock: number): boolean {
   } catch { stop(); return false; }
 }
 
-function releaseSplitMix(plan: ActivePlan): void {
+function releaseSplitMix(plan: ActivePlan, continuing: 'a' | 'b' = 'b'): void {
   plan.bedWindows=undefined;
   plan.stopBed?.();
   plan.stopBed=undefined;
@@ -6078,10 +6081,25 @@ function releaseSplitMix(plan: ActivePlan): void {
   releaseAutomixV2Tail(runtime.b);
   const aDeck = runtime.a;
   const bDeck = runtime.b;
-  // Return both elements to their dry outputs now. Only the already-fed
-  // reverb/delay nodes need to survive for the tail.
-  aDeck.tap.restore();
-  bDeck.tap.restore();
+  // 先把链上还挂着的过渡状态（扫频、压音、让位、风格 EQ）用真斜坡放平，再摘 tap。
+  //
+  // `tap.restore()` 是 0 时长的旁路：gate/input 直接 disconnect、元素 gain 一步接回干路。
+  // 曲线排得准的时候链上本来就接近中性，这一步是空操作；但只要还剩一点压低
+  // （手动取消、图被激活时硬切、曲线与进度差几十毫秒、尾巴没来得及收干），
+  // 旁路就会把它一次性弹回来 —— 听起来就是「过渡完成后，被削掉的高音瞬间恢复」。
+  const relaxMs = 180;
+  try {
+    relaxAutomixV2Chain(aDeck, relaxMs / 1000, continuing === 'a');
+    relaxAutomixV2Chain(bDeck, relaxMs / 1000, continuing === 'b');
+  } catch { /* 上下文已关闭时忽略 */ }
+  window.setTimeout(() => {
+    // 这 180 ms 里如果已经有新过渡接管了同一条 tap，别再拆它。
+    if (activePlan) return;
+    // Return both elements to their dry outputs. Only the already-fed
+    // reverb/delay nodes need to survive for the tail.
+    try { aDeck.tap.restore(); } catch { /* 已还原 */ }
+    try { bDeck.tap.restore(); } catch { /* 已还原 */ }
+  }, relaxMs);
   window.setTimeout(() => {
     aDeck.dispose();
     bDeck.dispose();
@@ -6187,7 +6205,10 @@ function beginTimeline(plan: ActivePlan): void {
         if (plan.am) scheduleAmFade(plan);
         else {
           // 非「标准」档且分轨没接管：走频率换手（低频先换、滤波错开），不再整轨等功率。
-          if (readMixTransitionMode() !== 'standard') scheduleBandSwap(plan, clock, autoOptions ?? null);
+          // 手动切歌的短淡入保持全频，避免四小节滤波在交接结束时被截断。
+          if (plan.kind !== 'manual' && readMixTransitionMode() !== 'standard') {
+            scheduleBandSwap(plan, clock, autoOptions ?? null);
+          }
           scheduleNaturalFade(plan, clock);
         }
       }
@@ -6545,7 +6566,7 @@ export function cancelCrossfade(reason = 'manual'): void {
   const plan = activePlan;
   activePlan = null;
   if (!plan) return;
-  releaseSplitMix(plan);
+  releaseSplitMix(plan, 'a');
   disposeAdvanced(plan);
   plan.cleanup?.();
   // 计划作废时 B 的起始 seek 监听也要撤掉，否则下次复用该元素会被旧目标改位置。

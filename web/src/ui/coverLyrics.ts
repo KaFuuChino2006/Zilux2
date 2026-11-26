@@ -170,6 +170,8 @@ export class CoverLyrics {
   private readonly tick = (): void => {
     this.frame = 0;
     if (this.disposed) return;
+    // 不可见（滚动出视口 / 切走页面）就停掉自转，否则空闲时也一直 60fps 空转。
+    if (!this.visible) return;
     if (this.host.closest('.is-lyrics-open')) {
       this.frame = requestAnimationFrame(this.tick);
       return;
@@ -531,10 +533,14 @@ export class CoverLyrics {
           strip.className = 'fx-hero-lyric-backdrop';
           backdrop.append(strip);
         }
-        strip.style.left = `${this.stack.offsetLeft + node.offsetLeft + row.offsetLeft - 12}px`;
-        strip.style.top = `${this.stack.offsetTop + node.offsetTop + row.offsetTop - 6}px`;
-        strip.style.width = `${row.offsetWidth + 24}px`;
-        strip.style.height = `${row.offsetHeight + 12}px`;
+        // 雾面跟着这一行的几何中心走；注意这只是「背景雾」的锚点，
+        // 不参与歌词排版（排版按顶边对齐，见上方测试 coverLyrics.test.cjs 的守卫）。
+        const mistX = this.stack.offsetLeft + node.offsetLeft + row.offsetLeft + row.offsetWidth / 2;
+        const mistY = this.stack.offsetTop + node.offsetTop + row.offsetTop + row.offsetHeight / 2;
+        strip.style.setProperty('--mist-x', mistX + 'px');
+        strip.style.setProperty('--mist-y', mistY + 'px');
+        strip.style.setProperty('--mist-width', (row.offsetWidth / 2 + 45) + 'px');
+        strip.style.setProperty('--mist-height', (row.offsetHeight / 2 + 28) + 'px');
         strip.classList.toggle('is-current', index === active);
       });
     }

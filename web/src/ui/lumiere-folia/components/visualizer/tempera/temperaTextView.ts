@@ -15,12 +15,23 @@ import type { TemperaGlyphMotionInput } from './temperaMotion';
 type PixiModule = typeof import('pixi.js');
 
 export interface TemperaGlyphView {
+    rowIndex: number;
     display: import('pixi.js').Text;
     shadow: import('pixi.js').Text | null;
+    sungBlur?: { filter: import('pixi.js').BlurFilter | null; maximum: number; create: () => import('pixi.js').BlurFilter };
+    /** Keyword halo: a blurred, additive copy that lights up as the word is sung. */
+    glow?: { display: import('pixi.js').Text; filter: import('pixi.js').BlurFilter | null; maximum: number; create: () => import('pixi.js').BlurFilter };
     /** Motion echoes trailing back along the entrance vector; empty when echoes are off. */
     echoes: import('pixi.js').Text[];
     /** Everything the per-frame motion solver needs; the runtime never reads layout again. */
     motion: TemperaGlyphMotionInput;
+    /** The colour the glyph was written in; the mask pass restores it after a knockout. */
+    fill: string;
+    /** The keyword colour when this glyph is emphasised, otherwise null. */
+    keyword: string | null;
+    /** Whether the glyph is currently knocked out by the mask bar (cached to avoid re-rasterising). */
+    masked?: boolean;
+    maskStep?: number;
     baseX: number;
     baseY: number;
     shadowDX: number;
@@ -33,6 +44,7 @@ interface TemperaTextViewOptions {
     fontFamily: string;
     fontWeight: number;
     shadowEnabled: boolean;
+    blurAfterSinging?: boolean;
     echoCount: number;
     textLayer: import('pixi.js').Container;
     /**
@@ -68,9 +80,13 @@ export const buildTemperaTextViews = (
         };
         const display = new Text({
             text: placement.char,
-            style: new TextStyle({ ...baseStyle, fill: placement.color ?? palette.ink }),
+            style: new TextStyle({ ...baseStyle, fill: placement.color ?? placement.tint ?? palette.ink }),
         });
         display.anchor.set(0.5);
+        if (placement.color && options.blurAfterSinging) {
+            display.style.fill = 0xffffff;
+            display.tint = placement.color;
+        }
         display.position.set(placement.x, placement.y);
         display.rotation = placement.rotation;
 
@@ -80,7 +96,7 @@ export const buildTemperaTextViews = (
         if (options.shadowEnabled) {
             shadow = new Text({
                 text: placement.char,
-                style: new TextStyle({ ...baseStyle, fill: palette.ink }),
+                style: new TextStyle({ ...baseStyle, fill: placement.color ?? placement.tint ?? palette.ink }),
             });
             shadow.anchor.set(0.5);
             shadow.rotation = placement.rotation;
@@ -93,7 +109,7 @@ export const buildTemperaTextViews = (
         for (let index = 0; index < options.echoCount; index += 1) {
             const echo = new Text({
                 text: placement.char,
-                style: new TextStyle({ ...baseStyle, fill: placement.color ?? palette.tone4 }),
+                style: new TextStyle({ ...baseStyle, fill: placement.color ?? placement.tint ?? palette.tone4 }),
             });
             echo.anchor.set(0.5);
             echo.rotation = placement.rotation;
@@ -102,11 +118,43 @@ export const buildTemperaTextViews = (
             echoes.push(echo);
         }
 
+        // Keywords get a halo copy underneath the glyph. It is a blurred second printing of the
+        // same character in the same hue, drawn additively: alpha can only reach the ink colour,
+        // add can push it towards white as the word is sung.
+        let glow: TemperaGlyphView['glow'];
+        if (placement.color) {
+            const halo = new Text({
+                text: placement.char,
+                style: new TextStyle({...baseStyle, fill: placement.color,
+                    stroke: options.blurAfterSinging
+                        ? {color: placement.color, width: Math.max(1.5, placement.fontSize * 0.05), join: 'round'}
+                        : undefined}),
+            });
+            halo.anchor.set(0.5);
+            halo.rotation = placement.rotation;
+            halo.alpha = 0;
+            halo.visible = false;
+            halo.blendMode = options.blurAfterSinging ? 'normal' : 'add';
+            // Filters are made on first use, not at build: a scene can hold hundreds of glyphs
+            // and each BlurFilter allocates render targets, which is what made track changes hitch.
+            const createGlowFilter = () => new pixi.BlurFilter({strength: 0, quality: 3, resolution: 1});
+            options.keywordLayer.addChild(halo);
+            glow = {display: halo, filter: null, create: createGlowFilter, maximum: Math.min(9, Math.max(3.5, placement.fontSize * 0.05))};
+        }
         (placement.color ? options.keywordLayer : options.textLayer).addChild(display);
         views.push({
+            rowIndex: placement.rowIndex,
             display,
             shadow,
             echoes,
+            glow,
+            sungBlur: options.blurAfterSinging ? {
+                filter: null,
+                create: () => new pixi.BlurFilter({ strength: 0, quality: 2, resolution: 1 }),
+                maximum: Math.min(7, Math.max(1.5, placement.fontSize * 0.034)),
+            } : undefined,
+            fill: placement.color ?? placement.tint ?? palette.ink,
+            keyword: placement.color,
             motion: {
                 startTime: placement.startTime,
                 settleTime: placement.settleTime,

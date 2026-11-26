@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
 namespace Zilux2.Interop;
@@ -303,6 +303,13 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     public static extern int GetSystemMetrics(int index);
+
+    // 带 WS_CAPTION / WS_THICKFRAME 的窗口最大化时，系统会把这圈「可缩放边框 + 内边距」往外撑出
+    // 工作区（本机 96 DPI 是 4 + 4 = 8 px）。我们的 WM_NCCALCSIZE 让客户区等于整窗，
+    // 于是这圈外扩原样变成「内容被推出屏幕」——用户看到的「全屏时顶部露不出来」就是它。
+    public const int SmCxSizeFrame = 32;
+    public const int SmCySizeFrame = 33;
+    public const int SmCxPaddedBorder = 92;
 
     // 桌面背景歌词：方案 B 要把窗口改成 WS_CHILD 挂到 Progman 下（图标层 SHELLDLL_DefView 的正下方）。
     // 样式是 LONG_PTR，必须用 Ptr 版本读写，否则 64 位下会截断 WS_POPUP 这类高位标志。

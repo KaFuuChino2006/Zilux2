@@ -458,7 +458,7 @@ export type SettingsPatch = {
 
 export const DEFAULT_SETTINGS: Settings = {
   version: 1,
-  general: { splash: true, splashTitle: 'ZILUX2', splashSubtitle: '新一代创意播放器', startMaximized: false, autoLaunch: false, autoStartHidden: true, watchLocalFolder: true, mediaSession: true, desktopLyrics: false, desktopLyricsLocked: false, desktopLyricsFontSize: 40, desktopLyricsWeight: 'normal', desktopLyricsBackdropOpacity: 40, desktopLyricsTopmost: true, desktopLyricsStyle: 'classic', desktopLyricsFanLines: 9, desktopLyricsFanWidth: 240, backgroundLyrics: false, systemOutputRotation: [], uiTemplate: 'standard', closeAction: 'tray' },
+  general: { splash: true, splashTitle: 'ZILUX2', splashSubtitle: 'Welcome', startMaximized: false, autoLaunch: false, autoStartHidden: true, watchLocalFolder: true, mediaSession: true, desktopLyrics: false, desktopLyricsLocked: false, desktopLyricsFontSize: 40, desktopLyricsWeight: 'normal', desktopLyricsBackdropOpacity: 40, desktopLyricsTopmost: true, desktopLyricsStyle: 'classic', desktopLyricsFanLines: 9, desktopLyricsFanWidth: 240, backgroundLyrics: false, systemOutputRotation: [], uiTemplate: 'standard', closeAction: 'tray' },
   appearance: {
     theme: 'frost',
     reduceMotion: false,
@@ -477,12 +477,12 @@ export const DEFAULT_SETTINGS: Settings = {
     eqEnabled: false,
     eqPreset: 'flat',
     eqGains: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    fadeEnabled: false,
+    fadeEnabled: true,
     fadeMs: FADE_MS.fallback,
     fadeOutMs: FADE_OUT_MS.fallback,
     fadeInMs: FADE_IN_MS.fallback,
     fadeCurve: 'smooth',
-    fadeVocal: false,
+    fadeVocal: true,
     fadeVocalTailMs: FADE_VOCAL_TAIL_MS.fallback,
     sleepFadeSeconds: 15,
     sleepAction: 'pause',

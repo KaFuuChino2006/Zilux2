@@ -71,6 +71,9 @@ internal sealed partial class DesktopWebSurface : IDisposable
     /// <summary>兜底：页面迟迟不报 ready 也要搬进来，否则壁纸永远不出现。</summary>
     private System.Windows.Threading.DispatcherTimer? _attachFallback;
 
+    /// <summary>连续「找不到桌面宿主」的次数，只用于把重试日志降频。</summary>
+    private int _attachFailCount;
+
     public DesktopWebSurface(
         CoreWebView2Environment environment,
         string navigationUrl,
@@ -210,7 +213,13 @@ internal sealed partial class DesktopWebSurface : IDisposable
             };
             _attachFallback.Tick += (_, _) =>
             {
-                HostLog.Warn("[wallpaper] desktop surface ready timeout, attaching anyway");
+                // 这个定时器每次失败都会重建，所以不能无条件打日志：
+                // Explorer 重启期间每 2.5s 一条，几分钟就能把 10MB 日志刷掉。
+                if (_attachFailCount == 0)
+                {
+                    HostLog.Info("[wallpaper] desktop surface ready timeout, attaching anyway");
+                }
+
                 AttachIfPending();
             };
             _attachFallback.Start();
@@ -341,7 +350,13 @@ internal sealed partial class DesktopWebSurface : IDisposable
         if (parent == IntPtr.Zero)
         {
             // 保留「待挂」状态并重排兜底定时器：Explorer 重启、开机抢先启动都会走到这里。
-            HostLog.Warn("[wallpaper] desktop host not found, retrying");
+            _attachFailCount++;
+            // 首次立刻报，之后每 24 次（约 1 分钟）报一次，日志里保留次数方便判断持续多久。
+            if (_attachFailCount == 1 || _attachFailCount % 24 == 0)
+            {
+                HostLog.Warn($"[wallpaper] desktop host not found, retrying (attempt {_attachFailCount})");
+            }
+
             _attached = false;
             _pendingAttach = true;
             EnsureAttachFallback();
@@ -382,6 +397,7 @@ internal sealed partial class DesktopWebSurface : IDisposable
             SwpNoActivate | SwpFrameChanged | SwpShowWindow);
 
         _attached = placed;
+        _attachFailCount = 0;
         // 挂上之后再开健康巡检：它会在父窗口丢了时重挂，挂之前开只会被当成
         // 「还没挂上」而反复触发。
         _health.Start();

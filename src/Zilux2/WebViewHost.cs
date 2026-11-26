@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Text.Json;
@@ -187,10 +187,14 @@ internal sealed class WebViewHost : IDisposable
     // Contract 3.2: keep Chromium from throttling a mostly-static, occasionally occluded window.
     private static readonly string BrowserArguments =
         // HardwareMediaKeyHandling：不让 WebView2 自己再建一个媒体会话，Windows「正在播放」只留宿主这一条
-        "--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,HardwareMediaKeyHandling " +
+        // UseEcoQoSForBackgroundProcess：Chromium 默认会把后台 renderer 交给 Windows 的 EcoQoS 限频；
+        //   主屏跑游戏时它就是副屏掉帧的第二只推手，关掉。进程级的 EcoQoS 由 ProcessScheduling 处理。
+        "--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,HardwareMediaKeyHandling,UseEcoQoSForBackgroundProcess " +
         "--disable-backgrounding-occluded-windows " +
         "--disable-background-timer-throttling " +
         "--disable-renderer-backgrounding " +
+        // 双显卡机器上别让 WebView2 落到核显：游戏在独显跑满时，核显窗口还要跨 GPU 合成，掉得更狠。
+        "--force_high_performance_gpu " +
         "--autoplay-policy=no-user-gesture-required" +
         // 仅调试用：CDP 截图/自动化时追加浏览器参数，例如 --remote-debugging-port=9333。
         (Environment.GetEnvironmentVariable("ZILUX2_WEBVIEW_ARGS") is { Length: > 0 } extra ? " " + extra : "");
@@ -208,6 +212,7 @@ internal sealed class WebViewHost : IDisposable
     private const int OnlineRetryIntervalMs = 500;
     private const int OnlineRetryLimit = 40;
     private bool _disposed;
+    private bool _trayParked;
     private bool _pageReady;
     private bool _firstContentReady;
     private bool _recoverAttempted;
@@ -601,7 +606,15 @@ internal sealed class WebViewHost : IDisposable
             return;
         }
 
-        PostJson("{\"v\":1,\"type\":\"host\",\"event\":\"windowState\",\"maximized\":" + (maximized ? "true" : "false") + "}");
+        PostJson("{\"v\":1,\"type\":\"host\",\"event\":\"windowState\",\"maximized\":" + (maximized ? "true" : "false") +
+                 ",\"parked\":" + (_trayParked ? "true" : "false") + "}");
+    }
+
+    /// <summary>收进托盘（离屏停放）时告诉页面：壁纸视频要暂停解码，回来再续播。</summary>
+    public void PostTrayParked(bool parked)
+    {
+        _trayParked = parked;
+        PostWindowState(_window.WindowState == System.Windows.WindowState.Maximized);
     }
 
     /// <summary>

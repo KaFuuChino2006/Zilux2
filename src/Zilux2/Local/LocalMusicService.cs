@@ -1051,7 +1051,38 @@ internal sealed partial class LocalMusicService
 
         // 自己改的文件别让 watcher 再触发一轮增量扫描。
         MarkHostWrite(fullPath);
-        var result = LocalTagWriter.Write(fullPath, textFields, numberFields);
+
+        // 写标签要碰 COM 属性存储、复制整份备份，还可能卡在 WriteGate 上。
+        // 这里是 WebMessageReceived（UI 线程）的同步路径，直接跑会把界面冻住；
+        // 改到线程池执行，结果回 UI 线程再更新曲目并回包。
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        var capturedTrack = track;
+        _ = Task.Run(() => LocalTagWriter.Write(fullPath, textFields, numberFields))
+            .ContinueWith(
+                task =>
+                {
+                    var written = task.IsCompletedSuccessfully
+                        ? task.Result
+                        : new LocalTagWriter.TagWriteResult
+                        {
+                            Ok = false,
+                            Error = task.Exception?.GetBaseException().Message ?? "写标签失败",
+                        };
+                    if (dispatcher is null || dispatcher.CheckAccess())
+                    {
+                        FinishTagWrite(fullPath, capturedTrack, written);
+                    }
+                    else
+                    {
+                        dispatcher.BeginInvoke(new Action(() => FinishTagWrite(fullPath, capturedTrack, written)));
+                    }
+                },
+                TaskScheduler.Default);
+    }
+
+    /// <summary>写标签的收尾（必须在 UI 线程：会改曲目对象并推送曲库）。</summary>
+    private void FinishTagWrite(string fullPath, LocalTrackDto? track, LocalTagWriter.TagWriteResult result)
+    {
         if (!result.Ok)
         {
             PostResult("writeTags", false, result.Error ?? "写标签失败");

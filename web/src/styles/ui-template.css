@@ -1637,14 +1637,19 @@ html[data-theme='dark'] .fx-name-rail {
 }
 .fx-hero-lyric-backdrop {
   position: absolute;
+  inset: 0;
   pointer-events: none;
-  backdrop-filter: blur(4px);
-  mask-image: linear-gradient(to right, transparent, black 14px, black calc(100% - 14px), transparent),
-    linear-gradient(to bottom, transparent, black 7px, black calc(100% - 7px), transparent);
-  mask-composite: intersect;
+  mask-image: radial-gradient(ellipse var(--mist-width) var(--mist-height) at var(--mist-x) var(--mist-y),
+    black, rgb(0 0 0 / .94) 22%, rgb(0 0 0 / .65) 46%, rgb(0 0 0 / .29) 66%, rgb(0 0 0 / .07) 85%, transparent);
   opacity: 0;
-  transition: opacity 620ms ease, top 800ms cubic-bezier(.23,.52,.22,1),
-    width 800ms cubic-bezier(.23,.52,.22,1), height 800ms cubic-bezier(.23,.52,.22,1);
+  transition: opacity 620ms ease;
+}
+.fx-hero-lyric-backdrop::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(96deg,rgb(6 6 10 / .36),rgb(6 6 10 / .20) 46%,transparent 85%), var(--lyric-cover-image) center / cover no-repeat;
+  filter: blur(8px);
 }
 .fx-hero-lyric-backdrop.is-current { opacity: 1; }
 .fx-hero-lyric-row, .fx-hero-lyric-trans {
@@ -1911,3 +1916,424 @@ html[data-theme='dark'] .fx-name-rail {
    fade. Its smaller graphic layers keep their individual motion. */
 .wall-daily-layout.is-block-in { animation-name: block-in-fade; }
 .wall-daily-layout.is-block-out { animation-name: block-out-fade; }
+
+.library-mark::after {
+  content: '';
+  position: absolute;
+  left: 22%;
+  top: 22%;
+  width: clamp(26px, 5vw, 74px);
+  aspect-ratio: 1;
+  border: 1px dashed var(--sleeve-ink);
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 5%, var(--sleeve-ink) 0 3px, transparent 4px);
+}
+.library-folio i {
+  background:
+    linear-gradient(90deg, transparent, var(--graphic-a) 48% 52%, transparent) left center / 16% 2px no-repeat,
+    repeating-linear-gradient(90deg,var(--sleeve-rule) 0 1px,transparent 1px 8px);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .library-mark::after { animation: sleeve-dial 16s linear infinite; }
+  .library-mark .sleeve-orbit { animation: sleeve-drift 7s ease-in-out infinite alternate; }
+  .library-mark .sleeve-spark { animation: sleeve-turn 8s ease-in-out infinite alternate-reverse; }
+  .library-folio i { animation: folio-scan 8s ease-in-out infinite alternate; }
+}
+@keyframes sleeve-dial { to { rotate: 1turn; } }
+@keyframes sleeve-drift { from { translate: -8% 0; } to { translate: 12% 4%; } }
+@keyframes sleeve-turn { from { rotate: -18deg; } to { rotate: 45deg; } }
+@keyframes folio-scan { from { background-position: left center, 0 0; } to { background-position: right center, 16px 0; } }
+
+/* Three cropped record sleeves share the diagonals of a manga panel strip. */
+.wall-daily-layout .library-mark {
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+  overflow: hidden;
+}
+.library-mark .sleeve-panel {
+  position: relative;
+  width: 28%;
+  margin-inline-start: -2%;
+  padding-inline-start: 3px;
+  background: var(--sleeve-ink);
+  transform: skewX(-16deg);
+  overflow: hidden;
+}
+.library-mark .sleeve-panel img {
+  width: 124%;
+  height: 100%;
+  margin-left: -12%;
+  object-fit: cover;
+  object-position: 50% 34%;
+  transform: skewX(16deg) scale(1.10);
+}
+.library-mark .sleeve-panel:nth-last-child(2) { width: 40%; }
+.library-mark .sleeve-panel:last-child { width: 21%; filter: grayscale(1); }
+.library-mark .sleeve-panel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(0deg, #13182470, transparent 48%);
+}
+.library-mark:has(.sleeve-panel)::after { display: none; }
+@media (prefers-reduced-motion: no-preference) {
+  .sleeve-panel img { animation: sleeve-camera 9s ease-in-out infinite alternate; }
+  .sleeve-panel:nth-last-child(2) img { animation-delay: -4s; }
+}
+@keyframes sleeve-camera { from { translate: -2% 0; } to { translate: 2% 0; } }
+
+/* 推荐式把整行高度留给同步歌词大封面和选曲区。 */
+.wall-daily-layout.library-lyric-layout { grid-template-rows: minmax(0, 1fr); background: transparent; border: 0; }
+.library-lyric-layout .fx-hero-cover { outline: 0; }
+/* Registration marks sit in the bleed, outside the lyric artwork. */
+.library-lyric-layout .fx-hero-shell::before {
+  content: '';
+  inset: -6px;
+  border: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(var(--sleeve-ink) 0 0) left top / 25px 1px,
+    linear-gradient(var(--sleeve-ink) 0 0) left top / 1px 21px,
+    linear-gradient(var(--sleeve-color) 0 0) right top / 36px 3px,
+    linear-gradient(var(--sleeve-ink) 0 0) right top / 1px 16px,
+    linear-gradient(var(--sleeve-ink) 0 0) right bottom / 28px 1px,
+    linear-gradient(var(--sleeve-ink) 0 0) right bottom / 1px 22px;
+  background-repeat: no-repeat;
+}
+.library-lyric-layout .fx-hero-shell::after {
+  content: '';
+  inset: -9px auto auto 32px;
+  width: min(32%, 128px);
+  height: 6px;
+  background:
+    linear-gradient(var(--sleeve-color) 0 0) left center / 26% 4px no-repeat,
+    repeating-linear-gradient(90deg,var(--sleeve-rule) 0 1px,transparent 1px 5px);
+}
+.library-lyric-layout .fx-cards {
+  background:
+    radial-gradient(circle,var(--sleeve-rule) .9px,transparent 1.2px) left top / 4px 5px repeat-y;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .library-lyric-layout .fx-hero-shell::after {
+    animation: sleeve-registration 7s ease-in-out infinite alternate;
+  }
+}
+@keyframes sleeve-registration { to { background-position: 75% center, 0 0; } }
+/* A record sleeve and a typeset index share the active theme palette. */
+.wall:has(> .library-lyric-layout) {
+  background: linear-gradient(135deg,color-mix(in srgb,var(--accent) 12%,var(--bg)),var(--bg) 60%);
+}
+.wall:has(> .library-lyric-layout) .wall-head {
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  border-bottom: 1px solid var(--line-strong);
+}
+.wall:has(> .library-lyric-layout) .wall-head-actions { max-width: 100%; flex-wrap: wrap; }
+.wall:has(> .library-lyric-layout) .wall-title {
+  font-family: Georgia,"Songti SC","SimSun",serif;
+  font-size: clamp(28px,3.4vw,54px);
+  letter-spacing: .025em;
+}
+.library-lyric-layout .fx-daily-view {
+  --sleeve-color: var(--accent);
+  --catalog-rule: color-mix(in srgb,var(--accent) 32%,var(--bg));
+}
+.library-lyric-layout .fx-cover { display: none; }
+.library-lyric-layout .fx-hero-bar {
+  background: color-mix(in srgb,var(--accent) 23%,var(--bg));
+  color: var(--text);
+  border-bottom: 2px solid var(--accent);
+}
+.library-lyric-layout .fx-cards:not(.is-list) {
+  grid-template-columns: repeat(auto-fit,minmax(min(100%,230px),1fr));
+  gap: 0 clamp(10px,1.6cqw,24px);
+  border-color: var(--catalog-rule);
+}
+.library-lyric-layout .fx-cards:not(.is-list) .fx-card {
+  aspect-ratio: auto;
+  height: 66px;
+  display: grid;
+  grid-template-columns: 50px minmax(0,1fr) 32px;
+  align-items: center;
+  gap: 9px;
+  background: transparent;
+  border-bottom: 1px solid var(--catalog-rule);
+  text-align: left;
+}
+.library-lyric-layout .fx-cards:not(.is-list) .fx-card-cover {
+  position: static; width: 50px; height: 50px;
+}
+.library-lyric-layout .fx-cards:not(.is-list) .fx-card-meta {
+  position: static; min-width: 0; padding: 0; background: transparent; color: var(--text);
+}
+.library-lyric-layout .fx-cards:not(.is-list) .fx-card::before {
+  inset: 50% 2px auto auto; translate: 0 -50%;
+  padding: 0; background: transparent; color: var(--muted);
+}
+.library-lyric-layout .fx-cards:not(.is-list) .fx-card::after {
+  content: '';
+  position: absolute;
+  right: 3px;
+  bottom: 9px;
+  width: 22px;
+  height: 4px;
+  pointer-events: none;
+  background: repeating-linear-gradient(90deg,var(--catalog-rule) 0 2px,transparent 2px 5px);
+}
+.library-lyric-layout .fx-cards:not(.is-list) .fx-card:nth-child(3n + 2)::after {
+  background: radial-gradient(circle,var(--sleeve-color) 1px,transparent 1.4px) 0 0 / 6px 4px;
+}
+.library-lyric-layout .fx-cards:not(.is-list) .fx-card.is-on::after {
+  height: 9px;
+  background: repeating-linear-gradient(90deg,var(--accent) 0 3px,transparent 3px 5px);
+  clip-path: polygon(0 66%,23% 66%,23% 22%,46% 22%,46% 46%,68% 46%,68% 0,100% 0,100% 100%,0 100%);
+}
+.library-lyric-layout .fx-cards:not(.is-list) .fx-card.is-on {
+  background: color-mix(in srgb,var(--accent) 16%,var(--bg));
+  box-shadow: inset -3px 0 var(--accent);
+}
+@container (min-width: 700px) and (min-height: 280px) {
+  .library-lyric-layout .fx-daily-view {
+    --library-cover: min(30cqw,70cqh);
+    --fx-cards-left: 43%;
+  }
+  .library-lyric-layout .fx-hero-shell { left: 3%; top: 6%; }
+  .library-lyric-layout .fx-daily-view::before {
+    content: '';
+    position: absolute;
+    left: calc(3% + var(--library-cover) * .22);
+    top: calc(6% + var(--library-cover) * .025);
+    width: calc(var(--library-cover) * .95);
+    aspect-ratio: 1;
+    border-radius: 50%;
+    box-shadow: 0 0 0 1px var(--catalog-rule), 0 0 0 5px var(--bg), 0 0 0 6px var(--catalog-rule);
+    background:
+      repeating-conic-gradient(from 35deg,transparent 0 52deg,color-mix(in srgb,var(--accent) 50%,transparent) 67deg,transparent 84deg 180deg),
+      repeating-radial-gradient(circle,var(--text) 0 2px,
+      color-mix(in srgb,var(--accent) 38%,var(--text)) 3px,var(--text) 4px);
+    pointer-events: none;
+  }
+  .library-lyric-layout .fx-daily-view::after {
+    content: attr(data-sleeve-title);
+    position: absolute;
+    inset: 3% auto 3% 38%;
+    width: 1em;
+    writing-mode: vertical-rl;
+    white-space: nowrap;
+    overflow: hidden;
+    color: var(--text);
+    font: 900 clamp(23px,3.4cqw,55px)/1 Georgia,"SimSun",serif;
+    letter-spacing: -.06em;
+    pointer-events: none;
+  }
+  .library-lyric-layout .fx-daily-view {
+    isolation: isolate;
+    background: radial-gradient(circle,color-mix(in srgb,var(--catalog-rule) 46%,transparent) .7px,transparent 1.1px) 0 0 / 6px 6px,var(--bg);
+  }
+  .library-lyric-layout .fx-cover {
+    display: block;
+    z-index: -1;
+    inset: 0 auto 0 0;
+    width: 42%;
+    height: 100%;
+    mask-image: none;
+    background: var(--accent);
+    clip-path: polygon(0 0,77% 0,98% 19%,86% 72%,100% 100%,0 100%);
+  }
+  .library-lyric-layout .fx-cover-img {
+    object-position: center 30%;
+    filter: grayscale(1) contrast(1.4);
+    mix-blend-mode: luminosity;
+  }
+  .library-lyric-layout .fx-cover-wash {
+    background:
+      linear-gradient(165deg,transparent 71%,var(--accent) 71% 73%,transparent 73% 74%,var(--bg) 74% 75%,transparent 75%),
+      radial-gradient(circle,color-mix(in srgb,var(--text) 19%,transparent) .5px,transparent .95px) 0 0 / 4px 4px,
+      linear-gradient(125deg,transparent,color-mix(in srgb,var(--bg) 73%,transparent));
+  }
+  .library-lyric-layout .fx-hero-shell {
+    rotate: -2deg;
+    box-shadow: -4px 4px var(--bg), -6px 6px var(--catalog-rule), -9px 9px var(--bg), -10px 10px var(--accent);
+  }
+  .library-lyric-layout .fx-cards {
+    background-color: var(--bg);
+    border-top: 3px double var(--catalog-rule);
+  }
+  .library-lyric-layout .fx-cards:not(.is-list) .fx-card::before {
+    font: italic 700 14px/1 Georgia,serif;
+    color: color-mix(in srgb,var(--accent) 42%,var(--text));
+  }
+  .library-lyric-layout .fx-cards:not(.is-list) .fx-card:nth-child(6n + 1) {
+    background-image: linear-gradient(105deg,transparent 75%,color-mix(in srgb,var(--accent) 12%,transparent) 75%);
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .library-lyric-layout .fx-daily-view::before { animation: library-vinyl-turn 36s linear infinite; }
+}
+@keyframes library-vinyl-turn { to { rotate: 1turn; } }
+/* Cover browsing uses jacket tiles; playback switches to a ruled track index. */
+.library-lyric-layout .fx-cards:not(.is-list) {
+  grid-template-columns: repeat(auto-fill,minmax(min(100%,138px),1fr));
+  gap: 11px;
+}
+.library-lyric-layout .fx-cards:not(.is-list) .fx-card {
+  height: auto;
+  aspect-ratio: 1;
+  display: block;
+  border: 1px solid var(--catalog-rule);
+}
+.library-lyric-layout .fx-cards:not(.is-list) .fx-card-cover {
+  width: 100%; height: 100%; object-fit: cover;
+}
+.library-lyric-layout .fx-cards:not(.is-list) .fx-card-meta {
+  position: absolute; inset: auto 0 0;
+  padding: 24px 8px 7px;
+  background: linear-gradient(transparent,#121318da);
+  color: white;
+}
+.library-lyric-layout .fx-cards:not(.is-list) .fx-card::before {
+  inset: 0 auto auto 0; translate: none;
+  padding: 3px 7px; background: var(--bg); color: var(--text);
+}
+.library-lyric-layout .fx-cards:not(.is-list) .fx-card::after { top: 7px; bottom: auto; }
+.library-lyric-layout .fx-cards.is-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit,minmax(min(100%,290px),1fr));
+  grid-auto-rows: 60px;
+  align-content: start;
+  gap: 3px 14px;
+}
+.library-lyric-layout .fx-cards.is-list .fx-card {
+  height: 100%;
+  padding: 3px 47px 3px 6px;
+  background: linear-gradient(105deg,transparent 75%,color-mix(in srgb,var(--accent) 9%,transparent) 75%);
+}
+.library-lyric-layout .fx-cards.is-list .fx-card::before {
+  inset: 8px 5px auto auto; translate: none;
+  color: var(--text); background: var(--catalog-rule);
+}
+.library-lyric-layout .fx-cards.is-list .fx-card::after {
+  content: attr(data-duration); position: absolute; right: 6px; bottom: 7px;
+  font: 11px/1.1 Consolas,monospace; color: var(--muted);
+}
+.library-lyric-layout .fx-cards.is-list .fx-card.is-on {
+  box-shadow: inset 3px 0 var(--accent);
+  background-color: color-mix(in srgb,var(--accent) 15%,var(--bg));
+}
+/* Perforated stubs keep sequence and duration together across both views. */
+.library-lyric-layout .fx-cards.is-list .fx-card {
+  padding-right: 62px;
+  background:
+    repeating-linear-gradient(to bottom,var(--catalog-rule) 0 3px,transparent 3px 7px) right 52px top / 1px 100% no-repeat,
+    linear-gradient(to left,color-mix(in srgb,var(--accent) 14%,var(--bg)) 52px,transparent 52px);
+}
+.library-lyric-layout .fx-cards.is-list .fx-card::before {
+  right: 8px; padding: 0; background: transparent;
+  font: italic 700 20px/1 Georgia,serif; letter-spacing: -.05em;
+}
+.library-lyric-layout .fx-cards.is-list .fx-card::after { right: 9px; }
+.library-lyric-layout .fx-cards.is-list .fx-card.is-on {
+  outline: 1px solid var(--accent); outline-offset: -1px;
+}
+@container (min-width: 960px) {
+  .library-lyric-layout .fx-cards:not(.is-list) .fx-card:nth-child(10n + 1) {
+    grid-column: span 2; aspect-ratio: 2;
+    background: color-mix(in srgb,var(--accent) 28%,var(--bg));
+    border-block-end: 4px solid var(--accent);
+  }
+  .library-lyric-layout .fx-card:nth-child(10n + 1) .fx-card-cover {
+    display: block;
+  }
+  .library-lyric-layout .fx-cards:not(.is-list) .fx-card:nth-child(10n + 1) .fx-card-cover {
+    width: 60%; clip-path: polygon(0 0,100% 0,83% 100%,0 100%);
+  }
+  .library-lyric-layout .fx-cards:not(.is-list) .fx-card:nth-child(10n + 1)::before {
+    inset: 3% 5% auto auto;
+    font: italic 900 clamp(31px,3.5cqw,60px)/1 Georgia,serif;
+    letter-spacing: -.08em; background: transparent;
+    color: var(--text);
+    text-shadow: 2px 2px var(--accent);
+  }
+  .library-lyric-layout .fx-cards:not(.is-list) .fx-card:nth-child(10n + 1) .fx-card-meta {
+    inset: auto 4% 9% 55%; padding: 0; background: transparent; color: var(--text);
+  }
+  .library-lyric-layout .fx-cards:not(.is-list) .fx-card:nth-child(10n + 1) .fx-card-name {
+    font-size: clamp(16px,1.6cqw,25px); font-weight: 800;
+    white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  }
+  .library-lyric-layout .fx-cards:not(.is-list) .fx-card:nth-child(10n + 1)::after {
+    inset: 6px auto auto 6px; width: 34px; height: 8px;
+    background: repeating-linear-gradient(90deg,var(--bg) 0 2px,transparent 2px 4px,var(--bg) 4px 5px,transparent 5px 8px);
+  }
+}
+
+/* Pressed sleeve: a foil spine, staggered rules and a low-contrast rosette. */
+.library-lyric-layout .fx-hero-bar {
+  border-inline-start: 5px solid var(--accent);
+  box-shadow: 0 3px var(--bg), 0 4px var(--catalog-rule);
+}
+.library-lyric-layout .fx-cards {
+  border-inline-end: 3px double var(--catalog-rule);
+}
+@container (min-width: 700px) and (min-height: 280px) {
+  .library-lyric-layout .fx-daily-view {
+    background:
+      repeating-radial-gradient(ellipse at 13% 105%,transparent 0 10px,var(--catalog-rule) 11px 12px,transparent 13px 18px) left bottom / 41% 18% no-repeat,
+      linear-gradient(90deg,var(--accent) 0 19%,transparent 19% 20%,var(--catalog-rule) 20% 72%,transparent 72%) left 1% bottom 2% / 40% 4px no-repeat,
+      radial-gradient(circle,color-mix(in srgb,var(--catalog-rule) 46%,transparent) .7px,transparent 1.1px) 0 0 / 6px 6px,
+      var(--bg);
+  }
+  .library-lyric-layout .fx-cards.is-list .fx-card:nth-child(4n + 1) .fx-card-cover {
+    box-shadow: 2px 2px var(--bg), 4px 4px var(--accent);
+  }
+}
+
+/* Label stock continues through the header and the exposed player margins. */
+.wall:has(> .library-lyric-layout) {
+  --label-tint: color-mix(in srgb,var(--accent) 22%,var(--bg));
+  background:
+    repeating-radial-gradient(ellipse at 58% -160%,transparent 0 14px,var(--label-tint) 15px 16px,transparent 17px 24px) center top / 82% 16% no-repeat,
+    linear-gradient(118deg,transparent 30%,var(--label-tint) 30% 40%,transparent 40.1% 41%,var(--label-tint) 41% 42%,transparent 42.1%) center top / 100% 23% no-repeat,
+    repeating-linear-gradient(115deg,var(--label-tint) 0 3px,transparent 3px 12px) left bottom / 27% 7% no-repeat,
+    repeating-radial-gradient(ellipse at 100% 180%,transparent 0 9px,var(--label-tint) 10px 12px,transparent 13px 19px) right bottom / 28% 12% no-repeat,
+    linear-gradient(135deg,color-mix(in srgb,var(--accent) 11%,var(--bg)),var(--bg) 64%);
+}
+.wall:has(> .library-lyric-layout) .wall-head {
+  border-image: linear-gradient(90deg,var(--accent) 0 19%,var(--label-tint) 19% 80%,var(--accent) 80%) 1;
+  border-bottom-width: 3px;
+}
+.library-lyric-layout .fx-cards.is-list .fx-card-name {
+  font: 700 15px/1.28 system-ui,sans-serif;
+  color: var(--text);
+}
+.library-lyric-layout .fx-cards.is-list .fx-card-artist {
+  font: 600 13px/1.28 system-ui,sans-serif;
+  color: color-mix(in srgb,var(--text) 80%,var(--bg));
+  opacity: 1;
+}
+.wall:has(> .library-lyric-layout) .wall-sub {
+  display: inline-block;
+  padding: 3px 9px;
+  border-inline-start: 4px solid var(--accent);
+  background: var(--label-tint);
+  color: var(--text);
+  font-weight: 650;
+}
+/* The end marks sit in the existing footer allowance, clear of the controls. */
+.wall:has(> .library-lyric-layout)::after {
+  content: '';
+  position: absolute;
+  inset: auto 3% 16px;
+  height: clamp(16px,3.4vh,34px);
+  pointer-events: none;
+  background:
+    linear-gradient(var(--accent) 0 0) left bottom / 6% 4px no-repeat,
+    repeating-linear-gradient(90deg,var(--accent) 0 2px,transparent 2px 6px,var(--accent) 6px 7px,transparent 7px 12px) left top / 17% 7px no-repeat,
+    linear-gradient(var(--catalog-rule,var(--label-tint)) 0 0) left center / 22% 1px no-repeat,
+    repeating-linear-gradient(115deg,transparent 0 6px,var(--accent) 6px 9px,transparent 9px 15px) right top / 12% 9px no-repeat,
+    linear-gradient(90deg,var(--label-tint) 70%,var(--accent) 70%) right bottom / 22% 3px no-repeat;
+}
+.wall:has(> .library-lyric-layout) .wall-head > :first-child {
+  background: repeating-linear-gradient(90deg,var(--accent) 0 3px,transparent 3px 8px) right bottom / min(24%,78px) 4px no-repeat;
+}

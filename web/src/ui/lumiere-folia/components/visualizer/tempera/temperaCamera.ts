@@ -1,4 +1,5 @@
 import type { TemperaCameraKey, TemperaShot } from './types';
+import { overlapFx } from '../../../../overlapSettings';
 
 // @note Version Control: Project Folia version 0.6.13-750617
 
@@ -63,3 +64,145 @@ export const resolveTemperaBreathWeight = (time: number, revealDoneTime: number,
 };
 
 export type { TemperaCameraKey };
+
+/** The push breathes with the line instead of sitting at one focal length: it rests slightly
+ * wider at the first character, swells through the middle, and settles again on the last one.
+ * While a finished line is left holding through an instrumental gap it relaxes further, so the
+ * next line's push-in lands as a fresh breath rather than a constant magnification. All of it is
+ * read from the overlap settings so the panel can retune the breath without rebuilding. */
+const FOLLOW_GAP_SECONDS = 2.4;
+// Lines are written at a seeded spot up to ~15% off centre and a shot's own camera can pan the
+// plate by another ~0.1, so the clamp only has to stop a pathological layout from throwing the
+// stage; it is deliberately loose so a real line is always centred outright rather than being
+// cut short of the middle (which read as the camera aiming at the pivot, not the type).
+const FOLLOW_MAX_SHIFT_X = 0.5;
+const FOLLOW_MAX_SHIFT_Y = 0.5;
+/** One line as the follow camera sees it: the glyph layout anchor plus the drift the shot's own
+ * plate has accumulated this frame (its camera path and breathing), in viewport pixels.
+ *
+ * The plate offset matters: the glyphs are laid out once and stay put inside the shot, but the
+ * shot camera pans that whole plate by up to ~16% of the frame while the line is sung. Aiming
+ * only at the layout anchor left the line sliding off centre as it played. */
+export interface TemperaFollowSource {
+    glyphs: readonly {baseX: number; baseY: number; motion: {startTime: number}}[];
+    offsetX?: number;
+    offsetY?: number;
+    /** Shot camera zoom applied about the viewport centre. */
+    scale?: number;
+    /** Quarter turns the line was written at; the camera rolls by the negative of this. */
+    orientation?: number;
+}
+
+/** Where the camera should be looking: a point that travels along the line as it is sung.
+ *
+ * A Gaussian kernel over the glyph onsets keeps the target on the character currently being
+ * sung without stepping from word to word: it glides continuously from the first character to
+ * the last, so a long line slides left-to-right through the frame while it plays. The weights
+ * are normalised against the nearest glyph, so an instrumental tail cannot underflow to zero
+ * (which used to snap the camera back to dead centre mid-gap) - the target simply rests on the
+ * last character that was sung.
+ *
+ * The shot's own plate drift and zoom are folded in afterwards: the glyphs are laid out once,
+ * but the shot camera pans the whole plate while the line plays, and the follow has to aim at
+ * where the type actually is this frame.
+ */
+export function resolveLyricAnchor(
+    source: TemperaFollowSource,
+    time: number,
+    width: number, height: number,
+) {
+    const { glyphs } = source;
+    if (!glyphs.length) return {x: 0, y: 0};
+    let first = Number.POSITIVE_INFINITY;
+    let last = Number.NEGATIVE_INFINITY;
+    let nearest = Number.POSITIVE_INFINITY;
+    for (const glyph of glyphs) {
+        const startTime = glyph.motion.startTime;
+        if (startTime < first) first = startTime;
+        if (startTime > last) last = startTime;
+        const distance = time - startTime;
+        const squared = distance * distance;
+        if (squared < nearest) nearest = squared;
+    }
+    // A fast line needs a wider kernel or the target jumps between characters; a slow one can
+    // sit tight on the character being sung.
+    const sigma = Math.max(0.55, (last - first) * 0.22);
+    const falloff = 2 * sigma * sigma;
+    let weight = 0;
+    let x = 0;
+    let y = 0;
+    for (const glyph of glyphs) {
+        const distance = time - glyph.motion.startTime;
+        const sample = Math.exp(-(distance * distance - nearest) / falloff);
+        weight += sample;
+        x += glyph.baseX * sample;
+        y += glyph.baseY * sample;
+    }
+    x /= weight;
+    y /= weight;
+    // The plate offset is added after the layout centre, so the camera tracks the type where it
+    // actually is on screen this frame. The shot zoom scales glyph offsets about the viewport
+    // centre, so it is applied first.
+    const shotScale = source.scale ?? 1;
+    x = (x - width / 2) * shotScale + width / 2 + (source.offsetX ?? 0);
+    y = (y - height / 2) * shotScale + height / 2 + (source.offsetY ?? 0);
+    // Pull the tracked point all the way to the middle. The clamp only stops a pathological
+    // layout from throwing the stage.
+    const gain = overlapFx().followGain;
+    const shiftX = (width * .5 - x) * gain;
+    const shiftY = (height * .5 - y) * gain;
+    return {
+        x: Math.max(-width * FOLLOW_MAX_SHIFT_X, Math.min(width * FOLLOW_MAX_SHIFT_X, shiftX)),
+        y: Math.max(-height * FOLLOW_MAX_SHIFT_Y, Math.min(height * FOLLOW_MAX_SHIFT_Y, shiftY)),
+    };
+}
+
+/** When the line's type actually starts appearing: the first glyph's onset, not the shot's
+ * clock. Bridging and tiling can open a shot well before its first character is sung, and a
+ * blend anchored on the shot start would be over before anything was on screen - that is why
+ * the quarter turn only seemed to happen on some lines. */
+export function resolveFollowStart(
+    source: TemperaFollowSource,
+    fallback: number,
+) {
+    let first = Number.POSITIVE_INFINITY;
+    for (const glyph of source.glyphs) {
+        if (glyph.motion.startTime < first) first = glyph.motion.startTime;
+    }
+    return Number.isFinite(first) ? first : fallback;
+}
+
+/** Breathing focal length for one line, 0..1 in playback time.
+ *
+ * The swell is a half sine over the sung span, so it is widest exactly at the line's first and
+ * last character and deepest in the middle; the tail then relaxes toward the gap focal length.
+ * Everything is a function of `time`, so seeking and rebuilding land on the same frame. */
+const resolveFollowZoom = (
+    glyphs: readonly {motion: {startTime: number}}[],
+    time: number, start: number,
+) => {
+    let last = start;
+    for (const glyph of glyphs) {
+        const startTime = glyph.motion.startTime;
+        if (startTime > last) last = startTime;
+    }
+    const span = Math.max(last - start, 0.35);
+    const progress = clamp01((time - start) / span);
+    const bell = Math.sin(Math.PI * progress) ** 2;
+    const tail = clamp01((time - last) / FOLLOW_GAP_SECONDS);
+    const relax = tail * tail * (3 - 2 * tail);
+    const fx = overlapFx();
+    const rest = fx.zoomRest - 1;
+    return 1 + rest + fx.zoomSwell * bell - fx.zoomRelax * relax;
+};
+
+/** Follow frame for a line: the point the camera should be looking at right now, plus the
+ * breathing focal length. The runtime springs its live position toward this every frame, so the
+ * move along a line and the move onto the next line come out of the same smooth motion. */
+export function resolveLyricFollow(
+    current: TemperaFollowSource,
+    time: number, start: number, width: number, height: number,
+) {
+    const target = resolveLyricAnchor(current, time, width, height);
+    return {x: target.x, y: target.y, zoom: resolveFollowZoom(current.glyphs, time, start)};
+}

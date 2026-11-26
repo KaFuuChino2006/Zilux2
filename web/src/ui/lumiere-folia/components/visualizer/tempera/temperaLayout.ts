@@ -17,7 +17,10 @@ import {
 // seeded indent / baseline shift / rotation. The result keeps a readable reading order while
 // looking assembled rather than typed.
 export interface TemperaGlyphPlacement {
+    /** Per-glyph base ink (a wash along the line); keyword `color` still wins over it. */
+    tint?: string | null;
     char: string;
+    rowIndex: number;
     lineIndex: number;
     segmentIndex: number;
     x: number;
@@ -346,6 +349,7 @@ export const resolveTemperaLayout = ({
                 const angle = baseAngle + spread;
                 placements.push({
                     char: glyph.char,
+                    rowIndex,
                     lineIndex: word.lineIndex,
                     segmentIndex: word.segmentIndex,
                     x: finalPoint.x,
