@@ -71,6 +71,7 @@ const resolveGhostDrift = (
     height: number,
     exit: number,
     exitDuration: number,
+    scatter: number,
 ) => {
     const rand = (salt: number) => temperaHash01(seed, index + 1, salt);
     // Four ways of letting go, chosen per line: the same song will always use the same one for
@@ -134,8 +135,16 @@ const resolveGhostDrift = (
     // The gesture belongs to the exit, not to the wait: while the line is merely held it only
     // breathes a little; the scatter starts when it is actually dismissed.
     // Before the dismissal starts this is exactly 0: the glyph keeps its normal playback pose.
-    const drive = blow;
-    const distance = height * (drift * 0.5 + rand(53) * drift) * drive
+    // 位移要在「还看得见」的那段就到位：blow 只在 exit=1 的瞬间才是 1，而那一刻场景正好隐藏，
+    // 所以按 blow 线性给量等于永远看不到峰值。这里把曲线提前（×1.45 封顶 1），并把基准距离
+    // 从 0.5–1.5 倍 drift 提到 0.9–2.4 倍，散开的观感才是「真的散开」而不是轻轻挪一下。
+    // 距离跟「散开」进度走，而不是跟淡出进度：下一句一进来就开始散，散到位后停住，
+    // 等下下句进来再由 alpha 把它带走。
+    // scatter 已经做过 EaseInOut，这里不再二次放大（放大后的封顶会带来一次速度突变）。
+    const drive = Math.max(blow, scatter) * (0.82 + 0.18 * rand(53));
+    // 每个字的距离差不要拉太开：1.05~1.8 倍 drift，整行读起来才是一起散开，
+    // 而不是几个字各飞各的（那种会显得抖、显得乱）。
+    const distance = height * (drift * 1.05 + rand(53) * drift * 0.75) * drive
         * (style === 1 ? 1.35 : style === 2 ? 0.8 : 1);
     // A slow float keeps the held type alive rather than frozen between two impulses.
     const phase = rand(59) * Math.PI * 2;
@@ -494,15 +503,35 @@ export const updateTemperaShot = (
         ghostCenter.x /= view.glyphs.length;
         ghostCenter.y /= view.glyphs.length;
     }
+    // 散开是第一段：下一句进来时就开始往外散，并在下下句到来前停住（这段时间 alpha 仍是 1）；
+    // 消散是第二段：holdUntil（下下句）之后才真正淡出。没有 scatterAt 的普通流程沿用旧行为。
+    const scatterAt = view.shot.scatterAt;
+    // 散开要一直「在动」：把行程铺满到 holdUntil 之后再 25% 才走完，这样下下句的淡出开始时
+    // 位移还在缓慢增长，不会出现「先弹一下 → 冻住 → 过会儿才淡掉」的停顿感。
+    const scatterSpan = Math.max(
+        0.5,
+        (scatterAt !== undefined && Number.isFinite(view.shot.holdUntil)
+            ? Math.max(0.5, (view.shot.holdUntil as number) - scatterAt)
+            : 0.9) * 1.25,
+    );
+    const scatterProgress = scatterAt === undefined
+        ? exitProgress
+        : clamp01((time - scatterAt) / scatterSpan);
     view.specks?.clear();
     view.glyphs.forEach((glyph, index) => {
         const glyphFrame = resolveTemperaGlyphMotion(glyph.motion, time, motion);
         const order = view.glyphs.length > 1 ? index / (view.glyphs.length - 1) : 0;
+        // 散开要「起笔慢、落定慢」：先按唱序让每个字错峰出发（最后一个字晚 32% 行程），
+        // 再用 smoothstep 收两头，否则整行会像一块板子被匀速推开，一看就假。
+        const stagger = 0.32;
+        const scatterLocal = clamp01((scatterProgress * (1 + stagger) - order * stagger));
+        const scatterEase = easeTemperaInOut(scatterLocal);
         const ghost = held
             ? resolveGhostDrift(
                 ghostSeed, ghostCenter.x, ghostCenter.y, glyph, index, order,
                 time, view.shot.lyricEndTime, height, exitProgress,
                 held ? resolveHeldExitDuration(view) : resolveShotHandoff(view),
+                scatterEase,
             )
             : null;
         // A retained line keeps a wet edge: one faint echo slides back toward where the glyph

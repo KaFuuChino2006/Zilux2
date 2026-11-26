@@ -859,6 +859,39 @@ export class TemperaPixiRuntime {
             }
         });
         if (frameStartedAt) perfMark('rt.frame.shots', frameStartedAt);
+        if (perfOn()) {
+            // 临时诊断：重合模式下每一段的可见性/退场进度。perf 关闭时不产生任何开销。
+            const out: Array<Record<string, unknown>> = [];
+            this.sceneCache.forEach((scene, index) => {
+                const first = scene.shots[0];
+                out.push({
+                    i: index,
+                    act: index === paragraphIndex,
+                    vis: scene.container.visible,
+                    alpha: Number(scene.container.alpha.toFixed(3)),
+                    z: scene.container.zIndex,
+                    shots: scene.shots.length,
+                    hold: first?.shot.holdUntil === undefined ? -1 : Number(first.shot.holdUntil.toFixed(2)),
+                    exit: first ? Number(resolveTemperaShotExit(first, time).toFixed(3)) : -1,
+                    shotVis: scene.shots.filter(shot => shot.container.visible).length,
+                    // 首镜头首字的落点（诊断「散开是否匀速/有没有跳变」用）。
+                    g: scene.shots[0]?.glyphs?.[0]
+                        ? [Number(scene.shots[0].glyphs[0].display.x.toFixed(1)), Number(scene.shots[0].glyphs[0].display.y.toFixed(1))]
+                        : null,
+                    // 散开量：首镜头各字相对首字的位置离散度（只做诊断）。
+                    disp: (() => {
+                        const glyphs = scene.shots[0]?.glyphs ?? [];
+                        if (glyphs.length < 2) return -1;
+                        const x0 = glyphs[0].display.x;
+                        const y0 = glyphs[0].display.y;
+                        let sum = 0;
+                        for (const glyph of glyphs) sum += Math.hypot(glyph.display.x - x0, glyph.display.y - y0);
+                        return Math.round(sum / glyphs.length);
+                    })(),
+                });
+            });
+            (window as unknown as { __overlapScenes?: unknown }).__overlapScenes = { t: Number(time.toFixed(2)), p: paragraphIndex, out };
+        }
 
         if (this.options.lyricsOnly) {
             type ShotView = TemperaSceneView['shots'][number];

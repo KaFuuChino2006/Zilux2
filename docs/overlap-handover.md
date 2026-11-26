@@ -200,3 +200,11 @@ pg.click('.pb-btn-lyrics', force=True)   # backgroundLyrics 开启时可能需�
 
 `temperaOverlapDecor.ts` 里除了「上一句末尾 → 这一句开头」的引导弧（`arcChance` 控制），还会按 `AMBIENT_ARC_GAP = [0.9, 2.4]` 秒的随机间隔自己补一笔：锚点取当前句中心，方向/长度/弯度由 `ambient-N` 哈希决定（同一首歌重播走势一致），长度压在 140–380，不会变成贯穿画面的划痕。换句那一笔也不止一根：掷中之后还会按哈希再补 1–2 根并排的同向弧（`extra`，0.62 概率补一根、其中 0.35 补两根），后一笔晚 0.12–0.35s 落笔、横向挪 5–6px、bow 缩到 0.62 并反向偏 9px，读起来像手写描了第二遍而不是画了两根平行线。同屏上限 `ARC_MAX = 9`，超了先让最老的一笔收干。补笔的 `key` 不是句 key，所以「引导弧跟随首字」那段要从后往前找本句自己的那根。
 
+### 9.6 旧句退场：两段式（散开 → 消散）
+
+退场分两段，两个时间点都写在镜头数据里：`TemperaShot.scatterAt`（下一句起点，编译期由 `flowScene.ts` 的 `lyrics[index + 1]?.startTime` 写入）与 `TemperaShot.holdUntil`（下下句起点，原来就有）。
+
+- **第一段散开**：`scatterAt` 到 `holdUntil` 之间，位移按 `scatterSpan = max(0.5, (holdUntil - scatterAt) * 1.25)` 走完八成左右；每字先按唱序错开 32% 行程出发，再套 `easeTemperaInOut`（两端速度为 0）。这段时间 alpha 保持 1，所以旧句是「散开并停在那儿」。
+- **第二段消散**：`holdUntil` 之后由 `blow`（`easeTemperaInOut(clamp01((exit - order * 0.45) / 0.55))`）把 alpha 带到 0，位移仍由 `drive = max(blow, scatter)` 继续缓慢增长，所以不会出现「先弹一下 → 冻住 → 过会儿才淡掉」。
+- **幅度**：`distance = height * (drift * 1.05 + rand(53) * drift * 0.75) * drive`，`drift = overlapFx().ghostDrift`（默认 0.18）；每个字的距离差压在 1.05–1.8 倍，整行一起散，不会几个字各飞各的。
+- **诊断**：`zilux2.perf=1` 时 `createTemperaPixiRuntime` 每帧把每个场景的 `{vis, alpha, z, shots, hold, exit, shotVis, disp, g}` 写进 `window.__overlapScenes`，`web/.scratch/` 下的 `sample.mjs`（200ms 采样）、`watch.mjs`（定时截帧 + 状态）、`track.mjs`（60ms 采样首字落点，用来判断速度曲线有没有跳变）都读它。**采样前先确认 `#overlap-settings` 没开着**，面板打开时舞台不 `update()`，会读到冻结的预览运行时。

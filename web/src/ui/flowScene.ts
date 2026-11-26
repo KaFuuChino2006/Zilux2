@@ -90,6 +90,8 @@ export function createFlowScene(onPainted?: () => void, onError?: (error: unknow
       lyrics.forEach((shot, index) => {
         const next = lyrics[index + 2];
         shot.holdUntil = next?.startTime ?? lyrics[lyrics.length - 1].lyricEndTime;
+        // 退场分两段：下一句进来时先「散开」（停在散开的位置不动），下下句进来时才真正消散。
+        shot.scatterAt = lyrics[index + 1]?.startTime ?? shot.endTime;
       });
     }
     const seed=`${runSeed}:${song?.trackKey||'tempera'}`;

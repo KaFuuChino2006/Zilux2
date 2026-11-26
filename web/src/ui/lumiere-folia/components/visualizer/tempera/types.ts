@@ -259,6 +259,9 @@ export interface TemperaShot {
     lyricEndTime: number;
     /** Optional playback time at which a retained lyric begins to leave. */
     holdUntil?: number;
+    /** 重合模式：这一句开始「散开」的时间点（= 下一句的起点）。退场的头一段只散不退，
+     * 到 holdUntil（下下句）才开始真正消散。 */
+    scatterAt?: number;
     slices: TemperaShotSlice[];
     /**
      * A bridge shot carries an instrumental gap between paragraphs: it has no lyric slices,
