@@ -1,10 +1,12 @@
 # 「重合」歌词模式交接说明
 
-最后更新：2026-11-26 05:12（装机版运行中，PID 32848）
+最后更新：2026-11-26 19:20（1.2.12 已发布；装机版运行中，PID 34636）
+
+> 项目级状态（版本、发布产物、仓库清理、测试与工具）见 [`handover.md`](handover.md)；本文只讲重合模式本身。
 
 ## 0. 一句话现状
 
-「重合」是歌词页的独立 Lumiere 模式（`LumiereMode = 'overlap'`）：整行歌词逐字出现，唱完的旧句留在画面里，镜头按播放头逐字跟随并把当前句拉到画面中心，旧句在两句后才散开。全部画面参数走「重合设置」面板，默认值就是维护者当前调好的那套。
+「重合」是歌词页的独立 Lumiere 模式（`LumiereMode = 'overlap'`）：整行歌词逐字出现，唱完的旧句留在画面里，镜头按播放头逐字跟随并把当前句拉到画面中心，旧句在两句后才散开。全部画面参数走「重合设置」面板，默认值就是维护者当前调好的那套；落位可在「随机散点 / 阶梯格」之间切，背景可在「跟随主题 / 纯黑 / 纯白」之间切。
 
 ## 1. 构建 / 部署 / 重启（唯一标准动作）
 
@@ -19,7 +21,7 @@ Start-Process "$env:LOCALAPPDATA\Programs\Zilux2\Zilux2.exe"
 ```
 
 - 装机目录：`C:\Users\13329\AppData\Local\Programs\Zilux2`；部署脚本自动备份 `web.bak-<时间戳>` / `Zilux2.exe.bak-<时间戳>`。
-- 当前构建：web payload ≈ 11.11 MB，exe 52,753,211 bytes。
+- 当前构建（1.2.12）：web payload 11,118,302 bytes，exe 52,753,211 bytes；部署备份 `web.bak-20261126-185831`。
 - bash 调 publish 时路径要加引号（反斜杠会被吞）。
 
 ## 2. 调用链（从入口到像素）
@@ -78,14 +80,17 @@ web/src/ui/lyrics.ts  applyLumiereMode()
 4. **段落纸底**：每个段落场景自带一张不透明纸底；任何 `zIndex < 段落场景` 的层都会被整张盖住。所有全屏装饰必须挂在 `app.stage` 且索引高于 `printLayer`（debris/ambient 用 index 2，overlay 之上另算），或挂进 `sceneContainer`。
 5. **`flowScene.resize()` 是空操作**（`start()` 被 memoized），不要指望它改画布尺寸；面板预览用 letterbox 手动装框。
 6. **滤镜惰性**：字形的 `sungBlur`/`glow` 首次需要才 `create()`；销毁时用 `filter?.destroy()`。
-7. **性能**：一个段落仍是一次性同步构建。已做：惰性滤镜、整行每段最多 6 行 / 拆句 3 行、每行分块 `ceil(words/6)`。极端段落仍可能单帧尖峰；埋点：`localStorage.zilux2.perf='1'` → `window.__temperaSceneMs`（{ms,shots,glyphs}）。
+7. **性能**：段落建场已改分帧（`temperaSceneSteps()` 逐镜头 `yield`，运行时每帧 4ms 预算），预建邻段不再单帧尖峰；「切歌当下必须立刻出画」那一次仍是同步首段（100~280ms，维护者已接受）。另有惰性滤镜、整行每段最多 6 行 / 拆句 3 行、每行分块 `ceil(words/6)`。埋点：`localStorage.zilux2.perf='1'` → `window.__zilux2Perf` 与 `window.__temperaSceneMs`（§8.1）。
 
 ## 4. 当前默认值（维护者调好的）
 
-`paper #05080f`、`ink #e8f1f6`、`accent #5fd6c9`、跟随封面 true；`sizeScale 1.12`、`fontWeight 700`、`glyphMotion .82`、`glyphSettleStretch 1.32`、`lyricTint .3`、`keywordGlow .7`；`intensity 1.82`、`followGain 1.6`、`zoomRest 1.35`、`zoomSwell .095`、`zoomRelax .15`、`panSoft .6`、`zoomSoft .56`、`rollSoft 1`；`turnChance .13`、角度 30–360°、`scatter .165`；`ghostDrift .18`、`holdFade .45`、`ghostBlur .38`、`exitSeconds 2.6`；撞击 `chance .35 / px 47 / X .65 / Y .95 / Z 70 / depth 0 / damping 1.75 / roll 7.6° / elastic 5 / attack .34 / swing .4`；装饰各概率见文件；`stagger .55`；镜头 `rackFocus 1.15 / dollySplit .5 / handheld .5 / panStreak .75 / settle 1.15`；印刷 `lensDistortion .15`，其余 0。
+`placement 'grid'`（落位方式，另一档 `scatter`）、`backdrop 'theme'`（背景，另两档 `black`/`white`）；`paper #05080f`、`ink #e8f1f6`、`accent #5fd6c9`、跟随封面 true；`sizeScale 1.12`、`fontWeight 700`、`glyphMotion .82`、`glyphSettleStretch 1.32`、`lyricTint .3`、`keywordGlow .7`；`intensity 1.82`、`followGain 1.6`、`zoomRest 1.35`、`zoomSwell .095`、`zoomRelax .15`、`panSoft .6`、`zoomSoft .56`、`rollSoft 1`；`turnChance .13`、角度 30–360°、`scatter .165`；`ghostDrift .18`、`holdFade .45`、`ghostBlur .38`、`exitSeconds 2.6`；撞击 `chance .35 / px 47 / X .65 / Y .95 / Z 70 / depth 0 / damping 1.75 / roll 7.6° / elastic 5 / attack .34 / swing .4`；装饰各概率见文件；`stagger .55`；镜头 `rackFocus 1.15 / dollySplit .5 / handheld .5 / panStreak .75 / settle 1.15`；印刷 `lensDistortion .15`，其余 0。
 
 ## 5. 最近做过什么（时间倒序）
 
+- 1.2.12 发布（2026-11-26 19:00）：重合子系统、切歌性能、混音默认「自动」、粉色主题等一起进版本；仓库清理后提交 `b57bfac`、tag `v1.2.12`、CI 产 Setup/Portable。见 `handover.md`。
+- 落位方式做成一档设置（随机散点 / 阶梯格），第三档「单一方向」试了两版不达标后按维护者要求删除（§9.1）。
+- 背景三档、书写弧随机补笔 + 换句补 1~2 根、四边箭头放大、闪烁固定 50ms、高级设置独立还原按钮（§9.2~§9.5）。
 - 切歌卡顿专项（2026-11-26）：主题去重、rAF 合并失效、预建主题、运行时池化、段落分帧构建、歌词预匹配写回缓存、DOM 重绘去抖。详见 §8。
 - 文字「爆炸散架」做过又按维护者要求**整段撤回**（设置、图层、绘制均删除）。
 - 分档镜头撞击（纯字/房间/拼合各自参数）做过，维护者要求**全部删除并还原**；`cameraShake.ts`、`shakeSettings.ts` 已不存在。
@@ -99,7 +104,7 @@ web/src/ui/lyrics.ts  applyLumiereMode()
 1. **切歌瞬间的长段落构建**：已改为分帧（§8）；仍存在「未预建 + 立即切」路径上的一次同步首段构建（实测 100~280ms，维护者已确认「立刻切但偶尔顿一下可以」）。若要再降，只能延迟首帧出画（会看到空场），暂不做。
 2. **拆句 + 退场**：拆句后每个 chunk 各自数「后两句」；若维护者希望整句一起退，需要在 `flowScene.ts` 重新聚合 `lineEnds`。
 3. **ambient 与遮挡**：自由线稿挂在 `sceneContainer` 内、与文字同变换；后层靠「跳过落在文字包围盒内的 item」让位，没有真正的「纸下」层。
-4. **文档缺口**：`docs/` 里还没有重合模式的设计文档，本文是第一份。
+4. **文档**：本文是重合模式的主文档；项目级交接看 `handover.md`。新增设置项时记得同步 §4 的默认值清单。
 
 ## 7. 自测方法（CDP）
 
@@ -117,7 +122,8 @@ pg.click('.pb-btn-lyrics', force=True)   # backgroundLyrics 开启时可能需�
 ```
 
 - 播放器页的歌词按钮监听 `pointerdown`，`el.click()` 无效。
-- 性能探针：`localStorage.zilux2.perf='1'`，清空 `window.__temperaSceneMs` 后切歌，读回 `{ms,shots,glyphs}`。
+- 性能探针：`localStorage.zilux2.perf='1'`，清空 `window.__zilux2Perf.marks` / `window.__temperaSceneMs` 后切歌，读回聚合。
+- 1.2.12 清理时删掉了大部分 `.mjs` 探针（`perf-cut` / `ov-burst` / `spots*` / `nextn` / `click-seg`），只剩 `web/.scratch/launch-cdp.ps1` 与 `web/.scratch/eval.mjs`（`node eval.mjs "<表达式>" [端口]`）；要复现测量需按 §8.1 的描述重写。
 
 ## 8. 切歌性能调度（2026-11-26 落地）
 
@@ -177,13 +183,14 @@ pg.click('.pb-btn-lyrics', force=True)   # backgroundLyrics 开启时可能需�
 - 这两个键不在 `FlowSettings` 里，改完样式键不变，所以 `overlapScene` 保存时会额外调 `type.refresh()`（`flowScene` 的公开方法，等价于 `invalidate()`），面板里切换落位方式也直接 `scene?.refresh()`，保证当场重排。
 
 被删掉的第三档留档说明（避免以后重走）：`stack` 试过「游标贴边累加」和「一屏五行等距槽」两版。前者因为拆句关掉时一段只有一句、游标每次建场重置而失效；后者虽然稳定，但重合模式的相机每帧都把正在唱的字拉回画面中心（`temperaCamera.ts resolveLyricAnchor` 的 `followGain`），绝对槽位在屏幕上根本显示不出来——关掉跟随又会破坏原有的镜头语言，所以整档删除。
-### 9.3 闪烁退场：固定 50ms 一步
-
-`temperaShotFrame.ts` 里旧句退场有六种手势，其中 `style === 4` 是「闪烁」（像坏掉的招牌灯）。它按 `exitDuration / 0.05` 切步，步长固定 50ms（亮 50ms / 灭 50ms），前半段满亮闪、后半段余辉闪，然后消失；步进的相位取自整句的退场进度而不是每个字各自的错峰延迟，所以整句是一起闪，不是一波软波。改「退场时长」只会改变闪多少次，不会改变闪烁快慢；要再快/再慢就改这个 0.05。
 
 ### 9.2 高级设置有独立的还原按钮
 
 `overlapSettingsPanel.ts` 的「高级设置」折叠组末尾多了一行「还原高级默认」（`.ts-advanced-reset`）：只把 `OVERLAP_RANGES` 里归到「高级」分类（镜头撞击那一组 `shake*`）还原成 `OVERLAP_DEFAULTS`，其它分类的草稿值原样保留；点完会重画面板，并把折叠组重新展开。面板底部原来的「恢复默认」仍是整体还原。
+
+### 9.3 闪烁退场：固定 50ms 一步
+
+`temperaShotFrame.ts` 里旧句退场有六种手势，其中 `style === 4` 是「闪烁」（像坏掉的招牌灯）。它按 `exitDuration / 0.05` 切步，步长固定 50ms（亮 50ms / 灭 50ms），前半段满亮闪、后半段余辉闪，然后消失；步进的相位取自整句的退场进度而不是每个字各自的错峰延迟，所以整句是一起闪，不是一波软波。改「退场时长」只会改变闪多少次，不会改变闪烁快慢；要再快/再慢就改这个 0.05。
 
 ### 9.4 重合背景：跟随主题 / 纯黑 / 纯白
 
