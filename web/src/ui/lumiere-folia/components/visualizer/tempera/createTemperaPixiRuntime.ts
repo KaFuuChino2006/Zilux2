@@ -473,17 +473,21 @@ export class TemperaPixiRuntime {
         width: number,
         height: number,
     ): TemperaCreditsView | null {
-        if (this.options.lyricsOnly) return null;
+        // 重合档（lyricsOnly）也要这张卡：开场第一句之前、全曲唱完之后各显示一次。
+        // 但它只显示歌名——词/曲/编曲那些署名是歌词文件自带的头部信息，不该出现在画面上。
+        const lyricsOnly = this.options.lyricsOnly === true;
+        if (lyricsOnly && !overlapFx().titleCard) return null;
         return this.creditsLayer.build({
             theme: song.theme,
             coverColors: song.coverColors,
             tuning: this.options.tuning,
             metadata: {
                 title: this.options.songTitle,
-                artist: this.options.songArtist,
-                album: this.options.songAlbum,
+                artist: lyricsOnly ? null : this.options.songArtist,
+                album: lyricsOnly ? null : this.options.songAlbum,
             },
             lyricsFontScale: this.options.lyricsFontScale,
+            plain: lyricsOnly,
         }, scenePalette, width, height);
     }
 
@@ -753,11 +757,29 @@ export class TemperaPixiRuntime {
         const width = this.lastWidth || Math.max(this.options.host.clientWidth, 320);
         const height = this.lastHeight || Math.max(this.options.host.clientHeight, 240);
         const finalParagraph = this.options.program.paragraphs.at(-1);
+        const firstParagraph = this.options.program.paragraphs[0];
         const creditsFrame = resolveTemperaCreditsFrame(
             time,
             finalParagraph?.endTime ?? Number.POSITIVE_INFINITY,
+            firstParagraph?.startTime ?? 0,
         );
         const hasCredits = this.creditsLayer.hasPoster;
+        if (perfOn() && (this as any).__creditsProbeT !== Math.floor(time)) {
+            (this as any).__creditsProbeT = Math.floor(time);
+            perfEvent('credits.frame', {
+                t: Math.round(time * 10) / 10,
+                first: Math.round((firstParagraph?.startTime ?? 0) * 10) / 10,
+                intro: creditsFrame.introActive ? 1 : 0,
+                alpha: Math.round(creditsFrame.posterAlpha * 100) / 100,
+                has: hasCredits ? 1 : 0,
+                only: this.options.lyricsOnly ? 1 : 0,
+                titleLen: (this.options.songTitle ?? '').length,
+                kids: this.creditsLayer.container.children.length,
+                cw: Math.round(this.creditsLayer.container.width),
+                ch: Math.round(this.creditsLayer.container.height),
+                vis: this.creditsLayer.container.visible ? 1 : 0,
+            });
+        }
         let wipeDrawn = false;
 
         const transitionsEnabled = this.options.tuning.enableTransitions && !this.options.staticMode;

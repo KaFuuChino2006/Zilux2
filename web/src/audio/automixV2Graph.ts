@@ -711,7 +711,9 @@ export function scheduleAutomixV2Duck(
   // 听感就是「过渡完成的一瞬间，压着人声/高音的那层东西突然消失」。
   const last = events[events.length - 1]!;
   const end = Number.isFinite(releaseAtSec) ? (releaseAtSec as number) : NaN;
-  if (Number.isFinite(end) && end > last.atSec + 0.05) {
+  // 曲线自己已经在窗口里放平（`buildDuckEvents` 留了 settle 区）时不再补 ramp：
+  // 一条贴着边界的 30 ms ramp 反而会把「最后一点让位」拍成台阶。
+  if (Number.isFinite(end) && last.db < -0.25 && end > last.atSec + 0.05) {
     try {
       param.linearRampToValueAtTime(0, end);
     } catch {

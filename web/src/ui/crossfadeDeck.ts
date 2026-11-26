@@ -3234,8 +3234,8 @@ function buildSchedule(options: CrossfadePrepareOptions): FadeSchedule | null {
     })();
     // 层 C 人声让位：以前只声明了 v2Duck 字段，从来没人生成过（全库体检才发现）。
     //   A 在 B 唱的地方把 1.5–4 kHz 压 6 dB，两条咬字就不会互相盖住。
-    // 只在「A、B 两边都真的在唱」时收 A 的存在感，且深度封顶 3.5 dB（2026-11-24）：
-    //   以前只看 B，B 每唱一句就压 A 一次，长窗里就是「压下去、松开、再压」。
+    // 跟着 B 走（v1.2.1 的听感），但起压改成 420 ms 缓坡、深度封顶 3.5 dB，
+    //   A 在器乐/换气时只轻收（×0.3）——不再是「B 一开口 A 就被按住」。
     const phraseDuck = buildDuckEvents({
       a: analysis, fadeStartAMs: x,
       b: nextAnalysis, fadeStartBMs: y, fadeMs: span, tempoRate: rate,
@@ -6087,7 +6087,9 @@ function releaseSplitMix(plan: ActivePlan, continuing: 'a' | 'b' = 'b'): void {
   // 曲线排得准的时候链上本来就接近中性，这一步是空操作；但只要还剩一点压低
   // （手动取消、图被激活时硬切、曲线与进度差几十毫秒、尾巴没来得及收干），
   // 旁路就会把它一次性弹回来 —— 听起来就是「过渡完成后，被削掉的高音瞬间恢复」。
-  const relaxMs = 180;
+  // 320 ms：让位/压音这些「压着人声」的状态在窗口里其实已经被 settle 区放平了，
+  // 这里只是兜底（手动取消、图被激活时硬切）。斜坡太短就又变成「突然消失」。
+  const relaxMs = 320;
   try {
     relaxAutomixV2Chain(aDeck, relaxMs / 1000, continuing === 'a');
     relaxAutomixV2Chain(bDeck, relaxMs / 1000, continuing === 'b');

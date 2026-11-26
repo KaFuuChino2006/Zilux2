@@ -223,9 +223,9 @@ test('人声让位：B 的开唱点之前一律不许压 A（m03403 回归）', 
     gateBeforeMs: 18_250,
   });
   assert.equal(Math.min(...gated.map((e) => e.db)), 0);
-  // 没有门的时候会立刻压下去（这正是「一进过渡就像加了低音」的来源）
+  // 没有门时会压下去（起压已改成 420 ms 缓坡，深度也跟着 B 的强度走）
   const raw = mod2.buildDuckEvents({ b, fadeStartBMs: 0, fadeMs: 18_000, tempoRate: 1 });
-  assert.ok(Math.min(...raw.map((e) => e.db)) < -3);
+  assert.ok(Math.min(...raw.map((e) => e.db)) < -1.5);
 });
 
 test('人声让位：A 是器乐时深度减半', () => {
@@ -243,7 +243,7 @@ test('人声让位：A 是器乐时深度减半', () => {
   assert.ok(Math.min(...instA.map((e) => e.db)) >= -3.5);
 });
 
-test('人声让位：两边都有人声才压，且深度封顶 3.5 dB（1.2.11）', () => {
+test('人声让位：跟着 B 走，A 静音时只轻收，深度封顶 3.5 dB', () => {
   const vocalB = new Array(160).fill(0.9);
   const b = { activity: { hopMs: 250, vocal: vocalB, drum: [], bass: [] } };
   // A 也在唱 → 有让位，但最深不超过 3.5 dB
@@ -254,12 +254,30 @@ test('人声让位：两边都有人声才压，且深度封顶 3.5 dB（1.2.11�
   const low = Math.min(...got.map((e) => e.db));
   assert.ok(low <= -2.5, `两边都在唱时应该让位：${low}`);
   assert.ok(low >= -3.55, `深度不该超过 3.5 dB：${low}`);
-  // A 是静音 → 完全不压（这就是「A 被按住」的根治点）
+  // A 是静音 → 只按 30% 深度轻收（不再完全不压，也不再压到底）
   const aQuiet = { activity: { hopMs: 250, vocal: new Array(160).fill(0), drum: [], bass: [] } };
-  const none = mod2.buildDuckEvents({
+  const quietA = mod2.buildDuckEvents({
     a: aQuiet, fadeStartAMs: 0, b, fadeStartBMs: 0, fadeMs: 6_000, tempoRate: 1, maxDuckDb: -3.5,
   });
-  assert.equal(Math.min(...none.map((e) => e.db)), 0);
+  const quietDepth = Math.min(...quietA.map((e) => e.db));
+  assert.ok(quietDepth > -2 && quietDepth < -0.5, `A 静音时深度不对：${quietDepth}`);
+});
+
+test('人声让位：收尾前自己放平，不留「过渡完成瞬间突然松手」的缺口', () => {
+  const vocal = new Array(160).fill(0.9);
+  const b = { activity: { hopMs: 250, vocal, drum: [], bass: [] } };
+  const aSing = { activity: { hopMs: 250, vocal: new Array(160).fill(0.9), drum: [], bass: [] } };
+  const got = mod2.buildDuckEvents({
+    a: aSing, fadeStartAMs: 0, b, fadeStartBMs: 0, fadeMs: 8_000, tempoRate: 1, maxDuckDb: -3.5,
+  });
+  assert.ok(Math.min(...got.map((e) => e.db)) <= -2.5);
+  // 最后 15% 必须已经回到中性：收尾靠的不是旁路，而是曲线自己松开（release 140 ms）。
+  const tail = got.filter((e) => e.offsetMs > 8_000 * 0.85);
+  assert.ok(tail.length > 0);
+  const worst = Math.min(...tail.map((e) => e.db));
+    assert.ok(worst > -0.35, `收尾仍在压：${worst} dB`);
+  // 窗口最后一点必须正好是 0 dB
+  assert.ok(Math.abs(got[got.length - 1].db) < 0.2, `末尾未归零：${got[got.length - 1].db}`);
 });
 
 test('18 秒前奏：前 30% 保留 A，30–50% 只换低频，80% 后才动人声', () => {

@@ -861,16 +861,28 @@ export function buildDuckEvents(input: {
   const aCurve = input.a?.activity;
   const aVocal = aCurve && Array.isArray(aCurve.vocal) && aCurve.vocal.length > 0 ? aCurve : null;
   const stepMs = input.stepMs ?? 40;
-  const attack = input.attackMs ?? 30;
+  // 起压必须慢：v1.2.1 是 20 ms 一压到底，听感是「B 一开口 A 就被按住」。
+  // 现在默认 420 ms 的缓坡——B 唱出来时 A 的存在感是慢慢让开的，
+  // 松开仍用 140 ms（收得利落，但不再靠旁路一刀切）。
+  const attack = input.attackMs ?? 420;
   const release = input.releaseMs ?? 140;
   const baseDuck = input.maxDuckDb ?? DUCK_MAX_DB;
   const maxDuck = input.aInstrumental ? Math.max(baseDuck, DUCK_MAX_DB / 2) : baseDuck;
   const gateMs = Number.isFinite(input.gateBeforeMs) ? (input.gateBeforeMs as number) : 0;
   const aStartMs = input.fadeStartAMs ?? 0;
-  // A 也要在唱才算「撞上」：A 是器乐尾奏/换气时，把它的 2.5 kHz 收下去只会变闷。
-  const A_COLLIDE = 0.28;
+  // A 的演唱强度只做「深度系数」而不是开关（2026-11-26 维护者要求）：
+  //   v1.2.1 是 B 唱就压；后来的版本要求两边都在唱，听感变得太干净、没有咬合感。
+  //   折中：仍然跟着 B 走，但 A 在器乐/换气时只轻轻收（×0.3），不把 A 收闷。
+  const A_QUIET_SCALE = 0.3;
   // 撞上要连续一小段才算数：前奏里的呼吸、切片只有一两个采样点，一碰就压是「抽一下」。
   const sustainMs = Math.max(80, Math.min(240, stepMs * 3));
+  // 收尾留一段「放平区」：最后这一小段不再起新的让位，让 release 自己把 duck 送回 0 dB。
+  //
+  // 以前曲线一路压到窗口边界，收尾只有两条路：0 时长的 `tap.restore()` 旁路，
+  // 或者一条从最后一点直接拉到 0 的极短 ramp —— 听感都是「过渡完成的一瞬间，
+  // 压着人声的那层东西突然消失」。现在让它在窗口里慢慢松开，收尾时链上本来就是中性。
+  const settleMs = Math.min(4_000, Math.max(600, input.fadeMs * 0.25));
+  const settleFrom = input.fadeMs - settleMs;
   const events: DuckEvent[] = [];
   let current = 0;
   let overlapMs = 0;
@@ -882,15 +894,17 @@ export function buildDuckEvents(input: {
     const vocal = sampleActivity(curve, bMs)[0];
     const aLevel = aVocal ? sampleActivity(aVocal, aStartMs + offsetMs)[0] : 1;
     const gated = bMs < gateMs - 1;
-    const collide = !gated && vocal > DUCK_TRIGGER_SOFT && aLevel > A_COLLIDE;
+    const nearEnd = offsetMs > settleFrom;
+    const collide = !nearEnd && !gated && vocal > DUCK_TRIGGER_SOFT;
     if (collide) overlapMs += stepMs;
     else overlapMs = 0;
     if (!ducking && overlapMs >= sustainMs) ducking = true;
     // 滞回：B 掉到软阈值以下 15%，或 A 已经不在唱，才松手——唱句里换气不再「一回一压」。
-    if (ducking && (gated || vocal < DUCK_TRIGGER_SOFT * 0.85 || (aVocal && aLevel < A_COLLIDE * 0.8))) ducking = false;
+    if (ducking && (nearEnd || gated || vocal < DUCK_TRIGGER_SOFT * 0.85)) ducking = false;
     // 深度跟着两边的演唱强度走：两边都唱得实才压到底，否则只压三分之一。
+    const aFactor = aVocal ? Math.max(A_QUIET_SCALE, Math.min(1, aLevel / 0.6)) : 1;
     const depth = ducking
-      ? Math.max(0.35, Math.min(1, (vocal - DUCK_TRIGGER_SOFT) / 0.5) * Math.min(1, aLevel / 0.6))
+      ? Math.max(0.35, Math.min(1, (vocal - DUCK_TRIGGER_SOFT) / 0.5)) * aFactor
       : 0;
     const target = ducking ? maxDuck * depth : 0;
     const tau = target < current ? attack : release;

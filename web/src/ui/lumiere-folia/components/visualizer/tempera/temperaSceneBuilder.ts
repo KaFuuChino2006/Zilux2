@@ -36,6 +36,7 @@ import {
     drawCrossMarks,
     drawHatchFill,
     drawLines,
+    drawPolyline,
     drawPolygonFill,
     drawPolygonOutline,
     drawSquareMarks,
@@ -279,6 +280,11 @@ export interface TemperaCreditsOptions {
     width: number;
     height: number;
     lyricsFontScale: number;
+    /**
+     * 重合档的曲名卡：只借这层画「歌名」，不复制拼合那套纸块/圆盘/网点拼贴。
+     * 版式用重合自己的语言——纸底、手写弧、方括号，标题压在正中。
+     */
+    plain?: boolean;
 }
 
 interface CreditsItem {
@@ -305,6 +311,7 @@ export const buildTemperaCreditsPoster = (
     options: TemperaCreditsOptions,
 ): TemperaCreditsView => {
     const { palette, metadata, width, height } = options;
+    if (options.plain) return buildPlainCreditsPoster(pixi, options);
     const { Container, Text, TextStyle } = pixi;
     const container = new Container();
     const filters: import('pixi.js').Filter[] = [];
@@ -1377,4 +1384,139 @@ export const buildTemperaScene = (
     let step = steps.next();
     while (!step.done) step = steps.next();
     return step.value;
+};
+
+/**
+ * 重合档的曲名卡。拼合那张卡是「纸块 + 圆盘 + 网点」的拼贴版式，搬到重合上像换了个设计；
+ * 这里只留重合自己会画的东西：纸底、一两笔手写弧、把歌名括起来的方括号。
+ */
+const buildPlainCreditsPoster = (
+    pixi: PixiModule,
+    options: TemperaCreditsOptions,
+): TemperaCreditsView => {
+    const { palette, metadata, width, height } = options;
+    const { Container, Text, TextStyle } = pixi;
+    const container = new Container();
+    const filters: import('pixi.js').Filter[] = [];
+    const items: CreditsItem[] = [];
+    const seed = hashTemperaSeed(`${metadata.title ?? ''}|plain`);
+    const halfWidth = width / 2;
+    const halfHeight = height / 2;
+    const bleed = Math.hypot(width, height) * 0.25;
+    const flip = temperaHash01(seed, 1, 229) > 0.5 ? 1 : -1;
+
+    const add = (
+        node: import('pixi.js').Container,
+        item: Partial<Omit<CreditsItem, 'node' | 'baseX' | 'baseY'>> = {},
+    ) => {
+        items.push({
+            node,
+            baseX: node.x,
+            baseY: node.y,
+            baseAlpha: item.baseAlpha ?? 1,
+            enterDX: item.enterDX ?? 0,
+            enterDY: item.enterDY ?? 0,
+            delay: item.delay ?? 0,
+            driftX: item.driftX ?? 0,
+            driftY: item.driftY ?? 0,
+            grow: item.grow ?? 0,
+        });
+        container.addChild(node);
+    };
+
+    // 纸底：重合的每一页都是纸，卡不能浮在黑上。
+    container.addChild(drawPolygonFill(
+        pixi,
+        rectPolygon(-halfWidth - bleed, -halfHeight - bleed, width + bleed * 2, height + bleed * 2),
+        palette.paper,
+        1,
+        null,
+    ));
+
+    const fontFamily = resolveThemeFontStack(options.theme);
+    const fontWeight = String(resolveThemeFontWeight(options.theme, 600)) as import('pixi.js').TextStyleFontWeight;
+    const titleSize = Math.max(26, Math.min(width, height) * 0.11 * options.lyricsFontScale);
+    const title = new Text({
+        text: metadata.title?.trim() || '\u266a',
+        style: new TextStyle({
+            fontFamily,
+            fontWeight,
+            fontSize: titleSize,
+            fill: palette.ink,
+            align: 'center',
+            wordWrap: true,
+            wordWrapWidth: Math.min(width * 0.78, Math.hypot(width, height) * 0.6),
+        }),
+    });
+    title.anchor.set(0.5);
+    title.position.set(0, 0);
+
+    const arcPoints = (x1: number, y1: number, cx: number, cy: number, x2: number, y2: number) => {
+        const points: number[] = [];
+        for (let step = 0; step <= 20; step += 1) {
+            const t = step / 20;
+            const u = 1 - t;
+            points.push(
+                u * u * x1 + 2 * u * t * cx + t * t * x2,
+                u * u * y1 + 2 * u * t * cy + t * t * y2,
+            );
+        }
+        return points;
+    };
+
+    // 标题上方一笔、下方一笔，方向各偏一次，像随手划的。
+    const reach = Math.max(title.width, titleSize * 2.4) * 0.62;
+    const topY = -titleSize * 0.95;
+    const bottomY = titleSize * 0.95;
+    add(
+        drawPolyline(
+            pixi,
+            arcPoints(-reach * flip, topY + titleSize * 0.25, reach * 0.1 * flip, topY - titleSize * 0.55, reach * 0.92 * flip, topY - titleSize * 0.1),
+            palette.accent,
+            2.1,
+            0.55,
+        ),
+        { delay: 0.34, enterDX: -28 * flip, driftX: -6 * flip },
+    );
+    add(
+        drawPolyline(
+            pixi,
+            arcPoints(-reach * 0.8 * flip, bottomY - titleSize * 0.12, -reach * 0.05 * flip, bottomY + titleSize * 0.5, reach * 0.72 * flip, bottomY + titleSize * 0.06),
+            palette.accent,
+            1.7,
+            0.42,
+        ),
+        { delay: 0.46, enterDX: 24 * flip, driftX: 5 * flip },
+    );
+
+    // 方括号：重合画面里包住一句词的那个记号。
+    const bracketW = title.width / 2 + titleSize * 0.42;
+    const bracketH = title.height / 2 + titleSize * 0.3;
+    const tick = titleSize * 0.28;
+    const leftBracket = [
+        -bracketW + tick, -bracketH,
+        -bracketW, -bracketH,
+        -bracketW, bracketH,
+        -bracketW + tick, bracketH,
+    ];
+    const rightBracket = leftBracket.map((value, index) => (index % 2 === 0 ? -value : value));
+    add(drawPolyline(pixi, leftBracket, palette.ink, 1.6, 0.6), { delay: 0.56, enterDX: -14 });
+    add(drawPolyline(pixi, rightBracket, palette.ink, 1.6, 0.6), { delay: 0.6, enterDX: 14 });
+    add(title, { delay: 0.18, enterDY: titleSize * 0.18 });
+
+    const updateTime = (elapsed: number) => {
+        const creep = creditsCreep(elapsed);
+        for (const item of items) {
+            const enter = easeTemperaEnter((elapsed - item.delay) / 1.1);
+            item.node.alpha = item.baseAlpha * enter;
+            item.node.visible = enter > 0.001;
+            item.node.position.set(
+                item.baseX + item.enterDX * (1 - enter) + item.driftX * creep,
+                item.baseY + item.enterDY * (1 - enter) + item.driftY * creep,
+            );
+            if (item.grow !== 0) item.node.scale.set(1 + item.grow * creep);
+        }
+    };
+    updateTime(0);
+    return { container, filters, updateTime };
 };

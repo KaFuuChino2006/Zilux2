@@ -61,9 +61,16 @@ export function createFlowScene(onPainted?: () => void, onError?: (error: unknow
   const shotCompositions=new Map<string,number[]>();
   let context: TemperaSongContext = compile();
 
+  // 歌词文件开头的「词：…」「曲：…」「编曲：…」这一类署名行不是歌词：
+  // 重合档会把它们当成句子排进画面，既不唱也占一屏。这里整行剔掉（只对重合档生效）。
+  const CREDIT_LINE = /^\s*(作词|作曲|编曲|词|曲|制作人|出品|监制|录音|混音|母带|吉他|贝斯|鼓|和声|弦乐|统筹|企划|发行|OP|SP|Lyrics?|Music|Arrang\w*|Producer|Mixed|Mastered)\s*[:：]/i;
+
   function compile(): TemperaSongContext {
     const profileStart = perfOn() ? performance.now() : 0;
-    const lines: Line[] = (song?.lines ?? []).map((line) => ({
+    const source = fixedStyle
+      ? (song?.lines ?? []).filter(line => !CREDIT_LINE.test(line.text))
+      : (song?.lines ?? []);
+    const lines: Line[] = source.map((line) => ({
       startTime: line.timeMs / 1000,
       endTime: (line.timeMs + Math.max(20, line.durationMs)) / 1000,
       fullText: line.text,

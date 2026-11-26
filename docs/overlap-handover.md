@@ -188,9 +188,19 @@ pg.click('.pb-btn-lyrics', force=True)   # backgroundLyrics 开启时可能需�
 
 `overlapSettingsPanel.ts` 的「高级设置」折叠组末尾多了一行「还原高级默认」（`.ts-advanced-reset`）：只把 `OVERLAP_RANGES` 里归到「高级」分类（镜头撞击那一组 `shake*`）还原成 `OVERLAP_DEFAULTS`，其它分类的草稿值原样保留；点完会重画面板，并把折叠组重新展开。面板底部原来的「恢复默认」仍是整体还原。
 
-### 9.3 闪烁退场：固定 50ms 一步
+### 9.3 闪烁退场：0.3 秒内四次
 
-`temperaShotFrame.ts` 里旧句退场有六种手势，其中 `style === 4` 是「闪烁」（像坏掉的招牌灯）。它按 `exitDuration / 0.05` 切步，步长固定 50ms（亮 50ms / 灭 50ms），前半段满亮闪、后半段余辉闪，然后消失；步进的相位取自整句的退场进度而不是每个字各自的错峰延迟，所以整句是一起闪，不是一波软波。改「退场时长」只会改变闪多少次，不会改变闪烁快慢；要再快/再慢就改这个 0.05。
+`temperaShotFrame.ts` 里旧句退场有六种手势，其中 `style === 4` 是「闪烁」。四次闪烁固定压在 **0.3 秒**里（绝对时间，不随「退场时长」拉伸），闪完立即变黑，剩下的退场时间保持不可见：
+
+```ts
+const window = 0.3;
+const elapsed = clamp01(exit) * exitDuration;
+if (elapsed >= window) return 0;
+const phase = (elapsed / window) * 4;
+return phase % 1 < 0.55 ? 1 : 0.05;   // 亮 55% / 暗 45%
+```
+
+每次约 75ms（亮 41ms / 暗 34ms）。相位取整句退场进度，整行一起闪；不要再做每字随机相位或 25ms 细步，那样会读成信号噪声。`exitDuration` 小于 0.3s 时四次会等比压缩。
 
 ### 9.4 重合背景：跟随主题 / 纯黑 / 纯白
 

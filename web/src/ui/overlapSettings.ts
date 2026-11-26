@@ -134,6 +134,8 @@ export interface OverlapSettings {
   showSilhouette: boolean;
   showCrease: boolean;
   showWave: boolean;
+  /** 第一句唱词前与全曲唱完后各显示一次歌名卡（只显示歌名，不带词曲署名）。 */
+  titleCard: boolean;
   /** 镜头运动时散落的墨尘/墨溅/字屑。 */
   showDebris: boolean;
   showAmbient: boolean;
@@ -232,6 +234,7 @@ export const OVERLAP_DEFAULTS: OverlapSettings = {
   showSilhouette: true,
   showCrease: true,
   showWave: true,
+  titleCard: true,
   showDebris: true,
   showAmbient: true,
   ambientRate: 1,
@@ -341,7 +344,7 @@ export const OVERLAP_RANGES: [OverlapRangeKey, string, number, number, number, s
   ['vignette', '暗角', 0, 2, 0.05, '印刷与画质', '四角压暗，让字更聚光'],
 ];
 
-export type OverlapSwitchKey = 'followCover' | 'splitLyrics' | 'showBracket' | 'showArc' | 'showTrail' | 'showHud' | 'showMask' | 'showGrid' | 'showUnderline' | 'showSilhouette' | 'showCrease' | 'showWave' | 'showDebris' | 'showMould' | 'showBreak' | 'showSeal' | 'showField' | 'showProgressArc' | 'showLyricMarks';
+export type OverlapSwitchKey = 'titleCard' | 'followCover' | 'splitLyrics' | 'showBracket' | 'showArc' | 'showTrail' | 'showHud' | 'showMask' | 'showGrid' | 'showUnderline' | 'showSilhouette' | 'showCrease' | 'showWave' | 'showDebris' | 'showMould' | 'showBreak' | 'showSeal' | 'showField' | 'showProgressArc' | 'showLyricMarks';
 
 /** [key, label, category, hint] */
 export const OVERLAP_SWITCHES: [OverlapSwitchKey, string, string, string][] = [
@@ -363,6 +366,7 @@ export const OVERLAP_SWITCHES: [OverlapSwitchKey, string, string, string][] = [
   ['showSilhouette', '远景剪影', '装饰', '当前句放大数倍的巨大剪影，作为最远的一层随镜头慢移'],
   ['showCrease', '折痕翻页', '装饰', '每换一段在纸面上多一道极淡的折痕，然后慢慢淡掉'],
   ['showWave', '声纹波带', '装饰', '画面下缘一条随唱字密度起伏的连续波线'],
+  ['titleCard', '曲名卡', '文字', '第一句唱词开口前与全曲唱完后，各显示一次歌名卡，样式跟随当前风格预设'],
 ];
 
 export const OVERLAP_SETTINGS_KEY = 'zilux2.overlapSettings';

@@ -160,18 +160,17 @@ const resolveGhostDrift = (
         // Strobe: the whole line blinks in step, keyed on the line's own exit progress rather
         // than each glyph's staggered departure - a per-glyph phase made the flash read as a
         // soft wave instead of a dead sign.
+        // Strobe: four clean blinks inside a fixed 0.3s window, then gone for the rest of the
+        // exit. Timing is absolute (not normalised over the exit length) so a long 退场 does not
+        // stretch the blinking itself.
         alpha: style === 4
             ? (() => {
-                // One blink step is a fixed 50ms, so the rate never depends on the exit length:
-                // a longer 退场 keeps blinking at the same speed, just for more steps.
-                const steps = Math.max(2, Math.floor(exitDuration / 0.05));
-                const step = Math.min(steps - 1, Math.floor(exit * steps));
-                const coolAt = Math.floor(steps * 0.5);
-                // 前半段满亮闪，收尾只留两次半亮的余闪（亮 灭 亮 灭），然后就黑掉。
-                if (step < coolAt) return step % 2 === 0 ? 1 : 0;
-                const coolStep = step - coolAt;
-                if (coolStep < 4) return coolStep % 2 === 0 ? 0.5 : 0;
-                return 0;
+                const window = 0.3;
+                const elapsed = clamp01(exit) * exitDuration;
+                if (elapsed >= window) return 0;
+                const phase = (elapsed / window) * 4;
+                // 每次闪烁亮 55%、暗 45%；四次之后（0.3s）直接黑掉。
+                return phase % 1 < 0.55 ? 1 : 0.05;
             })()
             : 1 - blow,
         ...(style === 5 ? {scaleY: 1 - 0.95 * blow} : {}),

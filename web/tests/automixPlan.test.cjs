@@ -268,10 +268,14 @@ test('人声重叠按拍中心统计：两首都一直唱 → 满拍重叠', () 
   assert.equal(silent, 0);
 });
 
-test('duck 事件：B 一直在唱 → 压到 −6 dB 并保持；从不在唱 → 全 0', () => {
+test('duck 事件：B 一直在唱 → 压到 −6 dB 并在窗口内自己放平；从不在唱 → 全 0', () => {
   const loud = buildDuckEvents({ b: analysis({ activity: curve(1) }), fadeStartBMs: 0, fadeMs: 2000, tempoRate: 1 });
   assert.ok(loud.length > 10);
-  assert.ok(loud[loud.length - 1].db <= -5.5);
+  // 起压是缓坡（420 ms），不是一开口就按到底：前 100 ms 还很浅
+  assert.ok(loud[2].db > -1.5, `起压太快：${loud[2].db}`);
+  // 但中段要压到位，最后一段自己回 0 dB（不再一路压到窗口边界等旁路）
+  assert.ok(Math.min(...loud.map((e) => e.db)) <= -5.5);
+  assert.ok(Math.abs(loud[loud.length - 1].db) < 0.2, `收尾没放平：${loud[loud.length - 1].db}`);
   assert.ok(loud.every((e) => e.db <= 0 && e.db >= -6));
 
   const quiet = buildDuckEvents({ b: analysis({ activity: curve(0) }), fadeStartBMs: 0, fadeMs: 2000, tempoRate: 1 });
