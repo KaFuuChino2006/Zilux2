@@ -81,16 +81,45 @@ export const resolveTemperaGlyphMotion = (
     glyph: TemperaGlyphMotionInput,
     time: number,
     motion: number,
+    entryTime?: (progress: number) => number,
+    enterStyle?: TemperaEnterStyle,
+    entryMotion?: {delay: number; duration: number},
 ): TemperaGlyphMotionFrame => {
+    const style = enterStyle ?? glyph.enterStyle;
     const window = Math.max(glyph.settleTime - glyph.startTime, 0.08);
-    const linear = clamp01((time - glyph.startTime) / window);
-    const travel = 1 - easeTemperaEnter(linear);
+    const elapsed = time - glyph.startTime;
+    const entryElapsed = entryTime && elapsed > 0 && elapsed < window
+        ? window * entryTime(elapsed / window) : elapsed;
+    const linear = clamp01(entryElapsed / window);
+    const excess = entryTime && elapsed > 0 && elapsed < window ? entryElapsed / window - linear : 0;
+    // 文闪的「入场延后 / 收束时长」不能只推迟放大收束：位移和旋转也要一起延后、拉长，
+    // 否则七种逐字入场会在闪烁那 0.3 秒里一闪而过，看起来只剩从大到小。
+    const moveDelay = entryMotion ? Math.max(0, entryMotion.delay) : 0;
+    const moveDuration = entryMotion ? Math.max(0.08, entryMotion.duration) : 0;
+    const moveElapsed = entryMotion ? elapsed - moveDelay : 0;
+    const moveLinear = entryMotion ? clamp01(moveElapsed / moveDuration) : linear;
+    const travel = entryMotion
+        ? 1 - easeTemperaEnter(moveLinear)
+        : 1 - easeTemperaEnter(linear) - excess;
     // The landing spring runs on its own short clock so the overshoot stays a snap.
-    const springLinear = clamp01((time - glyph.startTime) / Math.max(Math.min(window, MAX_SETTLE_SPRING), 0.08));
-    const entrance = resolveTemperaEnterFrame(glyph.enterStyle, glyph, travel, linear, springLinear);
+    const springLinear = entryMotion
+        ? clamp01(moveElapsed / Math.max(Math.min(moveDuration, MAX_SETTLE_SPRING), 0.08))
+        : clamp01(entryElapsed / Math.max(Math.min(window, MAX_SETTLE_SPRING), 0.08));
+    const entrance = resolveTemperaEnterFrame(style, glyph, travel, moveLinear, springLinear);
+    if (!entryMotion && excess && style !== 'stamp') {
+        entrance.scaleX += (1 - glyph.enterScale) * excess;
+        entrance.scaleY += (1 - glyph.enterScale) * excess;
+    }
     // Opacity and the echo run on their own capped window; position and scale keep the full
-    // stretched one, which is what turns a long line into one continuous move.
-    const reveal = clamp01((time - glyph.startTime) / Math.min(window, MAX_REVEAL_WINDOW));
+    // stretched one, which is what turns a long line into one continuous move. When the
+    // entrance is delayed we still reveal on the raw clock, so the glyph is already visible
+    // at its offset while it waits to start moving.
+    const revealElapsed = entryMotion
+        ? Math.max(0, elapsed)
+        : entryTime && elapsed > 0 && elapsed < window ? Math.max(entryElapsed, -entryElapsed) : entryElapsed;
+    const reveal = entryMotion
+        ? clamp01(elapsed / 0.22)
+        : clamp01(revealElapsed / Math.min(window, MAX_REVEAL_WINDOW));
     // Alpha resolves faster than position, so the glyph is readable while it is still moving.
     const alpha = easeTemperaInOut(clamp01(reveal * 2.4));
 
@@ -136,7 +165,8 @@ export const resolveTemperaGlyphMotion = (
         scaleY: entrance.scaleY + (1 - entrance.scaleY) * (1 - amount) + swell,
         echoX: entrance.x * motion,
         echoY: entrance.y * motion,
-        echoAlpha: entrance.echo * (1 - easeTemperaEnter(reveal)) * ECHO_ALPHA * amount,
+        echoAlpha: Math.max(0, entrance.echo)
+            * (1 - easeTemperaEnter(reveal)) * ECHO_ALPHA * amount,
     };
 };
 

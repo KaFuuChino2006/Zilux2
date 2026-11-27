@@ -7,8 +7,9 @@
 import { host } from '../core/bridge';
 import { BlockEntrance } from './blockEntrance';
 import { h, icon, toast } from './dom';
+import { broadcastAppBgMode } from './appBackground';
 import { createSelectControl } from './selectControl';
-import { applyAsset, attachDesktop, cleanStorage, coverUrl, deleteAsset, detachDesktop, fetchAsset, fetchCanvasSettings, fetchLibrary, fetchMonitors, fetchOptions, fetchState, fetchStorage, fetchTags, fmtDuration, fmtResolution, fmtSize, isWallpaperReady, KIND_LABELS, localizeAsset, mediaUrl, nextWallpaper, patchAsset, pauseCanvas, saveCanvasSettings, saveMonitor, scanLibrary, SOURCE_LABELS, sweepMonitor, type CanvasKind, type CanvasPicture, type LibraryQuery, type LibrarySort, type WallpaperAsset, type WallpaperMonitor, type WallpaperOptions, type WallpaperState, type WallpaperTag } from '../wallpaper/client';
+import { applyAsset, attachDesktop, cleanStorage, coverUrl, deleteAsset, detachDesktop, fetchAsset, fetchCanvasSettings, fetchLibrary, fetchMonitors, fetchOptions, fetchState, fetchStorage, fetchTags, fmtDuration, fmtResolution, fmtSize, isWallpaperReady, KIND_LABELS, localizeAsset, mediaUrl, nextWallpaper, patchAsset, pageImmersiveEnabled, pageWallpaperSwitch, patchOptions, pauseCanvas, saveCanvasSettings, saveMonitor, scanLibrary, SOURCE_LABELS, sweepMonitor, type CanvasKind, type CanvasPicture, type LibraryQuery, type LibrarySort, type WallpaperAsset, type WallpaperMonitor, type WallpaperOptions, type WallpaperState, type WallpaperTag } from '../wallpaper/client';
 
 const PAGE_SIZE = 120;
 
@@ -891,12 +892,33 @@ export class WallpaperView {
     });
     cover.append(check);
 
+    // 双击 = 直接把这张素材铺到软件内（等同抽屉里的「应用到软件内」）。
+    // 不能直接依赖 dblclick：第一下 click 会把详情抽屉打开，抽屉是 fixed 384px、
+    // 一开就把列表右侧顶开/盖住，第二下常常落在别的元素上，只有手速特别快才凑得成双击。
+    // 所以改成自己数两次点击：首击延迟 260ms 再开抽屉，第二击在窗口内就取消并应用。
+    let pendingOpen = 0;
+    let lastClick = 0;
+    card.title = asset.missing ? '文件缺失' : '双击应用到软件内';
     card.addEventListener('click', (event) => {
       if (event.ctrlKey || event.metaKey || event.shiftKey) {
         this.toggleSelection(asset.id);
         return;
       }
-      this.openDrawer(asset);
+      if (asset.missing) {
+        this.openDrawer(asset);
+        return;
+      }
+      const now = performance.now();
+      const doubleClick = now - lastClick < 320;
+      lastClick = now;
+      window.clearTimeout(pendingOpen);
+      if (doubleClick) {
+        lastClick = 0;
+        this.closeDrawer();
+        void this.apply(asset, 'inapp');
+        return;
+      }
+      pendingOpen = window.setTimeout(() => this.openDrawer(asset), 260);
     });
     card.addEventListener('dblclick', () => void this.apply(asset));
     card.addEventListener('pointerenter', () => this.startHoverPreview(cover, asset));
@@ -1280,6 +1302,18 @@ export class WallpaperView {
   private async apply(asset: WallpaperAsset, kind: CanvasKind = 'inapp'): Promise<void> {
     try {
       await applyAsset(asset.id, kind);
+      if (kind === 'inapp') {
+        // 应用到软件内 = 用户现在就要看到这张壁纸。以前只落素材，主界面还停在封面/自定义背景上，
+        // 看上去像「应用了没反应」。这里把壁纸开关补齐并把背景模式切到 none（纯壁纸）。
+        const current = await fetchOptions().catch(() => null);
+        const patch: Record<string, boolean> = {};
+        if (current && !current.options.enabled) patch.enabled = true;
+        if (current && !current.options.inAppEnabled) patch.inAppEnabled = true;
+        if (!pageWallpaperSwitch('normal')) patch.pageNormal = true;
+        if (!pageImmersiveEnabled()) patch.pageImmersive = true;
+        if (Object.keys(patch).length) await patchOptions(patch).catch(() => null);
+        broadcastAppBgMode('none');
+      }
       const target = kind === 'desktop' ? '桌面层' : '软件内';
       toast(`已应用「${asset.title || '未命名'}」到${target}`);
       await this.refresh();

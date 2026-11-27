@@ -1,5 +1,7 @@
 import { FLOW_DEFAULTS, type FlowSettings } from './flowSettings';
 
+const DEFAULT_CAMERA_CURVE = () => [1 / 3, 1 / 3, 2 / 3, 2 / 3];
+
 export type OverlapPlacement = 'scatter' | 'grid';
 
 /** 重合舞台的整屏底色：跟随主题（透明，露出封面底）或压成纯黑 / 纯白。 */
@@ -43,6 +45,12 @@ export interface OverlapSettings {
   zoomRest: number;
   zoomSwell: number;
   zoomRelax: number;
+  /** 下一句镜头提前叠加的秒数；只属于重合，0 关闭。 */
+  cameraOverlap: number;
+  /** 重合镜头平移速度曲线；四点贝塞尔，横轴是本句进度。 */
+  cameraCurve: number[];
+  /** 重合镜头缩放速度曲线；四点贝塞尔，横轴是本句进度。 */
+  cameraZoomCurve: number[];
   panSoft: number;
   zoomSoft: number;
   rollSoft: number;
@@ -173,6 +181,9 @@ export const OVERLAP_DEFAULTS: OverlapSettings = {
   zoomRest: 1.35,
   zoomSwell: 0.095,
   zoomRelax: 0.15,
+  cameraOverlap: 0.8,
+  cameraCurve: DEFAULT_CAMERA_CURVE(),
+  cameraZoomCurve: DEFAULT_CAMERA_CURVE(),
   panSoft: 0.6,
   zoomSoft: 0.56,
   rollSoft: 1.0,
@@ -258,7 +269,7 @@ export type OverlapRangeKey =
   | 'lyricTint' | 'keywordGlow'
   | 'sizeScale' | 'fontWeight' | 'glyphMotion' | 'glyphSettleStretch'
   | 'intensity' | 'followGain' | 'zoomRest' | 'zoomSwell' | 'zoomRelax'
-  | 'panSoft' | 'zoomSoft' | 'rollSoft'
+  | 'cameraOverlap' | 'panSoft' | 'zoomSoft' | 'rollSoft'
   | 'turnChance' | 'turnMinDeg' | 'turnMaxDeg'
   | 'scatter' | 'ghostDrift' | 'holdFade' | 'ghostBlur' | 'exitSeconds' | 'trailInk'
   | 'paper' | 'ink' | 'accent' | 'followCover' | 'splitLyrics' | 'sizeScale' | 'lyricTint' | 'keywordGlow' | 'fontWeight' | 'glyphMotion' | 'glyphSettleStretch' | 'intensity' | 'followGain' | 'zoomRest' | 'zoomSwell' | 'zoomRelax' | 'panSoft' | 'zoomSoft' | 'rollSoft' | 'turnChance' | 'turnMinDeg' | 'turnMaxDeg' | 'scatter' | 'ghostDrift' | 'holdFade' | 'ghostBlur' | 'exitSeconds' | 'trailInk' | 'trailChance' | 'bracketChance' | 'bracketCrossChance' | 'mouldChance' | 'fieldChance' | 'fieldStrength' | 'fieldSpeed' | 'fieldLength' | 'shakeChance' | 'shakePx' | 'shakeElastic' | 'shakeX' | 'shakeY' | 'shakeDepth' | 'shakeZ' | 'shakeDamping' | 'shakeRollDeg' | 'shakeAttack' | 'shakeSwing' | 'shakeAt' | 'sealChance' | 'breakChance' | 'underlineChance' | 'arcChance' | 'silhouetteChance' | 'creaseChance' | 'specks' | 'maskChance' | 'gridParallax' | 'gridLens' | 'waveGain' | 'decorAlpha' | 'stagger' | 'showBracket' | 'showSeal' | 'showField' | 'showProgressArc' | 'showMould' | 'showBreak' | 'showArc' | 'showTrail' | 'showHud' | 'rackFocus' | 'dollySplit' | 'handheld' | 'panStreak' | 'settle' | 'lensDistortion' | 'rgbShift' | 'grain' | 'contrast' | 'vignette' | 'showMask' | 'showGrid' | 'showUnderline' | 'showSilhouette' | 'showCrease' | 'showWave' | 'showDebris' | 'showAmbient' | 'ambientRate' | 'dustGain' | 'splashGain' | 'shardGain';
@@ -283,6 +294,7 @@ export const OVERLAP_RANGES: [OverlapRangeKey, string, number, number, number, s
   ['zoomRest', '常驻推近', 1, 1.4, 0.01, '运镜', '画面整体的基础缩放'],
   ['zoomSwell', '句内呼吸', 0, 0.15, 0.005, '运镜', '一句唱到中间时再多推近的量'],
   ['zoomRelax', '间奏回吐', 0, 0.15, 0.005, '运镜', '长间奏时退回广角的量'],
+  ['cameraOverlap', '镜头错帧', 0, 2, 0.05, '运镜', '下一句镜头提前这么久开始叠加；0 表示等上一段结束再换目标'],
   ['panSoft', '平移柔和', 0.1, 1.2, 0.02, '运镜', '换句时平移追上去的时间'],
   ['zoomSoft', '缩放柔和', 0.1, 1.2, 0.02, '运镜', '缩放变化的时间'],
   ['rollSoft', '旋转柔和', 0.3, 2.5, 0.05, '运镜', '旋转归正的时间，越大越慢'],
@@ -374,6 +386,20 @@ export const OVERLAP_SETTINGS_EVENT = 'zilux2:overlap-settings';
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, Number.isFinite(value) ? value : min));
 const color = (value: unknown, fallback: string) => (typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value) ? value.toLowerCase() : fallback);
+const readCurve = (input: unknown): number[] => {
+  if (!Array.isArray(input) || !input.every(Number.isFinite)) return DEFAULT_CAMERA_CURVE();
+  if (input.length === 4) return input.map((v, i) => i % 2 ? Math.max(-1, Math.min(2, v)) : clamp(v, 0, 1));
+  if (input.length === 9) {
+    let aa = 0, ab = 0, bb = 0, ay = 0, by = 0;
+    for (let i = 1; i < 8; i++) {
+      const t = i / 8, a = 3 * t * (1 - t) ** 2, b = 3 * t * t * (1 - t), y = input[i] - t ** 3;
+      aa += a * a; ab += a * b; bb += b * b; ay += a * y; by += b * y;
+    }
+    const det = aa * bb - ab * ab;
+    return [1 / 3, clamp((ay * bb - by * ab) / det, 0, 1), 2 / 3, clamp((by * aa - ay * ab) / det, 0, 1)];
+  }
+  return DEFAULT_CAMERA_CURVE();
+};
 const pick = <K extends keyof OverlapSettings>(input: Partial<OverlapSettings> | null | undefined, key: K, fallback: OverlapSettings[K]): OverlapSettings[K] => {
   const value = input?.[key];
   return (typeof value === typeof fallback ? value : fallback) as OverlapSettings[K];
@@ -385,6 +411,8 @@ export function normalizeOverlapSettings(input: (Partial<OverlapSettings> & { in
   out.paper = color(input?.paper, OVERLAP_DEFAULTS.paper);
   out.ink = color(input?.ink, OVERLAP_DEFAULTS.ink);
   out.accent = color(input?.accent, OVERLAP_DEFAULTS.accent);
+  out.cameraCurve = readCurve(input?.cameraCurve);
+  out.cameraZoomCurve = readCurve(input?.cameraZoomCurve);
   for (const [key, , min, max, step] of OVERLAP_RANGES) {
     const raw = Number(input?.[key]);
     const fallback = Number(OVERLAP_DEFAULTS[key]);
@@ -442,6 +470,32 @@ export function overlapFx(): OverlapSettings {
 
 export function setOverlapFx(settings: OverlapSettings): void {
   live = normalizeOverlapSettings(settings);
+}
+
+function cameraCurveSpeed(curve: number[], t: number): number {
+  const [x1, y1, x2, y2] = curve;
+  const at = clamp(t, 0, 1);
+  const cubic = (s: number, a: number, b: number) => s * (3 * (1 - s) * ((1 - s) * a + s * b) + s * s);
+  let low = 0, high = 1;
+  for (let i = 0; i < 16; i++) {
+    const mid = (low + high) / 2;
+    if (cubic(mid, x1, x2) < at) low = mid; else high = mid;
+  }
+  const s = (low + high) / 2;
+  const dx = 3 * (1 - s) * (1 - s) * x1 + 6 * (1 - s) * s * (x2 - x1) + 3 * s * s * (1 - x2);
+  const dy = 3 * (1 - s) * (1 - s) * y1 + 6 * (1 - s) * s * (y2 - y1) + 3 * s * s * (1 - y2);
+  if (dx <= 1e-4) return 1;
+  return Math.max(0.35, Math.min(2, dy / dx));
+}
+
+/** 重合镜头平移速度：与文闪同一套贝塞尔斜率算法，但读重合自己的曲线。 */
+export function overlapCameraSpeed(t: number): number {
+  return cameraCurveSpeed(overlapFx().cameraCurve, t);
+}
+
+/** 重合镜头缩放速度：读重合自己的缩放曲线。 */
+export function overlapCameraZoomSpeed(t: number): number {
+  return Math.max(0.25, Math.min(2.5, Math.pow(cameraCurveSpeed(overlapFx().cameraZoomCurve, t), 1.6)));
 }
 
 /** FlowSettings view of the same settings, with the overlap-only numbers folded in. */

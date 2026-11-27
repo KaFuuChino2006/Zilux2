@@ -8,6 +8,7 @@ import {
     type TemperaMeasureContext,
     type TemperaWordUnit,
 } from './temperaMeasure';
+import type { WenflashLineDirection, WenflashLineDirectionMode } from '../../../../wenflashSettings';
 
 // @note Version Control: Project Folia version 0.6.13-750617
 
@@ -16,6 +17,19 @@ import {
 // pretext, packed into ragged rows inside the shot's region, then each row and word gets a
 // seeded indent / baseline shift / rotation. The result keeps a readable reading order while
 // looking assembled rather than typed.
+export type TemperaTextArrangement = 'horizontal' | 'vertical' | 'graphic';
+export type TemperaGraphicShape = 'ring' | 'wave' | 'burst';
+
+/** 文闪的排列选择；`mixed` 按歌词行交替横排/竖排。 */
+export const resolveTemperaArrangement = (
+    arrangement: TemperaTextArrangement | 'mixed',
+    lineIndex: number,
+): TemperaTextArrangement => (
+    arrangement === 'mixed'
+        ? (lineIndex % 2 === 0 ? 'horizontal' : 'vertical')
+        : arrangement
+);
+
 export interface TemperaGlyphPlacement {
     /** Per-glyph base ink (a wash along the line); keyword `color` still wins over it. */
     tint?: string | null;
@@ -25,6 +39,8 @@ export interface TemperaGlyphPlacement {
     segmentIndex: number;
     x: number;
     y: number;
+    /** Measured ink advance of this glyph at its laid-out font size. */
+    width: number;
     rotation: number;
     startTime: number;
     endTime: number;
@@ -44,9 +60,24 @@ export interface TemperaGlyphPlacement {
     trackingY: number;
 }
 
+export interface TemperaLineAnchor {
+    /** Last glyph's left edge / bottom edge; keeps the original downward chain exact. */
+    left: number;
+    bottom: number;
+    /** Full line box, used by the 8-way direction chain to avoid overlapping the previous line. */
+    lineLeft: number;
+    lineRight: number;
+    lineTop: number;
+    lineBottom: number;
+    centerX: number;
+    centerY: number;
+    fontSize: number;
+}
+
 interface TemperaLayoutOptions {
     /** Segments per lyric line of the shot; each inner array is one lyric line. */
     lines: TemperaSegment[][];
+    centered?: boolean;
     shotKind: TemperaShotKind;
     width: number;
     height: number;
@@ -58,6 +89,20 @@ interface TemperaLayoutOptions {
     segmentColors?: (string | null)[][];
     /** 0..1 entrance pacing; see SETTLE_STRETCH. Defaults to the balanced middle. */
     settleStretch?: number;
+    /** 文闪: horizontal is the collage rows; vertical stacks each lyric line into a column. */
+    arrangement?: TemperaTextArrangement;
+    /** 文闪图形档的轨迹。 */
+    graphicShape?: TemperaGraphicShape;
+    /** 文闪链式排版：每句作为整体，下一句接上一句末字。 */
+    chained?: boolean;
+    /** 上一句最后一个字的左边缘与底边；首句为 null。 */
+    previousLineAnchor?: TemperaLineAnchor | null;
+    /** 文闪链式排版的落点：跟随上一句、按 8 方向接续，或落在画面内的随机位置。 */
+    linePlacement?: 'follow' | 'direction' | 'random';
+    /** `direction` 档的固定方向。 */
+    lineDirection?: WenflashLineDirection;
+    /** `direction` 档的方向演变：固定 / 每句顺时针转 45° / 按句种子随机。 */
+    lineDirectionMode?: WenflashLineDirectionMode;
 }
 
 interface LayoutRegion {
@@ -255,6 +300,481 @@ const applyGlyphTiming = (placements: TemperaGlyphPlacement[], settleStretch: nu
     return placements;
 };
 
+
+interface TemperaFlowGlyph {
+    char: string;
+    startTime: number;
+    endTime: number;
+    lineIndex: number;
+    segmentIndex: number;
+    color: string | null;
+    width: number;
+}
+
+/** Measures one lyric line and returns its drawable glyphs in reading order. */
+const collectTemperaLineGlyphs = (
+    ctx: TemperaMeasureContext,
+    segments: TemperaSegment[],
+    lineIndex: number,
+    fontSize: number,
+    segmentColors?: (string | null)[][],
+): TemperaFlowGlyph[] => segments.flatMap((segment, segmentIndex) => {
+    const unit = buildTemperaWordUnit(ctx, segment, lineIndex, segmentIndex, fontSize, 1);
+    if (!unit) return [];
+    const color = segmentColors?.[lineIndex]?.[segmentIndex] ?? null;
+    return unit.glyphs
+        .filter(glyph => glyph.char.trim().length > 0)
+        .map(glyph => ({
+            char: glyph.char,
+            startTime: glyph.startTime,
+            endTime: glyph.endTime,
+            lineIndex,
+            segmentIndex,
+            color,
+            width: glyph.width,
+        }));
+});
+
+const resolveFlowEntrance = (
+    shotKind: TemperaShotKind,
+    fontSize: number,
+    seed: number,
+    salt: number,
+) => {
+    const base = resolveEnterVector(shotKind, fontSize);
+    const baseAngle = Math.atan2(base.y, base.x);
+    const baseMagnitude = Math.hypot(base.x, base.y);
+    const spread = (temperaHash01(seed, salt, 149) - 0.5) * 1.7;
+    const magnitude = baseMagnitude * (0.55 + temperaHash01(seed, salt, 151) * 1.05);
+    const angle = baseAngle + spread;
+    return {
+        enterX: Math.cos(angle) * magnitude,
+        enterY: Math.sin(angle) * magnitude,
+        enterRotation: (temperaHash01(seed, salt, 157) - 0.5) * 0.7,
+        enterScale: 0.6 + temperaHash01(seed, salt, 163) * 0.3,
+        enterStyle: TEMPERA_ENTER_STYLES[
+            Math.floor(temperaHash01(seed, salt, 193) * TEMPERA_ENTER_STYLES.length)
+            % TEMPERA_ENTER_STYLES.length
+        ],
+    };
+};
+
+const pushFlowPlacement = (
+    placements: TemperaGlyphPlacement[],
+    input: Omit<TemperaGlyphPlacement, 'settleTime' | 'releaseTime' | 'trackingX' | 'trackingY'>,
+) => {
+    placements.push({
+        ...input,
+        settleTime: input.endTime,
+        releaseTime: 0,
+        trackingX: 0,
+        trackingY: 0,
+    });
+};
+
+/** 竖排：每行歌词成一列，字自上而下落位；列序仍按阅读顺序从左到右。 */
+const layoutVerticalFlow = (options: {
+    lines: TemperaSegment[][];
+    ctx: TemperaMeasureContext;
+    baseFontSize: number;
+    shotKind: TemperaShotKind;
+    seed: number;
+    segmentColors?: (string | null)[][];
+    width: number;
+    height: number;
+    centerX: number;
+    centerY: number;
+}): TemperaGlyphPlacement[] => {
+    const active = options.lines
+        .map((segments, lineIndex) => ({ segments, lineIndex }))
+        .filter(entry => entry.segments.some(isTemperaLayoutSegment));
+    if (active.length === 0) return [];
+    const counts = active.map(entry => entry.segments.reduce(
+        (sum, segment) => sum + segment.graphemes.filter(grapheme => grapheme.char.trim().length > 0).length,
+        0,
+    ));
+    const maxCount = Math.max(1, ...counts);
+    const areaWidth = options.width * 0.78;
+    const areaHeight = options.height * 0.74;
+    const fontSize = Math.max(18, Math.min(
+        options.baseFontSize,
+        areaHeight * 0.94 / Math.max(1, maxCount * 1.06),
+        areaWidth * 0.94 / Math.max(1, active.length * 1.16),
+    ));
+    const columnGap = fontSize * 1.16;
+    const totalWidth = (active.length - 1) * columnGap;
+    const placements: TemperaGlyphPlacement[] = [];
+    active.forEach((entry, columnIndex) => {
+        const glyphs = collectTemperaLineGlyphs(
+            options.ctx,
+            entry.segments,
+            columnIndex,
+            fontSize,
+            options.segmentColors,
+        );
+        if (glyphs.length === 0) return;
+        const advance = fontSize * 1.06;
+        const totalHeight = glyphs.length * advance;
+        const x = options.centerX - totalWidth / 2 + columnIndex * columnGap;
+        let y = options.centerY - totalHeight / 2 + fontSize * 0.53;
+        glyphs.forEach((glyph, glyphIndex) => {
+            const entrance = resolveFlowEntrance(
+                options.shotKind,
+                fontSize,
+                options.seed,
+                entry.lineIndex * 997 + glyphIndex * 37 + 7,
+            );
+            pushFlowPlacement(placements, {
+                char: glyph.char,
+                rowIndex: columnIndex,
+                lineIndex: columnIndex,
+                segmentIndex: glyph.segmentIndex,
+                x,
+                y,
+                width: glyph.width,
+                rotation: 0,
+                startTime: glyph.startTime,
+                endTime: glyph.endTime,
+                fontSize,
+                color: glyph.color,
+                ...entrance,
+            });
+            y += advance;
+        });
+    });
+    return placements;
+};
+
+/** 图形档：把整句字沿环形、波浪或放射轨迹排开，字仍按歌词时钟逐个落位。 */
+const layoutGraphicFlow = (options: {
+    lines: TemperaSegment[][];
+    ctx: TemperaMeasureContext;
+    baseFontSize: number;
+    shotKind: TemperaShotKind;
+    seed: number;
+    segmentColors?: (string | null)[][];
+    width: number;
+    height: number;
+    centerX: number;
+    centerY: number;
+    shape: TemperaGraphicShape;
+}): TemperaGlyphPlacement[] => {
+    const count = options.lines.reduce((total, segments) => total + segments.reduce(
+        (sum, segment) => sum + segment.graphemes.filter(grapheme => grapheme.char.trim().length > 0).length,
+        0,
+    ), 0);
+    if (count === 0) return [];
+    const areaWidth = options.width * 0.8;
+    const areaHeight = options.height * 0.76;
+    const minDim = Math.min(areaWidth, areaHeight);
+    let fontSize = Math.min(options.baseFontSize, areaHeight * 0.18);
+    if (options.shape === 'ring') {
+        fontSize = Math.min(
+            fontSize,
+            (Math.PI * 2 * minDim * 0.33) / Math.max(1, count) * 0.92,
+        );
+    } else if (options.shape === 'wave') {
+        fontSize = Math.min(
+            fontSize,
+            (areaWidth * 0.76) / Math.max(1, count) * 0.92,
+        );
+    } else {
+        const spokes = Math.min(6, Math.max(3, Math.ceil(count / 4)));
+        const perSpoke = Math.ceil(count / spokes);
+        const startR = minDim * 0.10;
+        const maxR = minDim * 0.36;
+        const stepR = perSpoke > 1 ? (maxR - startR) / (perSpoke - 1) : maxR * 0.2;
+        fontSize = Math.min(fontSize, stepR * 0.82);
+    }
+    fontSize = Math.max(18, fontSize);
+    const glyphs = options.lines.flatMap((segments, lineIndex) => collectTemperaLineGlyphs(
+        options.ctx,
+        segments,
+        lineIndex,
+        fontSize,
+        options.segmentColors,
+    ));
+    const n = glyphs.length;
+    const placements: TemperaGlyphPlacement[] = [];
+    const spokes = Math.min(6, Math.max(3, Math.ceil(n / 4)));
+    const perSpoke = Math.ceil(n / spokes);
+    const startR = minDim * 0.10;
+    const maxR = minDim * 0.36;
+    const stepR = perSpoke > 1 ? (maxR - startR) / (perSpoke - 1) : 0;
+    glyphs.forEach((glyph, index) => {
+        let x = options.centerX;
+        let y = options.centerY;
+        let rotation = 0;
+        if (n > 1 && options.shape === 'ring') {
+            const angle = -Math.PI / 2 + (index / n) * Math.PI * 2;
+            const radius = minDim * 0.33;
+            x = options.centerX + Math.cos(angle) * radius;
+            y = options.centerY + Math.sin(angle) * radius;
+            // 保持字正立，只随环切线轻微倾斜；整字旋转会让下半圈倒过来。
+            rotation = Math.sin(angle) * 0.18;
+        } else if (n > 1 && options.shape === 'wave') {
+            const span = areaWidth * 0.76;
+            const phase = (index / (n - 1)) * Math.PI * 2 * 1.15;
+            x = options.centerX - span / 2 + (index / (n - 1)) * span;
+            y = options.centerY + Math.sin(phase) * Math.min(areaHeight * 0.14, span * 0.09);
+            rotation = Math.cos(phase) * 0.16;
+        } else if (n > 1) {
+            const spoke = index % spokes;
+            const ring = Math.floor(index / spokes);
+            const angle = -Math.PI / 2 + (spoke / spokes) * Math.PI * 2;
+            const radius = startR + ring * stepR;
+            x = options.centerX + Math.cos(angle) * radius;
+            y = options.centerY + Math.sin(angle) * radius;
+            // 放射只负责位置，字仍保持正立，避免下半圈倒字。
+            rotation = Math.sin(angle) * 0.12;
+        }
+        const entrance = resolveFlowEntrance(options.shotKind, fontSize, options.seed, index * 991 + 7);
+        pushFlowPlacement(placements, {
+            char: glyph.char,
+            rowIndex: 0,
+            lineIndex: glyph.lineIndex,
+            segmentIndex: glyph.segmentIndex,
+            x,
+            y,
+            width: glyph.width,
+            rotation,
+            startTime: glyph.startTime,
+            endTime: glyph.endTime,
+            fontSize,
+            color: glyph.color,
+            ...entrance,
+        });
+    });
+    return placements;
+};
+
+const LINE_DIRECTIONS: WenflashLineDirection[] = [
+    'south', 'southeast', 'east', 'northeast', 'north', 'northwest', 'west', 'southwest',
+];
+
+const resolveChainedDirection = (
+    options: {
+        seed: number;
+        lineDirection?: WenflashLineDirection;
+        lineDirectionMode?: WenflashLineDirectionMode;
+    },
+    lineOrdinal: number,
+    lineClock: number,
+): WenflashLineDirection => {
+    const base = Math.max(0, LINE_DIRECTIONS.indexOf(options.lineDirection ?? 'south'));
+    if (options.lineDirectionMode === 'rotate') {
+        return LINE_DIRECTIONS[(base + lineOrdinal) % LINE_DIRECTIONS.length];
+    }
+    if (options.lineDirectionMode === 'random') {
+        const salt = lineClock * 17 + lineOrdinal * 131 + 29;
+        return LINE_DIRECTIONS[Math.floor(temperaHash01(options.seed, salt, 251) * LINE_DIRECTIONS.length)];
+    }
+    return LINE_DIRECTIONS[base];
+};
+
+/**
+ * 文闪链式排版：一整句保持为一个整体，下一句的首字接在上一句末字的左边缘下方。
+ * 不换行、不缩放适配屏幕；每句唱完/出画面都由舞台裁切，不做摄像机跟随。
+ */
+const layoutChainedFlow = (options: {
+    lines: TemperaSegment[][];
+    ctx: TemperaMeasureContext;
+    baseFontSize: number;
+    shotKind: TemperaShotKind;
+    seed: number;
+    segmentColors?: (string | null)[][];
+    width: number;
+    height: number;
+    direction: 'horizontal' | 'vertical';
+    previousLineAnchor?: TemperaLineAnchor | null;
+    linePlacement?: 'follow' | 'direction' | 'random';
+    lineDirection?: WenflashLineDirection;
+    lineDirectionMode?: WenflashLineDirectionMode;
+}): TemperaGlyphPlacement[] => {
+    const active = options.lines
+        .map((segments, lineIndex) => ({segments, lineIndex}))
+        .filter(entry => entry.segments.some(isTemperaLayoutSegment));
+    if (active.length === 0) return [];
+
+    const placements: TemperaGlyphPlacement[] = [];
+    let anchor = options.previousLineAnchor ?? null;
+    active.forEach((entry, lineOrdinal) => {
+        const glyphs = collectTemperaLineGlyphs(
+            options.ctx,
+            entry.segments,
+            entry.lineIndex,
+            options.baseFontSize,
+            options.segmentColors,
+        );
+        if (glyphs.length === 0) return;
+
+        const fontSize = options.baseFontSize;
+        const gap = Math.max(2, fontSize * 0.18);
+        const totalWidth = glyphs.reduce((sum, glyph) => sum + glyph.width, 0);
+        const totalHeight = glyphs.length * fontSize * 1.06;
+        let cursorX: number;
+        let cursorY: number;
+        const randomPlacement = options.linePlacement === 'random';
+        const directionPlacement = options.linePlacement === 'direction';
+        if (randomPlacement) {
+            // 每句落在画面内的随机位置；用句子的绝对时间做盐，保证整首歌每一句都不同，
+            // 又不会因为分镜重建、拖动或重播而跳位。仅靠行号的话每个镜头都从 0 开始，
+            // 整首只会重复那几个点。
+            const margin = Math.max(16, fontSize * 0.45);
+            const lineClock = Math.round((glyphs[0]?.startTime ?? 0) * 1000);
+            const salt = lineClock * 31 + entry.lineIndex * 131 + lineOrdinal * 541;
+            if (options.direction === 'horizontal') {
+                const spanX = Math.max(0, options.width - totalWidth - margin * 2);
+                const spanY = Math.max(0, options.height - fontSize - margin * 2);
+                cursorX = margin + temperaHash01(options.seed, salt, 211) * spanX;
+                cursorY = margin + fontSize / 2 + temperaHash01(options.seed, salt, 223) * spanY;
+            } else {
+                const spanX = Math.max(0, options.width - fontSize - margin * 2);
+                const spanY = Math.max(0, options.height - totalHeight - margin * 2);
+                cursorX = margin + fontSize / 2 + temperaHash01(options.seed, salt, 227) * spanX;
+                cursorY = margin + fontSize / 2 + temperaHash01(options.seed, salt, 229) * spanY;
+            }
+        } else if (directionPlacement && anchor) {
+            const lineClock = Math.round((glyphs[0]?.startTime ?? 0) * 1000);
+            const direction = resolveChainedDirection(options, lineOrdinal, lineClock);
+            if (options.direction === 'horizontal') {
+                switch (direction) {
+                    case 'north':
+                        cursorX = anchor.left;
+                        cursorY = anchor.lineTop - gap - fontSize / 2;
+                        break;
+                    case 'northeast':
+                        cursorX = anchor.lineRight + gap;
+                        cursorY = anchor.lineTop - gap - fontSize / 2;
+                        break;
+                    case 'east':
+                        cursorX = anchor.lineRight + gap;
+                        cursorY = anchor.centerY;
+                        break;
+                    case 'southeast':
+                        cursorX = anchor.lineRight + gap;
+                        cursorY = anchor.lineBottom + gap + fontSize / 2;
+                        break;
+                    case 'south':
+                        cursorX = anchor.left;
+                        cursorY = anchor.bottom + gap + fontSize / 2;
+                        break;
+                    case 'southwest':
+                        cursorX = anchor.lineLeft - gap - totalWidth;
+                        cursorY = anchor.lineBottom + gap + fontSize / 2;
+                        break;
+                    case 'west':
+                        cursorX = anchor.lineLeft - gap - totalWidth;
+                        cursorY = anchor.centerY;
+                        break;
+                    default:
+                        cursorX = anchor.lineLeft - gap - totalWidth;
+                        cursorY = anchor.lineTop - gap - fontSize / 2;
+                        break;
+                }
+            } else {
+                switch (direction) {
+                    case 'north':
+                        cursorX = anchor.left;
+                        cursorY = anchor.lineTop - gap - totalHeight + fontSize / 2;
+                        break;
+                    case 'northeast':
+                        cursorX = anchor.lineRight + gap;
+                        cursorY = anchor.lineTop - gap - totalHeight + fontSize / 2;
+                        break;
+                    case 'east':
+                        cursorX = anchor.lineRight + gap;
+                        cursorY = anchor.centerY - totalHeight / 2 + fontSize / 2;
+                        break;
+                    case 'southeast':
+                        cursorX = anchor.lineRight + gap;
+                        cursorY = anchor.lineBottom + gap + fontSize / 2;
+                        break;
+                    case 'south':
+                        cursorX = anchor.left;
+                        cursorY = anchor.bottom + gap + fontSize / 2;
+                        break;
+                    case 'southwest':
+                        cursorX = anchor.lineLeft - gap - fontSize;
+                        cursorY = anchor.lineBottom + gap + fontSize / 2;
+                        break;
+                    case 'west':
+                        cursorX = anchor.lineLeft - gap - fontSize;
+                        cursorY = anchor.centerY - totalHeight / 2 + fontSize / 2;
+                        break;
+                    default:
+                        cursorX = anchor.lineLeft - gap - fontSize;
+                        cursorY = anchor.lineTop - gap - totalHeight + fontSize / 2;
+                        break;
+                }
+            }
+        } else if (anchor) {
+            cursorX = anchor.left;
+            cursorY = anchor.bottom + gap + fontSize / 2;
+        } else if (options.direction === 'horizontal') {
+            cursorX = options.width / 2 - totalWidth / 2;
+            cursorY = options.height / 2;
+        } else {
+            cursorX = options.width / 2;
+            cursorY = options.height / 2 - totalHeight / 2 + fontSize / 2;
+        }
+
+        let lastX = cursorX;
+        let lastY = cursorY;
+        let lineLeft = Number.POSITIVE_INFINITY;
+        let lineRight = Number.NEGATIVE_INFINITY;
+        let lineTop = Number.POSITIVE_INFINITY;
+        let lineBottom = Number.NEGATIVE_INFINITY;
+        const columnCenterX = cursorX + glyphs[0].width / 2;
+        glyphs.forEach((glyph, glyphIndex) => {
+            const entrance = resolveFlowEntrance(
+                options.shotKind,
+                fontSize,
+                options.seed,
+                entry.lineIndex * 997 + glyphIndex * 37 + 7,
+            );
+            const x = options.direction === 'horizontal' ? cursorX + glyph.width / 2 : columnCenterX;
+            const y = options.direction === 'horizontal' ? cursorY : cursorY + glyphIndex * fontSize * 1.06;
+            pushFlowPlacement(placements, {
+                char: glyph.char,
+                rowIndex: lineOrdinal,
+                lineIndex: glyph.lineIndex,
+                segmentIndex: glyph.segmentIndex,
+                x,
+                y,
+                width: glyph.width,
+                rotation: 0,
+                startTime: glyph.startTime,
+                endTime: glyph.endTime,
+                fontSize,
+                color: glyph.color,
+                ...entrance,
+            });
+            if (options.direction === 'horizontal') cursorX += glyph.width;
+            lastX = x;
+            lastY = y;
+            lineLeft = Math.min(lineLeft, x - glyph.width / 2);
+            lineRight = Math.max(lineRight, x + glyph.width / 2);
+            lineTop = Math.min(lineTop, y - fontSize / 2);
+            lineBottom = Math.max(lineBottom, y + fontSize / 2);
+        });
+
+        const last = glyphs[glyphs.length - 1];
+        anchor = {
+            left: lastX - last.width / 2,
+            bottom: lastY + fontSize / 2,
+            lineLeft,
+            lineRight,
+            lineTop,
+            lineBottom,
+            centerX: (lineLeft + lineRight) / 2,
+            centerY: (lineTop + lineBottom) / 2,
+            fontSize,
+        };
+    });
+    return placements;
+};
+
 export const resolveTemperaLayout = ({
     lines,
     shotKind,
@@ -265,10 +785,51 @@ export const resolveTemperaLayout = ({
     fontWeight,
     seed,
     segmentColors,
+    centered = false,
     settleStretch = DEFAULT_SETTLE_STRETCH,
+    arrangement = 'horizontal',
+    graphicShape = 'ring',
+    chained = false,
+    previousLineAnchor = null,
+    linePlacement = 'follow',
+    lineDirection = 'south',
+    lineDirectionMode = 'fixed',
 }: TemperaLayoutOptions): TemperaGlyphPlacement[] => {
     const region = resolveRegion(shotKind, width, height);
+    if (centered) Object.assign(region, {centerX: width / 2, centerY: height / 2, width: width * 0.82, align: 'center'});
     const ctx = createTemperaMeasureContext(fontFamily, fontWeight);
+    const areaFontSize = baseFontSize * region.fontScale;
+
+    if (chained && arrangement !== 'graphic') {
+        return applyGlyphTiming(layoutChainedFlow({
+            lines,
+            ctx,
+            baseFontSize: areaFontSize,
+            shotKind,
+            seed,
+            segmentColors,
+            width,
+            height,
+            direction: arrangement,
+            previousLineAnchor,
+            linePlacement,
+            lineDirection,
+            lineDirectionMode,
+        }), settleStretch);
+    }
+
+    if (arrangement !== 'horizontal') {
+        const flowPlacements = arrangement === 'vertical'
+            ? layoutVerticalFlow({
+                lines, ctx, baseFontSize: areaFontSize, shotKind, seed, segmentColors,
+                width, height, centerX: region.centerX, centerY: region.centerY,
+            })
+            : layoutGraphicFlow({
+                lines, ctx, baseFontSize: areaFontSize, shotKind, seed, segmentColors,
+                width, height, centerX: region.centerX, centerY: region.centerY, shape: graphicShape,
+            });
+        return applyGlyphTiming(flowPlacements, settleStretch);
+    }
 
     // Fit loop: shrink until the packed rows sit inside the region.
     let fontSize = Math.max(14, baseFontSize * region.fontScale);
@@ -302,8 +863,8 @@ export const resolveTemperaLayout = ({
         const rowCenterY = cursorY + row.height / 2;
         cursorY += row.height;
         // Rows stagger horizontally and tilt slightly; that is the layered collage read.
-        const drift = (temperaHash01(seed, rowIndex, 127) - 0.5) * region.width * 0.06;
-        const rowRotation = (temperaHash01(seed, rowIndex, 131) - 0.5) * 0.06;
+        const drift = centered ? 0 : (temperaHash01(seed, rowIndex, 127) - 0.5) * region.width * 0.06;
+        const rowRotation = centered ? 0 : (temperaHash01(seed, rowIndex, 131) - 0.5) * 0.06;
         const rowLeft = region.align === 'center'
             ? region.centerX - row.width / 2 + drift
             : region.align === 'left'
@@ -354,6 +915,7 @@ export const resolveTemperaLayout = ({
                     segmentIndex: word.segmentIndex,
                     x: finalPoint.x,
                     y: finalPoint.y,
+                    width: glyph.width,
                     rotation: region.rotation + rowRotation + wordRotation,
                     startTime: glyph.startTime,
                     endTime: glyph.endTime,

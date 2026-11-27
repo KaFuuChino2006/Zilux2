@@ -19,9 +19,12 @@ import { flowSongSignature } from './flowHandoff';
 import { extractLyricKeywords } from './keywords';
 import { createFlowCountdown } from './flowCountdown';
 import { perfEvent, perfMark, perfMarkSlow, perfOn } from './perfProbe';
+import { currentWenflashSettings, wenflashArrangement, wenflashPhraseSize, wenflashRenderFps, type WenflashLyrics } from './wenflashSettings';
+
+type FlowSceneStyle = FlowSettings & { wenflashLayout?: WenflashLyrics };
 
 /** Folia v0.7.21 Tempera, with only Zilux's millisecond clock and lyric model adapted. */
-export function createFlowScene(onPainted?: () => void, onError?: (error: unknown) => void, recordUsage = true, fixedStyle?: FlowSettings) {
+export function createFlowScene(onPainted?: () => void, onError?: (error: unknown) => void, recordUsage = true, fixedStyle?: FlowSceneStyle, glyphsOnly = false) {
   const root = document.createElement('div');
   root.className = 'zl-flow-scene';
   root.style.cssText = 'position:absolute;inset:0;overflow:hidden';
@@ -38,6 +41,9 @@ export function createFlowScene(onPainted?: () => void, onError?: (error: unknow
   const themeSignature=(value:Theme):string=>[value.backgroundColor,value.primaryColor,value.accentColor,value.secondaryColor,value.fontStyle,value.fontFamily??'',value.fontFamilyStack?.join(',')??'',value.fontWeight??'',value.animationIntensity,(value.wordColors??[]).map(word=>`${word.word}:${word.color}`).join(',')].join('|');
   let themeKey=themeSignature(theme);
   let style=fixedStyle ?? flowSettings();
+  // 文闪的「整句 / 拆分 / 混合」不进入 FlowSettings（它只影响文闪），随样式一起带进来；
+  // setStyle 会先取这个字段再 normalize，避免 normalize 把扩展字段洗掉。
+  let wenflashLyrics: WenflashLyrics | undefined = fixedStyle?.wenflashLayout;
   let coverColors:string[]=[];
   // flowTuning() 每次都返回新对象，直接传给 setTuning 等于每次 applySong 都强制重跑整套
   // 调音（重建印刷滤镜链、遍历所有场景换图池、暂停态还要多画一帧）。设置没换就复用同一份。
@@ -52,6 +58,7 @@ export function createFlowScene(onPainted?: () => void, onError?: (error: unknow
   let dirty=false, scheduled=0;
   let disposed = false, revision = 0;
   let lastTime = 0;
+  let lastPaintAt = 0;
   let starting: Promise<void> | null = null;
   let appliedRevision=-1;
   let compiledShots:TemperaShot[]=[];
@@ -86,7 +93,16 @@ export function createFlowScene(onPainted?: () => void, onError?: (error: unknow
       for (let i = 0; i < 60; i++) lines.push({ id: `virtual-block-${i}`, startTime: i * 8, endTime: i * 8 + 6, fullText: '♪', words: [], isChorus: false });
     }
     const compileStart = performance.now();
-    const program=compileTemperaProgram(lines,song?.trackKey||'tempera',{wholeLineLyrics:style.wholeLineLyrics});
+    const lyricsLayout = glyphsOnly
+      ? (wenflashLyrics ?? (style.wholeLineLyrics ? 'whole' : 'split'))
+      : undefined;
+    const program=compileTemperaProgram(lines,song?.trackKey||'tempera',glyphsOnly ? {
+      wholeLineLyrics:style.wholeLineLyrics,
+      shortPhrases: lyricsLayout !== 'whole',
+      mixedPhrases: lyricsLayout === 'mixed',
+      glyphOrder: currentWenflashSettings().order,
+      phraseSize: wenflashPhraseSize(),
+    } : {wholeLineLyrics:style.wholeLineLyrics});
     if (localStorage.getItem('zilux2.perf') === '1') console.debug('[perf] compile', Math.round(performance.now() - compileStart), 'ms, shots', program.paragraphs.reduce((n, p) => n + p.shots.length, 0));
     if (fixedStyle) {
       // Overlap keeps a line on screen until the line two further down starts. With split
@@ -96,9 +112,20 @@ export function createFlowScene(onPainted?: () => void, onError?: (error: unknow
       const lyrics = program.paragraphs.flatMap(p => p.shots).filter(shot => !shot.isBridge && shot.slices.length);
       lyrics.forEach((shot, index) => {
         const next = lyrics[index + 2];
-        shot.holdUntil = next?.startTime ?? lyrics[lyrics.length - 1].lyricEndTime;
+        const nextLyric = lyrics[index + 1];
+        // 文闪：当前句唱完后，等下一句真正出现再等 0.5 秒才进入退场；最后一句没有下一句，
+        // 就按自己的 lyricEndTime 再等 0.5 秒。holdUntil 与 exitAt 对齐，保证旧舞台在
+        // 这 0.5 秒等待期间仍然可见，退场闪烁和淡出也有足够时间播完。
+        const exitAt = nextLyric
+          ? Math.max(shot.lyricEndTime, nextLyric.startTime + 0.5)
+          : shot.lyricEndTime + 0.5;
+        shot.holdUntil = glyphsOnly
+          ? exitAt
+          : next?.startTime ?? lyrics[lyrics.length - 1].lyricEndTime;
+        if (glyphsOnly) shot.exitAt = exitAt;
         // 退场分两段：下一句进来时先「散开」（停在散开的位置不动），下下句进来时才真正消散。
-        shot.scatterAt = lyrics[index + 1]?.startTime ?? shot.endTime;
+        // 文闪不散开：holdUntil 只负责让舞台活到退场闪烁播完，真正的退场起点在 shot.exitAt。
+        if (!glyphsOnly) shot.scatterAt = lyrics[index + 1]?.startTime ?? shot.endTime;
       });
     }
     const seed=`${runSeed}:${song?.trackKey||'tempera'}`;
@@ -191,6 +218,7 @@ export function createFlowScene(onPainted?: () => void, onError?: (error: unknow
     if (!disposed&&applyingRevision===revision) {
       const paintStart=perfOn()?performance.now():0;
       runtime.renderOnce();
+      lastPaintAt=performance.now();
       if(paintStart)perfMark('flow.renderOnce',paintStart);
       appliedRevision=revision;
     }
@@ -208,7 +236,7 @@ export function createFlowScene(onPainted?: () => void, onError?: (error: unknow
         tuning: tuning(), currentTime: clock,
         lyricsFontScale: 1, staticMode: false, coverColors,
         // The host drives renderOnce from the player's clock; don't run a second Pixi ticker.
-        lyricsOnly: !!fixedStyle, paused: true, songTitle: song?.title, songArtist: song?.artist, songAlbum: song?.album,
+        lyricsOnly: !!fixedStyle, glyphsOnly, cameraFollow: glyphsOnly && wenflashArrangement() !== 'graphic', paused: true, songTitle: song?.title, songArtist: song?.artist, songAlbum: song?.album,
         signal: abort.signal,
       });
       if (disposed) { created.destroy(); return; }
@@ -220,7 +248,12 @@ export function createFlowScene(onPainted?: () => void, onError?: (error: unknow
     void starting.catch(fail);
     return starting;
   }
-  const setStyle=(next:FlowSettings)=>{style=normalizeFlowSettings(next);invalidate();};
+  const setStyle=(next:FlowSceneStyle)=>{
+    if (next.wenflashLayout) wenflashLyrics = next.wenflashLayout;
+    style=normalizeFlowSettings(next);
+    if (glyphsOnly) runtime?.setCameraFollow?.(wenflashArrangement() !== 'graphic');
+    invalidate();
+  };
   const refreshStyle=(event:Event)=>setStyle((event as CustomEvent<FlowSettings>).detail??flowSettings());
   const syncStoredStyle=(event:StorageEvent)=>{if(event.key===FLOW_SETTINGS_KEY||event.key===null)setStyle(flowSettings());};
   if (!fixedStyle) {
@@ -248,9 +281,16 @@ export function createFlowScene(onPainted?: () => void, onError?: (error: unknow
       clock.set((lastTime + (song?.lyricOffsetMs || 0)) / 1000);
       countdown?.update(song,clock.get()*1000,style.text==='custom'?style.ink:'#fff0cd');
       if (runtime) {
-        const paintStart=perfOn()?performance.now():0;
-        runtime.renderOnce();
-        perfMarkSlow('flow.update.render',paintStart,4);
+        // 文闪的整幅画面帧率限制：不是只采样镜头，而是直接跳过这一帧的 Pixi 重绘，
+        // 让画布保持上一帧，得到真正的低帧定格感。音频时钟仍然每帧推进。
+        const fps = glyphsOnly ? wenflashRenderFps() : 0;
+        const now = performance.now();
+        if (fps <= 1 || now - lastPaintAt >= 1000 / fps - 0.5) {
+          lastPaintAt = now;
+          const paintStart=perfOn()?performance.now():0;
+          runtime.renderOnce();
+          perfMarkSlow('flow.update.render',paintStart,4);
+        }
         if(recordUsage&&appliedRevision===revision&&!document.hidden&&root.isConnected){
           const time=clock.get();
           let current:TemperaShot|undefined;

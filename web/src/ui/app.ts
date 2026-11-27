@@ -1,5 +1,6 @@
 import { openFlowSettingsSheet } from './flowSettingsPanel';
 import { openOverlapSettingsSheet } from './overlapSettingsPanel';
+import { openWenflashSettingsSheet } from './wenflashSettingsPanel';
 /// <reference types="vite/client" />
 /**
  * 应用外壳：顶栏 / 左 rail / 墙面 / 播放条 / 弹层（搜索、设置、账号、登录）。
@@ -238,7 +239,7 @@ import {
 } from './cacheSettings';
 import { buildSleepTimerPanel, completeSleepTimer, getSleepTimerState, subscribeSleepTimer } from './sleepTimer';
 import { bgLyricsCoverStyle, lumiereEffectOn, setBgLyricsCoverStyle, type BgLyricsCoverStyle } from './bgLyricsCover';
-import { pageImmersiveEnabled, pageWallpaperSwitch, setPageWallpaper } from '../wallpaper/client';
+import { fetchOptions, pageImmersiveEnabled, pageWallpaperSwitch, patchOptions, setPageWallpaper } from '../wallpaper/client';
 import { syncPageWallpaperClass } from './wallpaperLayer';
 import {
   BG_BRIGHTNESS_MAX,
@@ -356,7 +357,7 @@ import { openVinylSettingsSheet } from './vinylSettingsPanel';
 import { readPosterLayout, writePosterLayout, type PosterLayout } from './posterLayout';
 import { buildCommentsPanel } from './comments';
 import { ACCENT_PRESETS, applyAccentColor, readAccentColor, ui, writeAccentColor } from './theme';
-import { APP_BG_BLUR, APP_BG_POSITIONS, applyAppBgStyle, pickBackgroundImageFile, readAppBgBlur, readAppBgImage, readAppBgMode, readAppBgPosition, writeAppBgBlur, writeAppBgImage, writeAppBgMode, writeAppBgPosition, type AppBgMode } from './appBackground';
+import { APP_BG_BLUR, APP_BG_MODE_EVENT, APP_BG_POSITIONS, applyAppBgStyle, pickBackgroundImageFile, readAppBgBlur, readAppBgImage, readAppBgMode, readAppBgPosition, writeAppBgBlur, writeAppBgImage, writeAppBgMode, writeAppBgPosition, type AppBgMode } from './appBackground';
 import {
   UPDATE_STATE_TEXT,
   cancelUpdate,
@@ -893,6 +894,8 @@ export class App {
   /** 分段控件（.seg）滑动胶囊的增强观察器。 */
   private segObserver?: MutationObserver;
   private playerbar!: HTMLDivElement;
+  /** 非默认歌词效果下，播放条空闲自动隐藏；鼠标一动就恢复。 */
+  private playerbarAutoHideTimer = 0;
   /** 顶部「即将播放下一首」预告条。 */
   private upNextToast: UpNextToastHandle | null = null;
   private accountBtn!: HTMLButtonElement;
@@ -1153,6 +1156,11 @@ export class App {
     // 背景模糊度/取景位置也走 CSS 变量，先写入再挂载，避免首帧跳变。
     applyAppBgStyle();
     this.root = h('div', { class: 'app' });
+    // 别处（壁纸页「应用到软件内」）会把背景模式改成 none 让壁纸露出来，
+    // 这里跟着换，不然用户在壁纸页点了应用、回到主界面还是封面背景，看不到刚选的壁纸。
+    window.addEventListener(APP_BG_MODE_EVENT, (event) => {
+      this.setBackgroundMode((event as CustomEvent<AppBgMode>).detail);
+    });
     this.appBgEl = h('div', { class: 'app-bg' });
     // 每层写成「淡入淡出壳 + 固定模糊图片」：透明度动画在外层、模糊在内层，
     // 这样过渡期间模糊层不做重采样，结束时不会突然变糊。
@@ -10026,6 +10034,17 @@ export class App {
     this.root.append(wrap);
     this.playerbar = bar;
     this.playerbarWrap = wrap;
+    // 非默认歌词效果下，播放条不该长期占着画面：空闲一会儿就收起，鼠标一动立刻回来。
+    this.playerbar.addEventListener('pointerenter', () => this.revealPlayerbar());
+    this.playerbar.addEventListener('pointerleave', () => this.schedulePlayerbarAutoHide());
+    const onPlayerbarPointerMove = (event: PointerEvent): void => {
+      if (event.pointerType === 'touch') return;
+      if (!this.lyrics || lyricsLumiereMode() === 'off' || !playerState().track) return;
+      this.revealPlayerbar();
+      this.schedulePlayerbarAutoHide();
+    };
+    document.addEventListener('pointermove', onPlayerbarPointerMove, { passive: true });
+    this.disposers.add(() => document.removeEventListener('pointermove', onPlayerbarPointerMove));
     // Use the actual toolbar width as the animation endpoint. A 500px cap
     // leaves a long interval with no visible movement while collapsing.
     const extra = bar.querySelector<HTMLElement>('.pb-extra')!;
@@ -10968,9 +10987,17 @@ export class App {
               ? '已保存自定义图片，点「自定义」即可切到它。'
               : '自定义图片会压缩到 1600px 内保存到本机。';
       };
-      /** 选页面底图前先关掉壁纸层，避免两层背景打架（等落库再重画，段位才不会闪回动态壁纸）。 */
+      /**
+       * 选页面底图前先把壁纸层彻底让开：常规页开关、沉浸（歌词页）开关、以及软件内背景层。
+       * 只关 pageNormal 是不够的——「动态壁纸」那一下会顺手把软件内背景层打开，
+       * 之后选封面/自定义时壁纸仍然盖在最上面，看起来就是「切不回纯背景」。
+       * 这几个选项本来就是互斥的（面板提示也这么写），所以这里直接关掉软件内背景层。
+       */
       const dropMotion = async (): Promise<void> => {
         if (pageWallpaperSwitch('normal')) await setPageWallpaper('normal', false);
+        if (pageImmersiveEnabled()) await setPageWallpaper('immersive', false);
+        const current = await fetchOptions().catch(() => null);
+        if (current?.options.inAppEnabled) await patchOptions({ inAppEnabled: false }).catch(() => null);
       };
       const bgBtn = (label: string, on: boolean): HTMLButtonElement => {
         const button = h('button', { class: 'quick-seg-btn', type: 'button', text: label });
@@ -11003,7 +11030,20 @@ export class App {
       bgMotionBtn.addEventListener('click', () => {
         // 壁纸接管页面背景：关掉封面/自定义底图，打开常规页面的壁纸开关。
         this.setAppBg(false);
-        void setPageWallpaper('normal', true).then(() => paintBg());
+        void (async () => {
+          // 如果软件还没启用动态壁纸（总开关关着 / 软件内背景层关着），这一下顺手打开：
+          // 用户点「动态壁纸」的意思是「我现在就要看壁纸」，不该再让他去壁纸页里找开关。
+          const current = await fetchOptions().catch(() => null);
+          const patch: Record<string, boolean> = {};
+          if (current && !current.options.enabled) patch.enabled = true;
+          if (current && !current.options.inAppEnabled) patch.inAppEnabled = true;
+          if (!pageWallpaperSwitch('normal')) patch.pageNormal = true;
+          // 歌词页（沉浸播放页）也铺：重合/纯字这些画布是透明的，壁纸就从纸缝里透出来；
+          // 不打开的话切到歌词页会退回纯色背景，看起来像「选了没生效」。
+          if (!pageImmersiveEnabled()) patch.pageImmersive = true;
+          if (Object.keys(patch).length) await patchOptions(patch).catch(() => null);
+          paintBg();
+        })();
       });
       const bgSeg = h(
         'div',
@@ -11058,7 +11098,13 @@ export class App {
           void (async () => {
             if (option.id === 'motion') {
               // 动态壁纸接管歌词页背景：打开沉浸页开关，壁纸层会立刻搬进歌词页。
-              await setPageWallpaper('immersive', true);
+              // 顺带把总开关/软件内背景层补上，否则开关打开了也没有东西可铺。
+              const current = await fetchOptions().catch(() => null);
+              const patch: Record<string, boolean> = {};
+              if (current && !current.options.enabled) patch.enabled = true;
+              if (current && !current.options.inAppEnabled) patch.inAppEnabled = true;
+              if (!pageImmersiveEnabled()) patch.pageImmersive = true;
+              if (Object.keys(patch).length) await patchOptions(patch).catch(() => null);
             } else {
               // 先等开关落库再画：否则 paint 读到的还是旧的 pageImmersive，段位会停在「动态壁纸」。
               if (pageImmersiveEnabled()) await setPageWallpaper('immersive', false);
@@ -11790,6 +11836,7 @@ export class App {
           hint: '唱片：歌词字体/颜色/排布、盘面配色、转速、唱臂与尘埃',
         },
         flow: {action:'拼合设置…',hint:'背景与歌词独立配色、封面取色、段落换色、多角度运镜'},
+        wenflash: {action:'文闪设置…',hint:'入场、闪烁、亮拍外观与模糊'},
         overlap: {action:'重合设置…',hint:'配色、字号、跟随运镜、旋转概率与角度、落点散开、旧句消散、括号/轨迹/弧线/刻度尺'},
       };
       const effectSettingsBtn = h('button', {
@@ -11806,7 +11853,7 @@ export class App {
         if (mode === 'off') return;
         this.closeQuick();
         const open =
-          mode === 'overlap' ? openOverlapSettingsSheet
+          mode === 'wenflash' ? openWenflashSettingsSheet : mode === 'overlap' ? openOverlapSettingsSheet
             : mode === 'flow' ? openFlowSettingsSheet : mode === 'text'
               ? openTextSettingsSheet
               : mode === 'room'
@@ -11885,6 +11932,7 @@ export class App {
         });
         btn.addEventListener('click', () => {
           setLyricsLumiereMode(mode.id);
+          this.syncPlayerbarAutoHide();
           paintEffectMode();
           syncGrowCell();
           syncEffectSettingsCell();
@@ -12592,7 +12640,11 @@ export class App {
   private paintAppBg(track: OnlineTrack | null): void {
     const mode = this.appBgMode;
     if (mode === 'none') {
-      // 先只摘类名让 opacity 过渡跑完，真正隐藏交给 setBackgroundMode 里的延时
+      // 关闭动画进行中先别摘 is-app-bg：歌词页「有封面时透明 / 没封面时不透明」
+      // 就是挂在这个类上的，提前摘掉会让那层不透明底在一帧内拍上来，
+      // 把还在淡出的封面整个盖死（表现为「先瞬间变白一点点，再开始淡」）。
+      // 类名留到淡出走完，由 setBackgroundMode 的定时器统一摘。
+      if (this.root.classList.contains('is-app-bg-out')) return;
       this.root.classList.remove('is-app-bg');
       return;
     }
@@ -12632,15 +12684,26 @@ export class App {
     writeAppBgMode(mode);
     if (mode !== 'none') {
       window.clearTimeout(this.appBgHideTimer);
+      this.root.classList.remove('is-app-bg-out');
       this.appBgEl.style.display = '';
+    } else {
+      // 关闭这一下要「看得见地」淡出去：先挂 is-app-bg-out 把目标值钉成 0，
+      // 再让 paintAppBg 撤 .is-app-bg —— 只靠撤类名会退回 .app-bg 自带的
+      // 强 ease-out（0.7s 里前 150ms 就走掉九成），观感就是硬切。
+      this.root.classList.add('is-app-bg-out');
     }
     this.paintAppBg(playerState().track);
     if (mode === 'none') {
-      // 等淡出动画走完（0.7s）再真正摘掉背景层，保证关闭时也有过渡
+      // 等淡出动画走完再真正摘掉背景层，保证关闭时也有过渡
       window.clearTimeout(this.appBgHideTimer);
       this.appBgHideTimer = window.setTimeout(() => {
-        if (this.appBgMode === 'none') this.appBgEl.style.display = 'none';
-      }, 760);
+        if (this.appBgMode !== 'none') return;
+        // 淡出（0.9s）走完才同时摘掉这两个类：先摘 out 再摘 bg 会有一帧
+        // 退回 is-app-bg 的满亮状态，反过来则会让歌词页的底板提前变不透明。
+        this.root.classList.remove('is-app-bg-out');
+        this.root.classList.remove('is-app-bg');
+        this.appBgEl.style.display = 'none';
+      }, 960);
     }
   }
 
@@ -13667,11 +13730,65 @@ export class App {
     }
   }
 
+  /** 同步歌词页右上角收起按钮的显隐，让它跟底部整组控件一起进退。 */
+  private setLyricsChromeHidden(hidden: boolean): void {
+    this.lyrics?.root.classList.toggle('is-chrome-hidden', hidden);
+  }
+
+  /** 立刻显示整组底部控件（播放条、下一首卡、队列按钮），并清掉空闲隐藏计时。 */
+  private revealPlayerbar(): void {
+    if (!this.playerbarWrap) return;
+    if (this.playerbarAutoHideTimer) {
+      window.clearTimeout(this.playerbarAutoHideTimer);
+      this.playerbarAutoHideTimer = 0;
+    }
+    this.playerbarWrap.classList.remove('is-auto-hidden');
+    this.setLyricsChromeHidden(false);
+    // 兼容旧版本留下的单条隐藏类，避免更新后播放条仍停在屏外。
+    this.playerbar.classList.remove('is-hidden');
+  }
+
+  /** 只在「歌词页开着 + 非默认歌词效果 + 有歌」时安排整组底部控件空闲隐藏。 */
+  private schedulePlayerbarAutoHide(): void {
+    if (!this.playerbarWrap) return;
+    if (this.playerbarAutoHideTimer) {
+      window.clearTimeout(this.playerbarAutoHideTimer);
+      this.playerbarAutoHideTimer = 0;
+    }
+    const active = !!this.lyrics && lyricsLumiereMode() !== 'off' && !!playerState().track;
+    if (!active) {
+      this.playerbarWrap.classList.remove('is-auto-hidden');
+      this.setLyricsChromeHidden(false);
+      return;
+    }
+    this.playerbarAutoHideTimer = window.setTimeout(() => {
+      this.playerbarAutoHideTimer = 0;
+      if (!this.lyrics || lyricsLumiereMode() === 'off' || !playerState().track) {
+        this.playerbarWrap.classList.remove('is-auto-hidden');
+        this.setLyricsChromeHidden(false);
+        return;
+      }
+      // 指针停在整组任意控件（含下一首卡、队列按钮）上，或键盘焦点还在里面时先不收。
+      const hovered = [this.playerbar, this.upnextRoot, this.quickRoot]
+        .some((el) => !!el && el.matches(':hover'));
+      const focused = this.playerbarWrap.contains(document.activeElement);
+      if (hovered || focused) return;
+      this.playerbarWrap.classList.add('is-auto-hidden');
+      this.setLyricsChromeHidden(true);
+    }, 2400);
+  }
+
+  /** 效果档位或歌词页状态变化后，重新判断自动隐藏。 */
+  private syncPlayerbarAutoHide(): void {
+    this.revealPlayerbar();
+    this.schedulePlayerbarAutoHide();
+  }
+
   private syncPlayer(state: PlayerState): void {
     const track = state.track;
     if (!track) {
       this.root.classList.remove('is-app-bg');
-      this.playerbar.classList.remove('is-hidden');
+      this.revealPlayerbar();
       this.playerbar.classList.add('is-idle');
       this.pbTrackKey = '';
       this.pbTitle.textContent = '未在播放';
@@ -14550,6 +14667,7 @@ export class App {
     void enterMotion(view.root, { duration: MOTION.slow, rise: MOTION.riseIn + 6 });
     this.stage.inert = true;
     this.root.classList.add('is-lyrics-open');
+    this.syncPlayerbarAutoHide();
     // 歌词页铺满整窗：导航条彻底停用，连悬停也不许出来（维护者 2026-11-24）。
     this.dockSuspend?.(true);
     // 进歌词页要立刻把壁纸层挪进 .lyrics-view（screen 混合要靠同层），不等状态推送。
@@ -14565,6 +14683,7 @@ export class App {
     this.navBefore();
     this.lyrics = null;
     this.root.classList.remove('is-lyrics-open');
+    this.syncPlayerbarAutoHide();
     syncPageWallpaperClass();
     // 退场也交给运动系统：反向同轨迹，期间点不到；同一层再打开会先 cancel。
     view.root.style.pointerEvents = 'none';

@@ -51,6 +51,19 @@ export function readAppBgMode(): AppBgMode {
   }
 }
 
+/** 背景模式被别处改掉（例如壁纸页把素材应用到软件内）时的广播事件。 */
+export const APP_BG_MODE_EVENT = 'zilux2:app-bg-mode';
+
+/** 落库 + 通知正在跑的界面立刻换成这个模式（没有监听者时等价于只落库）。 */
+export function broadcastAppBgMode(mode: AppBgMode): void {
+  writeAppBgMode(mode);
+  try {
+    window.dispatchEvent(new CustomEvent<AppBgMode>(APP_BG_MODE_EVENT, { detail: mode }));
+  } catch {
+    /* 忽略 */
+  }
+}
+
 export function writeAppBgMode(mode: AppBgMode): void {
   try {
     localStorage.setItem(MODE_KEY, mode);

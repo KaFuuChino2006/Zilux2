@@ -54,9 +54,44 @@ const metadataChanged = (previous: Line, next: Line) => (
     || (previous.songPart !== undefined && next.songPart !== undefined && previous.songPart !== next.songPart)
 );
 
+const isTimedGlyphChar = (char: string) => /[\p{L}\p{N}]/u.test(char);
+
+/**
+ * Random entry order inside one split short phrase. The phrase keeps its slot and every glyph
+ * keeps its position and text; only the authored per-character time windows are permuted, so
+ * characters surface in a seeded order but all land before the phrase's own end.
+ */
+const shuffleTemperaGraphemeTimes = (segment: TemperaSegment, seed: number) => {
+    const timed = segment.graphemes
+        .map((grapheme, index) => (isTimedGlyphChar(grapheme.char) ? index : -1))
+        .filter(index => index >= 0);
+    if (timed.length < 2) return;
+    const windows = timed.map(index => ({
+        startTime: segment.graphemes[index]!.startTime,
+        endTime: segment.graphemes[index]!.endTime,
+    }));
+    for (let index = windows.length - 1; index > 0; index -= 1) {
+        const swap = Math.floor(temperaHash01(seed, index, 619) * (index + 1));
+        [windows[index], windows[swap]] = [windows[swap]!, windows[index]!];
+    }
+    segment.graphemes = segment.graphemes.map((grapheme, index) => {
+        const slot = timed.indexOf(index);
+        return slot >= 0
+            ? { ...grapheme, startTime: windows[slot]!.startTime, endTime: windows[slot]!.endTime }
+            : grapheme;
+    });
+};
+
 // Produces lossless word-level segments while mapping display offsets to parser-derived
 // grapheme timing; sticky punctuation merges forward so blocks never strand symbols.
-export const buildTemperaSegments = (line: Line): TemperaSegment[] => {
+export const buildTemperaSegments = (
+    line: Line,
+    shortPhrases = false,
+    glyphOrder: 'time' | 'random' | 'all-random' = 'time',
+    seed = '',
+    lineKey: string | number = 0,
+    phraseSize = 3,
+): TemperaSegment[] => {
     if (!line.fullText) return [];
     const timeline = buildLineGraphemeTimeline(line);
     let cursor = 0;
@@ -65,7 +100,21 @@ export const buildTemperaSegments = (line: Line): TemperaSegment[] => {
         cursor = range.end;
         return range;
     });
-    const parts = segmentLyricWords(line);
+    // Split the display text only; offsets still select the original timed graphemes.
+    // Dense scripts (Chinese/Japanese/Thai/Lao/Khmer/Myanmar/Tibetan) have no word spaces, so
+    // phraseSize counts grapheme-ish characters. Space-delimited scripts (English, Korean,
+    // Arabic, Cyrillic, Devanagari, ...) count words instead; 1 keeps one word per phrase.
+    const hanChunk = Math.max(1, Math.min(8, Math.round(phraseSize)));
+    const dense = '[\\p{Script=Han}\\p{Script=Hiragana}\\p{Script=Katakana}\\p{Script=Thai}\\p{Script=Lao}\\p{Script=Khmer}\\p{Script=Myanmar}\\p{Script=Tibetan}]';
+    const word = `(?:(?!${dense})[\\p{L}\\p{M}\\p{N}])+`;
+    const phrasePattern = new RegExp(
+        `${dense}{1,${hanChunk}}|${word}(?:\\s+${word}){0,${hanChunk - 1}}|\\s+|[^\\p{L}\\p{M}\\p{N}\\s]+`,
+        'gu',
+    );
+    const parts = shortPhrases
+        ? Array.from(line.fullText.matchAll(phrasePattern),
+            match => ({index: match.index!, isWordLike: /[\p{L}\p{N}]/u.test(match[0])}))
+        : segmentLyricWords(line);
     const segments = parts.map((part, index) => {
         const startOffset = part.index;
         const endOffset = parts[index + 1]?.index ?? line.fullText.length;
@@ -106,6 +155,11 @@ export const buildTemperaSegments = (line: Line): TemperaSegment[] => {
         } else {
             sticky.push({ ...segment, graphemes: [...segment.graphemes] });
         }
+    }
+    if (glyphOrder === 'all-random' || (shortPhrases && glyphOrder === 'random')) {
+        sticky.forEach((segment, index) => {
+            shuffleTemperaGraphemeTimes(segment, hashTemperaSeed(`${seed}:${lineKey}:${index}:glyph-order`));
+        });
     }
     return sticky;
 };
@@ -166,6 +220,17 @@ interface ShotChunk {
 export interface TemperaProgramOptions {
     /** Keep each source lyric line in one shot instead of slicing it into half-phrases. */
     wholeLineLyrics?: boolean;
+    shortPhrases?: boolean;
+    /** Alternate whole-line and split-phrase lines within the same program. */
+    mixedPhrases?: boolean;
+    /** Maximum Han characters per short phrase when `shortPhrases` is on. */
+    phraseSize?: number;
+    /**
+     * Glyph entry order. `time` keeps each character on its authored clock; `random`
+     * permutes the character entry windows inside every short phrase; `all-random`
+     * does the same for whole-line segments too.
+     */
+    glyphOrder?: 'time' | 'random' | 'all-random';
 }
 
 const isRenderableSegment = (segment: TemperaSegment) => (
@@ -189,15 +254,18 @@ const buildShotChunks = (
 ): ShotChunk[] => {
     const chunks: ShotChunk[] = [];
     lines.forEach(line => {
+        const lineChunks: ShotChunk[] = [];
+        // 混合档按行决定：这一行要么整句一个 shot，要么按短句拆成多个 shot。
+        const shortPhrases = line.splitPhrases && !wholeLineLyrics;
         const usable = line.segments
             .map((segment, index) => ({ segment, index }))
             .filter(entry => isRenderableSegment(entry.segment));
         if (usable.length === 0) return;
 
-        if (wholeLineLyrics) {
+        if (!shortPhrases) {
             const first = usable[0];
             const last = usable.at(-1)!;
-            chunks.push({
+            lineChunks.push({
                 lineIndex: line.sourceIndex,
                 segmentStart: first.index,
                 segmentEnd: last.index + 1,
@@ -205,42 +273,43 @@ const buildShotChunks = (
                 endTime: Math.max(last.segment.endTime, first.segment.startTime + 0.2),
                 lyricEndTime: Math.max(last.segment.endTime, first.segment.startTime + 0.2),
             });
-            return;
-        }
+        } else {
+            let segmentStart = usable[0].index;
+            let startTime = usable[0].segment.startTime;
+            let words = 0;
+            usable.forEach((entry, order) => {
+                words += 1;
+                // Chunk size is derived from the line, not random: a long line used to break into
+                // twenty tiny shots, and a paragraph of those took half a second to build.
+                // 文闪短句每个短语自成一镜；重合/默认仍按行内词数收束成 2..4 词。
+                const target = line.wenflashPhrases ? 1 : Math.max(2, Math.ceil(usable.length / 6));
+                const spent = entry.segment.endTime - startTime;
+                const isLast = order === usable.length - 1;
+                if (!isLast && words < target && spent < 2.2) return;
+                // Never cut between two single-character Chinese words that touch: 我/想/你 counts as
+                // three words, and the word target alone would split 我想你 across two shots. The glue
+                // may hold a chunk past the usual 2.2s, up to a hard cap, so a long run of single
+                // characters still cannot grow unbounded.
+                const next = usable[order + 1];
+                if (!line.wenflashPhrases && !isLast && spent < SINGLE_HAN_GLUE_MAX_SECONDS && next && isSingleHanWord(entry.segment)
+                    && isSingleHanWord(next.segment) && next.segment.startOffset === entry.segment.endOffset) return;
 
-        let segmentStart = usable[0].index;
-        let startTime = usable[0].segment.startTime;
-        let words = 0;
-        usable.forEach((entry, order) => {
-            words += 1;
-            // Chunk size is derived from the line, not random: a long line used to break into
-            // twenty tiny shots, and a paragraph of those took half a second to build.
-            const target = Math.max(2, Math.ceil(usable.length / 6));
-            const spent = entry.segment.endTime - startTime;
-            const isLast = order === usable.length - 1;
-            if (!isLast && words < target && spent < 2.2) return;
-            // Never cut between two single-character Chinese words that touch: 我/想/你 counts as
-            // three words, and the word target alone would split 我想你 across two shots. The glue
-            // may hold a chunk past the usual 2.2s, up to a hard cap, so a long run of single
-            // characters still cannot grow unbounded.
-            const next = usable[order + 1];
-            if (!isLast && spent < SINGLE_HAN_GLUE_MAX_SECONDS && next && isSingleHanWord(entry.segment)
-                && isSingleHanWord(next.segment) && next.segment.startOffset === entry.segment.endOffset) return;
-
-            chunks.push({
-                lineIndex: line.sourceIndex,
-                segmentStart,
-                segmentEnd: entry.index + 1,
-                startTime,
-                endTime: Math.max(entry.segment.endTime, startTime + 0.2),
-                lyricEndTime: Math.max(entry.segment.endTime, startTime + 0.2),
+                lineChunks.push({
+                    lineIndex: line.sourceIndex,
+                    segmentStart,
+                    segmentEnd: entry.index + 1,
+                    startTime,
+                    endTime: Math.max(entry.segment.endTime, startTime + 0.2),
+                    lyricEndTime: Math.max(entry.segment.endTime, startTime + 0.2),
+                });
+                if (next) {
+                    segmentStart = next.index;
+                    startTime = next.segment.startTime;
+                    words = 0;
+                }
             });
-            if (next) {
-                segmentStart = next.index;
-                startTime = next.segment.startTime;
-                words = 0;
-            }
-        });
+        }
+        chunks.push(...lineChunks);
     });
     // Tile the timeline: every shot runs until the next one opens, so the runtime's
     // "last shot whose startTime has passed" lookup never lands in a hole. `lyricEndTime`
@@ -527,16 +596,48 @@ export const compileTemperaProgram = (
     seed: string | number = 'tempera',
     options: TemperaProgramOptions = {},
 ): TemperaProgram => {
-    const compiled = lines.map((line, sourceIndex) => ({
-        sourceIndex,
-        line,
-        // The visual tail may extend beyond authored timing, but never into the next line.
-        renderEndTime: Math.max(
-            line.startTime,
-            Math.min(getLineRenderEndTime(line), lines[sourceIndex + 1]?.startTime ?? Number.POSITIVE_INFINITY),
-        ),
-        segments: buildTemperaSegments(line),
-    }));
+    const resolvedSeed = String(seed);
+    const mixedSeed = hashTemperaSeed(`${resolvedSeed}:mixed-lyrics`);
+    // 混合档随机排列整句/拆句，但保证两种都出现；不能固定成 1-2-1 的交替。
+    const mixedSplitFlags = new Set<number>();
+    if (options.mixedPhrases) {
+        const order = lines.map((_, index) => index);
+        const splitCount = lines.length <= 1
+            ? (temperaHash01(mixedSeed, 0, 421) < 0.5 ? 1 : 0)
+            : Math.max(1, Math.min(lines.length - 1, Math.ceil(lines.length / 2)));
+        for (let index = 0; index < splitCount; index++) {
+            const pick = index + Math.floor(temperaHash01(mixedSeed, index, 421) * (order.length - index));
+            [order[index], order[pick]] = [order[pick], order[index]];
+            mixedSplitFlags.add(order[index]);
+        }
+    }
+    const compiled = lines.map((line, sourceIndex) => {
+        // 拆镜头的开关：未显式指定时沿用旧行为（整句模式整行一镜，否则按词拆短句）。
+        // 文闪的「1–3 字短句」是另一套分词，只由 shortPhrases 打开，不能影响重合/默认。
+        const mixedSplit = !options.mixedPhrases || mixedSplitFlags.has(sourceIndex);
+        const splitPhrases = (options.shortPhrases ?? !options.wholeLineLyrics) && mixedSplit;
+        const wenflashPhrases = options.shortPhrases === true && mixedSplit;
+        return {
+            sourceIndex,
+            line,
+            // The visual tail may extend beyond authored timing, but never into the next line.
+            renderEndTime: Math.max(
+                line.startTime,
+                Math.min(getLineRenderEndTime(line), lines[sourceIndex + 1]?.startTime ?? Number.POSITIVE_INFINITY),
+            ),
+            splitPhrases,
+            wenflashPhrases,
+            segments: buildTemperaSegments(
+                line,
+                wenflashPhrases,
+                options.glyphOrder === 'random' ? 'random'
+                    : options.glyphOrder === 'all-random' ? 'all-random' : 'time',
+                resolvedSeed,
+                sourceIndex,
+                options.phraseSize,
+            ),
+        };
+    });
     const paragraphGapThreshold = resolveTemperaParagraphGapThreshold(lines);
     // Split lyrics turn one authored line into several shots, so a six-line paragraph can hold
     // sixty glyph-heavy shots and take half a second to build. Cap the source lines instead.
@@ -560,7 +661,6 @@ export const compileTemperaProgram = (
     });
     if (current.lines.length > 0) drafts.push(...splitOversizedDraft(current, maxLinesPerParagraph));
 
-    const resolvedSeed = String(seed);
     let previousShot: TemperaShotKind | null = null;
     let previousMotif: TemperaDecorMotif | null = null;
     let previousFlow: number | null = null;

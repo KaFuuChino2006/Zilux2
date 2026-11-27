@@ -7,7 +7,7 @@ import {
 } from '../pixi/pixiDisplayResources';
 import { snapResolutionToTexturePool } from '../pixi/pixiTextureBudget';
 import type { TemperaProgram } from './types';
-import { resolveFollowStart, resolveLyricFollow } from './temperaCamera';
+import { resolveFollowStart, resolveLyricCoverageZoom, resolveLyricFollow } from './temperaCamera';
 import { createTemperaOverlapGrid, type TemperaOverlapGrid } from './temperaOverlapGrid';
 import { createTemperaOverlapSheet, type TemperaOverlapSheet } from './temperaOverlapSheet';
 import { createTemperaOverlapWave, type TemperaOverlapWave } from './temperaOverlapWave';
@@ -15,6 +15,7 @@ import { createTemperaOverlapDebris } from './temperaOverlapDebris';
 import { createTemperaOverlapAmbient } from './temperaOverlapAmbient';
 import { createTemperaOverlapPrintFilters } from './temperaOverlapPrint';
 import { hashTemperaSeed } from './temperaRandom';
+import { wenflashCameraBlend, wenflashCameraSpeed, wenflashCameraSteps, wenflashCameraZoomBlend, wenflashCameraZoomSpeed, wenflashImpact } from '../../../../wenflashSettings';
 
 /** Critically damped follow. The camera is sprung toward the point it should be looking at, so
  * the drift along a line and the hand-off onto the next line both start and stop softly instead
@@ -110,7 +111,7 @@ import { TemperaImageTextures } from './temperaImageTextures';
 import { TemperaOverlay } from './temperaOverlay';
 import { resolveTemperaCreditsFrame, TemperaCreditsLayer } from './temperaCreditsLayer';
 import { heldExitSeconds, resolveTemperaShotExit, updateTemperaShot } from './temperaShotFrame';
-import { overlapFx } from '../../../../overlapSettings';
+import { overlapCameraSpeed, overlapCameraZoomSpeed, overlapFx } from '../../../../overlapSettings';
 
 interface TemperaImpact {
     start: number;
@@ -176,6 +177,9 @@ export interface TemperaRuntimeOptions {
     /** Stored files for the user's placed images, keyed by placement id. */
     imageBlobs?: Map<string, Blob>;
     lyricsOnly?: boolean;
+    glyphsOnly?: boolean;
+    /** 文闪链式排版（横排/竖排）的镜头跟随；graphic 档保持固定镜头。 */
+    cameraFollow?: boolean;
     paused: boolean;
     songTitle?: string | null;
     songArtist?: string | null;
@@ -231,6 +235,8 @@ export class TemperaPixiRuntime {
     private followVZoom = 0;
     private followVRoll = 0;
     private followTime = Number.NEGATIVE_INFINITY;
+    /** Last time the camera pose was sampled when camera stepping is on. */
+    private cameraSampleTime = 0;
     // Camera impacts: a line change can bump the stage. Several bumps may ring at once when the
     // lines come fast, so each one keeps its own clock instead of replacing the previous.
     private impactLine = '';
@@ -330,7 +336,7 @@ export class TemperaPixiRuntime {
         runtime.overlay = new TemperaOverlay(pixi);
         app.stage.addChild(runtime.printLayer, runtime.creditsLayer.container, runtime.overlay.container);
         runtime.printLayer.addChild(runtime.sceneContainer);
-        if (options.lyricsOnly) {
+        if (options.lyricsOnly && !options.glyphsOnly) {
             // Inside the follow container: the trail and the stroke travel, turn and zoom with
             // the type, so they read as ink on the same page rather than as an overlay on the glass.
             runtime.decor = createTemperaOverlapDecor(
@@ -380,6 +386,18 @@ export class TemperaPixiRuntime {
             app.stage.addChildAt(runtime.sheet.container, 1);
             runtime.wave = createTemperaOverlapWave(pixi, width, height, options.theme.accentColor);
             app.stage.addChild(runtime.wave.container);
+        }
+        if (options.lyricsOnly && options.glyphsOnly) {
+            // 文闪也走同一套屏幕空间印刷链，但参数来自文闪自己的「印刷与画质」，
+            // 不读取重合的 grain / 色版 / 暗角。
+            runtime.printSeed = hashTemperaSeed(String(options.songSeed ?? 'wenflash'));
+            runtime.printFilters = options.tuning.postProcessEnabled && !options.staticMode
+                ? createTemperaOverlapPrintFilters(pixi, options.tuning, runtime.printSeed, runtime.renderResolution)
+                : [];
+            if (runtime.printFilters.length > 0) {
+                runtime.printLayer.filters = runtime.printFilters;
+                runtime.printLayer.filterArea = new pixi.Rectangle(0, 0, width, height);
+            }
         }
 
         // Textures are loaded once and shared by every scene: paragraph scenes are rebuilt as
@@ -476,7 +494,7 @@ export class TemperaPixiRuntime {
         // 重合档（lyricsOnly）也要这张卡：开场第一句之前、全曲唱完之后各显示一次。
         // 但它只显示歌名——词/曲/编曲那些署名是歌词文件自带的头部信息，不该出现在画面上。
         const lyricsOnly = this.options.lyricsOnly === true;
-        if (lyricsOnly && !overlapFx().titleCard) return null;
+        if (this.options.glyphsOnly || (lyricsOnly && !overlapFx().titleCard)) return null;
         return this.creditsLayer.build({
             theme: song.theme,
             coverColors: song.coverColors,
@@ -578,6 +596,7 @@ export class TemperaPixiRuntime {
             for (const glyph of shot.glyphs) {
                 if (glyph.glow) {
                     glyph.glow.display.filters = null;
+                    glyph.glow.gradient?.filter.destroy();
                     glyph.glow.filter?.destroy();
                 }
                 if (glyph.sungBlur) {
@@ -623,6 +642,7 @@ export class TemperaPixiRuntime {
             lyricsFontScale: this.options.lyricsFontScale,
             staticMode: this.options.staticMode,
             lyricsOnly: this.options.lyricsOnly,
+            glyphsOnly: this.options.glyphsOnly,
             coverColors: song.coverColors,
             imageTextures: this.imageTextures.textures,
         };
@@ -701,7 +721,9 @@ export class TemperaPixiRuntime {
         // Advanced before the paragraph lookup so a cut lands on this frame's scene selection
         // instead of leaving one frame of the outgoing program on the incoming one.
         this.songSwap.advance();
-        if (this.options.program.paragraphs.length === 0) return;
+        if (this.options.program.paragraphs.length === 0) {
+            return;
+        }
         const paragraphIndex = findTemperaParagraphIndexAtTime(this.options.program, time);
         // Songs with an intro have no paragraph before their first line: -1 used to reach
         // sceneCache.ensure and throw on an undefined paragraph, which took the whole stage down.
@@ -852,7 +874,7 @@ export class TemperaPixiRuntime {
                 updateTemperaShot(shot, time, width, height, this.options.tuning, this.options.theme, {
                     x: this.followX,
                     y: this.followY,
-                }, this.options.lyricsOnly === true);
+                }, this.options.lyricsOnly === true, this.options.glyphsOnly);
             });
             scene.activeShotIndex = activeShotIndex;
 
@@ -915,12 +937,15 @@ export class TemperaPixiRuntime {
             (window as unknown as { __overlapScenes?: unknown }).__overlapScenes = { t: Number(time.toFixed(2)), p: paragraphIndex, out };
         }
 
-        if (this.options.lyricsOnly) {
+        const glyphFollow = this.options.cameraFollow === true;
+        if (this.options.lyricsOnly && (!this.options.glyphsOnly || glyphFollow)) {
             type ShotView = TemperaSceneView['shots'][number];
             // The line the camera should be looking at: the newest one that has type. Walk back
             // through retained scenes because an instrumental gap is usually its own
             // bridge-only paragraph, so "one paragraph back" can hold nothing but a bridge.
             let current: ShotView | null = null;
+            let currentSceneIndex = -1;
+            let currentShotIndex = -1;
             for (let index = paragraphIndex; index >= 0 && !current; index -= 1) {
                 const scene = this.sceneCache.get(index);
                 if (!scene) continue;
@@ -931,21 +956,53 @@ export class TemperaPixiRuntime {
                     const shot = scene.shots[shotIndex];
                     if (shot.glyphs.length) {
                         current = shot;
+                        currentSceneIndex = index;
+                        currentShotIndex = shotIndex;
                         break;
                     }
                 }
             }
             // Each shot updates its own plate drift before this block runs, so the anchor sees
             // the type where it is this frame - not at its static layout position.
-            const currentSource = current
-                ? {
-                    glyphs: current.glyphs,
-                    offsetX: current.frameX,
-                    offsetY: current.frameY,
-                    scale: current.frameScale,
-                    orientation: current.orientation,
+            const sourceOf = (shot: ShotView) => ({
+                glyphs: shot.glyphs,
+                offsetX: shot.frameX,
+                offsetY: shot.frameY,
+                scale: shot.frameScale,
+                orientation: shot.orientation,
+            });
+            const currentSource = current ? sourceOf(current) : null;
+            // 下一句的镜头目标：同一场景里的下一个 shot；没有就取下一段的第一个 shot。
+            // 只在下一句真正出现前的一段窗口里叠进来，上一段不用先停住。
+            let nextSource: ReturnType<typeof sourceOf> | null = null;
+            if (current && currentSceneIndex >= 0) {
+                // 只在下一条歌词行切换时错帧；拆分短句的同一行内不提前抢镜。
+                const currentLineIndex = current.shot.slices[0]?.lineIndex;
+                const nextLine = (candidate: ShotView) => {
+                    if (!candidate.glyphs.length) return true;
+                    return currentLineIndex !== undefined
+                        && candidate.shot.slices[0]?.lineIndex === currentLineIndex;
+                };
+                const scene = this.sceneCache.get(currentSceneIndex);
+                if (scene) {
+                    for (let index = currentShotIndex + 1; index < scene.shots.length; index += 1) {
+                        const candidate = scene.shots[index];
+                        if (nextLine(candidate)) continue;
+                        nextSource = sourceOf(candidate);
+                        break;
+                    }
                 }
-                : null;
+                if (!nextSource) {
+                    const nextScene = this.sceneCache.get(currentSceneIndex + 1);
+                    if (nextScene) {
+                        for (const candidate of nextScene.shots) {
+                            if (nextLine(candidate)) continue;
+                            nextSource = sourceOf(candidate);
+                            break;
+                        }
+                    }
+                }
+            }
             // A line change can knock the camera: an elastic bump rather than a stop. The angle is
             // deterministic per line, so the same song bumps at the same places on a replay.
             const seek = Math.abs(time - this.followTime) > 1.2;
@@ -954,7 +1011,7 @@ export class TemperaPixiRuntime {
                 this.impactPlan = null;
             }
             // The bump can land anywhere inside the line: plan it, then fire on the frame it is due.
-            const spawnImpact = (hash: number, at: number, now: ReturnType<typeof overlapFx>) => {
+            const spawnImpact = (hash: number, at: number, now: ReturnType<typeof overlapFx> | ReturnType<typeof wenflashImpact>) => {
                 const elastic = Math.max(0.2, now.shakeElastic);
                 const damping = Math.max(0.15, now.shakeDamping);
                 this.impacts.push({
@@ -972,15 +1029,19 @@ export class TemperaPixiRuntime {
                 });
                 if (this.impacts.length > 6) this.impacts.shift();
             };
-            if (current && current.shot.id !== this.impactLine) {
-                this.impactLine = current.shot.id;
-                const hash = hashTemperaSeed(current.shot.id);
-                const now = overlapFx();
-                if (((hash >>> 0) % 100000) / 100000 < now.shakeChance) {
+            const wenflashStage = this.options.glyphsOnly === true;
+            const impactNow = wenflashStage ? wenflashImpact() : overlapFx();
+            const impactKey = wenflashStage
+                ? `line:${current?.shot.slices[0]?.lineIndex ?? current?.shot.id ?? ''}`
+                : current?.shot.id ?? '';
+            if (current && impactKey !== this.impactLine) {
+                this.impactLine = impactKey;
+                const hash = hashTemperaSeed(impactKey);
+                if (((hash >>> 0) % 100000) / 100000 < impactNow.shakeChance) {
                     const span = Math.max(0.2, current.shot.endTime - current.shot.startTime);
-                    const share = Math.min(1, Math.max(0, now.shakeAt / 100));
+                    const share = Math.min(1, Math.max(0, impactNow.shakeAt / 100));
                     this.impactPlan = {
-                        shotId: current.shot.id,
+                        shotId: impactKey,
                         at: current.shot.startTime + span * share,
                         fired: false,
                     };
@@ -991,7 +1052,7 @@ export class TemperaPixiRuntime {
             if (this.impactPlan && !this.impactPlan.fired && time >= this.impactPlan.at) {
                 this.impactPlan.fired = true;
                 const impactHash = hashTemperaSeed(this.impactPlan.shotId);
-                spawnImpact(impactHash, this.impactPlan.at, overlapFx());
+                spawnImpact(impactHash, this.impactPlan.at, impactNow);
                 if (this.debris && current) {
                     const angle = (((impactHash >>> 8) % 360) * Math.PI) / 180;
                     this.debris.splash(
@@ -1040,36 +1101,93 @@ export class TemperaPixiRuntime {
                 ? resolveFollowStart(currentSource ?? {glyphs: current.glyphs}, current.shot.startTime)
                 : 0;
             const follow = currentSource
-                ? resolveLyricFollow(currentSource, time, visualStart, width, height)
+                ? resolveLyricFollow(
+                    currentSource, time, visualStart, width, height,
+                    glyphFollow ? {gain: 1, clamp: false, zoom: resolveLyricCoverageZoom(currentSource, time, width, height)} : undefined,
+                )
                 : {x: this.followX, y: this.followY, zoom: this.followZoom};
+            // 错帧：下一句的目标在它起唱前 overlap 秒内逐步叠进来。两条运动不是首尾相接，
+            // 而是在第一段还没走完时就叠加；blend 到 1 时下一句已经完全接管。
+            const nextStart = nextSource ? resolveFollowStart(nextSource, 0) : 0;
+            const nextFollow = nextSource
+                ? resolveLyricFollow(
+                    nextSource, time, nextStart, width, height,
+                    glyphFollow ? {gain: 1, clamp: false, zoom: resolveLyricCoverageZoom(nextSource, time, width, height)} : undefined,
+                )
+                : null;
+            // 错帧参数各用各的：文闪读文闪设置，重合读重合自己的「镜头错帧」。
+            // 图形档没有跟随镜头（上面整段不会进），所以这里不额外判断 glyphFollow。
+            const nextBlend = nextFollow
+                ? wenflashCameraBlend(time, nextStart, glyphFollow ? undefined : overlapFx().cameraOverlap)
+                : 0;
+            // 重合只有一个「镜头错帧」滑杆，位置和缩放共用它；文闪仍按合并/分开两条走。
+            const nextZoomBlend = nextFollow
+                ? glyphFollow
+                    ? wenflashCameraZoomBlend(time, nextStart)
+                    : wenflashCameraBlend(time, nextStart, overlapFx().cameraOverlap)
+                : 0;
+            const targetX = nextFollow ? follow.x + (nextFollow.x - follow.x) * nextBlend : follow.x;
+            const targetY = nextFollow ? follow.y + (nextFollow.y - follow.y) * nextBlend : follow.y;
+            const targetZoom = nextFollow ? follow.zoom + (nextFollow.zoom - follow.zoom) * nextZoomBlend : follow.zoom;
             // The line is written at an angle to the stage; the camera rolls it back upright. With
-            // no line in reach the stage holds the angle it already has.
-            const targetRoll = currentSource ? -(currentSource.orientation ?? 0) : this.followRotation;
+            // no line in reach the stage holds the angle it already has. 文闪 keeps the stage
+            // upright: its chain is already the layout, not a plate turned against the frame.
+            const targetRoll = glyphFollow
+                ? 0
+                : currentSource ? -(currentSource.orientation ?? 0) : this.followRotation;
             const dt = Math.max(0, Math.min(0.1, time - this.followTime));
+            // 镜头抽帧：按固定帧率采样镜头姿态，采样之间保持上一帧的位置，
+            // 让跟随变成可调的定格感。0/1 帧为连续，不改变原弹簧。
+            const cameraSteps = glyphFollow ? wenflashCameraSteps() : 0;
+            const cameraInterval = cameraSteps > 1 ? 1 / cameraSteps : 0;
+            const cameraDue = cameraSteps <= 1 || seek
+                || time - this.cameraSampleTime >= cameraInterval - 1e-4;
+            const cameraDt = cameraSteps > 1
+                ? Math.max(0, Math.min(0.5, time - this.cameraSampleTime))
+                : dt;
             if (seek) {
-                this.followX = follow.x;
-                this.followY = follow.y;
-                this.followZoom = follow.zoom;
+                this.followX = targetX;
+                this.followY = targetY;
+                this.followZoom = targetZoom;
                 this.followRotation = targetRoll;
                 this.followVX = 0;
                 this.followVY = 0;
                 this.followVZoom = 0;
                 this.followVRoll = 0;
-            } else if (dt > 0) {
+                this.cameraSampleTime = time;
+            } else if (dt > 0 && cameraDue) {
                 // Spring, not blend: the camera keeps its momentum through a line change, so the
                 // move onto the next line starts at whatever speed the last one was still
                 // travelling and settles out without a hard stop at the end of the ease.
                 const fx = overlapFx();
-                const x = smoothDamp(this.followX, follow.x, this.followVX, fx.panSoft, dt);
+                // 文闪的镜头速度曲线：横轴是本句演唱进度，纵轴是相对速度。曲线越陡，
+                // 这一段镜头追得越快；弹簧的 soft 时间相应缩短，曲线平缓时则放慢。
+                // 缩放共用同一条曲线，但用更宽的映射，让收放对曲线陡缓更敏感。
+                const followGlyphs = currentSource?.glyphs ?? [];
+                let lyricFirst = visualStart;
+                let lyricLast = visualStart;
+                for (const glyph of followGlyphs) {
+                    const start = glyph.motion.startTime;
+                    if (start < lyricFirst) lyricFirst = start;
+                    if (start > lyricLast) lyricLast = start;
+                }
+                const lyricProgress = lyricLast > lyricFirst
+                    ? Math.max(0, Math.min(1, (time - lyricFirst) / (lyricLast - lyricFirst)))
+                    : 1;
+                const cameraSpeed = glyphFollow ? wenflashCameraSpeed(lyricProgress) : overlapCameraSpeed(lyricProgress);
+                const zoomSpeed = glyphFollow ? wenflashCameraZoomSpeed(lyricProgress) : overlapCameraZoomSpeed(lyricProgress);
+                const panSoft = fx.panSoft / cameraSpeed;
+                const zoomSoft = fx.zoomSoft / zoomSpeed;
+                const x = smoothDamp(this.followX, targetX, this.followVX, panSoft, cameraDt);
                 this.followX = x.value;
                 this.followVX = x.velocity;
-                const y = smoothDamp(this.followY, follow.y, this.followVY, fx.panSoft, dt);
+                const y = smoothDamp(this.followY, targetY, this.followVY, panSoft, cameraDt);
                 this.followY = y.value;
                 this.followVY = y.velocity;
                 // The focal length gets its own, quicker spring: the breath is continuous, but a
                 // line change steps it by a few percent, which would pop as a scale jump.
                 const zoom = smoothDamp(
-                    this.followZoom, follow.zoom, this.followVZoom, fx.zoomSoft, dt,
+                    this.followZoom, targetZoom, this.followVZoom, zoomSoft, cameraDt,
                 );
                 this.followZoom = zoom.value;
                 this.followVZoom = zoom.velocity;
@@ -1080,10 +1198,11 @@ export class TemperaPixiRuntime {
                 const rollTravel = Math.abs(targetRoll - this.followRotation);
                 const rollSoft = Math.min(3.2, Math.max(0.35, fx.rollSoft + rollTravel * 0.18));
                 const roll = smoothDamp(
-                    this.followRotation, targetRoll, this.followVRoll, rollSoft, dt,
+                    this.followRotation, targetRoll, this.followVRoll, rollSoft, cameraDt,
                 );
                 this.followRotation = roll.value;
                 this.followVRoll = roll.velocity;
+                this.cameraSampleTime = time;
             }
             this.followTime = time;
             const line = current && currentSource
@@ -1120,7 +1239,8 @@ export class TemperaPixiRuntime {
             // Handheld only while the camera is at rest: a travelling camera already moves, so
             // adding noise there would read as jitter rather than breath.
             const still = 1 - Math.min(1, speed / 260);
-            const shake = fx.handheld * still;
+            // 文闪只做干净的跟随平移：不吃重合的手持与落定回弹；撞击改用自己的参数。
+            const shake = glyphFollow ? 0 : fx.handheld * still;
             const handheldX = Math.sin(time * 0.83) * 1.6 * shake;
             const handheldY = Math.sin(time * 1.07 + 1.7) * 1.2 * shake;
             const handheldRoll = Math.sin(time * 0.71 + 0.6) * 0.0075 * shake;
@@ -1128,7 +1248,9 @@ export class TemperaPixiRuntime {
             // to give the stop a little weight. Zoom only - never the position.
             const sinceStart = Math.max(0, time - visualStart);
             const settleWave = sinceStart < 1.4 ? Math.exp(-sinceStart * 3.2) * Math.sin(sinceStart * 12.5) : 0;
-            const dollyZoom = this.followZoom * (1 + 0.04 * fx.settle * settleWave);
+            const dollyZoom = glyphFollow
+                ? this.followZoom
+                : this.followZoom * (1 + 0.04 * fx.settle * settleWave);
             const zoomed = dollyZoom;
             const roll = this.followRotation + handheldRoll;
             const shakeRoll = roll + impactRoll;
@@ -1261,6 +1383,25 @@ export class TemperaPixiRuntime {
         this.creditsLayer.applyFrame(creditsFrame, hasCredits, time, finalParagraph?.endTime, width, height);
         if (frameStartedAt) perfMark('rt.frame.total', frameStartedAt);
     };
+
+    /** 文闪切到 graphic 档时关掉镜头跟随，切回横/竖排时再打开；不重建运行时。 */
+    setCameraFollow(enabled: boolean) {
+        this.options.cameraFollow = enabled;
+        if (enabled) return;
+        // graphic 档走固定镜头：把共享跟随块留下的舞台位移/缩放/旋转归零，否则画面会停在
+        // 上一次跟随的位置。跟随状态也一并复位，切回链式时从画面中心重新起步。
+        this.followX = 0;
+        this.followY = 0;
+        this.followZoom = 1;
+        this.followRotation = 0;
+        this.followVX = 0;
+        this.followVY = 0;
+        this.cameraSampleTime = 0;
+        this.sceneContainer.pivot.set(0, 0);
+        this.sceneContainer.position.set(0, 0);
+        this.sceneContainer.scale.set(1);
+        this.sceneContainer.rotation = 0;
+    }
 
     renderOnce() {
         if (this.destroyed || !this.app.canvas.isConnected) return;

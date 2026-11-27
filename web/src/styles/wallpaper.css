@@ -1269,6 +1269,28 @@ html.is-wallpaper-layer .app.is-lyrics-open.is-wallpaper-immersive {
   transition: opacity 420ms var(--ease, cubic-bezier(0.22, 0.8, 0.28, 1)) !important;
 }
 
+/* 「随歌曲封面 → 关闭」这一下的底色不要用 background-color 过渡：
+   透明到不透明的颜色插值在起手那一帧会先闪一下亮色。
+   改成一块只做 opacity 的底板（::before）跟封面一起交叉淡：
+   封面 1→0、底板 0→1，两边都是纯 opacity，起手不会跳。 */
+.lyrics-view::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--bg-soft);
+  opacity: 0;
+  pointer-events: none;
+  /* 底板要在 .lyrics-bg / .lyrics-scrim 之下、内容之上：作为首个子元素自然排在它们前面 */
+  transition: opacity 0.9s cubic-bezier(0.33, 0, 0.35, 1);
+}
+.app.is-app-bg-out .lyrics-view::before {
+  opacity: 1;
+}
+/* 沉浸动态壁纸不参与：那一档是壁纸自己在淡，底板插进来会多一层米色 */
+.app.is-wallpaper-immersive .lyrics-view::before {
+  display: none;
+}
+
 /* 让歌词页的底色/模糊封面本身带过渡：进出「动态壁纸」是从壁纸上淡入淡出，
    不是一下子消失。 */
 .lyrics-view .lyrics-bg,
@@ -1313,16 +1335,16 @@ html.is-wallpaper-layer .app.is-lyrics-open.is-wallpaper-immersive {
   mix-blend-mode: screen;
 }
 
-/* 切换播放效果时舞台是新建的，给一次淡入，避免「旧的没了、新的一下子顶上来」。
-   只作用于壁纸在背后的沉浸态；其它场景沿用舞台自己的过渡。 */
-.app.is-wallpaper-immersive .lyrics-stage {
-  animation: wp-stage-in 260ms var(--ease, cubic-bezier(0.22, 0.8, 0.28, 1)) both;
+/* 重合：每一句都是一张纸，纸底要盖得住壁纸（screen 会把纸和字一起滤成半透明，
+   在花壁纸上就读不出字了）。所以这里退回普通混合，壁纸只在纸缝与页边露出来。 */
+.app.is-wallpaper-immersive .lyrics-view.is-overlap .lyrics-stage {
+  mix-blend-mode: normal;
 }
 
-@keyframes wp-stage-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
+/* 这里原来给沉浸态下的舞台挂了一次 260ms 的 opacity 动画做淡入。
+   去掉的原因：动画期间元素会被提升成独立合成层，screen 混合就失去 backdrop，
+   画布里的黑底会当真地盖住壁纸——表现就是「切到壁纸后某些效果不生效／来回切几次就黑一块」。
+   舞台自己的淡入由 flow.ts / lumiere.ts 写 inline opacity 完成，不依赖这条动画。 */
 
 /* ---- 软件内壁纸层（画面在页面里播，见 ui/wallpaperLayer.ts） ---- */
 

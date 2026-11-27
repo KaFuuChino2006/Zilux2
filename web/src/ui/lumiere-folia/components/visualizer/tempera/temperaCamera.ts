@@ -84,13 +84,29 @@ const FOLLOW_MAX_SHIFT_Y = 0.5;
  * shot camera pans that whole plate by up to ~16% of the frame while the line is sung. Aiming
  * only at the layout anchor left the line sliding off centre as it played. */
 export interface TemperaFollowSource {
-    glyphs: readonly {baseX: number; baseY: number; motion: {startTime: number}}[];
+    glyphs: readonly {
+        baseX: number; baseY: number;
+        /** Text node, when the caller has one: used to measure the line's footprint. */
+        display?: {width: number; height: number; scale: {x: number; y: number}};
+        motion: {startTime: number};
+    }[];
     offsetX?: number;
     offsetY?: number;
     /** Shot camera zoom applied about the viewport centre. */
     scale?: number;
     /** Quarter turns the line was written at; the camera rolls by the negative of this. */
     orientation?: number;
+}
+
+/** 文闪的链式排版会一路向下/向右延伸，镜头必须能跟着走出第一屏，不能再套重合的
+ * 半屏防呆钳制，也不吃重合的「常驻推近」缩放。 */
+export interface TemperaFollowOptions {
+    /** 把当前字拉到画面中央的力度；文闪用 1 精确居中。 */
+    gain?: number;
+    /** false 时不钳制平移量，允许镜头跟出画面。 */
+    clamp?: boolean;
+    /** 覆盖呼吸缩放；文闪固定 1，只做平移。 */
+    zoom?: number;
 }
 
 /** Where the camera should be looking: a point that travels along the line as it is sung.
@@ -110,6 +126,7 @@ export function resolveLyricAnchor(
     source: TemperaFollowSource,
     time: number,
     width: number, height: number,
+    options?: TemperaFollowOptions,
 ) {
     const { glyphs } = source;
     if (!glyphs.length) return {x: 0, y: 0};
@@ -148,9 +165,10 @@ export function resolveLyricAnchor(
     y = (y - height / 2) * shotScale + height / 2 + (source.offsetY ?? 0);
     // Pull the tracked point all the way to the middle. The clamp only stops a pathological
     // layout from throwing the stage.
-    const gain = overlapFx().followGain;
+    const gain = options?.gain ?? overlapFx().followGain;
     const shiftX = (width * .5 - x) * gain;
     const shiftY = (height * .5 - y) * gain;
+    if (options?.clamp === false) return {x: shiftX, y: shiftY};
     return {
         x: Math.max(-width * FOLLOW_MAX_SHIFT_X, Math.min(width * FOLLOW_MAX_SHIFT_X, shiftX)),
         y: Math.max(-height * FOLLOW_MAX_SHIFT_Y, Math.min(height * FOLLOW_MAX_SHIFT_Y, shiftY)),
@@ -196,13 +214,64 @@ const resolveFollowZoom = (
     return 1 + rest + fx.zoomSwell * bell - fx.zoomRelax * relax;
 };
 
+/** Focal length for a line that is too small or too large in frame.
+ *
+ * 文闪的链式排版会让句子在画面里忽长忽短：短句只占一小块，长句会一路伸出屏幕。镜头除了
+ * 跟着唱字平移，还要按这一句当前占画面的比例推拉：占得少就推近，占得多就拉远，让每一句
+ * 都落在差不多的视觉分量上。只统计已经出现的字，所以句子越长镜头越往后退，是连续推拉，
+ * 不是等整句排完再跳一下。平移目标仍由 resolveLyricAnchor 决定。 */
+const FOLLOW_TARGET_FILL = 0.62;
+const FOLLOW_ZOOM_MIN = 0.55;
+const FOLLOW_ZOOM_MAX = 1.25;
+export function resolveLyricCoverageZoom(
+    source: TemperaFollowSource,
+    time: number,
+    width: number,
+    height: number,
+) {
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    let counted = 0;
+    for (const glyph of source.glyphs) {
+        if (glyph.motion.startTime > time + 0.35) continue;
+        const display = glyph.display;
+        if (!display) continue;
+        const scaleX = Math.abs(display.scale.x) || 1;
+        const scaleY = Math.abs(display.scale.y) || 1;
+        const halfWidth = (display.width / scaleX) * 0.5;
+        const halfHeight = (display.height / scaleY) * 0.5;
+        if (!Number.isFinite(halfWidth) || !Number.isFinite(halfHeight)) continue;
+        minX = Math.min(minX, glyph.baseX - halfWidth);
+        maxX = Math.max(maxX, glyph.baseX + halfWidth);
+        minY = Math.min(minY, glyph.baseY - halfHeight);
+        maxY = Math.max(maxY, glyph.baseY + halfHeight);
+        counted += 1;
+    }
+    if (!counted) return 1;
+    const shotScale = source.scale ?? 1;
+    const coverage = Math.max(
+        ((maxX - minX) * shotScale) / Math.max(1, width),
+        ((maxY - minY) * shotScale) / Math.max(1, height),
+    );
+    if (!Number.isFinite(coverage) || coverage < 0.001) return 1;
+    const zoom = FOLLOW_TARGET_FILL / coverage;
+    return Math.max(FOLLOW_ZOOM_MIN, Math.min(FOLLOW_ZOOM_MAX, zoom));
+}
+
 /** Follow frame for a line: the point the camera should be looking at right now, plus the
  * breathing focal length. The runtime springs its live position toward this every frame, so the
  * move along a line and the move onto the next line come out of the same smooth motion. */
 export function resolveLyricFollow(
     current: TemperaFollowSource,
     time: number, start: number, width: number, height: number,
+    options?: TemperaFollowOptions,
 ) {
-    const target = resolveLyricAnchor(current, time, width, height);
-    return {x: target.x, y: target.y, zoom: resolveFollowZoom(current.glyphs, time, start)};
+    const target = resolveLyricAnchor(current, time, width, height, options);
+    return {
+        x: target.x,
+        y: target.y,
+        zoom: options?.zoom ?? resolveFollowZoom(current.glyphs, time, start),
+    };
 }

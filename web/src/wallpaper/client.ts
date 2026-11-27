@@ -475,9 +475,22 @@ export function pageSwitchesKnown(): boolean {
   return pageSwitchesLoaded;
 }
 
-/** 补读一次设置（页面刚起来时在线端点可能还没就绪，第一次读会失败）。 */
-export function refreshPageWallpaperSwitches(): void {
-  void fetchOptions().catch(() => {});
+/**
+ * 补读一次设置（页面刚起来时在线端点可能还没就绪，第一次读会失败）。
+ *
+ * 失败会悄悄退化成默认值（immersive:false），表现就是「设置里明明开了沉浸页壁纸，
+ * 进歌词页却没有」——用户以为要再去背景页切一次。所以这里失败后按 400/1200/3000ms
+ * 重试三次，端点起来就能补上，不用等下一次设置写入。
+ */
+export function refreshPageWallpaperSwitches(retries = 3): void {
+  const attempt = (left: number, delay: number): void => {
+    window.setTimeout(() => {
+      void fetchOptions().catch(() => {
+        if (left > 0) attempt(left - 1, delay * 3);
+      });
+    }, delay);
+  };
+  attempt(retries, 0);
 }
 
 /** 歌词页（沉浸播放页）是否允许铺壁纸。 */

@@ -14,7 +14,7 @@ import { host, onWallpaperLayer } from '../core/bridge';
 import { onlineEndpoint } from '../online/client';
 import { onBeat, startBeatClock } from '../core/beatClock';
 import { getSettings } from '../core/settings';
-import { pageImmersiveEnabled, pageWallpaperAllowed } from '../wallpaper/client';
+import { pageImmersiveEnabled, pageSwitchesKnown, pageWallpaperAllowed, refreshPageWallpaperSwitches } from '../wallpaper/client';
 
 const ROOT_ID = 'wallpaper-root';
 
@@ -865,6 +865,9 @@ let immersiveClassOn = false;
 
 /** 页面切换（进/出歌词页、房间页）后调用：由 app.ts 在这些时机直接触发，不轮询。 */
 export function syncPageWallpaperClass(): void {
+  // 启动早期读设置可能失败（在线端点还没就绪），缓存会停在默认值（沉浸页不开）。
+  // 每次整页导航顺手补读一次，别让「设置里开了、进歌词页却没有」留到用户去手动切。
+  if (!pageSwitchesKnown()) refreshPageWallpaperSwitches();
   syncImmersiveClass();
   // 整页导航时顺手把壁纸层搬到目标页（搬动只在这么几次发生）。
   attachWallpaperToPage();
@@ -877,6 +880,10 @@ function syncImmersiveClass(): void {
   if (on === immersiveClassOn) return;
   immersiveClassOn = on;
   app.classList.toggle('is-wallpaper-immersive', on);
+  // 开关一变也要跟着搬一次：以前只在整页导航时搬，于是「人在歌词页上直接把动态壁纸打开」
+  // 会出现开关已经亮了、壁纸层却还留在 body 里 —— 歌词页的深色底把 body 整个盖住，
+  // 看上去就是「切了壁纸但某些效果显示不出壁纸」。反过来关掉时同样搬回去。
+  attachWallpaperToPage();
 }
 
 /**

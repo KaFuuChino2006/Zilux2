@@ -25,7 +25,7 @@ const PRESETS: {name: string; patch: Partial<OverlapSettings>}[] = [
 
 let opened: HTMLElement | null = null;
 
-function demoSong(): LumiereSongInput {
+export function overlapPreviewSong(): LumiereSongInput {
   const texts = ['重合的句子留在纸上', '像墨迹等下一笔', '把未说完的话折成纸页', 'We move into another morning', '直到整个世界慢慢安静'];
   return {
     trackKey: 'overlap-settings-demo', title: '重合预览', artist: 'Zilux2', album: '', durationMs: 24000,
@@ -52,7 +52,7 @@ export function openOverlapSettingsSheet(): void {
   setOverlapFx(draft);
   // Same shape as the other effect sheets: a small fixed-style scene with its own clock.
   const stage = h('div', {class: 'ts-preview-stage'});
-  const song = lyricPreviewSong() ?? demoSong();
+  const song = lyricPreviewSong() ?? overlapPreviewSong();
   const start = Math.max(0, (song.lines[0]?.timeMs ?? 0) - 500);
   const end = Math.max(start + 4000, song.durationMs || 24000);
   let position = start;
@@ -227,6 +227,80 @@ export function openOverlapSettingsSheet(): void {
     parent.append(h('div', {class: 'ts-row'}, h('div', {class: 'ts-row-head'}, h('span', {class: 'ts-label', text: label})), host));
   }
 
+  type CurveField = 'cameraCurve' | 'cameraZoomCurve';
+  function curveEditor(field: CurveField, label: string) {
+    const canvas = h('canvas', {
+      width: '640', height: '300',
+      style: 'display:block;width:100%;height:auto;touch-action:none;cursor:crosshair',
+      'aria-label': label,
+    }) as HTMLCanvasElement;
+    const inset = 16;
+    const w = canvas.width - 2 * inset;
+    const hgt = canvas.height - 2 * inset;
+    const px = (x: number) => inset + x * w;
+    const py = (y: number) => inset + (2 - y) * hgt / 3;
+    function draw() {
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      const css = getComputedStyle(canvas);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.strokeStyle = css.getPropertyValue('--line-strong');
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let i = 0; i <= 8; i++) {
+        const x = inset + i * w / 8, y = inset + i * hgt / 8;
+        ctx.moveTo(x, inset); ctx.lineTo(x, inset + hgt);
+        ctx.moveTo(inset, y); ctx.lineTo(inset + w, y);
+      }
+      ctx.stroke();
+      const [x1, y1, x2, y2] = draft[field];
+      ctx.fillStyle = ctx.strokeStyle = css.getPropertyValue('--muted');
+      ctx.font = '20px system-ui';
+      for (const y of [0, 1]) {
+        ctx.beginPath(); ctx.moveTo(inset, py(y)); ctx.lineTo(inset + w, py(y)); ctx.stroke();
+        ctx.fillText(y ? '100%' : '0%', inset + 4, py(y) - 5);
+      }
+      ctx.beginPath();
+      ctx.moveTo(px(0), py(0)); ctx.lineTo(px(x1), py(y1));
+      ctx.moveTo(px(1), py(1)); ctx.lineTo(px(x2), py(y2));
+      ctx.strokeStyle = css.getPropertyValue('--muted');
+      ctx.stroke();
+      ctx.strokeStyle = ctx.fillStyle = css.getPropertyValue('--accent');
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(px(0), py(0));
+      ctx.bezierCurveTo(px(x1), py(y1), px(x2), py(y2), px(1), py(1));
+      ctx.stroke();
+      [[0, 0, 4], [x1, y1, 10], [x2, y2, 10], [1, 1, 4]].forEach(([x, y, r]) => {
+        ctx.beginPath(); ctx.arc(px(x), py(y), r, 0, Math.PI * 2); ctx.fill();
+      });
+    }
+    let handle = 0;
+    canvas.onpointerdown = event => {
+      if (!event.isPrimary) return;
+      const box = canvas.getBoundingClientRect();
+      const x = (event.clientX - box.left) / box.width * canvas.width - inset;
+      const y = (event.clientY - box.top) / box.height * canvas.height;
+      const dist = (i: number) => Math.hypot(x - w * draft[field][i], y - py(draft[field][i + 1]));
+      handle = dist(0) <= dist(2) ? 0 : 2;
+      canvas.setPointerCapture(event.pointerId);
+      moveHandle(event);
+    };
+    function moveHandle(event: PointerEvent) {
+      if (!canvas.hasPointerCapture(event.pointerId)) return;
+      const box = canvas.getBoundingClientRect();
+      const value = 2 - 3 * (((event.clientY - box.top) / box.height) * canvas.height - inset) / hgt;
+      draft[field][handle] = Math.max(0, Math.min(1, ((event.clientX - box.left) / box.width * canvas.width - inset) / w));
+      draft[field][handle + 1] = Math.max(-1, Math.min(2, value));
+      update();
+      draw();
+    }
+    canvas.onpointermove = moveHandle;
+    const reset = h('button', {class: 'ts-btn is-quiet', text: '重置曲线'});
+    reset.onclick = () => {draft[field] = [1 / 3, 1 / 3, 2 / 3, 2 / 3]; update(); draw();};
+    return {canvas, draw, reset};
+  }
+
   function render() {
     rows.replaceChildren();
     const presets = group('风格预设');
@@ -313,6 +387,22 @@ export function openOverlapSettingsSheet(): void {
         };
         section.append(h('div', {class: 'ts-row'}, h('div', {class: 'ts-row-head'}, h('span', {class: 'ts-label', text: label}), value), input));
         if (hint) section.append(h('div', {class: 'ts-hint', text: hint}));
+      }
+      if (category === '运镜') {
+        const curves: [CurveField, string, string][] = [
+          ['cameraCurve', '镜头移动速度曲线', '横轴是本句演唱进度，纵轴是镜头平移速度；与文闪一样拖动两个控制柄。'],
+          ['cameraZoomCurve', '镜头缩放速度曲线', '横轴是本句演唱进度，纵轴是缩放速度；与移动分开设置。'],
+        ];
+        for (const [field, label, hint] of curves) {
+          const editor = curveEditor(field, label);
+          section.append(
+            h('div', {class: 'ts-row'},
+              h('div', {class: 'ts-row-head'}, h('span', {class: 'ts-label', text: label}), editor.reset),
+              editor.canvas,
+              h('div', {class: 'ts-hint', text: hint})),
+          );
+          editor.draw();
+        }
       }
       if (category === '高级') {
         const resetAdvanced = h('button', {class: 'ts-btn is-quiet ts-advanced-reset', text: '还原高级默认'});

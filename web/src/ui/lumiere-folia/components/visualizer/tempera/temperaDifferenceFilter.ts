@@ -31,6 +31,7 @@ uniform vec3 uTintB;
 uniform vec3 uTintC;
 uniform vec3 uTintD;
 uniform float uTintAmount;
+uniform float uPreserveColor;
 uniform mat3 uTintMatrix;
 uniform float uAnchoredTint;
 
@@ -87,6 +88,9 @@ void main(void) {
         vec3 matched = clamp(tint * (toneLuminance / tintLuminance), 0.0, 1.0);
         tone = mix(tone, matched, uTintAmount);
     }
+    // 文闪的「异色概率」按字改的是字形填充色；这个滤镜不能再用整块 ink/ramp 把它盖掉。
+    vec3 source = front.rgb / max(front.a, 1e-4);
+    tone = mix(tone, source, uPreserveColor);
     finalColor = vec4(tone * front.a, front.a);
 }
 `;
@@ -98,6 +102,8 @@ const tintOnlyFragment = `${fragmentHead}
 void main(void) {
     vec4 front = texture(uTexture, vTextureCoord);
     vec3 tone = uTintAmount > 0.0 ? sampleTint(tintPosition(vTextureCoord)) : uInkColor;
+    vec3 source = front.rgb / max(front.a, 1e-4);
+    tone = mix(tone, source, uPreserveColor);
     finalColor = vec4(tone * front.a, front.a);
 }
 `;
@@ -122,6 +128,8 @@ export interface TemperaDifferenceOptions {
     /** Four-stop hue ramp swept across the line; omit for a plain ink/paper inversion. */
     tint?: string[] | null;
     tintAnchor?: import('pixi.js').Sprite;
+    /** 保留输入纹理自身的填充色；文闪按字异色时使用，避免被整块 ink/ramp 盖掉。 */
+    preserveColor?: boolean;
     /**
      * Default true. False builds the tint-only form: the ramp still colours the lyric, but no
      * backdrop is sampled, so `textInversion` can be switched off without gradient mode losing
@@ -149,6 +157,7 @@ export const createTemperaDifferenceFilter = (
         uTintC: { value: new Float32Array(stops[2]), type: 'vec3<f32>' },
         uTintD: { value: new Float32Array(stops[3]), type: 'vec3<f32>' },
         uTintAmount: { value: tint ? 1 : 0, type: 'f32' },
+        uPreserveColor: { value: options.preserveColor ? 1 : 0, type: 'f32' },
         uPaperColor: { value: new Float32Array(paper), type: 'vec3<f32>' },
         uInkLuminance: { value: luminanceOf(ink), type: 'f32' },
         uPaperLuminance: { value: luminanceOf(paper), type: 'f32' },

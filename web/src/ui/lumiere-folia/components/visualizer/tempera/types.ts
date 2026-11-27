@@ -175,6 +175,10 @@ export interface TemperaCompiledLine {
     sourceIndex: number;
     line: Line;
     renderEndTime: number;
+    /** This source line was cut into short phrases; mixed mode decides it line by line. */
+    splitPhrases: boolean;
+    /** 文闪短句：按 1–3 个汉字切段、每段单独成镜；重合/默认的拆句沿用旧分词与聚句。 */
+    wenflashPhrases: boolean;
     segments: TemperaSegment[];
 }
 
@@ -259,6 +263,8 @@ export interface TemperaShot {
     lyricEndTime: number;
     /** Optional playback time at which a retained lyric begins to leave. */
     holdUntil?: number;
+    /** 文闪：真正的退场起点。当前句唱完后等下一句出现 0.5 秒再退场；最后一句为 lyricEndTime + 0.5。 */
+    exitAt?: number;
     /** 重合模式：这一句开始「散开」的时间点（= 下一句的起点）。退场的头一段只散不退，
      * 到 holdUntil（下下句）才开始真正消散。 */
     scatterAt?: number;

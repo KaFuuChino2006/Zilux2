@@ -150,6 +150,7 @@ test('scene records only rendered shots and applies same-window/cross-window set
    if(specifier.includes('framer-motion'))return {MotionValue:class{constructor(value){this.value=value;}get(){return this.value;}set(value){this.value=value;}}};
    if(specifier.includes('temperaProgram'))return {compileTemperaProgram:()=>({paragraphs:[{shots:Array.from({length:3},(_,index)=>({...shot(),id:`shot-${index}`,startTime:index,endTime:index+1}))}]})};
    if(specifier.includes('createTemperaPixiRuntime'))return {TemperaPixiRuntime:{create:async()=>({setTuning(){},setSongMetadata(){},swapSong:async context=>{swaps.push(context);},renderOnce(){},destroy(){}})}};
+   if(specifier==='./wenflashSettings')return {currentWenflashSettings:()=>({order:'time'})};
    throw new Error(specifier);
   },
  });

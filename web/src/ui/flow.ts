@@ -8,7 +8,7 @@ import { lyricsBackgroundMode, preloadLyricSong } from './lyrics';
 import { readCrossfadeDebug } from './crossfadeDeck';
 import type { Theme } from './lumiere-folia/types';
 
-import { createOverlapScene } from './overlapScene';
+import { createOverlapScene, createWenflashScene } from './overlapScene';
 import { perfEvent, perfMark, perfOn } from './perfProbe';
 
 let previewPalette:string[]=[];
@@ -19,7 +19,7 @@ type Slot={scene:Pick<ReturnType<typeof createFlowScene>,'update'|'dispose'|'set
 /** At most two surfaces: the playing scene and one prepared/retiring neighbour. */
 export function createFlowStage():FlowStage {
  const root=document.createElement('div');root.className='lyrics-stage is-flow';
- let overlap=false;
+ let overlap: 'overlap' | 'wenflash' | false = false;
  let current:Slot|null=null,standby:Slot|null=null,outgoing:Slot|null=null;
  // 切歌最贵的一步不是换歌本身，是「为下一首新建一整只 Pixi 运行时」：新 WebGL 上下文 +
  // 云母/字形图集冷启动，实测一个 102 镜头的段落首帧要 430ms，而同一只运行时里重建同一段
@@ -66,7 +66,7 @@ export function createFlowStage():FlowStage {
    return pooled;
   }
   let slot:Slot;
-  const makeScene=overlap?createOverlapScene:createFlowScene;
+  const makeScene=overlap==='wenflash'?createWenflashScene:overlap?createOverlapScene:createFlowScene;
   const scene=makeScene(()=>{
    slot.ready=true;
    if(slot===current){root.classList.remove('is-failed');root.classList.add('is-ready','is-painted');}
@@ -163,7 +163,7 @@ export function createFlowStage():FlowStage {
  return {
   root,
   setPalette(colors){previewPalette=[...colors];palette=[...colors];const key=currentKey();for(const slot of [current,standby])if(slot?.song.trackKey===key&&JSON.stringify(slot.colors)!==JSON.stringify(colors)){slot.colors=[...colors];slot.scene.setPalette(colors);}},
-  setMode(mode:LumiereMode){const next=mode==='overlap';if(next!==overlap){deactivate();overlap=next;}},
+  setMode(mode:LumiereMode){const next=mode==='overlap'||mode==='wenflash'?mode:false;if(next!==overlap){deactivate();overlap=next;}},
   // 换歌滑出的旧画面不该被重新上色：它只剩 450ms，重建一次整场却正好落在切歌帧上。
   setTheme(next:Theme){perfEvent('flow.stage.setTheme');theme=next;for(const slot of [current,standby])slot?.scene.setTheme(next);},
   setSong(input){song=input;if(input)accept(input);root.classList.toggle('is-content',!!input&&(!overlap||input.lines.length>0));},

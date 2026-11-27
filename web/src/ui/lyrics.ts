@@ -2123,7 +2123,7 @@ export class LyricsView {
     const textOn = mode === 'text';
     const roomOn = mode === 'room';
     const vinylOn = mode === 'vinyl';
-    const flowOn = (mode === 'flow' || mode === 'overlap');
+    const flowOn = (mode === 'flow' || mode === 'overlap' || mode === 'wenflash');
     const poemOn = mode === 'poem';
     const pressureOn = mode === 'pressure';
     const anyOn = textOn || roomOn || vinylOn || flowOn || poemOn || pressureOn;
@@ -2153,12 +2153,14 @@ export class LyricsView {
     this.root.classList.toggle('is-room', roomOn);
     this.root.classList.toggle('is-vinyl', vinylOn);
     this.root.classList.toggle('is-flow', flowOn);
+    // 重合单独一个类：壁纸在背后时它要保留纸底（不能走 screen 混合，否则纸和字一起被滤掉）。
+    this.root.classList.toggle('is-overlap', mode === 'overlap' || mode === 'wenflash');
     this.root.classList.toggle('is-poem', poemOn);
     this.root.classList.toggle('is-pressure', pressureOn);
     // 进页暗场里那句「… · 准备中」按当前播放效果写：canvas 舞台全走 is-lumiere-text，
     // 固定写「纯字」会让重合 / 拼合也显示成纯字。CSS 里用 attr() 读这个属性。
     const stageLabel =
-      mode === 'overlap' ? '重合'
+      mode === 'wenflash' ? '文闪' : mode === 'overlap' ? '重合'
       : mode === 'flow' ? '拼合'
       : mode === 'text' ? '纯字'
       : mode === 'room' ? '房间'
@@ -2994,7 +2996,7 @@ export class LyricsView {
   private lumiereCoversLyrics(): boolean {
     const mode = lumiereMode();
     if (mode === 'off') return false;
-    const stage = mode === 'pressure' ? this.pressureStage : mode === 'poem' ? this.poemStage : (mode === 'flow' || mode === 'overlap') ? this.flowStage : mode === 'room' ? this.roomStage : mode === 'vinyl' ? this.vinylStage : this.lumiereText;
+    const stage = mode === 'pressure' ? this.pressureStage : mode === 'poem' ? this.poemStage : (mode === 'flow' || mode === 'overlap' || mode === 'wenflash') ? this.flowStage : mode === 'room' ? this.roomStage : mode === 'vinyl' ? this.vinylStage : this.lumiereText;
     if (!stage) return false;
     const classes = stage.root.classList;
     return classes.contains('is-on') && classes.contains('is-ready')

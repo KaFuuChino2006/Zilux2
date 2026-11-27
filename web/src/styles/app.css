@@ -87,9 +87,14 @@ img{display:block}
 .btn:hover{background:rgb(var(--overlay-rgb) / .12);color:var(--text);transform:translateY(-1px)}
 .btn.is-primary{background:linear-gradient(135deg,var(--accent-strong),var(--accent));border-color:transparent;color:var(--accent-contrast);font-weight:600}
 .btn.is-primary:hover{filter:brightness(1.06)}
-.playerbar-wrap{position:fixed;left:0;right:0;bottom:0;z-index:60;display:flex;justify-content:center;padding:0 18px 18px;pointer-events:none}
+.playerbar-wrap{position:fixed;left:0;right:0;bottom:0;z-index:60;display:flex;justify-content:center;padding:0 18px 18px;pointer-events:none;transition:transform 360ms cubic-bezier(.22,1,.36,1),opacity 240ms var(--ease),visibility 0s linear}
 .playerbar{pointer-events:auto;width:min(1020px,88vw);height:72px;display:flex;align-items:center;gap:14px;padding:0 14px 0 12px;border-radius:20px;background:var(--panel);border:1px solid var(--line);box-shadow:var(--shadow-2);backdrop-filter:blur(28px);transition: transform var(--motion-fast) var(--ease),opacity var(--motion-fast) var(--ease)}
 .playerbar.is-hidden{transform:translateY(120%);opacity:0;pointer-events:none}
+/* 歌词页非默认效果下整组底部控件（播放条、下一首卡、队列按钮）一起收起。
+   用 wrap 统一做位移/淡出，避免只藏播放条、旁边控件留在画面上。 */
+.playerbar-wrap.is-auto-hidden{opacity:0;transform:translateY(calc(100% + 30px));visibility:hidden;pointer-events:none;transition:transform 360ms cubic-bezier(.22,1,.36,1),opacity 220ms var(--ease),visibility 0s linear 360ms}
+.playerbar-wrap.is-auto-hidden *{pointer-events:none!important}
+@media (prefers-reduced-motion: reduce){.playerbar-wrap{transition:none}}
 .pb-cover{width:52px;height:52px;border-radius:12px;overflow:hidden;flex:none;background:var(--surface-hover)}
 .pb-cover img{width:100%;height:100%;object-fit:cover}
 .pb-meta{min-width:0;width:190px;flex:none}
@@ -722,6 +727,15 @@ to{opacity:1;transform:none}
 }
 .lyrics-close{position:absolute;top:22px;right:26px;z-index:6;width:38px;height:38px;display:grid;place-items:center;border-radius:50%;border:1px solid rgb(var(--overlay-rgb) / .16);background:rgb(var(--ink-rgb) / .34);color:var(--text);cursor:pointer;transition: background var(--dur-mid) var(--ease),transform var(--dur-mid) var(--ease)}
 .lyrics-close:hover{background:rgb(var(--overlay-rgb) / .16);transform:rotate(90deg)}
+/* 底部整组控件自动收起时，右上角「收起歌词」也跟着淡出；鼠标移动时同轨迹淡入。 */
+@keyframes lyrics-close-auto-out{0%{opacity:1;visibility:visible}to{opacity:0;visibility:hidden}}
+@keyframes lyrics-close-auto-in{0%{opacity:0;visibility:visible}to{opacity:1;visibility:visible}}
+.lyrics-view.is-chrome-hidden .lyrics-close{animation:lyrics-close-auto-out 220ms var(--ease) both;pointer-events:none}
+.lyrics-view:not(.is-chrome-hidden) .lyrics-close{animation:lyrics-close-auto-in 220ms var(--ease) both}
+@media (prefers-reduced-motion: reduce){
+  .lyrics-view.is-chrome-hidden .lyrics-close{animation:none;opacity:0;visibility:hidden;pointer-events:none}
+  .lyrics-view:not(.is-chrome-hidden) .lyrics-close{animation:none;opacity:1;visibility:visible}
+}
 .lyrics-frame{position:relative;z-index:2;display:flex;align-items:center;gap:clamp(36px,5vw,92px);height:100%;padding:6vh 6vw 7vh 5vw;box-sizing:border-box}
 .lyrics-left{flex:0 0 auto;width:clamp(220px,26vw,380px);display:flex;flex-direction:column;gap:20px}
 .lyrics-cover-wrap{width:100%;aspect-ratio:1;border-radius:22px;overflow:hidden;box-shadow:0 30px 70px rgb(var(--ink-rgb) / .55);animation: lyrics-cover-in var(--motion-slow) var(--ease-pop) both}
@@ -1360,6 +1374,9 @@ to{transform:translate(28px);opacity:0}
   opacity: 1;
   filter: blur(72px) saturate(1.25) brightness(var(--lyrics-bg-brightness, .92));
   transform: scale(1.12);
+  /* 关掉「随歌曲封面」时这一层要从 0 淡回 1：没有过渡它会瞬间盖上来，
+     把外面 .app-bg 的淡出整个吃掉，看起来就是「切关闭没动画」。 */
+  transition: opacity 0.75s cubic-bezier(0.33, 0, 0.35, 1);
 }
 .lyrics-view .lyrics-scrim {
   background: linear-gradient(
@@ -1778,12 +1795,24 @@ body,
   opacity: 1;
 }
 
+/* 关闭背景时的淡出：对称缓动 + 0.75s。
+   只撤 .is-app-bg 会回到 .app-bg 的 `transition: opacity .7s var(--ease)`，
+   那条缓动是强 ease-out（前 150ms 走掉九成），看着像直接没了。
+   两条 !important 同权重时靠后面那条赢，所以这里必须把特异性提到 4 段。 */
+.app.is-app-bg-out.is-app-bg .app-bg,
+.app.is-app-bg-out .app-bg {
+  opacity: 0;
+  transition: opacity 0.9s cubic-bezier(0.33, 0, 0.35, 1);
+}
+
 /* 封面背景不要压暗：去掉白色薄纱，铺满不透明 */
 .app-bg::after {
   display: none !important;
 }
+/* 这里不要 !important：加了它，关闭时任何过渡/内联动画都压不过它，
+   只能等类名被摘掉那一帧直接跳 0，看着就是硬切。 */
 .app.is-app-bg .app-bg {
-  opacity: 1 !important;
+  opacity: 1;
 }
 .app.is-app-bg .app-bg-fade.is-on {
   opacity: 1;

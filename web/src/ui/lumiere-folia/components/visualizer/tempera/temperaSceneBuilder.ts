@@ -1,5 +1,16 @@
 import { applyFlowPalette, type FlowSettings } from '../../../../flowSettings';
 import { overlapFx } from '../../../../overlapSettings';
+import {
+    wenflashArrangement,
+    wenflashGraphicShape,
+    wenflashLinePlacement,
+    wenflashLineDirection,
+    wenflashLineDirectionMode,
+    wenflashTextColor,
+    wenflashTextColorChance,
+    wenflashTextColorCount,
+    wenflashTextColorMode,
+} from '../../../../wenflashSettings';
 import { perfMark, perfOn } from '../../../../perfProbe';
 import type { TemperaTuning, Theme } from '../../../types';
 import { resolveThemeFontStack, resolveThemeFontWeight } from '../../../utils/fontStacks';
@@ -9,8 +20,8 @@ import { hashTemperaSeed, temperaHash01 } from './temperaRandom';
 import { easeTemperaEnter } from './temperaMotion';
 import { resolveTemperaPalette, type TemperaPalette } from './temperaPalette';
 import { buildTemperaBlocks, type TemperaBlocksView } from './temperaBlocks';
-import { isTemperaLayoutSegment, resolveTemperaLayout } from './temperaLayout';
-import type { TemperaGlyphPlacement } from './temperaLayout';
+import { isTemperaLayoutSegment, resolveTemperaArrangement, resolveTemperaLayout } from './temperaLayout';
+import type { TemperaGlyphPlacement, TemperaLineAnchor } from './temperaLayout';
 import {
     buildTemperaFragmentViews,
     buildTemperaTextViews,
@@ -43,6 +54,7 @@ import {
     type TemperaGradientFill,
 } from './temperaShapes';
 import { createSonnetPostProcessFilters } from '../sonnet/sonnetPostProcess';
+import { buildPhraseScore, type PhraseScore } from './temperaPhraseScore';
 
 // @note Version Control: Project Folia version 0.6.13-750617
 
@@ -61,6 +73,7 @@ const createTemperaTextFilter = (
     palette: TemperaPalette,
     inversion: boolean,
     tintAnchor?: import('pixi.js').Sprite,
+    preserveColor = false,
 ): import('pixi.js').Filter | null => {
     if (!inversion && !palette.textGradient) return null;
     return createTemperaDifferenceFilter(pixi, {
@@ -69,6 +82,7 @@ const createTemperaTextFilter = (
         tint: palette.textGradient,
         tintAnchor,
         inversion,
+        preserveColor,
     });
 };
 
@@ -173,6 +187,38 @@ export interface TemperaShotView {
     orientation: number;
     /** Carries the difference inversion filter; the runtime clears it on destroy. */
     textLayer: import('pixi.js').Container;
+    /** One full-phrase block above the type, swept off in one pass; 文闪 only. */
+    lineFlashBox: import('pixi.js').Graphics | null;
+    /** Whether the phrase runs top-to-bottom, so the plate sweeps downwards. */
+    lineFlashVertical: boolean;
+    /** Union of the phrase's glyph ink boxes, in `lineFlashBox` local coordinates. */
+    lineFlashBoxRect: {x: number; y: number; width: number; height: number} | null;
+    /** Glyphs that own an ink box, ordered left to right for the line wipe. */
+    lineFlashOrder: TemperaGlyphView[];
+    /** Font size the line block expands from, used for its block-padding setting. */
+    lineFlashBoxFontSize: number;
+    /** Palette colours the line block can use; 文闪 only. */
+    lineFlashBoxColors: {accent: string; ink: string; paper: string} | null;
+    /** Cache key for the line block's redraw. */
+    lineFlashBoxSignature?: string;
+    phraseScore: PhraseScore | null;
+    glyphAccents: import('pixi.js').Graphics | null;
+    /** 文闪 only: the sentence's marquee frame, two glow lines chasing each other. */
+    marquee: {
+        glow: import('pixi.js').Graphics;
+        core: import('pixi.js').Graphics;
+        blur: import('pixi.js').BlurFilter;
+        rect: {x: number; y: number; width: number; height: number};
+        fontSize: number;
+    } | null;
+    /** 文闪 only: one glow line under the sentence. */
+    bottomLine: {
+        glow: import('pixi.js').Graphics;
+        core: import('pixi.js').Graphics;
+        blur: import('pixi.js').BlurFilter;
+        rect: {x: number; y: number; width: number; height: number};
+        fontSize: number;
+    } | null;
     /** Grains of ink flicked off each character as it lands; 重合 only, null elsewhere. */
     specks: import('pixi.js').Graphics | null;
     /** Colour of those grains: the palette's ink, so they read as spray off the type. */
@@ -206,6 +252,32 @@ export interface TemperaShotView {
     revealDoneTime: number;
 }
 
+/** Union of the phrase's measured ink boxes, in the shot container's coordinates. */
+function resolveLineFlashBoxGeometry(glyphs: TemperaGlyphView[]) {
+    let left = Infinity;
+    let top = Infinity;
+    let right = -Infinity;
+    let bottom = -Infinity;
+    let fontSize = 0;
+    let colors: {accent: string; ink: string; paper: string} | null = null;
+    for (const glyph of glyphs) {
+        const ink = glyph.flashBoxRect;
+        if (!ink) continue;
+        left = Math.min(left, glyph.baseX + ink.x);
+        top = Math.min(top, glyph.baseY + ink.y);
+        right = Math.max(right, glyph.baseX + ink.x + ink.width);
+        bottom = Math.max(bottom, glyph.baseY + ink.y + ink.height);
+        fontSize = Math.max(fontSize, Number(glyph.display.style.fontSize) || 0);
+        if (!colors && glyph.flashBoxColors) colors = glyph.flashBoxColors;
+    }
+    if (!Number.isFinite(left) || !Number.isFinite(top) || right <= left || bottom <= top) return null;
+    return {
+        rect: {x: left, y: top, width: right - left, height: bottom - top},
+        fontSize,
+        colors,
+    };
+}
+
 export interface TemperaSceneView extends TemperaSceneFilterTarget {
     paragraph: TemperaParagraph;
     container: import('pixi.js').Container;
@@ -233,6 +305,7 @@ export interface TemperaSceneBuildOptions {
     /** "重合" stage: every lyric line gets its own place on the page, and the camera centres
      * the line being sung. Off for the flow stage, whose compositions own their layout. */
     lyricsOnly?: boolean;
+    glyphsOnly?: boolean;
     /** Cover-art colours for the gradient colour mode; empty falls back to the theme hues. */
     coverColors: string[];
     /** Loaded textures for the user's placed images, keyed by placement id. */
@@ -511,14 +584,90 @@ const applyTemperaScenePostProcess = (
 /** Hex mix used for the overlap ink wash; palette colours are always #rrggbb. */
 const mixHex = (from: string, to: string, amount: number): string => {
     const parse = (value: string) => {
+        const rgb = /^rgba?\(([^)]+)\)/i.exec(value.trim());
+        if (rgb) {
+            const parts = rgb[1].split(/[\s,/]+/).filter(Boolean).slice(0, 3).map(part => Number.parseFloat(part));
+            if (parts.length === 3 && parts.every(part => Number.isFinite(part))) return parts;
+        }
         const hex = value.replace('#', '');
         const full = hex.length === 3 ? hex.split('').map(c => c + c).join('') : hex;
-        return [0, 2, 4].map(index => parseInt(full.slice(index, index + 2), 16));
+        return [0, 2, 4].map(index => {
+            const channel = parseInt(full.slice(index, index + 2), 16);
+            return Number.isFinite(channel) ? channel : 0;
+        });
     };
     const a = parse(from);
     const b = parse(to);
-    const channel = (index: number) => Math.round(a[index] + (b[index] - a[index]) * amount);
+    const channel = (index: number) => Math.min(255, Math.max(0, Math.round(a[index] + (b[index] - a[index]) * amount)));
     return `#${[0, 1, 2].map(index => channel(index).toString(16).padStart(2, '0')).join('')}`;
+};
+
+const rgbOfHex = (value: string): [number, number, number] => {
+    const rgb = /^rgba?\(([^)]+)\)/i.exec(value.trim());
+    if (rgb) {
+        const parts = rgb[1].split(/[\s,/]+/).filter(Boolean).slice(0, 3).map(part => Number.parseFloat(part));
+        if (parts.length === 3 && parts.every(Number.isFinite)) return [parts[0] / 255, parts[1] / 255, parts[2] / 255];
+    }
+    const hex = value.replace('#', '');
+    const full = hex.length === 3 ? hex.split('').map(c => c + c).join('') : hex;
+    return [0, 2, 4].map(index => {
+        const channel = parseInt(full.slice(index, index + 2), 16);
+        return Number.isFinite(channel) ? channel / 255 : 0;
+    }) as [number, number, number];
+};
+
+const hslOfRgb = ([r, g, b]: [number, number, number]): [number, number, number] => {
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    const l = (max + min) / 2;
+    if (max === min) return [0, 0, l];
+    const d = max - min;
+    const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    let h = 0;
+    if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    return [h / 6, s, l];
+};
+
+const hexOfHsl = ([h, s, l]: [number, number, number]): string => {
+    const hue = (h + 1) % 1;
+    const sat = Math.min(1, Math.max(0, s));
+    const light = Math.min(1, Math.max(0, l));
+    const q = light < 0.5 ? light * (1 + sat) : light + sat - light * sat;
+    const p = 2 * light - q;
+    const channel = (offset: number) => {
+        let t = hue + offset;
+        if (t < 0) t += 1;
+        if (t > 1) t -= 1;
+        const value = t < 1 / 6 ? p + (q - p) * 6 * t
+            : t < 1 / 2 ? q
+            : t < 2 / 3 ? p + (q - p) * (2 / 3 - t) * 6
+            : p;
+        return Math.round(value * 255).toString(16).padStart(2, '0');
+    };
+    return `#${channel(1 / 3)}${channel(0)}${channel(-1 / 3)}`;
+};
+
+/** 色盘对角：保持强调色的饱和度，明度贴住封面主墨色，避免互补色在黑底上发脏。 */
+const complementHex = (value: string, lightnessFrom: string): string => {
+    const [h, s] = hslOfRgb(rgbOfHex(value));
+    const [, , l] = hslOfRgb(rgbOfHex(lightnessFrom));
+    return hexOfHsl([(h + 0.5) % 1, Math.max(0.35, s), l]);
+};
+
+/**
+ * 文闪的文字异色色盘：从锚点色的色相出发，沿色环均匀铺开，再轻微错开明度，
+ * 让同一句里抽中的字彼此可辨，而不是只在一个“变化色”上打转。
+ */
+const buildWenflashTextColorPalette = (seed: string, count: number): string[] => {
+    const [h, s, l] = hslOfRgb(rgbOfHex(seed));
+    const n = Math.max(2, Math.min(32, Math.round(count)));
+    return Array.from({length: n}, (_, index) => {
+        const hue = (h + index / n + 0.025 * Math.sin(index * 2.1)) % 1;
+        const sat = Math.min(0.96, Math.max(0.55, s * 0.9 + 0.1));
+        const light = Math.min(0.78, Math.max(0.42, l + ((index % 3) - 1) * 0.08));
+        return hexOfHsl([hue, sat, light]);
+    });
 };
 
 /**
@@ -529,8 +678,48 @@ const applyOverlapInkTint = (
     placements: TemperaGlyphPlacement[],
     palette: { ink: string; accent: string },
     enabled: boolean | undefined,
+    wenflash = false,
 ) => {
     if (!enabled) return placements;
+    if (wenflash) {
+        const mode = wenflashTextColorMode();
+        const chance = wenflashTextColorChance();
+        const base = mode === 'custom'
+            ? wenflashTextColor()
+            : mode === 'complement'
+                ? complementHex(palette.accent, palette.ink)
+                : palette.ink;
+        const seed = mode === 'custom'
+            ? wenflashTextColor()
+            : mode === 'complement'
+                ? base
+                : palette.accent;
+        if (mode === 'cover' && chance <= 0.0001) {
+            // 保持原有的封面墨色渐变；只有设置概率时才按字分色。
+        } else {
+            const candidates = placements
+                .map((placement, index) => ({placement, index}))
+                .filter(({placement}) => !placement.color);
+            // 按整句普通字数量抽取，而不是逐字独立抛硬币：30% 就是这一句 30% 的字，
+            // 不会出现短句里一个都没有、长句里却连成一片的观感。
+            const target = Math.round(candidates.length * chance);
+            const ranked = candidates.map(({placement, index}) => ({
+                index,
+                roll: temperaHash01(hashTemperaSeed(
+                    `${placement.rowIndex}:${placement.segmentIndex}:${placement.startTime.toFixed(3)}:${placement.char}:text-color-roll`,
+                ), 0, 0),
+            })).sort((a, b) => a.roll - b.roll);
+            const paletteColors = buildWenflashTextColorPalette(seed, wenflashTextColorCount());
+            const chosen = new Map<number, string>();
+            ranked.slice(0, target).forEach((entry, index) => {
+                chosen.set(entry.index, paletteColors[index % paletteColors.length]);
+            });
+            return placements.map((placement, index) => {
+                if (placement.color) return placement;
+                return {...placement, tint: chosen.get(index) ?? base};
+            });
+        }
+    }
     const strength = overlapFx().lyricTint;
     const last = Math.max(1, placements.length - 1);
     return placements.map((placement, index) => ({
@@ -890,18 +1079,19 @@ export function* temperaSceneSteps(
 
     // Threaded so two neighbouring shots do not land on the same picture.
     let lastImageId: string | null = null;
+    // 文闪链式排版：上一句最后一个字的锚点，跨 shot 延续。
+    let previousLineAnchor: TemperaLineAnchor | null = null;
     const shots: TemperaSceneView['shots'] = [];
     for (let shotIndex = 0; shotIndex < paragraph.shots.length; shotIndex += 1) {
         const shot = paragraph.shots[shotIndex];
         const shotContainer = new Container();
         // A shot normally shows one half-phrase slice; whole-line mode deliberately trades
         // some of that type scale for keeping the source lyric line together.
-        const sliceSegments = shot.slices.map(slice => ({
-            slice,
-            segments: paragraph.lines.find(item => item.sourceIndex === slice.lineIndex)
-                ?.segments.slice(slice.segmentStart, slice.segmentEnd)
-                .filter(isTemperaLayoutSegment) ?? [],
-        })).filter(entry => entry.segments.length > 0);
+        const sliceSegments = shot.slices.map(slice => {
+            const segments = paragraph.lines.find(item => item.sourceIndex === slice.lineIndex)
+                ?.segments.slice(slice.segmentStart, slice.segmentEnd) ?? [];
+            return { slice, segments: segments.filter(isTemperaLayoutSegment) };
+        }).filter(entry => entry.segments.length > 0);
         const linesSegments = sliceSegments.map(entry => entry.segments);
         const segmentColors = sliceSegments.map(entry => {
             const ranges = colorRangesByLine.get(entry.slice.lineIndex) ?? [];
@@ -953,6 +1143,17 @@ export function* temperaSceneSteps(
         const textLayer = new Container();
         const echoLayer = new Container();
         const keywordLayer = new Container();
+        // Every glyph's halo, above the type: keywords use a moving colour ramp, the rest a
+        // faint solid bloom. Keeping it out of textLayer stops the difference filter reading it.
+        const glowLayer = new Container();
+        // 文闪 only: the solid flash blocks live over the type, above the text, echo and keyword
+        // layers so they can cover the glyph. The layer is separate from `textLayer` so the
+        // blocks are never fed through the difference filter.
+        const flashBoxLayer = options.glyphsOnly ? new Container() : null;
+        const glyphAccents = options.glyphsOnly && !options.staticMode ? new Graphics() : null;
+        // 文闪 only: the sentence's marquee frame, two glow lines chasing each other around
+        // the line box. It sits above the blocks so the frame stays clean while a block sweeps.
+        const marqueeLayer = options.glyphsOnly ? new Container() : null;
         // Order matters. Everything the inversion filter should read must render before the
         // text layer - that includes the decorative watermark, which is the point of it: the
         // lyric flips colour where it crosses those strokes. Nothing glyph-shaped may go there
@@ -967,15 +1168,28 @@ export function* temperaSceneSteps(
             textLayer,
             echoLayer,
             keywordLayer,
+            glowLayer,
             images.front,
         );
+        // 纯色块要盖住文字：放在文字/残影/关键词/辉光之后，front 插画之前。
+        if (flashBoxLayer) shotContainer.addChildAt(flashBoxLayer, shotContainer.getChildIndex(glowLayer) + 1);
+        if (marqueeLayer) shotContainer.addChild(marqueeLayer);
+        if (glyphAccents) shotContainer.addChildAt(glyphAccents, shotContainer.getChildIndex(textLayer));
         // Wet-ink specks sit in front of everything: they are the only mark allowed over the
         // type, and at this size they read as paper spray rather than as a layer on top.
-        const specks = options.lyricsOnly && overlapFx().specks > 0 ? new Graphics() : null;
+        const decorate = options.lyricsOnly && !options.glyphsOnly;
+        if (options.glyphsOnly) {
+            blocks.container.renderable = images.back.renderable = images.front.renderable = watermarkLayer.renderable = false;
+        }
+        const specks = decorate && overlapFx().specks > 0 ? new Graphics() : null;
         if (specks) shotContainer.addChild(specks);
 
         const layoutAt = perfOn() ? performance.now() : 0;
+        const arrangement = options.glyphsOnly
+            ? resolveTemperaArrangement(wenflashArrangement(), shot.slices[0]?.lineIndex ?? shotIndex)
+            : 'horizontal';
         const placements = resolveTemperaLayout({
+            centered: options.glyphsOnly,
             lines: linesSegments,
             shotKind: shot.kind,
             width,
@@ -986,12 +1200,19 @@ export function* temperaSceneSteps(
             seed: shotSeed,
             segmentColors,
             settleStretch: tuning.glyphSettleStretch,
+            arrangement,
+            graphicShape: options.glyphsOnly ? wenflashGraphicShape() : 'ring',
+            chained: options.glyphsOnly,
+            previousLineAnchor,
+            linePlacement: options.glyphsOnly ? wenflashLinePlacement() : 'follow',
+            lineDirection: options.glyphsOnly ? wenflashLineDirection() : 'south',
+            lineDirectionMode: options.glyphsOnly ? wenflashLineDirectionMode() : 'fixed',
         });
         if (layoutAt) { layoutMs += performance.now() - layoutAt; }
         // Serial position in the song, not the lyric line: with 拆句 on, one line is several shots
         // and each one needs its own spot (see resolveOverlapPlacement).
         const placementIndex = paragraphIndex * 32 + shotIndex;
-        const placement = options.lyricsOnly
+        const placement = options.lyricsOnly && !options.glyphsOnly
             ? resolveOverlapPlacement(
                 placementIndex,
                 shot.slices[0]?.lineIndex ?? shotIndex,
@@ -999,11 +1220,35 @@ export function* temperaSceneSteps(
                 hashTemperaSeed(options.programSeed),
             )
             : {placements, orientation: 0, bracket: null, underline: null};
-        const placedGlyphs = applyOverlapInkTint(placement.placements, palette, options.lyricsOnly);
+        const placedGlyphs = applyOverlapInkTint(placement.placements, palette, options.lyricsOnly, options.glyphsOnly === true);
+        if (options.glyphsOnly && arrangement !== 'graphic' && placedGlyphs.length > 0) {
+            const last = placedGlyphs[placedGlyphs.length - 1];
+            let lineLeft = Number.POSITIVE_INFINITY;
+            let lineRight = Number.NEGATIVE_INFINITY;
+            let lineTop = Number.POSITIVE_INFINITY;
+            let lineBottom = Number.NEGATIVE_INFINITY;
+            for (const glyph of placedGlyphs) {
+                lineLeft = Math.min(lineLeft, glyph.x - glyph.width / 2);
+                lineRight = Math.max(lineRight, glyph.x + glyph.width / 2);
+                lineTop = Math.min(lineTop, glyph.y - glyph.fontSize / 2);
+                lineBottom = Math.max(lineBottom, glyph.y + glyph.fontSize / 2);
+            }
+            previousLineAnchor = {
+                left: last.x - last.width / 2,
+                bottom: last.y + last.fontSize / 2,
+                lineLeft,
+                lineRight,
+                lineTop,
+                lineBottom,
+                centerX: (lineLeft + lineRight) / 2,
+                centerY: (lineTop + lineBottom) / 2,
+                fontSize: last.fontSize,
+            };
+        }
         let bracket: TemperaBracketView | null = null;
         const lineIndex = shot.slices[0]?.lineIndex ?? shotIndex;
         const accentSeed = hashTemperaSeed(options.programSeed);
-        if (placement.bracket && overlapFx().showBracket
+        if (decorate && placement.bracket && overlapFx().showBracket
             && temperaHash01(accentSeed, lineIndex, 271) < overlapFx().bracketChance) {
             const frame = placement.bracket;
             const group = new Container();
@@ -1057,7 +1302,7 @@ export function* temperaSceneSteps(
             bracket = {group, right, style: cross ? 'cross' : 'bracket', horizontal, vertical, top, bottom, overshoot, half, blur, delay};
         }
         let underline: TemperaUnderlineView | null = null;
-        if (placement.underline && overlapFx().showUnderline
+        if (decorate && placement.underline && overlapFx().showUnderline
             && temperaHash01(accentSeed, lineIndex, 277) < overlapFx().underlineChance) {
             const frame = placement.underline;
             const group = new Container();
@@ -1090,8 +1335,50 @@ export function* temperaSceneSteps(
             textLayer,
             echoLayer,
             keywordLayer,
+            glowLayer,
+            glowAll: options.glyphsOnly,
+            flashBoxLayer: flashBoxLayer ?? undefined,
         });
         if (glyphAt) { glyphMs += performance.now() - glyphAt; }
+        // A whole-phrase block sits above the individual glyph blocks: it is the one that
+        // covers the line and sweeps off in one quick pass of its own.
+        const lineGeometry = flashBoxLayer ? resolveLineFlashBoxGeometry(glyphs) : null;
+        const phraseScore = lineGeometry && !options.staticMode && temperaHash01(shotSeed, 0, 1747) < 0.68
+            ? buildPhraseScore(new Graphics(), glyphs, lineGeometry.rect, lineGeometry.fontSize, arrangement === 'vertical')
+            : null;
+        if (phraseScore) shotContainer.addChildAt(phraseScore.pen, shotContainer.getChildIndex(textLayer));
+        const lineFlashOrder = lineGeometry
+            ? glyphs.slice().sort((a, b) => (
+                (a.baseX + (a.flashBoxRect?.x ?? 0)) - (b.baseX + (b.flashBoxRect?.x ?? 0))
+            ))
+            : [];
+        const lineFlashBox = lineGeometry ? new Graphics() : null;
+        if (lineFlashBox && flashBoxLayer) {
+            lineFlashBox.visible = false;
+            flashBoxLayer.addChild(lineFlashBox);
+        }
+        // 跑马框：两条辉光线沿整句墨迹框追逐。几何只在这里取一次，逐帧只重画线。
+        const marquee = lineGeometry && marqueeLayer ? (() => {
+            const glow = new Graphics();
+            const blur = new pixi.BlurFilter({strength: 0, quality: 2, resolution: 1});
+            blur.padding = 24;
+            glow.filters = [blur];
+            const core = new Graphics();
+            glow.visible = core.visible = false;
+            marqueeLayer.addChild(glow, core);
+            return {glow, core, blur, rect: lineGeometry.rect, fontSize: lineGeometry.fontSize};
+        })() : null;
+        // 底部光线：一条同色辉光线画在整句下方，和跑马框共用一层。
+        const bottomLine = lineGeometry && marqueeLayer ? (() => {
+            const glow = new Graphics();
+            const blur = new pixi.BlurFilter({strength: 0, quality: 2, resolution: 1});
+            blur.padding = 24;
+            glow.filters = [blur];
+            const core = new Graphics();
+            glow.visible = core.visible = false;
+            marqueeLayer.addChild(glow, core);
+            return {glow, core, blur, rect: lineGeometry.rect, fontSize: lineGeometry.fontSize};
+        })() : null;
         // Under the type: one hairline block per character, the way a compositor sets type
         // into a forme. It is drawn under the text so the character sits in the box rather than
         // on top of a rectangle, and it uses the rendered bounds so a turned glyph's box turns
@@ -1099,7 +1386,7 @@ export function* temperaSceneSteps(
         const overlap = overlapFx();
         let moulds: import('pixi.js').Graphics | null = null;
         const mouldGlyphs: number[] = [];
-        if (options.lyricsOnly && overlap.showMould && glyphs.length > 0
+        if (decorate && overlap.showMould && glyphs.length > 0
             && temperaHash01(accentSeed, lineIndex, 357) < overlap.mouldChance) {
             // A forme is never the whole sentence: the compositor sets one short run of type
             // into the box and leaves the rest on the page. Two or three adjacent characters,
@@ -1118,7 +1405,7 @@ export function* temperaSceneSteps(
         // hairlines, deterministic per line, that drift out, turn a little and fade. Nothing
         // is simulated frame to frame, so scrubbing back replays the same field.
         let field: TemperaFieldView | null = null;
-        if (options.lyricsOnly && overlap.showField && glyphs.length > 0
+        if (decorate && overlap.showField && glyphs.length > 0
             && temperaHash01(accentSeed, lineIndex, 371) < overlap.fieldChance) {
             const graphics = new Graphics();
             shotContainer.addChild(graphics);
@@ -1133,7 +1420,7 @@ export function* temperaSceneSteps(
         let sealSize = 0;
         let sealRotation = 0;
         let sealStart = 0;
-        if (options.lyricsOnly && overlap.showSeal && glyphs.length > 0
+        if (decorate && overlap.showSeal && glyphs.length > 0
             && temperaHash01(accentSeed, lineIndex, 367) < overlap.sealChance) {
             // The seal belongs at the bottom-right corner of the *last character*, not at the
             // bounding box of the whole line: measure inside the line's own writing frame, then
@@ -1169,7 +1456,7 @@ export function* temperaSceneSteps(
         // Above the type: the plate inverts whatever it covers. Its box is measured in the
         // line's own writing frame, so a turned or vertical line is wrapped along the baseline
         // rather than by a screen-aligned box cutting across it.
-        const mask = options.lyricsOnly
+        const mask = decorate
             ? resolveOverlapMask(
                 pixi,
                 shot.slices[0]?.lineIndex ?? shotIndex,
@@ -1215,24 +1502,33 @@ export function* temperaSceneSteps(
         let tintAnchor: import('pixi.js').Sprite | undefined;
         if (palette.textGradient && glyphs.length) {
             // Map the ramp across the finished layout, including letters revealed later.
-            const cos = Math.cos(placement.orientation);
-            const sin = Math.sin(placement.orientation);
+            // Horizontal lines ramp left-to-right along the writing axis; vertical lines
+            // ramp top-to-bottom, so the axis and the anchor turn a quarter turn with them.
+            const verticalText = arrangement === 'vertical';
+            const axisX = verticalText ? -Math.sin(placement.orientation) : Math.cos(placement.orientation);
+            const axisY = verticalText ? Math.cos(placement.orientation) : Math.sin(placement.orientation);
             let left = Infinity;
             let right = -Infinity;
             for (const glyph of glyphs) {
-                const center = glyph.baseX * cos + glyph.baseY * sin;
-                const half = glyph.display.width / 2;
+                const center = glyph.baseX * axisX + glyph.baseY * axisY;
+                const half = (verticalText ? glyph.display.height : glyph.display.width) / 2;
                 left = Math.min(left, center - half);
                 right = Math.max(right, center + half);
             }
             tintAnchor = new pixi.Sprite(pixi.Texture.WHITE);
             tintAnchor.renderable = false;
-            tintAnchor.position.set(left * cos, left * sin);
-            tintAnchor.rotation = placement.orientation;
+            tintAnchor.position.set(left * axisX, left * axisY);
+            tintAnchor.rotation = placement.orientation + (verticalText ? Math.PI / 2 : 0);
             tintAnchor.width = Math.max(1, right - left);
             textLayer.addChild(tintAnchor);
         }
-        const textFilter = createTemperaTextFilter(pixi, palette, tuning.textInversion, tintAnchor);
+        const textFilter = createTemperaTextFilter(
+            pixi,
+            palette,
+            tuning.textInversion,
+            tintAnchor,
+            options.glyphsOnly === true && wenflashTextColorChance() > 0.0001,
+        );
         if (textFilter) {
             textLayer.filters = [textFilter];
             postProcessFilters.push(textFilter);
@@ -1245,16 +1541,16 @@ export function* temperaSceneSteps(
 
         shotContainer.pivot.set(width / 2, height / 2);
         const penStyles = ['ticks', 'beads', 'stitch', 'rings', 'chevron', 'diamond'] as const;
-        const interGlyphStyles = options.lyricsOnly ? penStyles.filter((style, index) =>
+        const interGlyphStyles = decorate ? penStyles.filter((style, index) =>
             temperaHash01(accentSeed, lineIndex, 953 + index * 47) < overlap[`${style}Chance`]) : [];
-        const progressArc = options.lyricsOnly && overlap.showProgressArc && glyphs.length
+        const progressArc = decorate && overlap.showProgressArc && glyphs.length
             && temperaHash01(accentSeed, lineIndex, 1291) < overlap.progressArcChance
             ? new Graphics() : null;
         const progressHalo = progressArc ? new Graphics() : null;
         const interGlyph = glyphs.length && interGlyphStyles.length ? new Graphics() : null;
         if (interGlyph) shotContainer.addChild(interGlyph);
         let lyricMarks: import('pixi.js').Container | null = null;
-        if (options.lyricsOnly && overlap.showLyricMarks && glyphs.length
+        if (decorate && overlap.showLyricMarks && glyphs.length
             && temperaHash01(accentSeed, lineIndex, 817) < 0.45) {
             const nextLine = paragraph.lines.find(line => line.sourceIndex > lineIndex)?.sourceIndex ?? options.followingLine;
             if (nextLine !== undefined) {
@@ -1298,6 +1594,16 @@ export function* temperaSceneSteps(
             frameScale: 1,
             orientation: placement.orientation,
             textLayer,
+            lineFlashBox,
+            lineFlashVertical: arrangement === 'vertical',
+            lineFlashBoxRect: lineGeometry?.rect ?? null,
+            lineFlashOrder,
+            lineFlashBoxFontSize: lineGeometry?.fontSize ?? 0,
+            lineFlashBoxColors: lineGeometry?.colors ?? null,
+            phraseScore,
+            glyphAccents,
+            marquee,
+            bottomLine,
             specks,
             speckColor: palette.ink,
             bracket,

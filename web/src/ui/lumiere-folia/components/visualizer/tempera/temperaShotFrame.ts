@@ -1,3 +1,72 @@
+import {
+    wenflashBlurAmount,
+    wenflashDecorIntensity,
+    wenflashBlurDelay,
+    wenflashGlowFlowScale,
+    wenflashGlowFlowSpeed,
+    wenflashGlowColorMode,
+    wenflashGlowColors,
+    wenflashGlowPlain,
+    wenflashGlowRadius,
+    wenflashGlowStrength,
+    wenflashBlockAlpha,
+    wenflashBlockPadding,
+    wenflashBottomLine,
+    wenflashBottomLineBrake,
+    wenflashBottomLineChance,
+    wenflashBottomLineFade,
+    wenflashBottomLineGlow,
+    wenflashBottomLineLength,
+    wenflashBottomLineOffset,
+    wenflashBottomLineRun,
+    wenflashBottomLineSpeed,
+    wenflashBottomLineWidth,
+    wenflashEntryChance,
+    wenflashEntryDelay,
+    wenflashEntryBlurAmount,
+    wenflashEntryBlurChance,
+    wenflashEntryBlurDuration,
+    wenflashEntrySize,
+    wenflashEntryStyle,
+    wenflashEntryTime,
+    wenflashEntryZoom,
+    wenflashFlashCount,
+    wenflashFlashDark,
+    wenflashFlashDim,
+    wenflashFlashWindow,
+    wenflashHollowLinger,
+    wenflashHollowLingerChance,
+    wenflashHollowLingerDuration,
+    wenflashLineBlockAlpha,
+    wenflashLineBlockChance,
+    wenflashLineBlockPadding,
+    wenflashLineBlockSweep,
+    wenflashMarquee,
+    wenflashMarqueeBrake,
+    wenflashMarqueeChance,
+    wenflashMarqueeDuration,
+    wenflashMarqueeEntryDelay,
+    wenflashMarqueeEntryFade,
+    wenflashMarqueeEntryScale,
+    wenflashMarqueeGlow,
+    wenflashMarqueeLength,
+    wenflashMarqueePadding,
+    wenflashMarqueeRun,
+    wenflashMarqueeWidth,
+    wenflashOutlineChance,
+    wenflashOutlineWidth,
+    wenflashPostZoomChance,
+    wenflashPostZoomWaveChance,
+    wenflashPostZoomDuration,
+    wenflashPostZoomScale,
+    wenflashPostZoomSteps,
+    wenflashRevision,
+    wenflashSolidChance,
+    wenflashStretchAmount,
+    wenflashStretchDuration,
+    wenflashStretchSteps,
+} from '../../../../wenflashSettings';
+import { wenflashEasedCycles } from '../../../../wenflashPhase';
 import type { TemperaTuning, Theme } from '../../../types';
 import { overlapFx } from '../../../../overlapSettings';
 import { hashTemperaSeed, temperaHash01 } from './temperaRandom';
@@ -15,6 +84,8 @@ import {
     resolveShotPacedDuration,
     resolveTemperaGlyphMotion,
 } from './temperaMotion';
+import { resolveTemperaEnterFrame } from './temperaEnterStyles';
+import { drawPhraseScore } from './temperaPhraseScore';
 
 // @note Version Control: Project Folia version 0.6.13-750617
 
@@ -25,6 +96,42 @@ import {
 const resolveAnimationScale = (theme: Theme) => (
     theme.animationIntensity === 'calm' ? 0.65 : theme.animationIntensity === 'chaotic' ? 1.35 : 1
 );
+
+type MarqueeRect = {x: number; y: number; width: number; height: number};
+
+/** Point `distance` pixels clockwise from the top-left corner of a rect. */
+function marqueePoint(rect: MarqueeRect, distance: number) {
+    const perimeter = (rect.width + rect.height) * 2;
+    let d = ((distance % perimeter) + perimeter) % perimeter;
+    if (d <= rect.width) return {x: rect.x + d, y: rect.y};
+    d -= rect.width;
+    if (d <= rect.height) return {x: rect.x + rect.width, y: rect.y + d};
+    d -= rect.height;
+    if (d <= rect.width) return {x: rect.x + rect.width - d, y: rect.y + rect.height};
+    d -= rect.width;
+    return {x: rect.x, y: rect.y + rect.height - d};
+}
+
+/** One glow line: a rounded polyline of `length` pixels starting at `start`. */
+function strokeMarquee(
+    graphics: import('pixi.js').Graphics,
+    rect: MarqueeRect,
+    start: number,
+    length: number,
+    width: number,
+    color: string,
+    alpha: number,
+) {
+    if (length <= 0.5 || alpha <= 0.002) return;
+    const steps = Math.max(12, Math.ceil(length / 8));
+    const first = marqueePoint(rect, start);
+    graphics.moveTo(first.x, first.y);
+    for (let i = 1; i <= steps; i++) {
+        const point = marqueePoint(rect, start + (length * i) / steps);
+        graphics.lineTo(point.x, point.y);
+    }
+    graphics.stroke({width, color, alpha, cap: 'round', join: 'round'});
+}
 
 /**
  * How long a finished shot keeps sliding out while the next one is already sliding in.
@@ -189,11 +296,12 @@ export const updateTemperaShot = (
     theme: Theme,
     follow: {x: number; y: number} = {x: 0, y: 0},
     rackFocus = false,
+    fixedCamera = false,
 ) => {
     const duration = Math.max(view.shot.endTime - view.shot.startTime, 0.001);
     const rawProgress = (time - view.shot.startTime) / duration;
     const animationScale = resolveAnimationScale(theme);
-    const camera = tuning.cameraIntensity * animationScale;
+    const camera = fixedCamera ? 0 : tuning.cameraIntensity * animationScale;
     const motion = tuning.glyphMotion * animationScale;
     const rotationOnly = view.shot.cameraMotion === 'rotation';
     const frame = resolveTemperaCameraFrame(view.shot, view.shot.holdUntil === undefined ? rawProgress : Math.min(1,rawProgress));
@@ -230,7 +338,7 @@ export const updateTemperaShot = (
     // A retained line is the "重合" ghost. It is not translated as a plate any more: each
     // grapheme drifts on its own (resolveGhostDrift), so the shot keeps only its entrance
     // push and fades in place on the way out.
-    const exitTravel = held || rotationOnly ? 0 : exit * span * 0.55 * camera;
+    const exitTravel = fixedCamera || held || rotationOnly ? 0 : exit * span * 0.55 * camera;
     // Where the plate itself sits this frame, before the entrance/exit/parallax offsets. The
     // follow camera adds this to the line's anchor: the glyph layout is fixed, but the shot's
     // own camera path and breathing keep moving the type inside the plate, so without this
@@ -239,8 +347,9 @@ export const updateTemperaShot = (
     view.frameY = frame.y * height * camera;
     // A retained line sits behind the live one: when the shared camera slides, it travels a
     // quarter of the distance, which reads as depth instead of one flat plate moving.
-    const parallaxX = held ? -follow.x * 0.25 : 0;
-    const parallaxY = held ? -follow.y * 0.25 : 0;
+    // 文闪的镜头是跟着链式排版走的，旧句必须留在自己的链位上，不能再反向漂移。
+    const parallaxX = held && !fixedCamera ? -follow.x * 0.25 : 0;
+    const parallaxY = held && !fixedCamera ? -follow.y * 0.25 : 0;
     view.container.position.set(
         view.baseX + view.frameX
             - Math.cos(view.shot.flowAngle) * push + Math.cos(view.shot.flowAngle) * exitTravel
@@ -257,9 +366,10 @@ export const updateTemperaShot = (
         : 4.5;
     const wait = held ? clamp01((time - view.shot.lyricEndTime) / holdSpan) : 0;
     const waitFade = wait * wait * (3 - 2 * wait);
-    view.container.alpha = held
-        ? 1 - overlapFx().holdFade * waitFade
-        : 1 - exit;
+    // 文闪的旧句在模糊开始前保持满不透明；否则 holdFade 会在延迟结束前先把字压暗，
+    // 看起来仍像「唱完就淡出」，而不是「落位后过一会儿再模糊」。
+    const holdFade = fixedCamera ? 0 : overlapFx().holdFade * waitFade;
+    view.container.alpha = held ? 1 - holdFade : 1 - exit;
     const shotScale = (1 + (frame.scale - 1) * camera) * (1 - exit * 0.08);
     // Exposed for the follow camera: the plate zoom is applied about the viewport centre, so the
     // camera has to widen the glyph offsets by the same factor when it re-centres the line.
@@ -487,13 +597,17 @@ export const updateTemperaShot = (
     view.blocks.updateTime(time, view.shot.startTime, view.shot.endTime, view.shot.lyricEndTime);
     view.images.updateTime(time, view.shot.startTime, view.shot.endTime, view.shot.lyricEndTime);
 
-    // Sung words start to soften as soon as they are sung, and keep softening while the line
-    // waits. Slow ramp on purpose: it should read as ink drying, not as a focus pull.
-    const blurFrom = view.shot.lyricEndTime;
-    const blurProgress = clamp01((time - blurFrom) / 1.6);
-    const lineBlur = blurProgress * blurProgress * (3 - 2 * blurProgress);
+    // 文闪等整句完全落位后再开始模糊；延迟与强度由文闪设置控制。重合的旧句仍在唱完后
+    // 立刻开始失焦，保持它原本的「墨迹晾干」节奏。模糊强度是字号推导上限的百分比，0 即关闭。
+    const blurFrom = fixedCamera ? view.revealDoneTime + wenflashBlurDelay() : view.shot.lyricEndTime;
+    const blurProgress = clamp01((time - blurFrom) / (fixedCamera ? 1.1 : 1.6));
+    const blurEase = blurProgress * blurProgress * (3 - 2 * blurProgress);
+    const lineBlur = fixedCamera ? blurEase * wenflashBlurAmount() : blurEase;
     const ghostCenter = {x: 0, y: 0};
     const ghostSeed = held ? hashTemperaSeed(view.shot.id) : 0;
+    // 文闪的镜头种子必须每句独立：ghostSeed 在非停留句上是 0，只适合散开残影，
+    // 拿它抽闪烁概率会让所有新句得到同一个结果，也会让逐字倍率每句重复。
+    const flashSeed = hashTemperaSeed(view.shot.id);
     if (held && view.glyphs.length > 0) {
         for (const glyph of view.glyphs) {
             ghostCenter.x += glyph.baseX;
@@ -516,16 +630,217 @@ export const updateTemperaShot = (
     const scatterProgress = scatterAt === undefined
         ? exitProgress
         : clamp01((time - scatterAt) / scatterSpan);
+    const flashOnEntry = fixedCamera && temperaHash01(flashSeed, 0, 853) < wenflashEntryChance();
+    const flashCount = wenflashFlashCount();
+    const flashWindow = wenflashFlashWindow();
+    const flashDark = wenflashFlashDark();
+    const flashDim = wenflashFlashDim();
+    const solidChance = wenflashSolidChance();
+    const outlineChance = wenflashOutlineChance();
+    const blockPadding = wenflashBlockPadding();
+    const blockAlpha = wenflashBlockAlpha();
+    const outlineWidth = wenflashOutlineWidth();
+    const appearanceRevision = wenflashRevision();
+    const entryBlurChance = fixedCamera ? wenflashEntryBlurChance() : 0;
+    const entryBlurAmount = fixedCamera ? wenflashEntryBlurAmount() : 0;
+    const entryBlurDuration = fixedCamera ? wenflashEntryBlurDuration() : 0.42;
+    const lineBlockOn = fixedCamera && temperaHash01(flashSeed, 0, 1913) < wenflashLineBlockChance();
+    // 文闪退场：不散开、不放大。当前句唱完后先等下一句出现 0.5 秒（flowScene 写入
+    // shot.exitAt），再从那一刻重放同一套闪烁节奏，并沿用入场的亮拍外观（纯色块/镂空）；
+    // 闪烁窗口一结束立刻切到全透明，不做淡出。
+    const exitAt = view.shot.exitAt ?? view.shot.lyricEndTime;
+    const exitAge = time - exitAt;
+    const exitPhase = exitAge * (flashCount / flashWindow);
+    const inExitFlash = fixedCamera && exitAge >= 0 && exitAge < flashWindow;
+    const exitLit = inExitFlash && exitPhase % 1 >= flashDark;
+    // 闪烁窗口播完就硬切到 0：不再补一段淡出，否则最后一下亮拍之后会看到渐隐。
+    const exitAlpha = fixedCamera
+        ? (exitAge < 0 ? 1 : exitAge < flashWindow ? (exitLit ? 1 : flashDim) : 0)
+        : 1;
     view.specks?.clear();
+    const entryStyleMode = wenflashEntryStyle();
+    const originalEntrance = entryStyleMode === 'overlap';
+    const entryDelay = wenflashEntryDelay();
+    const entryZoom = wenflashEntryZoom();
+    const entryRampEnd = entryDelay + entryZoom;
+    // 退场运动窗：把入场那套位移/缩放/拉伸/抽帧放大原路放回去，但必须在退场闪烁
+    // 结束前收完，否则字已经透明了，运动还没走完。窗长与闪烁窗口对齐，短句也能看见。
+    const exitMotionWindow = Math.max(0.08, Math.min(flashWindow, entryRampEnd));
+    const exitMotionProgress = clamp01(exitAge / exitMotionWindow);
+    const exitMotionOn = fixedCamera && exitAge >= 0 && exitAge < exitMotionWindow;
+    // 入场落定后的抽帧放大：按字独立抽取，每个字在自己的落定时间之后触发一次，
+    // 离散台阶先放大再收回，不改变字的位置和布局。
+    const postZoomDuration = wenflashPostZoomDuration();
+    const postZoomPeak = wenflashPostZoomScale();
+    const postZoomSteps = wenflashPostZoomSteps();
+    // 同一套抽帧放大有两种走法：按字随机，或整句从左到右过一道波浪。
+    // 波浪按镜头种子抽取，抽中时所有字都参与，不再逐字随机。
+    const postZoomWaveOn = fixedCamera
+        && wenflashPostZoomChance() > 0
+        && temperaHash01(flashSeed, 0, 4791) < wenflashPostZoomWaveChance();
+    const postZoomWaveAge = time - view.revealDoneTime;
+    const postZoomWavePeak = 1 + (postZoomPeak - 1) * temperaHash01(flashSeed, 0, 3571);
+    const postZoomWaveRect = view.lineFlashBoxRect;
+    const accents = view.glyphAccents;
+    accents?.clear();
     view.glyphs.forEach((glyph, index) => {
-        const glyphFrame = resolveTemperaGlyphMotion(glyph.motion, time, motion);
+        const glyphFrame = resolveTemperaGlyphMotion(
+            glyph.motion, time, motion,
+            fixedCamera && !originalEntrance ? wenflashEntryTime : undefined,
+            fixedCamera && entryStyleMode === 'wenflash' ? 'stamp' : undefined,
+            fixedCamera && entryStyleMode !== 'wenflash'
+                ? {delay: entryDelay, duration: entryZoom}
+                : undefined,
+        );
+        const entryAge = time - glyph.motion.startTime;
+        if (fixedCamera && !originalEntrance && entryAge >= 0 && entryAge < entryRampEnd) {
+            const zoomProgress = entryAge <= entryDelay ? 0 : Math.min(1, (entryAge - entryDelay) / entryZoom);
+            const size = wenflashEntrySize(temperaHash01(flashSeed, index, 317), zoomProgress);
+            glyphFrame.scaleX *= size;
+            glyphFrame.scaleY *= size;
+        }
+        const postZoomOn = fixedCamera
+            && temperaHash01(flashSeed, index, 2731) < wenflashPostZoomChance();
+        const postZoomAge = time - glyph.motion.settleTime;
+        // 上限倍率只是区间上界：每个字在 1× 到上限之间独立取一个峰值，避免所有抽中的字一样大。
+        const postZoomPeakForGlyph = 1 + (postZoomPeak - 1) * temperaHash01(flashSeed, index, 3571);
+        let postZoom = 1;
+        if (postZoomWaveOn) {
+            if (Number.isFinite(postZoomWaveAge) && postZoomWaveAge >= 0 && postZoomWaveAge < postZoomDuration) {
+                const ink = glyph.flashBoxRect;
+                const glyphX = glyph.baseX + (ink ? ink.x + ink.width / 2 : 0);
+                const glyphY = glyph.baseY + (ink ? ink.y + ink.height / 2 : 0);
+                const progress = postZoomWaveRect && postZoomWaveRect.width > 0 && !view.lineFlashVertical
+                    ? clamp01((glyphX - postZoomWaveRect.x) / postZoomWaveRect.width)
+                    : postZoomWaveRect && postZoomWaveRect.height > 0 && view.lineFlashVertical
+                        ? clamp01((glyphY - postZoomWaveRect.y) / postZoomWaveRect.height)
+                        : view.glyphs.length > 1 ? index / (view.glyphs.length - 1) : 0;
+                const u = clamp01(postZoomWaveAge / postZoomDuration);
+                const head = -0.15 + u * 1.3;
+                const distance = progress - head;
+                const pulse = Math.exp(-(distance * distance) / (2 * 0.14 * 0.14));
+                const envelope = Math.sin(Math.PI * u);
+                postZoom = 1 + (postZoomWavePeak - 1) * pulse * envelope;
+            }
+        } else if (postZoomOn && Number.isFinite(postZoomAge) && postZoomAge >= 0 && postZoomAge < postZoomDuration) {
+            const raw = postZoomAge / postZoomDuration;
+            const stepped = Math.min(1, Math.round(raw * postZoomSteps) / postZoomSteps);
+            const shape = stepped < 0.5 ? stepped * 2 : (1 - stepped) * 2;
+            postZoom = 1 + (postZoomPeakForGlyph - 1) * shape;
+        }
+        glyphFrame.scaleX *= postZoom;
+        glyphFrame.scaleY *= postZoom;
+        // 抽帧放大触发时，镂空字不能因为停留计时到点就在放大过程中回填：
+        // 放大把镂空与实心的差异放大，回填会像「镂空突然消失」，辉光也会同时跳回满亮。
+        // 一旦放大落在这个镂空字上，就把镂空锁到本句结束；纯色块亮拍仍可短暂盖住。
+        if (fixedCamera && postZoom > 1.0001 && glyph.hollowSeen === true) {
+            glyph.hollowLocked = true;
+        }
+        // 独立的入场拉伸：不并入七种入场，也不参与位移，只在字出现后沿排版方向拉长，
+        // 再按设定时长收回到 1 倍。横排拉左右、竖排拉上下，落位后的字形不受影响。
+        const stretchAmount = fixedCamera ? wenflashStretchAmount() : 1;
+        const stretchDuration = fixedCamera ? wenflashStretchDuration() : 0;
+        const stretchSteps = fixedCamera ? wenflashStretchSteps() : 0;
+        if (stretchAmount > 1 && stretchDuration > 0) {
+            const stretchAge = time - glyph.motion.startTime;
+            if (stretchAge >= 0 && stretchAge < stretchDuration) {
+                const rawDecay = 1 - stretchAge / stretchDuration;
+                const decay = stretchSteps > 1
+                    ? Math.max(0, Math.min(1, Math.round(rawDecay * stretchSteps) / stretchSteps))
+                    : rawDecay;
+                const smear = 1 + (stretchAmount - 1) * decay * decay;
+                if (view.lineFlashVertical) glyphFrame.scaleY = Math.max(glyphFrame.scaleY, smear);
+                else glyphFrame.scaleX = Math.max(glyphFrame.scaleX, smear);
+            }
+        }
+        if (exitMotionOn) {
+            // 入场动作的反向播放：位移、旋转、缩放沿原入场轨迹退回起笔位置。
+            // 只回放入场实际用到的部分：纯缩放入场不额外加位移，纯重合逐字不带倍率。
+            if (entryStyleMode !== 'wenflash') {
+                const exitEnter = resolveTemperaEnterFrame(
+                    glyph.motion.enterStyle, glyph.motion, exitMotionProgress, exitMotionProgress, 1 - exitMotionProgress,
+                );
+                glyphFrame.x += exitEnter.x * motion;
+                glyphFrame.y += exitEnter.y * motion;
+                glyphFrame.rotation += exitEnter.rotation * motion;
+                glyphFrame.scaleX *= exitEnter.scaleX;
+                glyphFrame.scaleY *= exitEnter.scaleY;
+            }
+            if (entryStyleMode !== 'overlap') {
+                const size = wenflashEntrySize(
+                    temperaHash01(flashSeed, index, 317), exitMotionProgress,
+                );
+                glyphFrame.scaleX *= size;
+                glyphFrame.scaleY *= size;
+            }
+            // 入场后的抽帧放大同样反向：退场时从 1 倍逐级涨到自己的峰值，
+            // 波形模式也把波浪重新走一遍，最后和文字一起消失。
+            if (postZoomOn || postZoomWaveOn) {
+                const stepped = Math.min(1, Math.round(exitMotionProgress * postZoomSteps) / postZoomSteps);
+                const shape = postZoomWaveOn ? Math.sin(Math.PI * exitMotionProgress) : stepped;
+                const exitZoom = 1 + (postZoomPeakForGlyph - 1) * shape;
+                glyphFrame.scaleX *= exitZoom;
+                glyphFrame.scaleY *= exitZoom;
+            }
+        }
+        const entryPhase = entryAge * (flashCount / flashWindow);
+        const inFlash = flashOnEntry && entryAge >= 0 && entryAge < flashWindow;
+        const entryLit = inFlash && entryPhase % 1 >= flashDark;
+        // 入场用逐字起唱相位，退场用整句退场相位；两者共用同一套闪烁参数与亮拍外观。
+        // 退场一旦开始就一直走 exitAlpha（窗口结束后为 0），不能回落到入场/默认的 1，
+        // 否则闪烁播完那一帧会把原字重新显出来，直到舞台真正卸载才消失。
+        const inExit = fixedCamera && exitAge >= 0;
+        const flashLit = inExit ? exitLit : entryLit;
+        const flashPhase = inExit ? exitPhase : entryPhase;
+        const flashAlpha = inExit
+            ? exitAlpha
+            : (inFlash && !entryLit ? flashDim : 1);
+        const flashRoll = flashLit ? temperaHash01(flashSeed, index, 947 + Math.floor(flashPhase)) : 1;
+        const paint = flashRoll < solidChance ? 'solid'
+            : flashRoll < Math.min(1, solidChance + outlineChance) ? 'outline' : undefined;
+        // 镂空停留：某个字第一次被镂空亮拍选中时掷一次骰子；中了就继续保留描边，
+        // 直到设定时长结束或本句退场。之后的纯色块亮拍仍会短暂盖住它，亮拍结束再恢复镂空。
+        const hollowLingerOn = fixedCamera && wenflashHollowLinger();
+        let hollowLingering = hollowLingerOn && glyph.hollowUntil !== undefined
+            && time < glyph.hollowUntil;
+        if (hollowLingerOn && !glyph.hollowRolled && paint === 'outline' && glyphFrame.visible) {
+            glyph.hollowRolled = true;
+            if (temperaHash01(flashSeed, index, 6151) < wenflashHollowLingerChance()) {
+                const hold = wenflashHollowLingerDuration();
+                const lineEnd = view.shot.lyricEndTime;
+                glyph.hollowUntil = hold > 0
+                    ? time + hold
+                    : (Number.isFinite(lineEnd) ? lineEnd : time + 2);
+                hollowLingering = time < glyph.hollowUntil;
+            }
+        }
+        // 停留期间描边副本单独承担字形，阴影/残影/辉光必须一起让位；
+        // 否则它们仍是填充字，放大时会露在描边后面，看起来像「镂空又回填」。
+        const hollowBase = paint === 'outline'
+            || (hollowLingering && paint !== 'solid')
+            || (glyph.hollowLocked === true && paint !== 'solid');
+        if (hollowBase) glyph.hollowSeen = true;
+        // 退场开始的那一帧记住这个字是否处于镂空；随后整段退场都沿用，不能因为
+        // 闪烁暗拍时 paint 暂时为空就退回填充字，否则会看到「一退场就回填」。
+        if (fixedCamera && exitAge >= 0 && glyph.exitHollow === undefined) {
+            glyph.exitHollow = hollowBase || glyph.hollowSeen === true
+                || glyph.hollowLocked === true
+                || glyph.flashPaint === 'outline' || glyph.hollowUntil !== undefined;
+        }
+        // 退场期间纯色块亮拍仍然可以短暂盖住镂空，暗拍和描边亮拍继续保留描边。
+        const hollowLook = fixedCamera && exitAge >= 0 && glyph.exitHollow === true
+            ? paint !== 'solid'
+            : hollowBase;
+        if (glyph.flashPaint !== paint) {
+            glyph.flashPaint = paint;
+        }
         const order = view.glyphs.length > 1 ? index / (view.glyphs.length - 1) : 0;
         // 散开要「起笔慢、落定慢」：先按唱序让每个字错峰出发（最后一个字晚 32% 行程），
         // 再用 smoothstep 收两头，否则整行会像一块板子被匀速推开，一看就假。
         const stagger = 0.32;
         const scatterLocal = clamp01((scatterProgress * (1 + stagger) - order * stagger));
         const scatterEase = easeTemperaInOut(scatterLocal);
-        const ghost = held
+        const ghost = held && !fixedCamera
             ? resolveGhostDrift(
                 ghostSeed, ghostCenter.x, ghostCenter.y, glyph, index, order,
                 time, view.shot.lyricEndTime, height, exitProgress,
@@ -544,14 +859,25 @@ export const updateTemperaShot = (
             * (1 - (ghost?.depart ?? 0));
         const trailX = -(ghost?.x ?? 0) * 0.35;
         const trailY = -(ghost?.y ?? 0) * 0.35;
-        const ghostAlpha = ghost?.alpha ?? 1;
+        const ghostAlpha = (ghost?.alpha ?? 1) * flashAlpha;
         const ghostScale = ghost?.scale ?? 1;
         const ghostScaleY = ghost?.scaleY ?? ghostScale;
         // Each character lands as wet ink: it blooms in slightly out of focus and sharpens
         // over 0.42s, then the sung-line blur takes over. One pulse at the onset makes the
         // reveal read as a stroke being written rather than opacity being switched on.
         const revealProgress = clamp01((time - glyph.motion.startTime) / 0.42);
-        const revealBlur = 1 - revealProgress * revealProgress * (3 - 2 * revealProgress);
+        const revealBase = 1 - revealProgress * revealProgress * (3 - 2 * revealProgress);
+        // 文闪的随机入场模糊：每个字独立掷骰，命中后按自己的时长从虚焦收到清晰。
+        // 原有的湿墨底模糊保留；随机模糊叠在它上面，只让命中的字更虚。
+        const entryBlurOn = entryBlurChance > 0 && temperaHash01(flashSeed, index, 4093) < entryBlurChance;
+        const entryBlurPeak = entryBlurOn
+            ? entryBlurAmount * (1.15 + 0.35 * temperaHash01(flashSeed, index, 4099))
+            : 0;
+        const entryBlurSeconds = entryBlurDuration * (0.65 + 0.7 * temperaHash01(flashSeed, index, 4111));
+        const entryBlurProgress = clamp01((time - glyph.motion.startTime) / Math.max(0.05, entryBlurSeconds));
+        const entryBlurEase = 1 - entryBlurProgress * entryBlurProgress * (3 - 2 * entryBlurProgress);
+        const entryBlur = entryBlurOn ? entryBlurEase * entryBlurPeak : 0;
+        const revealBlur = revealBase;
         const pulseDistance = (time - glyph.motion.startTime) / 0.18;
         const pulse = Math.exp(-pulseDistance * pulseDistance);
         const x = glyph.baseX + glyphFrame.x + (ghost?.x ?? 0);
@@ -585,14 +911,14 @@ export const updateTemperaShot = (
             }
         }
         glyph.display.alpha = glyphFrame.alpha * ghostAlpha;
-        glyph.display.visible = glyphFrame.visible;
+        glyph.display.visible = glyphFrame.visible && ghostAlpha > 0.001;
         glyph.display.position.set(x, y);
         glyph.display.scale.set(scaleX, scaleY);
         glyph.display.rotation = rotation;
         if (glyph.sungBlur) {
             const fade = clamp01((time - glyph.motion.endTime) / 1.2);
             glyph.display.alpha = glyphFrame.alpha * ghostAlpha
-                * (1 - overlapFx().ghostBlur * fade * fade * (3 - 2 * fade));
+                * (fixedCamera ? 1 : 1 - overlapFx().ghostBlur * fade * fade * (3 - 2 * fade));
             const sung = glyph.sungBlur;
             const maximum = sung.maximum;
             // Reading and writing share one filter: the max keeps the wet-ink reveal and the
@@ -604,8 +930,8 @@ export const updateTemperaShot = (
             const outgoing = held && Number.isFinite(view.shot.holdUntil)
                 ? clamp01((time - view.shot.lyricEndTime) / 0.45) * (1 - clamp01((time - view.shot.lyricEndTime - focusHold) / 0.6))
                 : 0;
-            const rack = rackFocus ? Math.max(incoming, outgoing) : 0;
-            const strength = maximum * Math.max(lineBlur, revealBlur, rack * overlapFx().rackFocus);
+            const rack = rackFocus && !fixedCamera ? Math.max(incoming, outgoing) : 0;
+            const strength = maximum * Math.max(lineBlur, revealBlur, entryBlur, rack * overlapFx().rackFocus);
             if (strength > 0 && !sung.filter) sung.filter = sung.create();
             const filter = sung.filter;
             if (filter && filter.strength !== strength) {
@@ -615,50 +941,159 @@ export const updateTemperaShot = (
                 else if (wasClear) glyph.display.filters = [filter];
             }
         }
+        // 镂空用独立描边副本显隐，基字形的 fill/stroke 永远不动。
+        // 这样即使闪烁停在某一亮拍、或某一帧没来得及重建纹理，也不会留下透明填充。
+        if (glyph.outline) {
+            const outlineOn = hollowLook
+                && glyphFrame.visible && ghostAlpha > 0.001 && !glyph.masked;
+            const outline = glyph.outline;
+            outline.visible = outlineOn;
+            if (outlineOn) {
+                outline.position.copyFrom(glyph.display.position);
+                outline.scale.copyFrom(glyph.display.scale);
+                outline.rotation = glyph.display.rotation;
+                outline.alpha = glyph.display.alpha;
+                if (glyph.flashOutlineWidth !== outlineWidth) {
+                    glyph.flashOutlineWidth = outlineWidth;
+                    outline.style.stroke = {
+                        color: glyph.fill,
+                        width: Math.max(1, Number(outline.style.fontSize) * outlineWidth),
+                        join: 'round',
+                    };
+                }
+            } else {
+                glyph.flashOutlineWidth = undefined;
+            }
+            glyph.display.visible = glyph.display.visible && !outlineOn;
+        }
+        // The solid block shares the glyph's final transform and alpha so it reads as one
+        // printed unit while it flashes; it is hidden on every non-solid beat and after entry.
+        if (glyph.flashBox) {
+            const boxVisible = paint === 'solid' && glyphFrame.visible && !glyph.masked && ghostAlpha > 0.001;
+            glyph.flashBox.visible = boxVisible;
+            if (boxVisible) {
+                const rect = glyph.flashBoxRect;
+                if (rect) {
+                    const pad = Number(glyph.display.style.fontSize) * blockPadding;
+                    // 色块跟随这个字自己的文字颜色，而不是主题里的强调色/墨色。
+                    const color = glyph.fill ?? theme.primaryColor;
+                    const signature = `${appearanceRevision}:${color}:${pad.toFixed(2)}`;
+                    if (glyph.flashBoxSignature !== signature) {
+                        glyph.flashBox.clear()
+                            .rect(rect.x - pad, rect.y - pad, rect.width + pad * 2, rect.height + pad * 2)
+                            .fill({color, alpha: 1});
+                        glyph.flashBoxSignature = signature;
+                    }
+                }
+                glyph.flashBox.position.set(x, y);
+                glyph.flashBox.scale.set(scaleX, scaleY);
+                glyph.flashBox.rotation = rotation;
+                glyph.flashBox.alpha = glyph.display.alpha * blockAlpha;
+            }
+        }
         if (glyph.glow) {
-            // The halo ramps with the word itself: silent until the first stroke, then up over
-            // 0.7s with a slow breathing pulse, so a keyword arrives as a light being turned on
-            // rather than a colour swap.
+            const halo = glyph.glow;
+            const glowStrength = fixedCamera ? wenflashGlowStrength() : 1;
+            const plainRatio = fixedCamera ? wenflashGlowPlain() : 0.7;
+            const gain = overlapFx().keywordGlow * glowStrength;
             const rise = held ? Math.min(0.32, Math.max(0.08, glyph.motion.endTime - glyph.motion.startTime)) : 0.7;
             const ramp = clamp01((time - glyph.motion.startTime) / rise);
             const eased = ramp * ramp * (3 - 2 * ramp);
-            const breathe = 1 + 0.07 * Math.sin((time - glyph.motion.startTime) * 3.1);
-            const gain = overlapFx().keywordGlow;
-            const halo = glyph.glow;
+            const breathe = fixedCamera ? 1 : 1 + 0.07 * Math.sin((time - glyph.motion.startTime) * 3.1);
             const release = held ? clamp01((time - Math.max(glyph.motion.endTime, glyph.motion.startTime + rise)) / 0.55) : 0;
-            const light = eased * (1 - release * release * (3 - 2 * release)) * gain;
-            if (held) glyph.display.tint = mixColors(glyph.fill, '#ffffff', clamp01(light * 1.4));
-            const alpha = (held ? 1 : 0.72) * light * breathe * glyph.display.alpha * (glyphFrame.visible ? 1 : 0);
-            halo.display.visible = alpha > 0.004 && !glyph.masked;
+            const light = gain * (fixedCamera
+                ? 1 - clamp01(exitAge / Math.max(0.18, flashWindow))
+                : eased * (1 - release * release * (3 - 2 * release)));
+            if (!fixedCamera && held && !hollowLook && halo.keyword) glyph.display.tint = mixColors(glyph.fill, '#ffffff', clamp01(light * 1.4));
+            const strength = halo.maximum * (fixedCamera ? wenflashGlowRadius() : 0.25 + 0.75 * eased);
+            const alpha = (fixedCamera ? 1 : (held ? 1 : 0.72)) * light * breathe * glyph.display.alpha * (glyphFrame.visible ? 1 : 0) * (halo.keyword ? 1 : plainRatio);
+            const exitHollowGlow = fixedCamera && exitAge >= 0 && glyph.exitHollow === true;
+            halo.display.visible = alpha > 0.004 && !glyph.masked && !hollowLook && !exitHollowGlow;
             if (halo.display.visible) {
                 halo.display.alpha = Math.min(1, alpha);
                 halo.display.position.set(x, y);
                 halo.display.scale.set(scaleX * 1.015, scaleY * 1.015);
                 halo.display.rotation = rotation;
-                if (!halo.filter) {
-                    halo.filter = halo.create();
+                if (!halo.filter) halo.filter = halo.create();
+                if (halo.gradient && (!fixedCamera || wenflashGlowColorMode() === 'custom')) {
+                    const flowSpeed = fixedCamera ? wenflashGlowFlowSpeed() : 1;
+                    halo.gradient.setTime(time * 0.55 * flowSpeed + glyph.baseX * 0.0025 + glyph.baseY * 0.001);
+                    if (fixedCamera) halo.gradient.setScale(wenflashGlowFlowScale());
+                    halo.gradient.setColors(fixedCamera && wenflashGlowColorMode() === 'custom'
+                        ? wenflashGlowColors()
+                        : halo.colors);
+                    if (halo.display.filters?.length !== 2) {
+                        halo.display.filters = [halo.filter, halo.gradient.filter];
+                    }
+                } else if (halo.display.filters?.length !== 1) {
                     halo.display.filters = [halo.filter];
                 }
-                const strength = halo.maximum * (0.25 + 0.75 * eased);
                 if (halo.filter.strength !== strength) halo.filter.strength = strength;
+            }
+        }
+        if (glyph.posterEcho) {
+            const echo = glyph.posterEcho;
+            const onset = glyph.motion.startTime + 0.08;
+            const end = Math.min(exitAt, Math.max(onset + 0.62, Math.min(onset + 1.5, glyph.motion.endTime + 0.48)));
+            const phase = easeTemperaInOut(clamp01(Math.min((time - onset) / 0.24, (end - time) / 0.36)));
+            const alpha = phase * wenflashDecorIntensity() * 0.28;
+            echo.visible = alpha > 0.002;
+            if (echo.visible) {
+                const side = glyph.baseY < height * 0.45 ? 1 : -1;
+                const font = Number(echo.style.fontSize);
+                const spread = phase * font;
+                echo.position.set(glyph.baseX + spread * 0.45, glyph.baseY + side * spread * 0.85);
+                echo.rotation = glyph.motion.rotation - side * phase * 0.06;
+                echo.scale.set(1 + 2.1 * phase);
+                echo.alpha = alpha;
+            }
+        }
+        if (accents && entryAge >= 0 && entryAge < 0.72 && glyph.display.visible && !glyph.flashBox?.visible) {
+            const pick = temperaHash01(flashSeed, index, 1409);
+            if (pick < (glyph.keyword ? 0.7 : 0.2)) {
+                const phase = easeTemperaInOut(clamp01(Math.min(entryAge / 0.22, (0.72 - entryAge) / 0.34)));
+                const font = Number(glyph.display.style.fontSize) || 32;
+                const size = font * Math.min(1.6, Math.abs(scaleY));
+                const angle = rotation - Math.PI * 0.25;
+                const distance = size * (0.65 + 0.12 * phase);
+                const cx = x + Math.cos(angle) * distance, cy = y + Math.sin(angle) * distance;
+                const r = size * 0.14 * phase;
+                const alpha = Math.min(0.85, glyph.display.alpha) * phase;
+                if (pick < (glyph.keyword ? 0.4 : 0.1)) {
+                    // A tapered four-point glint opens and folds around the same centre.
+                    const neck = r * 0.18;
+                    accents.poly([cx,cy-r, cx+neck,cy-neck, cx+r*0.75,cy,
+                        cx+neck,cy+neck, cx,cy+r, cx-neck,cy+neck,
+                        cx-r*0.75,cy, cx-neck,cy-neck]).fill({color:glyph.fill, alpha});
+                } else {
+                    // Two broken registration corners briefly frame this glyph.
+                    const dx = cx-x, dy = cy-y;
+                    for (const side of [-1,1]) {
+                        const ax = x+side*dx, ay = y+side*dy;
+                        const ux = Math.cos(rotation)*r*side, uy = Math.sin(rotation)*r*side;
+                        accents.moveTo(ax-ux,ay-uy).lineTo(ax,ay).lineTo(ax-uy,ay+ux);
+                    }
+                    accents.stroke({width:Math.max(1,font*0.018),color:glyph.fill,alpha});
+                }
             }
         }
         if (glyph.shadow) {
             glyph.shadow.alpha = glyphFrame.alpha * ghostAlpha * 0.34;
-            glyph.shadow.visible = glyphFrame.visible && !glyph.masked;
+            glyph.shadow.visible = glyphFrame.visible && !glyph.masked && !hollowLook && ghostAlpha > 0.001;
             glyph.shadow.position.set(x + glyph.shadowDX, y + glyph.shadowDY);
             glyph.shadow.scale.set(scaleX, scaleY);
             glyph.shadow.rotation = rotation;
         }
         // Echoes trail further back along the entrance vector the deeper they sit; once the
         // line is retained the same echoes carry the wet-ink trail instead.
-        const echoVisible = glyphFrame.visible && !glyph.masked
+        const echoVisible = glyphFrame.visible && !glyph.masked && !hollowLook
+            && ghostAlpha > 0.001
             && (glyphFrame.echoAlpha > 0.004 || trailInk > 0.004);
         glyph.echoes.forEach((echo, echoIndex) => {
             echo.visible = echoVisible;
             if (!echoVisible) return;
             const depth = 1 + echoIndex * 0.85;
-            echo.alpha = Math.max(
+            echo.alpha = flashAlpha * Math.max(
                 glyphFrame.echoAlpha / (echoIndex + 1.4),
                 trailInk / (echoIndex + 1.2),
             );
@@ -670,6 +1105,165 @@ export const updateTemperaShot = (
             echo.rotation = rotation;
         });
     });
+
+    // The whole-phrase plate: one block across the line, entering on the same flash cadence
+    // as the type, then swept off in one quick pass. The sweep runs on its own clock instead
+    // of the karaoke clock: horizontal lines wipe left to right, vertical lines top to bottom.
+    if (view.lineFlashBox && view.lineFlashBoxRect) {
+        const rect = view.lineFlashBoxRect;
+        const pad = view.lineFlashBoxFontSize * wenflashLineBlockPadding();
+        let lineStart = Infinity;
+        for (const glyph of view.lineFlashOrder) lineStart = Math.min(lineStart, glyph.motion.startTime);
+        const entryAge = time - lineStart;
+        const sweep = wenflashLineBlockSweep();
+        const progress = clamp01(entryAge / sweep);
+        const phase = entryAge * (flashCount / flashWindow);
+        const entryLineAlpha = entryAge >= 0 && entryAge < flashWindow && phase % 1 < flashDark ? flashDim : 1;
+        const lineAlpha = entryLineAlpha * exitAlpha;
+        const vertical = view.lineFlashVertical;
+        const left = rect.x - pad;
+        const top = rect.y - pad;
+        const spanW = rect.width + pad * 2;
+        const spanH = rect.height + pad * 2;
+        const boundary = vertical ? top + spanH * progress : left + spanW * progress;
+        const remain = vertical ? top + spanH - boundary : left + spanW - boundary;
+        const visible = lineBlockOn && Number.isFinite(lineStart) && entryAge >= 0 && progress < 1
+            && remain > 0.5 && lineAlpha > 0.001;
+        view.lineFlashBox.visible = visible;
+        if (visible) {
+            // 整句色块同样跟随这一句文字自身的颜色，取句中第一个有颜色的字。
+            const color = view.glyphs.find(glyph => glyph.fill)?.fill ?? theme.primaryColor;
+            const signature = `${appearanceRevision}:${color}:${vertical ? 1 : 0}:${boundary.toFixed(2)}:${remain.toFixed(2)}:${pad.toFixed(2)}`;
+            if (view.lineFlashBoxSignature !== signature) {
+                view.lineFlashBox.clear();
+                if (vertical) view.lineFlashBox.rect(left, boundary, spanW, remain);
+                else view.lineFlashBox.rect(boundary, top, remain, spanH);
+                view.lineFlashBox.fill({color, alpha: 1});
+                view.lineFlashBoxSignature = signature;
+            }
+            const settle = Math.max(0.08, Math.min(0.6, view.revealDoneTime - lineStart));
+            const entryScale = wenflashEntrySize(temperaHash01(flashSeed, 0, 619), clamp01(entryAge / settle));
+            // 整句色块也补退场：沿入场的收束方向反向涨回起始倍率，再随闪烁消失。
+            const exitScale = exitAge >= 0
+                ? wenflashEntrySize(
+                    temperaHash01(flashSeed, 0, 619),
+                    clamp01(exitAge / Math.max(0.08, exitMotionWindow)),
+                )
+                : 1;
+            const scale = entryScale * exitScale;
+            const cx = rect.x + rect.width / 2;
+            const cy = rect.y + rect.height / 2;
+            view.lineFlashBox.pivot.set(cx, cy);
+            view.lineFlashBox.position.set(cx, cy);
+            view.lineFlashBox.scale.set(scale);
+            view.lineFlashBox.alpha = lineAlpha * wenflashLineBlockAlpha();
+        }
+    }
+
+    if (view.phraseScore) {
+        drawPhraseScore(
+            view.phraseScore, time, exitAt, flashWindow, wenflashDecorIntensity(),
+            flashCount, flashDark, flashDim,
+        );
+    }
+
+    // 跑马框：两条辉光线沿整句外框追逐，各自相隔半圈。它有自己的环绕时钟，
+    // 从这一句第一个字起唱开始跑，随整句入场淡入、随退场闪烁一起消失。
+    if (view.marquee && fixedCamera) {
+        const rect = view.marquee.rect;
+        const pad = view.marquee.fontSize * wenflashMarqueePadding();
+        const box = {x: rect.x - pad, y: rect.y - pad, width: rect.width + pad * 2, height: rect.height + pad * 2};
+        let lineStart = Infinity;
+        for (const glyph of view.lineFlashOrder) lineStart = Math.min(lineStart, glyph.motion.startTime);
+        const entryAge = time - lineStart;
+        const delay = wenflashMarqueeEntryDelay();
+        const fade = wenflashMarqueeEntryFade();
+        const rolled = temperaHash01(flashSeed, 0, 7331) < wenflashMarqueeChance();
+        const reveal = clamp01((entryAge - delay) / fade);
+        const eased = reveal * reveal * (3 - 2 * reveal);
+        // 退场也走一遍入场淡入的相反方向：框线先缩回起始倍率，再随闪烁归零。
+        const exitFade = exitAge >= 0 ? 1 - clamp01(exitAge / Math.max(0.08, fade)) : 1;
+        const alpha = wenflashMarquee() && rolled && Number.isFinite(lineStart) && entryAge >= delay
+            ? eased * exitAlpha * exitFade
+            : 0;
+        if (alpha > 0.002) {
+            const perimeter = (box.width + box.height) * 2;
+            const length = perimeter * wenflashMarqueeLength();
+            const width = Math.max(0.6, view.marquee.fontSize * wenflashMarqueeWidth());
+            const glow = wenflashMarqueeGlow();
+            const color = view.glyphs.find(glyph => glyph.fill)?.fill ?? theme.primaryColor;
+            const orbitAge = Math.max(0, entryAge - delay);
+            const cycles = wenflashEasedCycles(orbitAge, wenflashMarqueeDuration(), wenflashMarqueeRun(), wenflashMarqueeBrake());
+            const phase = ((cycles % 1) + 1) % 1;
+            const start = phase * perimeter;
+            view.marquee.glow.clear();
+            view.marquee.core.clear();
+            strokeMarquee(view.marquee.glow, box, start, length, width * 4.5, color, alpha * 0.22 * glow);
+            strokeMarquee(view.marquee.glow, box, start + perimeter / 2, length, width * 4.5, color, alpha * 0.22 * glow);
+            strokeMarquee(view.marquee.core, box, start, length, width, color, alpha);
+            strokeMarquee(view.marquee.core, box, start + perimeter / 2, length, width, color, alpha);
+            view.marquee.blur.strength = Math.max(0, width * 2.4 * glow);
+            view.marquee.blur.padding = Math.ceil(width * 6 + 8);
+            const entryScale = wenflashMarqueeEntryScale();
+            const retract = exitAge >= 0 ? 1 - exitFade : 0;
+            const scale = (1 + (entryScale - 1) * (1 - eased)) * (1 + (entryScale - 1) * retract);
+            const cx = box.x + box.width / 2;
+            const cy = box.y + box.height / 2;
+            for (const line of [view.marquee.glow, view.marquee.core]) {
+                line.pivot.set(cx, cy);
+                line.position.set(cx, cy);
+                line.scale.set(scale);
+            }
+            view.marquee.glow.visible = glow > 0.01;
+            view.marquee.core.visible = true;
+        } else {
+            view.marquee.glow.visible = false;
+            view.marquee.core.visible = false;
+        }
+    }
+
+    // 底部光线：一条同色辉光线画在整句下方，从本句起唱开始淡入，随退场闪烁一起消失。
+    if (view.bottomLine && fixedCamera) {
+        const rect = view.bottomLine.rect;
+        const fontSize = view.bottomLine.fontSize;
+        let lineStart = Infinity;
+        for (const glyph of view.lineFlashOrder) lineStart = Math.min(lineStart, glyph.motion.startTime);
+        const entryAge = time - lineStart;
+        const rolled = temperaHash01(flashSeed, 0, 8419) < wenflashBottomLineChance();
+        const fade = Math.max(0.06, wenflashBottomLineFade());
+        const reveal = clamp01(entryAge / fade);
+        // 底部光线也补上退场：沿入场淡入的反方向收回，不再只靠 exitAlpha 硬消失。
+        const exitFade = exitAge >= 0 ? 1 - clamp01(exitAge / fade) : 1;
+        const alpha = wenflashBottomLine() && rolled && Number.isFinite(lineStart) && entryAge >= 0
+            ? reveal * exitAlpha * exitFade
+            : 0;
+        if (alpha > 0.002) {
+            const y = rect.y + rect.height + fontSize * wenflashBottomLineOffset();
+            const length = Math.max(4, rect.width * wenflashBottomLineLength());
+            const width = Math.max(0.5, fontSize * wenflashBottomLineWidth());
+            const glow = wenflashBottomLineGlow();
+            const color = view.glyphs.find(glyph => glyph.fill)?.fill ?? theme.primaryColor;
+            const speed = Math.max(0.1, wenflashBottomLineSpeed());
+            const cycles = wenflashEasedCycles(entryAge, speed, wenflashBottomLineRun(), wenflashBottomLineBrake());
+            const travel = 0.5 - 0.5 * Math.cos(cycles * Math.PI * 2);
+            const cx = rect.x + length / 2 + Math.max(0, rect.width - length) * travel;
+            const x0 = cx - length / 2;
+            const x1 = cx + length / 2;
+            view.bottomLine.glow.clear();
+            view.bottomLine.core.clear();
+            view.bottomLine.glow.moveTo(x0, y).lineTo(x1, y)
+                .stroke({width: width * 4.5, color, alpha: alpha * 0.22 * glow, cap: 'round'});
+            view.bottomLine.core.moveTo(x0, y).lineTo(x1, y)
+                .stroke({width, color, alpha, cap: 'round'});
+            view.bottomLine.blur.strength = Math.max(0, width * 2.4 * glow);
+            view.bottomLine.blur.padding = Math.ceil(width * 6 + 8);
+            view.bottomLine.glow.visible = glow > 0.01;
+            view.bottomLine.core.visible = true;
+        } else {
+            view.bottomLine.glow.visible = false;
+            view.bottomLine.core.visible = false;
+        }
+    }
 
     // The forme: a hairline block under each character, growing from the middle as the glyph
     // lands and shrinking away with it. It is drawn from the character's rendered box, so the
