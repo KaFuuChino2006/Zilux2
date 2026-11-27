@@ -1,3 +1,4 @@
+import { buildPhraseArt } from './wenflashPhraseArt';
 import { applyFlowPalette, type FlowSettings } from '../../../../flowSettings';
 import { overlapFx } from '../../../../overlapSettings';
 import {
@@ -6,10 +7,16 @@ import {
     wenflashLinePlacement,
     wenflashLineDirection,
     wenflashLineDirectionMode,
+    wenflashEntryRotation,
+    wenflashLineRotation,
     wenflashTextColor,
     wenflashTextColorChance,
     wenflashTextColorCount,
     wenflashTextColorMode,
+    wenflashInvertDark,
+    wenflashInvertLight,
+    wenflashBackdropMode,
+    wenflashBackdropColor,
 } from '../../../../wenflashSettings';
 import { perfMark, perfOn } from '../../../../perfProbe';
 import type { TemperaTuning, Theme } from '../../../types';
@@ -29,6 +36,7 @@ import {
     type TemperaGlyphView,
 } from './temperaTextView';
 import { createTemperaDifferenceFilter } from './temperaDifferenceFilter';
+import { createWenflashKineticDecor, type WenflashKineticDecor } from './wenflashKineticDecor';
 import {
     resolveTemperaPassResolution,
     resolveTemperaTransitionBlurResolution,
@@ -201,8 +209,13 @@ export interface TemperaShotView {
     lineFlashBoxColors: {accent: string; ink: string; paper: string} | null;
     /** Cache key for the line block's redraw. */
     lineFlashBoxSignature?: string;
+    /** 文闪 only: first keyword start in this shot, used by the background-invert flash. */
+    invertKeywordAt: number | null;
+    phraseArt: ReturnType<typeof buildPhraseArt>;
     phraseScore: PhraseScore | null;
     glyphAccents: import('pixi.js').Graphics | null;
+    /** 文闪 only: shot-anchored kinetic graphics that follow the type as it moves. */
+    kinetic: WenflashKineticDecor | null;
     /** 文闪 only: the sentence's marquee frame, two glow lines chasing each other. */
     marquee: {
         glow: import('pixi.js').Graphics;
@@ -286,6 +299,8 @@ export interface TemperaSceneView extends TemperaSceneFilterTarget {
     /** Everything the runtime has to destroy with the scene, blur included. */
     postProcessFilters: import('pixi.js').Filter[];
     activeShotIndex: number;
+    /** 文闪链式排版最后一句的落点，供下一段继续接续。 */
+    lastLineAnchor: TemperaLineAnchor | null;
 }
 
 export interface TemperaSceneBuildOptions {
@@ -306,6 +321,8 @@ export interface TemperaSceneBuildOptions {
      * the line being sung. Off for the flow stage, whose compositions own their layout. */
     lyricsOnly?: boolean;
     glyphsOnly?: boolean;
+    /** 上一段最后一句的落点，用于跨段继续方向链。 */
+    previousLineAnchor?: TemperaLineAnchor | null;
     /** Cover-art colours for the gradient colour mode; empty falls back to the theme hues. */
     coverColors: string[];
     /** Loaded textures for the user's placed images, keyed by placement id. */
@@ -616,6 +633,20 @@ const rgbOfHex = (value: string): [number, number, number] => {
     }) as [number, number, number];
 };
 
+const luminanceOfHex = (value: string): number => {
+    const [r, g, b] = rgbOfHex(value);
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+};
+
+/** The invert base must follow the backdrop that is actually painted, not the cover paper. */
+const backdropLuminance = (fallbackPaper: string): number => {
+    const mode = wenflashBackdropMode();
+    if (mode === 'black') return 0;
+    if (mode === 'white') return 1;
+    if (mode === 'custom') return luminanceOfHex(wenflashBackdropColor());
+    return luminanceOfHex(fallbackPaper);
+};
+
 const hslOfRgb = ([r, g, b]: [number, number, number]): [number, number, number] => {
     const max = Math.max(r, g, b), min = Math.min(r, g, b);
     const l = (max + min) / 2;
@@ -676,7 +707,7 @@ const buildWenflashTextColorPalette = (seed: string, count: number): string[] =>
  */
 const applyOverlapInkTint = (
     placements: TemperaGlyphPlacement[],
-    palette: { ink: string; accent: string },
+    palette: { ink: string; accent: string; paper: string },
     enabled: boolean | undefined,
     wenflash = false,
 ) => {
@@ -694,6 +725,17 @@ const applyOverlapInkTint = (
             : mode === 'complement'
                 ? base
                 : palette.accent;
+        if (mode === 'invert') {
+            // 与背景反色：亮背景先写深色，暗背景先写浅色；播放中再闪到另一色。
+            // 必须用实际铺出的背景（纯黑/纯白/自定义），否则黑底会选到黑字而看不见。
+            const base = backdropLuminance(palette.paper) > 0.55 ? wenflashInvertDark() : wenflashInvertLight();
+            return placements.map(placement => ({...placement, color: null, tint: base}));
+        }
+        if (mode === 'custom' && chance <= 0.0001) {
+            // 自定义纯色且异色概率为 0：整句所有字（包括重点词）都必须用这个颜色。
+            // 否则 placement.color 里的重点词强调色会留下，看起来像“还有别的颜色”。
+            return placements.map(placement => ({...placement, color: null, tint: base}));
+        }
         if (mode === 'cover' && chance <= 0.0001) {
             // 保持原有的封面墨色渐变；只有设置概率时才按字分色。
         } else {
@@ -1080,7 +1122,7 @@ export function* temperaSceneSteps(
     // Threaded so two neighbouring shots do not land on the same picture.
     let lastImageId: string | null = null;
     // 文闪链式排版：上一句最后一个字的锚点，跨 shot 延续。
-    let previousLineAnchor: TemperaLineAnchor | null = null;
+    let previousLineAnchor: TemperaLineAnchor | null = options.previousLineAnchor ?? null;
     const shots: TemperaSceneView['shots'] = [];
     for (let shotIndex = 0; shotIndex < paragraph.shots.length; shotIndex += 1) {
         const shot = paragraph.shots[shotIndex];
@@ -1108,6 +1150,14 @@ export function* temperaSceneSteps(
         ) * 1.5)) * options.lyricsFontScale * (flowStyle?.sizeScale ?? 1);
 
         const shotSeed = sceneSeed + shotIndex * 97;
+        const kinetic = options.glyphsOnly
+            ? createWenflashKineticDecor(pixi, {
+                ink: palette.ink,
+                accent: palette.accent,
+                paper: palette.paper,
+            }, shotSeed)
+            : null;
+        if (kinetic) shotContainer.addChildAt(kinetic.container, 0);
         const phaseAt = perfOn() ? performance.now() : 0;
         const blocks = buildTemperaBlocks(pixi, {
             kind: shot.kind,
@@ -1207,6 +1257,8 @@ export function* temperaSceneSteps(
             linePlacement: options.glyphsOnly ? wenflashLinePlacement() : 'follow',
             lineDirection: options.glyphsOnly ? wenflashLineDirection() : 'south',
             lineDirectionMode: options.glyphsOnly ? wenflashLineDirectionMode() : 'fixed',
+            entryRotation: options.glyphsOnly ? wenflashEntryRotation() : 0,
+            lineRotation: options.glyphsOnly ? wenflashLineRotation() : 0,
         });
         if (layoutAt) { layoutMs += performance.now() - layoutAt; }
         // Serial position in the song, not the lyric line: with 拆句 on, one line is several shots
@@ -1221,6 +1273,12 @@ export function* temperaSceneSteps(
             )
             : {placements, orientation: 0, bracket: null, underline: null};
         const placedGlyphs = applyOverlapInkTint(placement.placements, palette, options.lyricsOnly, options.glyphsOnly === true);
+        const invertKeywordAt = options.glyphsOnly && wenflashTextColorMode() === 'invert'
+            ? (() => {
+                const starts = placement.placements.filter(glyph => glyph.color).map(glyph => glyph.startTime);
+                return starts.length ? Math.min(...starts) : null;
+            })()
+            : null;
         if (options.glyphsOnly && arrangement !== 'graphic' && placedGlyphs.length > 0) {
             const last = placedGlyphs[placedGlyphs.length - 1];
             let lineLeft = Number.POSITIVE_INFINITY;
@@ -1343,6 +1401,12 @@ export function* temperaSceneSteps(
         // A whole-phrase block sits above the individual glyph blocks: it is the one that
         // covers the line and sweeps off in one quick pass of its own.
         const lineGeometry = flashBoxLayer ? resolveLineFlashBoxGeometry(glyphs) : null;
+        const phraseArt = lineGeometry && !options.staticMode
+            ? buildPhraseArt(pixi, shotContainer, textLayer, shotSeed, lineGeometry.rect, lineGeometry.fontSize,
+                arrangement === 'vertical', glyphs[0].fill, palette.accent, Math.min(...glyphs.map(g => g.motion.startTime)),
+                (glyphs.find(g => /[\p{L}\p{N}]/u.test(g.display.text)) ?? glyphs[0]).display,
+                glyphs.map(g => g.motion.startTime).sort((a, b) => a-b))
+            : null;
         const phraseScore = lineGeometry && !options.staticMode && temperaHash01(shotSeed, 0, 1747) < 0.68
             ? buildPhraseScore(new Graphics(), glyphs, lineGeometry.rect, lineGeometry.fontSize, arrangement === 'vertical')
             : null;
@@ -1527,7 +1591,8 @@ export function* temperaSceneSteps(
             palette,
             tuning.textInversion,
             tintAnchor,
-            options.glyphsOnly === true && wenflashTextColorChance() > 0.0001,
+            options.glyphsOnly === true
+                && (wenflashTextColorMode() !== 'cover' || wenflashTextColorChance() > 0.0001),
         );
         if (textFilter) {
             textLayer.filters = [textFilter];
@@ -1600,8 +1665,11 @@ export function* temperaSceneSteps(
             lineFlashOrder,
             lineFlashBoxFontSize: lineGeometry?.fontSize ?? 0,
             lineFlashBoxColors: lineGeometry?.colors ?? null,
+            invertKeywordAt,
+            phraseArt,
             phraseScore,
             glyphAccents,
+            kinetic,
             marquee,
             bottomLine,
             specks,
@@ -1677,6 +1745,7 @@ export function* temperaSceneSteps(
         transitionBlurFilter,
         transitionBlurAttached: false,
         activeShotIndex: -1,
+        lastLineAnchor: previousLineAnchor,
     };
 }
 

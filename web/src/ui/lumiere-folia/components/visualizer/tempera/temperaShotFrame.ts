@@ -1,5 +1,8 @@
+import { updatePhraseArt } from './wenflashPhraseArt';
 import {
     wenflashBlurAmount,
+    wenflashPhraseArtRun,
+    wenflashPhraseArtBrake,
     wenflashDecorIntensity,
     wenflashBlurDelay,
     wenflashGlowFlowScale,
@@ -34,9 +37,21 @@ import {
     wenflashFlashDark,
     wenflashFlashDim,
     wenflashFlashWindow,
+    wenflashGhostAlpha,
+    wenflashGhostLayers,
+    wenflashGhostOffset,
+    wenflashGlyphDecor,
+    wenflashGlyphDecorChance,
+    wenflashGlyphDecorSize,
+    wenflashGlyphDecorSpeed,
+    wenflashGlyphDecorStyle,
     wenflashHollowLinger,
     wenflashHollowLingerChance,
     wenflashHollowLingerDuration,
+    wenflashKineticDecor,
+    wenflashKineticDensity,
+    wenflashKineticChance,
+    wenflashKineticSpeed,
     wenflashLineBlockAlpha,
     wenflashLineBlockChance,
     wenflashLineBlockPadding,
@@ -55,6 +70,14 @@ import {
     wenflashMarqueeWidth,
     wenflashOutlineChance,
     wenflashOutlineWidth,
+    wenflashInvertDark,
+    wenflashInvertEveryMax,
+    wenflashInvertEveryMin,
+    wenflashInvertFlash,
+    wenflashInvertFlashWindow,
+    wenflashInvertKeyword,
+    wenflashInvertLight,
+    wenflashTextColorMode,
     wenflashPostZoomChance,
     wenflashPostZoomWaveChance,
     wenflashPostZoomDuration,
@@ -67,6 +90,7 @@ import {
     wenflashStretchSteps,
 } from '../../../../wenflashSettings';
 import { wenflashEasedCycles } from '../../../../wenflashPhase';
+import { pickWenflashLineStyle } from './wenflashLineStyles';
 import type { TemperaTuning, Theme } from '../../../types';
 import { overlapFx } from '../../../../overlapSettings';
 import { hashTemperaSeed, temperaHash01 } from './temperaRandom';
@@ -93,45 +117,9 @@ import { drawPhraseScore } from './temperaPhraseScore';
 // 单个 shot 的逐帧姿态：镜头位移与呼吸、shot 之间的推入推出交接、图形与图片层时间、逐字运动。
 // 只按绝对播放时间写 view，不持有状态。
 
-const resolveAnimationScale = (theme: Theme) => (
+export const resolveAnimationScale = (theme: Theme) => (
     theme.animationIntensity === 'calm' ? 0.65 : theme.animationIntensity === 'chaotic' ? 1.35 : 1
 );
-
-type MarqueeRect = {x: number; y: number; width: number; height: number};
-
-/** Point `distance` pixels clockwise from the top-left corner of a rect. */
-function marqueePoint(rect: MarqueeRect, distance: number) {
-    const perimeter = (rect.width + rect.height) * 2;
-    let d = ((distance % perimeter) + perimeter) % perimeter;
-    if (d <= rect.width) return {x: rect.x + d, y: rect.y};
-    d -= rect.width;
-    if (d <= rect.height) return {x: rect.x + rect.width, y: rect.y + d};
-    d -= rect.height;
-    if (d <= rect.width) return {x: rect.x + rect.width - d, y: rect.y + rect.height};
-    d -= rect.width;
-    return {x: rect.x, y: rect.y + rect.height - d};
-}
-
-/** One glow line: a rounded polyline of `length` pixels starting at `start`. */
-function strokeMarquee(
-    graphics: import('pixi.js').Graphics,
-    rect: MarqueeRect,
-    start: number,
-    length: number,
-    width: number,
-    color: string,
-    alpha: number,
-) {
-    if (length <= 0.5 || alpha <= 0.002) return;
-    const steps = Math.max(12, Math.ceil(length / 8));
-    const first = marqueePoint(rect, start);
-    graphics.moveTo(first.x, first.y);
-    for (let i = 1; i <= steps; i++) {
-        const point = marqueePoint(rect, start + (length * i) / steps);
-        graphics.lineTo(point.x, point.y);
-    }
-    graphics.stroke({width, color, alpha, cap: 'round', join: 'round'});
-}
 
 /**
  * How long a finished shot keeps sliding out while the next one is already sliding in.
@@ -286,6 +274,55 @@ const resolveGhostDrift = (
 };
 
 const focusHold = 0.55;
+
+export interface WenflashInvertTrigger {
+    /** Absolute song time of the next toggle; null means this shot has no trigger. */
+    at: number | null;
+    /** The steady text colour; the inverted state paints the screen with this colour. */
+    base: string;
+    /** The inverted text colour held after the toggle. */
+    flash: string;
+    /** How long the toggle blinks before it settles. */
+    duration: number;
+    /** Stable identity of this trigger, so one line only toggles once. */
+    key: string;
+}
+
+/**
+ * Resolve when the background-invert state should toggle for this shot. The state is held by
+ * the runtime: each trigger flips it, and the next trigger flips it back.
+ */
+export function resolveWenflashInvertTrigger(
+    view: TemperaShotView,
+): WenflashInvertTrigger | null {
+    if (wenflashTextColorMode() !== 'invert' || !wenflashInvertFlash()) return null;
+    const firstGlyph = view.glyphs[0];
+    if (!firstGlyph) return null;
+    const flashSeed = hashTemperaSeed(view.shot.id);
+    const duration = wenflashInvertFlashWindow();
+    const min = wenflashInvertEveryMin();
+    const max = Math.max(min, wenflashInvertEveryMax());
+    const interval = min + Math.floor(temperaHash01(flashSeed, 0, 811) * (max - min + 1));
+    const line = view.shot.slices?.[0]?.lineIndex ?? 0;
+    const lineFirst = (view.shot.slices?.[0]?.segmentStart ?? 0) === 0;
+    const randomDue = lineFirst && line >= 0 && line % Math.max(1, interval) === 0;
+    const keywordAt = view.invertKeywordAt;
+    const keywordDue = wenflashInvertKeyword() && typeof keywordAt === 'number';
+    const at = keywordDue
+        ? keywordAt
+        : randomDue ? view.shot.startTime : null;
+    const base = firstGlyph.fill ?? wenflashInvertDark();
+    const flash = base.toLowerCase() === wenflashInvertDark().toLowerCase()
+        ? wenflashInvertLight()
+        : wenflashInvertDark();
+    return {
+        at,
+        base,
+        flash,
+        duration,
+        key: at !== null ? `${view.shot.id}:${at.toFixed(3)}` : '',
+    };
+}
 
 export const updateTemperaShot = (
     view: TemperaShotView,
@@ -645,17 +682,22 @@ export const updateTemperaShot = (
     const entryBlurAmount = fixedCamera ? wenflashEntryBlurAmount() : 0;
     const entryBlurDuration = fixedCamera ? wenflashEntryBlurDuration() : 0.42;
     const lineBlockOn = fixedCamera && temperaHash01(flashSeed, 0, 1913) < wenflashLineBlockChance();
+    // 与背景反色：状态由 runtime 持有。每次触发翻一次面，保持到下一次触发再翻回来。
     // 文闪退场：不散开、不放大。当前句唱完后先等下一句出现 0.5 秒（flowScene 写入
     // shot.exitAt），再从那一刻重放同一套闪烁节奏，并沿用入场的亮拍外观（纯色块/镂空）；
     // 闪烁窗口一结束立刻切到全透明，不做淡出。
     const exitAt = view.shot.exitAt ?? view.shot.lyricEndTime;
     const exitAge = time - exitAt;
     const exitPhase = exitAge * (flashCount / flashWindow);
-    const inExitFlash = fixedCamera && exitAge >= 0 && exitAge < flashWindow;
+    // 退场闪烁沿用这个镜头是否被入场闪烁抽中；没抽中时退场只做硬切，不再补一套
+    // 100% 触发的闪烁，否则调低「触发概率」也挡不住退场一直闪。
+    const exitFlashOn = fixedCamera && flashOnEntry;
+    const inExitFlash = exitFlashOn && exitAge >= 0 && exitAge < flashWindow;
     const exitLit = inExitFlash && exitPhase % 1 >= flashDark;
     // 闪烁窗口播完就硬切到 0：不再补一段淡出，否则最后一下亮拍之后会看到渐隐。
+    // 没抽中闪烁的镜头保留原字到同一个窗口结束再硬切，避免变成「无闪但一直不消失」。
     const exitAlpha = fixedCamera
-        ? (exitAge < 0 ? 1 : exitAge < flashWindow ? (exitLit ? 1 : flashDim) : 0)
+        ? (exitAge < 0 ? 1 : exitAge < flashWindow ? (exitFlashOn ? (exitLit ? 1 : flashDim) : 1) : 0)
         : 1;
     view.specks?.clear();
     const entryStyleMode = wenflashEntryStyle();
@@ -1077,6 +1119,91 @@ export const updateTemperaShot = (
                 }
             }
         }
+        // 字形装饰：每个字独立抽取一种小装饰，落定后浮现，随闪烁/退场收走。
+        // 只画在 accents 这一张每帧清空的 Graphics 上，不新增节点；抽不中的字完全干净。
+        const glyphFont = Number(glyph.display.style.fontSize) || 32;
+        const decorOn = fixedCamera && wenflashGlyphDecor() && wenflashDecorIntensity() > 0.001
+            && !glyph.masked && !hollowLook && paint !== 'solid'
+            && /[\p{L}\p{N}]/u.test(glyph.display.text);
+        if (accents && decorOn && entryAge > 0.24) {
+            const decorRoll = temperaHash01(flashSeed, index, 1301);
+            if (decorRoll < wenflashGlyphDecorChance()) {
+                const mode = wenflashGlyphDecorStyle();
+                const styleIndex = mode === 'random'
+                    ? Math.floor(temperaHash01(flashSeed, index, 1307) * 4)
+                    : mode === 'sparkle' ? 0 : mode === 'bracket' ? 1 : mode === 'orbit' ? 2 : 3;
+                const size = glyphFont * 0.16 * wenflashGlyphDecorSize()
+                    * (Math.abs(scaleX) + Math.abs(scaleY)) * 0.5;
+                const speed = wenflashGlyphDecorSpeed();
+                const phase = (time - glyph.motion.startTime) * 2.2 * speed
+                    + temperaHash01(flashSeed, index, 1319) * Math.PI * 2;
+                const fadeIn = clamp01((entryAge - 0.24) / 0.5);
+                const decorAlpha = fadeIn * Math.max(0, Math.min(1, exitAlpha))
+                    * wenflashDecorIntensity() * 0.9;
+                if (decorAlpha > 0.005 && size > 0.5) {
+                    const accent = glyph.flashBoxColors?.accent ?? glyph.fill;
+                    const point = (dx: number, dy: number): [number, number] => [
+                        x + Math.cos(rotation) * dx - Math.sin(rotation) * dy,
+                        y + Math.sin(rotation) * dx + Math.cos(rotation) * dy,
+                    ];
+                    if (styleIndex === 0) {
+                        // 星芒：在字的右上角缓慢自转，两次呼吸一大一小。
+                        const [cx, cy] = point(size * 1.25, -size * 1.1);
+                        const r = size * (0.28 + 0.16 * Math.sin(phase * 1.7));
+                        const turn = phase * 0.35;
+                        const arm = (a: number, length: number): [number, number] => [
+                            cx + Math.cos(a + turn) * length, cy + Math.sin(a + turn) * length,
+                        ];
+                        const [ax, ay] = arm(0, r);
+                        const [bx, by] = arm(Math.PI / 2, r);
+                        const [cx2, cy2] = arm(Math.PI, r);
+                        const [dx2, dy2] = arm(-Math.PI / 2, r);
+                        const neck = r * 0.18;
+                        accents.poly([
+                            ax, ay, cx + neck, cy - neck, bx, by, cx + neck, cy + neck,
+                            cx2, cy2, cx - neck, cy + neck, dx2, dy2, cx - neck, cy - neck,
+                        ]).fill({color: accent, alpha: decorAlpha * 0.8});
+                    } else if (styleIndex === 1) {
+                        // 角标：左上/右下两段 L 形短线，长度随呼吸伸缩。
+                        const w = size * (1.5 + 0.12 * Math.sin(phase * 1.2));
+                        const h = size * (1.7 + 0.12 * Math.cos(phase * 1.2));
+                        const corner = size * 0.55;
+                        const stroke = Math.max(1, size * 0.11);
+                        const [lx, ty] = point(-w / 2, -h / 2);
+                        const [rx, by] = point(w / 2, h / 2);
+                        const [lx2, ty2] = point(-w / 2, -h / 2 + corner);
+                        const [lx3, ty3] = point(-w / 2 + corner, -h / 2);
+                        const [rx2, by2] = point(w / 2, h / 2 - corner);
+                        const [rx3, by3] = point(w / 2 - corner, h / 2);
+                        accents.moveTo(lx2, ty2).lineTo(lx, ty).lineTo(lx3, ty3)
+                            .stroke({width: stroke, color: accent, alpha: decorAlpha * 0.75});
+                        accents.moveTo(rx2, by2).lineTo(rx, by).lineTo(rx3, by3)
+                            .stroke({width: stroke, color: accent, alpha: decorAlpha * 0.75});
+                    } else if (styleIndex === 2) {
+                        // 环绕：三颗小墨点沿椭圆轨道绕字运行。
+                        const radius = size * 1.5;
+                        for (let dot = 0; dot < 3; dot += 1) {
+                            const angle = phase * (0.8 + dot * 0.12) + dot * Math.PI * 2 / 3;
+                            const [px, py] = point(Math.cos(angle) * radius, Math.sin(angle) * radius * 0.55);
+                            accents.circle(px, py, size * (0.1 + 0.04 * Math.sin(phase + dot)))
+                                .fill({color: dot === 0 ? accent : glyph.fill, alpha: decorAlpha * 0.7});
+                        }
+                    } else {
+                        // 划线：字下/字侧一段短线，两端随呼吸伸缩。
+                        const length = size * (1.9 + 0.35 * Math.sin(phase * 1.4));
+                        const vertical = view.lineFlashVertical;
+                        const [ax, ay] = vertical
+                            ? point(size * 1.15, -length / 2)
+                            : point(-length / 2, size * 1.15);
+                        const [bx, by] = vertical
+                            ? point(size * 1.15, length / 2)
+                            : point(length / 2, size * 1.15);
+                        accents.moveTo(ax, ay).lineTo(bx, by)
+                            .stroke({width: Math.max(1, size * 0.09), color: accent, alpha: decorAlpha * 0.7});
+                    }
+                }
+            }
+        }
         if (glyph.shadow) {
             glyph.shadow.alpha = glyphFrame.alpha * ghostAlpha * 0.34;
             glyph.shadow.visible = glyphFrame.visible && !glyph.masked && !hollowLook && ghostAlpha > 0.001;
@@ -1084,6 +1211,24 @@ export const updateTemperaShot = (
             glyph.shadow.scale.set(scaleX, scaleY);
             glyph.shadow.rotation = rotation;
         }
+        // 层叠色版：几张固定在基字后方的错位副本，跟随同样的运动/闪烁/退场透明度。
+        // 只在亮拍不是纯色块、且没有镂空时露出，避免把实心块和描边弄脏。
+        const ghostOffset = wenflashGhostOffset();
+        const ghostBaseAlpha = wenflashGhostAlpha();
+        glyph.ghosts.forEach((ghost, ghostIndex) => {
+            const layers = Math.max(1, wenflashGhostLayers());
+            const spread = ghostOffset * (ghostIndex + 1);
+            const layerAlpha = flashAlpha * Math.max(0, glyphFrame.alpha) * ghostBaseAlpha
+                * Math.max(0.12, 1 - ghostIndex / (layers + 1));
+            ghost.visible = glyphFrame.visible && !glyph.masked && !hollowLook && paint !== 'solid'
+                && layerAlpha > 0.001;
+            if (!ghost.visible) return;
+            const angle = rotation + Math.PI * 0.25;
+            ghost.position.set(x + Math.cos(angle) * spread, y + Math.sin(angle) * spread);
+            ghost.rotation = rotation;
+            ghost.scale.set(scaleX, scaleY);
+            ghost.alpha = Math.min(1, layerAlpha);
+        });
         // Echoes trail further back along the entrance vector the deeper they sit; once the
         // line is retained the same echoes carry the wet-ink trail instead.
         const echoVisible = glyphFrame.visible && !glyph.masked && !hollowLook
@@ -1160,6 +1305,9 @@ export const updateTemperaShot = (
         }
     }
 
+    if (view.phraseArt) {
+        updatePhraseArt(view.phraseArt, time, exitAt, flashWindow, wenflashDecorIntensity(), wenflashPhraseArtRun(), wenflashPhraseArtBrake());
+    }
     if (view.phraseScore) {
         drawPhraseScore(
             view.phraseScore, time, exitAt, flashWindow, wenflashDecorIntensity(),
@@ -1188,20 +1336,24 @@ export const updateTemperaShot = (
             : 0;
         if (alpha > 0.002) {
             const perimeter = (box.width + box.height) * 2;
-            const length = perimeter * wenflashMarqueeLength();
             const width = Math.max(0.6, view.marquee.fontSize * wenflashMarqueeWidth());
             const glow = wenflashMarqueeGlow();
             const color = view.glyphs.find(glyph => glyph.fill)?.fill ?? theme.primaryColor;
             const orbitAge = Math.max(0, entryAge - delay);
             const cycles = wenflashEasedCycles(orbitAge, wenflashMarqueeDuration(), wenflashMarqueeRun(), wenflashMarqueeBrake());
             const phase = ((cycles % 1) + 1) % 1;
-            const start = phase * perimeter;
+            const lineStyle = pickWenflashLineStyle(hashTemperaSeed(`${view.shot.id}:${view.glyphs.map(glyph => glyph.display.text).join('')}`), Math.round(view.shot.startTime * 1000));
+            const art = {
+                rect, box, perimeter, phase, cycles, alpha, color, width, glow,
+                span: wenflashMarqueeLength(),
+                fontSize: view.marquee.fontSize, lineY: box.y + box.height,
+            };
             view.marquee.glow.clear();
             view.marquee.core.clear();
-            strokeMarquee(view.marquee.glow, box, start, length, width * 4.5, color, alpha * 0.22 * glow);
-            strokeMarquee(view.marquee.glow, box, start + perimeter / 2, length, width * 4.5, color, alpha * 0.22 * glow);
-            strokeMarquee(view.marquee.core, box, start, length, width, color, alpha);
-            strokeMarquee(view.marquee.core, box, start + perimeter / 2, length, width, color, alpha);
+            if (glow > 0.01) {
+                lineStyle.frame(view.marquee.glow, {...art, width: width * 4.5, alpha: alpha * 0.22 * glow});
+            }
+            lineStyle.frame(view.marquee.core, art);
             view.marquee.blur.strength = Math.max(0, width * 2.4 * glow);
             view.marquee.blur.padding = Math.ceil(width * 6 + 8);
             const entryScale = wenflashMarqueeEntryScale();
@@ -1248,13 +1400,27 @@ export const updateTemperaShot = (
             const travel = 0.5 - 0.5 * Math.cos(cycles * Math.PI * 2);
             const cx = rect.x + length / 2 + Math.max(0, rect.width - length) * travel;
             const x0 = cx - length / 2;
-            const x1 = cx + length / 2;
+            const lineStyle = pickWenflashLineStyle(hashTemperaSeed(`${view.shot.id}:${view.glyphs.map(glyph => glyph.display.text).join('')}`), Math.round(view.shot.startTime * 1000));
+            const art = {
+                rect: {x: x0, y: rect.y, width: length, height: rect.height},
+                box: {x: x0, y: rect.y, width: length, height: rect.height},
+                perimeter: (length + rect.height) * 2,
+                phase: ((cycles % 1) + 1) % 1,
+                cycles,
+                alpha,
+                color,
+                width,
+                glow,
+                span: wenflashBottomLineLength() / 100,
+                fontSize,
+                lineY: y,
+            };
             view.bottomLine.glow.clear();
             view.bottomLine.core.clear();
-            view.bottomLine.glow.moveTo(x0, y).lineTo(x1, y)
-                .stroke({width: width * 4.5, color, alpha: alpha * 0.22 * glow, cap: 'round'});
-            view.bottomLine.core.moveTo(x0, y).lineTo(x1, y)
-                .stroke({width, color, alpha, cap: 'round'});
+            if (glow > 0.01) {
+                lineStyle.line(view.bottomLine.glow, {...art, width: width * 4.5, alpha: alpha * 0.22 * glow});
+            }
+            lineStyle.line(view.bottomLine.core, art);
             view.bottomLine.blur.strength = Math.max(0, width * 2.4 * glow);
             view.bottomLine.blur.padding = Math.ceil(width * 6 + 8);
             view.bottomLine.glow.visible = glow > 0.01;
@@ -1625,5 +1791,63 @@ export const updateTemperaShot = (
                     });
             }
         });
+    }
+
+    if (fixedCamera && view.kinetic) {
+        const shotSpan = Math.max(0.01, view.shot.endTime - view.shot.startTime);
+        const stageProgress = clamp01((time - view.shot.startTime) / shotSpan);
+        const impactPulse = time >= view.shot.startTime
+            ? Math.pow(Math.max(0, 1 - (time - view.shot.startTime) / 0.55), 2)
+            : 0;
+        const kineticGlyphs = view.glyphs.map((glyph, index) => {
+            const scaleX = glyph.display.scale.x;
+            const scaleY = glyph.display.scale.y;
+            const ink = glyph.flashBoxRect;
+            return {
+                x: glyph.display.x,
+                y: glyph.display.y,
+                width: ink?.width ?? (Math.abs(scaleX) > 0.001 ? glyph.display.width / Math.abs(scaleX) : glyph.display.width),
+                height: ink?.height ?? (Math.abs(scaleY) > 0.001 ? glyph.display.height / Math.abs(scaleY) : glyph.display.height),
+                alpha: glyph.display.alpha,
+                scaleX,
+                scaleY,
+                color: glyph.fill,
+                rotation: glyph.motion.rotation + glyph.motion.enterRotation,
+                finalX: glyph.baseX,
+                finalY: glyph.baseY,
+                finalRotation: glyph.motion.rotation,
+                startTime: glyph.motion.startTime,
+                endTime: glyph.motion.endTime,
+                settleTime: glyph.motion.settleTime,
+                enterX: glyph.motion.enterX,
+                enterY: glyph.motion.enterY,
+                keyword: !!glyph.keyword,
+                rowIndex: glyph.rowIndex,
+                index,
+            };
+        });
+        // 几何层自己的出现概率：每句独立抽取，不再借用文字入场闪烁的抽取结果。
+        const kineticOn = temperaHash01(flashSeed, 0, 1907) < wenflashKineticChance();
+        // 出现后，出入场闪烁与文字共用同一组闪烁参数：次数/窗口/暗拍比例/暗拍亮度。
+        const kineticEntryAge = time - view.shot.startTime;
+        const kineticExitAge = time - exitAt;
+        const kineticEntryPhase = kineticEntryAge * (flashCount / flashWindow);
+        const kineticExitPhase = kineticExitAge * (flashCount / flashWindow);
+        const kineticEntryOn = kineticOn && kineticEntryAge >= 0 && kineticEntryAge < flashWindow;
+        const kineticExitOn = kineticOn && kineticExitAge >= 0 && kineticExitAge < flashWindow;
+        const kineticEntryAlpha = kineticEntryOn ? (kineticEntryPhase % 1 >= flashDark ? 1 : flashDim) : 1;
+        const kineticExitAlpha = kineticExitOn ? (kineticExitPhase % 1 >= flashDark ? 1 : flashDim) : 1;
+        view.kinetic.update(
+            time,
+            kineticGlyphs,
+            stageProgress,
+            enter,
+            exit,
+            impactPulse,
+            wenflashKineticDecor() && kineticOn ? 0.78 : 0,
+            wenflashKineticDensity(),
+            wenflashKineticSpeed(),
+            kineticEntryAlpha * kineticExitAlpha,
+        );
     }
 };

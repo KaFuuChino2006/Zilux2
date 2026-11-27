@@ -1,7 +1,8 @@
 const key = 'zilux2.wenflash.entry';
 export type WenflashOrder = 'time' | 'random' | 'all-random';
 export type WenflashGlowColorMode = 'keyword' | 'custom';
-export type WenflashTextColorMode = 'cover' | 'custom' | 'complement';
+export type WenflashTextColorMode = 'cover' | 'custom' | 'complement' | 'invert';
+export type WenflashGlyphDecorStyle = 'random' | 'sparkle' | 'bracket' | 'orbit' | 'dash';
 export type WenflashBackdropMode = 'cover' | 'custom' | 'black' | 'white';
 export type WenflashLyrics = 'whole' | 'split' | 'mixed';
 export type WenflashArrangement = 'horizontal' | 'vertical' | 'mixed' | 'graphic';
@@ -17,7 +18,7 @@ const readLineDirection = (value: unknown): WenflashLineDirection => (
   LINE_DIRECTIONS.includes(value as WenflashLineDirection) ? value as WenflashLineDirection : 'south'
 );
 export type WenflashEntryStyle = 'wenflash' | 'overlap' | 'both';
-export const defaultEntrySizes = {sizeMin: 1.3, sizeMax: 1.8};
+export const defaultEntrySizes = {sizeMin: 1, sizeMax: 3};
 const readSize = (value: unknown, fallback: number) => typeof value === 'number' && Number.isFinite(value)
   ? Math.max(1, Math.min(3, value)) : fallback;
 const readNumber = (value: unknown, fallback: number, min: number, max: number) => (
@@ -32,6 +33,8 @@ export const defaultEntryCurve = () => [1/3, 1/3, 2/3, 2/3];
 const unit = (v: number) => Math.max(0, Math.min(1, v));
 export interface WenflashSettings {
   decorIntensity: number;
+  phraseArtRun: number;
+  phraseArtBrake: number;
   sizeMin: number;
   sizeMax: number;
   enabled: boolean;
@@ -56,6 +59,14 @@ export interface WenflashSettings {
   entryDelay: number;
   /** Seconds the size ramp takes to go from the initial scale to 1. */
   entryZoom: number;
+  /** 每个字额外的随机入场旋转角，单位度；入场后转正。 */
+  entryRotation: number;
+  /** 整句额外的随机入场旋转角，单位度；同一句所有字共享一个角度。 */
+  lineRotation: number;
+  /** 镜头跟随入场旋转的比例，百分比；0 保持水平。 */
+  cameraRotation: number;
+  /** 文闪上下电影黑边在常规镜头下的单边画面占比，百分比；0 关闭。 */
+  letterboxPercent: number;
   /** Chance that a glyph arrives through a random defocus, in percent. */
   entryBlurChance: number;
   /** Peak strength of the random arrival blur over the wet-ink base, in percent. */
@@ -120,9 +131,54 @@ export interface WenflashSettings {
   textColorChance: number;
   /** How many distinct alternate inks the per-line palette draws from. */
   textColorCount: number;
+  /** 与背景反色：亮背景用深色、暗背景用浅色；播放到重点词或间隔若干句时闪成另一色。 */
+  invertDark: string;
+  invertLight: string;
+  invertFlash: boolean;
+  invertKeyword: boolean;
+  invertEveryMin: number;
+  invertEveryMax: number;
+  /** 反色翻转的闪烁节奏。独立于文字闪烁，避免两边互相牵制。 */
+  invertFlashCount: number;
+  invertFlashWindow: number;
+  invertFlashDark: number;
+  /** Persistent offset plates behind each glyph; 0 keeps a single plate. */
+  ghostLayers: number;
+  /** Offset between successive plates, in pixels. */
+  ghostOffset: number;
+  /** Opacity of each plate, in percent. */
+  ghostAlpha: number;
+  /** Whether glyph ornaments are drawn around selected characters. */
+  glyphDecor: boolean;
+  /** Ornament family; random picks one per glyph from the fixed set. */
+  glyphDecorStyle: WenflashGlyphDecorStyle;
+  /** Chance that a glyph receives an ornament, in percent. */
+  glyphDecorChance: number;
+  /** Ornament size relative to the glyph, in percent. */
+  glyphDecorSize: number;
+  /** Ornament motion speed relative to the base rate, in percent. */
+  glyphDecorSpeed: number;
+  /** 随文字运动的动态图示：轨道、连线、飘带、呼吸框与字边火花。 */
+  kineticDecor: boolean;
+  /** 动态图示总强度。 */
+  kineticChance: number;
+  /** 动态图示的线条与粒子密度。 */
+  kineticDensity: number;
+  /** 动态图示的旋转、呼吸和流动速度。 */
+  kineticSpeed: number;
   /** Whole-stage backdrop: cover, one custom colour, black, or white. */
   backdropMode: WenflashBackdropMode;
   backdropColor: string;
+  /** 版面框架：裁切规矩线、套准靶、色标条、标尺与页边批注。 */
+  stageMarks: boolean;
+  /** 纸面氛围：纸纤维、漂浮墨点、半调晕、光束与暗角。 */
+  stageInk: boolean;
+  /** 两组版面装饰的总强度。 */
+  stageDecorIntensity: number;
+  /** 漂移墨点与半调点的密度。 */
+  stageDecorDensity: number;
+  /** 装饰动画速度倍率。 */
+  stageDecorSpeed: number;
   /** Gradient palette source: follow the keyword colour, or use the three custom stops. */
   glowColorMode: WenflashGlowColorMode;
   glowColorA: string;
@@ -242,115 +298,147 @@ export interface WenflashSettings {
   bottomLineFade: number;
 }
 export const defaultWenflashSettings = (): WenflashSettings => ({
-  decorIntensity: 80,
   ...defaultEntrySizes,
   enabled: true,
-  curve: defaultEntryCurve(),
-  cameraCurve: defaultEntryCurve(),
-  cameraZoomCurve: defaultEntryCurve(),
-  cameraOverlap: 0.8,
-  cameraOverlapLinked: true,
-  cameraZoomOverlap: 0.8,
+  decorIntensity: 80,
+  phraseArtRun: 0.8,
+  phraseArtBrake: 1,
+  curve: [0, 0.9303026153635492, 0.7945436986962819, 1.0179378337669451],
+  cameraCurve: [0.2601802671817158, -0.0001369300287552555, 0.37928536938676966, 0.9857592770094481],
+  cameraZoomCurve: [0.28271366489618543, 0.0005477201150208, 0.14751327860936747, 0.9645351225523757],
+  cameraOverlap: 0.7,
+  cameraOverlapLinked: false,
+  cameraZoomOverlap: 0.35,
   cameraSteps: 0,
   renderFps: 0,
   entryStyle: 'both',
-  entryDelay: 0.3,
+  entryDelay: 0.1,
   entryZoom: 1,
+  entryRotation: 12,
+  lineRotation: 0,
+  cameraRotation: 100,
+  letterboxPercent: 15,
   entryBlurChance: 45,
   entryBlurAmount: 100,
   entryBlurDuration: 0.42,
   stretch: true,
-  stretchAmount: 14,
-  stretchDuration: 0.1,
-  stretchSteps: 7,
-  postZoomChance: 30,
-  postZoomWaveChance: 35,
-  postZoomScale: 1.6,
-  postZoomDuration: 0.34,
-  postZoomSteps: 7,
-  splitLyrics: false,
-  mixedLyrics: false,
-  phraseSize: 3,
-  order: 'time',
-  arrangement: 'horizontal',
+  stretchAmount: 8,
+  stretchDuration: 0.13,
+  stretchSteps: 3,
+  postZoomChance: 28,
+  postZoomWaveChance: 24,
+  postZoomScale: 2.25,
+  postZoomDuration: 0.18,
+  postZoomSteps: 3,
+  splitLyrics: true,
+  mixedLyrics: true,
+  phraseSize: 4,
+  order: 'all-random',
+  arrangement: 'mixed',
   graphicShape: 'ring',
-  linePlacement: 'follow',
+  linePlacement: 'random',
   lineDirection: 'south',
   lineDirectionMode: 'fixed',
-  blurDelay: 1.2,
-  blurAmount: 45,
-  glowStrength: 100,
-  glowRadius: 100,
-  glowPlain: 70,
-  glowChance: 100,
+  blurDelay: 0.8,
+  blurAmount: 73,
+  glowStrength: 122,
+  glowRadius: 300,
+  glowPlain: 51,
+  glowChance: 21,
   glowFlowSpeed: 100,
   glowFlowScale: 100,
-  textColorMode: 'cover',
-  textColor: '#f2efe6',
-  textColorChance: 0,
-  textColorCount: 8,
-  backdropMode: 'cover',
+  textColorMode: 'complement',
+  textColor: '#000000',
+  textColorChance: 79,
+  textColorCount: 32,
+  invertDark: '#000000',
+  invertLight: '#ffffff',
+  invertFlash: true,
+  invertKeyword: true,
+  invertEveryMin: 3,
+  invertEveryMax: 6,
+  invertFlashCount: 4,
+  invertFlashWindow: 0.3,
+  invertFlashDark: 45,
+  ghostLayers: 2,
+  ghostOffset: 9,
+  ghostAlpha: 16,
+  glyphDecor: true,
+  glyphDecorStyle: 'random',
+  glyphDecorChance: 35,
+  glyphDecorSize: 100,
+  glyphDecorSpeed: 70,
+  kineticDecor: true,
+  kineticChance: 70,
+  kineticDensity: 58,
+  kineticSpeed: 100,
+  backdropMode: 'black',
   backdropColor: '#0d0d12',
+  stageMarks: true,
+  stageInk: true,
+  stageDecorIntensity: 58,
+  stageDecorDensity: 55,
+  stageDecorSpeed: 90,
   glowColorMode: 'keyword',
   glowColorA: '#ff5c8a',
   glowColorB: '#ffd166',
   glowColorC: '#7bdff2',
-  chance: 35,
+  chance: 52,
   flashCount: 4,
-  flashWindow: 0.3,
+  flashWindow: 0.2,
   flashDark: 45,
   flashDim: 5,
-  solidChance: 25,
-  outlineChance: 25,
+  solidChance: 34,
+  outlineChance: 50,
   lineBlockChance: 35,
-  lineBlockPadding: 0,
+  lineBlockPadding: 11,
   lineBlockAlpha: 100,
-  lineBlockSweep: 0.55,
+  lineBlockSweep: 0.4,
   blockPadding: 0,
   blockAlpha: 100,
   outlineWidth: 3.5,
   hollowLinger: true,
   hollowLingerChance: 35,
   hollowLingerDuration: 0,
-  shakeChance: 35,
-  shakePx: 47,
+  shakeChance: 48,
+  shakePx: 30,
   shakeElastic: 5,
-  shakeX: 0.65,
-  shakeY: 0.95,
-  shakeZ: 70,
+  shakeX: 0.15,
+  shakeY: 0.25,
+  shakeZ: 64,
   shakeDepth: 0,
-  shakeRollDeg: 7.6,
-  shakeAttack: 0.34,
-  shakeSwing: 0.4,
+  shakeRollDeg: 5.9,
+  shakeAttack: 0.29,
+  shakeSwing: 0.45,
   shakeAt: 0,
-  shakeDamping: 1.75,
-  lensDistortion: 0.15,
-  rgbShift: 0,
-  grain: 0,
+  shakeDamping: 3.5,
+  lensDistortion: 0.75,
+  rgbShift: 0.15,
+  grain: 0.05,
   contrast: 0,
   vignette: 0,
   marquee: true,
   marqueeChance: 25,
-  marqueeDuration: 3.6,
-  marqueeLength: 22,
-  marqueePadding: 0.6,
-  marqueeWidth: 5,
-  marqueeGlow: 60,
+  marqueeDuration: 1.6,
+  marqueeLength: 10,
+  marqueePadding: 0.1,
+  marqueeWidth: 6.5,
+  marqueeGlow: 90,
   marqueeEntryDelay: 0.08,
   marqueeEntryFade: 0.32,
-  marqueeEntryScale: 1,
-  marqueeRun: 0,
-  marqueeBrake: 1.2,
+  marqueeEntryScale: 1.4,
+  marqueeRun: 0.8,
+  marqueeBrake: 1,
   bottomLine: true,
-  bottomLineChance: 30,
-  bottomLineLength: 70,
+  bottomLineChance: 100,
+  bottomLineLength: 52,
   bottomLineWidth: 5,
-  bottomLineGlow: 55,
-  bottomLineOffset: 0.5,
-  bottomLineSpeed: 4.5,
-  bottomLineRun: 0,
-  bottomLineBrake: 1.2,
-  bottomLineFade: 0.4,
+  bottomLineGlow: 82,
+  bottomLineOffset: 0.4,
+  bottomLineSpeed: 1.4,
+  bottomLineFade: 0.42,
+  bottomLineRun: 1,
+  bottomLineBrake: 0.9,
 });
 function readColor(input: unknown, fallback: string): string {
   return typeof input === 'string' && /^#[0-9a-f]{6}$/i.test(input) ? input : fallback;
@@ -394,6 +482,10 @@ function readSettings(): WenflashSettings {
         : value?.entryStyle === 'overlap' ? 'overlap' : 'both',
       entryDelay: readNumber(value?.entryDelay, fallback.entryDelay, 0, 1.5),
       entryZoom: readNumber(value?.entryZoom, fallback.entryZoom, 0.2, 3),
+      entryRotation: readNumber(value?.entryRotation, fallback.entryRotation, 0, 360),
+      lineRotation: readNumber(value?.lineRotation, fallback.lineRotation, 0, 360),
+      cameraRotation: readNumber(value?.cameraRotation, fallback.cameraRotation, 0, 100),
+      letterboxPercent: Math.round(readNumber(value?.letterboxPercent, fallback.letterboxPercent, 0, 30)),
       entryBlurChance: readNumber(value?.entryBlurChance, fallback.entryBlurChance, 0, 100),
       entryBlurAmount: readNumber(value?.entryBlurAmount, fallback.entryBlurAmount, 0, 200),
       entryBlurDuration: readNumber(value?.entryBlurDuration, fallback.entryBlurDuration, 0.1, 1.2),
@@ -426,20 +518,52 @@ function readSettings(): WenflashSettings {
       blurDelay: readNumber(value?.blurDelay, fallback.blurDelay, 0, 8),
       blurAmount: readNumber(value?.blurAmount, fallback.blurAmount, 0, 100),
       glowStrength: readNumber(value?.glowStrength, fallback.glowStrength, 0, 200),
+      phraseArtRun: readNumber(value?.phraseArtRun, fallback.phraseArtRun, 0, 30),
+      phraseArtBrake: readNumber(value?.phraseArtBrake, fallback.phraseArtBrake, 0.1, 8),
       decorIntensity: readNumber(value?.decorIntensity, fallback.decorIntensity, 0, 100),
       glowRadius: readNumber(value?.glowRadius, fallback.glowRadius, 20, 300),
       glowPlain: readNumber(value?.glowPlain, fallback.glowPlain, 0, 100),
       glowChance: readNumber(value?.glowChance, fallback.glowChance, 0, 100),
       glowFlowSpeed: readNumber(value?.glowFlowSpeed, fallback.glowFlowSpeed, 0, 300),
       glowFlowScale: readNumber(value?.glowFlowScale, fallback.glowFlowScale, 30, 300),
-      textColorMode: value?.textColorMode === 'custom' ? 'custom' : value?.textColorMode === 'complement' ? 'complement' : 'cover',
+      textColorMode: value?.textColorMode === 'custom' ? 'custom'
+        : value?.textColorMode === 'complement' ? 'complement'
+          : value?.textColorMode === 'invert' ? 'invert' : 'cover',
       textColor: readColor(value?.textColor, fallback.textColor),
       textColorChance: readNumber(value?.textColorChance, fallback.textColorChance, 0, 100),
       textColorCount: Math.round(readNumber(value?.textColorCount, fallback.textColorCount, 2, 32)),
+      invertDark: readColor(value?.invertDark, fallback.invertDark),
+      invertLight: readColor(value?.invertLight, fallback.invertLight),
+      invertFlash: value?.invertFlash !== false,
+      invertKeyword: value?.invertKeyword !== false,
+      invertEveryMin: Math.round(readNumber(value?.invertEveryMin, fallback.invertEveryMin, 1, 12)),
+      invertEveryMax: Math.round(readNumber(value?.invertEveryMax, fallback.invertEveryMax, 1, 12)),
+      invertFlashCount: Math.round(readNumber(value?.invertFlashCount, fallback.invertFlashCount, 1, 8)),
+      invertFlashWindow: readNumber(value?.invertFlashWindow, fallback.invertFlashWindow, 0.05, 2),
+      invertFlashDark: readNumber(value?.invertFlashDark, fallback.invertFlashDark, 0, 100),
+      ghostLayers: Math.round(readNumber(value?.ghostLayers, fallback.ghostLayers, 0, 4)),
+      ghostOffset: readNumber(value?.ghostOffset, fallback.ghostOffset, 0, 40),
+      ghostAlpha: readNumber(value?.ghostAlpha, fallback.ghostAlpha, 0, 100),
+      glyphDecor: value?.glyphDecor !== false,
+      glyphDecorStyle: value?.glyphDecorStyle === 'sparkle' || value?.glyphDecorStyle === 'bracket'
+        || value?.glyphDecorStyle === 'orbit' || value?.glyphDecorStyle === 'dash'
+        ? value.glyphDecorStyle : 'random',
+      glyphDecorChance: readNumber(value?.glyphDecorChance, fallback.glyphDecorChance, 0, 100),
+      glyphDecorSize: readNumber(value?.glyphDecorSize, fallback.glyphDecorSize, 30, 220),
+      glyphDecorSpeed: readNumber(value?.glyphDecorSpeed, fallback.glyphDecorSpeed, 20, 200),
+      kineticDecor: value?.kineticDecor !== false,
+      kineticChance: readNumber(value?.kineticChance ?? value?.kineticIntensity, fallback.kineticChance, 0, 100),
+      kineticDensity: readNumber(value?.kineticDensity, fallback.kineticDensity, 0, 100),
+      kineticSpeed: readNumber(value?.kineticSpeed, fallback.kineticSpeed, 20, 200),
       backdropMode: value?.backdropMode === 'custom' || value?.backdropMode === 'black' || value?.backdropMode === 'white'
         ? value.backdropMode
         : 'cover',
       backdropColor: readColor(value?.backdropColor, fallback.backdropColor),
+      stageMarks: value?.stageMarks !== false,
+      stageInk: value?.stageInk !== false,
+      stageDecorIntensity: readNumber(value?.stageDecorIntensity, fallback.stageDecorIntensity, 0, 100),
+      stageDecorDensity: readNumber(value?.stageDecorDensity, fallback.stageDecorDensity, 0, 100),
+      stageDecorSpeed: readNumber(value?.stageDecorSpeed, fallback.stageDecorSpeed, 20, 200),
       glowColorMode: value?.glowColorMode === 'custom' ? 'custom' : 'keyword',
       glowColorA: readColor(value?.glowColorA, fallback.glowColorA),
       glowColorB: readColor(value?.glowColorB, fallback.glowColorB),
@@ -506,6 +630,9 @@ function readSettings(): WenflashSettings {
   }
 }
 let settings: WenflashSettings = readSettings();
+export const wenflashPhraseArtRun = () => settings.phraseArtRun;
+export const wenflashPhraseArtBrake = () => settings.phraseArtBrake;
+
 export function wenflashDecorIntensity(): number {
   return settings.decorIntensity / 100;
 }
@@ -515,6 +642,8 @@ function apply(value: WenflashSettings) {
   const structureChanged = settings.splitLyrics !== value.splitLyrics
     || settings.mixedLyrics !== value.mixedLyrics
     || settings.phraseSize !== value.phraseSize
+    || settings.entryRotation !== value.entryRotation
+    || settings.lineRotation !== value.lineRotation
     || settings.order !== value.order
     || settings.arrangement !== value.arrangement
     || settings.graphicShape !== value.graphicShape
@@ -525,6 +654,9 @@ function apply(value: WenflashSettings) {
     || settings.textColor !== value.textColor
     || settings.textColorChance !== value.textColorChance
     || settings.textColorCount !== value.textColorCount
+    || settings.invertDark !== value.invertDark
+    || settings.invertLight !== value.invertLight
+    || settings.ghostLayers !== value.ghostLayers
     || settings.backdropMode !== value.backdropMode
     || settings.backdropColor !== value.backdropColor
     || settings.lensDistortion !== value.lensDistortion
@@ -575,6 +707,22 @@ export function wenflashEntryDelay(): number {
 }
 export function wenflashEntryZoom(): number {
   return Math.max(0.05, settings.entryZoom);
+}
+/** 每个字额外的随机入场旋转角；返回弧度。 */
+export function wenflashEntryRotation(): number {
+  return Math.max(0, Math.min(360, settings.entryRotation)) * Math.PI / 180;
+}
+/** 整句额外的随机入场旋转角；返回弧度。 */
+export function wenflashLineRotation(): number {
+  return Math.max(0, Math.min(360, settings.lineRotation)) * Math.PI / 180;
+}
+/** 镜头跟随入场旋转的比例，0..1。 */
+export function wenflashCameraRotation(): number {
+  return unit(settings.cameraRotation / 100);
+}
+/** 文闪上下黑边在常规镜头下的单边画面占比，0..0.30。 */
+export function wenflashLetterboxPercent(): number {
+  return unit(settings.letterboxPercent / 100);
 }
 export function wenflashEntryBlurChance(): number {
   return unit(settings.entryBlurChance / 100);
@@ -633,11 +781,93 @@ export function wenflashTextColorChance(): number {
 export function wenflashTextColorCount(): number {
   return Math.round(settings.textColorCount);
 }
+export function wenflashInvertDark(): string {
+  return settings.invertDark;
+}
+export function wenflashInvertLight(): string {
+  return settings.invertLight;
+}
+export function wenflashInvertFlash(): boolean {
+  return settings.invertFlash;
+}
+export function wenflashInvertKeyword(): boolean {
+  return settings.invertKeyword;
+}
+export function wenflashInvertEveryMin(): number {
+  return Math.max(1, Math.min(12, Math.round(settings.invertEveryMin)));
+}
+export function wenflashInvertEveryMax(): number {
+  return Math.max(wenflashInvertEveryMin(), Math.min(12, Math.round(settings.invertEveryMax)));
+}
+export function wenflashInvertFlashCount(): number {
+  return Math.max(1, Math.min(8, Math.round(settings.invertFlashCount)));
+}
+export function wenflashInvertFlashWindow(): number {
+  return Math.max(0.05, Math.min(2, settings.invertFlashWindow));
+}
+export function wenflashInvertFlashDark(): number {
+  return Math.max(0, Math.min(1, settings.invertFlashDark / 100));
+}
+export function wenflashGhostLayers(): number {
+  return Math.round(settings.ghostLayers);
+}
+export function wenflashGhostOffset(): number {
+  return settings.ghostOffset;
+}
+export function wenflashGhostAlpha(): number {
+  return unit(settings.ghostAlpha / 100);
+}
+export function wenflashGlyphDecor(): boolean {
+  return settings.glyphDecor;
+}
+export function wenflashGlyphDecorStyle(): WenflashGlyphDecorStyle {
+  return settings.glyphDecorStyle;
+}
+export function wenflashGlyphDecorChance(): number {
+  return unit(settings.glyphDecorChance / 100);
+}
+export function wenflashGlyphDecorSize(): number {
+  return settings.glyphDecorSize / 100;
+}
+export function wenflashGlyphDecorSpeed(): number {
+  return settings.glyphDecorSpeed / 100;
+}
+
+export function wenflashKineticDecor(): boolean {
+  return settings.kineticDecor;
+}
+
+export function wenflashKineticChance(): number {
+  return unit(settings.kineticChance / 100);
+}
+
+export function wenflashKineticDensity(): number {
+  return unit(settings.kineticDensity / 100);
+}
+
+export function wenflashKineticSpeed(): number {
+  return settings.kineticSpeed / 100;
+}
 export function wenflashBackdropMode(): WenflashBackdropMode {
   return settings.backdropMode;
 }
 export function wenflashBackdropColor(): string {
   return settings.backdropColor;
+}
+export function wenflashStageMarks(): boolean {
+  return settings.stageMarks;
+}
+export function wenflashStageInk(): boolean {
+  return settings.stageInk;
+}
+export function wenflashStageDecorIntensity(): number {
+  return unit(settings.stageDecorIntensity / 100);
+}
+export function wenflashStageDecorDensity(): number {
+  return unit(settings.stageDecorDensity / 100);
+}
+export function wenflashStageDecorSpeed(): number {
+  return settings.stageDecorSpeed / 100;
 }
 export function wenflashGlowStrength(): number {
   return Math.max(0, settings.glowStrength / 100);

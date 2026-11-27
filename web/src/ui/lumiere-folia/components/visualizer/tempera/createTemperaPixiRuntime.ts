@@ -1,3 +1,4 @@
+import { createWenflashLetterbox } from './wenflashLetterbox';
 import type { MotionValue } from "../../../shims/framer-motion";
 import type { TemperaTuning, Theme } from '../../../types';
 import {
@@ -7,7 +8,7 @@ import {
 } from '../pixi/pixiDisplayResources';
 import { snapResolutionToTexturePool } from '../pixi/pixiTextureBudget';
 import type { TemperaProgram } from './types';
-import { resolveFollowStart, resolveLyricCoverageZoom, resolveLyricFollow } from './temperaCamera';
+import { resolveFollowRoll, resolveFollowStart, resolveLyricCoverageZoom, resolveLyricFollow } from './temperaCamera';
 import { createTemperaOverlapGrid, type TemperaOverlapGrid } from './temperaOverlapGrid';
 import { createTemperaOverlapSheet, type TemperaOverlapSheet } from './temperaOverlapSheet';
 import { createTemperaOverlapWave, type TemperaOverlapWave } from './temperaOverlapWave';
@@ -15,7 +16,7 @@ import { createTemperaOverlapDebris } from './temperaOverlapDebris';
 import { createTemperaOverlapAmbient } from './temperaOverlapAmbient';
 import { createTemperaOverlapPrintFilters } from './temperaOverlapPrint';
 import { hashTemperaSeed } from './temperaRandom';
-import { wenflashCameraBlend, wenflashCameraSpeed, wenflashCameraSteps, wenflashCameraZoomBlend, wenflashCameraZoomSpeed, wenflashImpact } from '../../../../wenflashSettings';
+import { wenflashCameraBlend, wenflashCameraRotation, wenflashCameraSpeed, wenflashCameraSteps, wenflashCameraZoomBlend, wenflashCameraZoomSpeed, wenflashImpact, wenflashInvertFlashCount, wenflashInvertFlashDark, wenflashInvertFlashWindow, wenflashLetterboxPercent } from '../../../../wenflashSettings';
 
 /** Critically damped follow. The camera is sprung toward the point it should be looking at, so
  * the drift along a line and the hand-off onto the next line both start and stop softly instead
@@ -23,6 +24,7 @@ import { wenflashCameraBlend, wenflashCameraSpeed, wenflashCameraSteps, wenflash
 
 /** Critically damped spring step (Unity's SmoothDamp): no overshoot, and the velocity is zero
  * at both ends, which is what makes the hand-off read as soft rather than as a slide. */
+
 const smoothDamp = (
     current: number, target: number, velocity: number, smoothTime: number, dt: number,
 ) => {
@@ -110,7 +112,7 @@ import { destroyTemperaGradientFills } from './temperaShapes';
 import { TemperaImageTextures } from './temperaImageTextures';
 import { TemperaOverlay } from './temperaOverlay';
 import { resolveTemperaCreditsFrame, TemperaCreditsLayer } from './temperaCreditsLayer';
-import { heldExitSeconds, resolveTemperaShotExit, updateTemperaShot } from './temperaShotFrame';
+import { heldExitSeconds, resolveAnimationScale, resolveTemperaShotExit, resolveWenflashInvertTrigger, updateTemperaShot } from './temperaShotFrame';
 import { overlapCameraSpeed, overlapCameraZoomSpeed, overlapFx } from '../../../../overlapSettings';
 
 interface TemperaImpact {
@@ -255,6 +257,18 @@ export class TemperaPixiRuntime {
     private renderResolution = 1;
 
     private sceneContainer!: import('pixi.js').Container;
+    /** Equal-height black bars that breathe with the follow camera's zoom. */
+    private letterbox: ReturnType<typeof createWenflashLetterbox> | null = null;
+    private letterboxLayer: import('pixi.js').Container | null = null;
+    /** Full-frame wash behind the type while the background-invert flash is active. */
+    /** Held invert state: every trigger flips it, the next trigger flips it back. */
+    private invertOn = false;
+    private invertTargetOn = false;
+    private invertActive = false;
+    private invertTriggerKey = '';
+    private invertTransitionAt = 0;
+    private invertTransitionUntil = 0;
+    private invertSampleTime = Number.NEGATIVE_INFINITY;
     /** Still parent that carries the print pass, so the vignette stays in frame space. */
     private printLayer!: import('pixi.js').Container;
     private printFilters: import('pixi.js').Filter[] = [];
@@ -398,6 +412,14 @@ export class TemperaPixiRuntime {
                 runtime.printLayer.filters = runtime.printFilters;
                 runtime.printLayer.filterArea = new pixi.Rectangle(0, 0, width, height);
             }
+            runtime.letterbox = createWenflashLetterbox(pixi);
+            const foreground = new pixi.Container();
+            foreground.addChild(runtime.printLayer, runtime.creditsLayer.container);
+            app.stage.addChildAt(foreground, 0);
+            foreground.filters = [runtime.letterbox.filter];
+            foreground.filterArea = new pixi.Rectangle(0, 0, width, height);
+            runtime.letterboxLayer = foreground;
+            runtime.updateLetterbox(height);
         }
 
         // Textures are loaded once and shared by every scene: paragraph scenes are rebuilt as
@@ -451,6 +473,55 @@ export class TemperaPixiRuntime {
         return snapResolutionToTexturePool(width, height, tuning.textureResolution);
     }
 
+    private updateInvertState(view: TemperaShotView | null, time: number) {
+        if (!this.options.glyphsOnly) {
+            this.invertOn = false;
+            this.invertActive = false;
+            this.setInvertFilter(false);
+            return;
+        }
+        // A seek is not a trigger: drop the held state and let the next trigger establish it.
+        if (Math.abs(time - this.invertSampleTime) > 1.2) {
+            this.invertOn = false;
+            this.invertTargetOn = false;
+            this.invertTriggerKey = '';
+            this.invertTransitionUntil = 0;
+        }
+        this.invertSampleTime = time;
+        const trigger = view ? resolveWenflashInvertTrigger(view) : null;
+        if (!trigger) {
+            this.invertOn = false;
+            this.invertActive = false;
+            this.invertTriggerKey = '';
+            this.setInvertFilter(false);
+            return;
+        }
+        if (trigger.at !== null && trigger.key !== this.invertTriggerKey && time >= trigger.at) {
+            this.invertTriggerKey = trigger.key;
+            this.invertTargetOn = !this.invertOn;
+            this.invertTransitionAt = time;
+            // The invert blink has its own count / window / dark ratio, independent of the
+            // lyric entrance/exit flash.
+            this.invertTransitionUntil = time + Math.max(0.05, wenflashInvertFlashWindow());
+        }
+        if (time < this.invertTransitionUntil) {
+            const span = Math.max(0.02, this.invertTransitionUntil - this.invertTransitionAt);
+            const phase = (time - this.invertTransitionAt) / span * Math.max(1, wenflashInvertFlashCount());
+            const lit = phase % 1 >= Math.min(1, Math.max(0, wenflashInvertFlashDark()));
+            this.invertActive = lit ? this.invertTargetOn : this.invertOn;
+        } else {
+            if (this.invertTransitionUntil > 0 && this.invertTargetOn !== this.invertOn) {
+                this.invertOn = this.invertTargetOn;
+            }
+            this.invertActive = this.invertOn;
+        }
+        this.setInvertFilter(this.invertActive);
+    }
+
+    private setInvertFilter(active: boolean) {
+        this.options.host.classList.toggle('is-invert-flipped', active);
+    }
+
     private resizeToHost() {
         if (this.destroyed) return false;
         const width = Math.max(this.options.host.clientWidth, 320);
@@ -475,6 +546,10 @@ export class TemperaPixiRuntime {
         this.ambient?.resize(width, height);
         this.sheet?.resize(width, height);
         this.wave?.resize(width, height);
+        if (this.letterboxLayer) {
+            this.letterboxLayer.filterArea = new this.pixi.Rectangle(0, 0, width, height);
+            this.updateLetterbox(height);
+        }
         if (this.printFilters.length > 0) {
             this.printLayer.filterArea = new this.pixi.Rectangle(0, 0, width, height);
             this.printFilters.forEach(filter => {
@@ -643,6 +718,7 @@ export class TemperaPixiRuntime {
             staticMode: this.options.staticMode,
             lyricsOnly: this.options.lyricsOnly,
             glyphsOnly: this.options.glyphsOnly,
+            previousLineAnchor: index > 0 ? this.sceneCache.get(index - 1)?.lastLineAnchor ?? null : null,
             coverColors: song.coverColors,
             imageTextures: this.imageTextures.textures,
         };
@@ -852,6 +928,10 @@ export class TemperaPixiRuntime {
                 transitionsEnabled,
             );
             const activeShotIndex = findTemperaActiveShotIndex(scene, time);
+            if (this.options.glyphsOnly && activeShotIndex >= 0) {
+                // The invert state is held across lines; only advance it on the active shot.
+                this.updateInvertState(scene.shots[activeShotIndex] ?? null, time);
+            }
 
             // Shot boundaries need no scene-level transition any more: the compositions hand
             // off to each other directly, which is what makes a paragraph read as one take.
@@ -964,13 +1044,26 @@ export class TemperaPixiRuntime {
             }
             // Each shot updates its own plate drift before this block runs, so the anchor sees
             // the type where it is this frame - not at its static layout position.
-            const sourceOf = (shot: ShotView) => ({
-                glyphs: shot.glyphs,
-                offsetX: shot.frameX,
-                offsetY: shot.frameY,
-                scale: shot.frameScale,
-                orientation: shot.orientation,
-            });
+            const sourceOf = (shot: ShotView) => {
+                const glyphs = shot.glyphs;
+                const roll = glyphs.length ? (glyphs[0].motion.lineRotation ?? 0) : 0;
+                const rollStart = glyphs.length
+                    ? Math.min(...glyphs.map(glyph => glyph.motion.startTime))
+                    : shot.shot.startTime;
+                const rollEnd = glyphs.length
+                    ? Math.max(...glyphs.map(glyph => glyph.motion.settleTime))
+                    : rollStart + 1;
+                return {
+                    glyphs,
+                    offsetX: shot.frameX,
+                    offsetY: shot.frameY,
+                    scale: shot.frameScale,
+                    orientation: shot.orientation,
+                    roll,
+                    rollStart,
+                    rollEnd,
+                };
+            };
             const currentSource = current ? sourceOf(current) : null;
             // 下一句的镜头目标：同一场景里的下一个 shot；没有就取下一段的第一个 shot。
             // 只在下一句真正出现前的一段窗口里叠进来，上一段不用先停住。
@@ -1130,10 +1223,12 @@ export class TemperaPixiRuntime {
             const targetY = nextFollow ? follow.y + (nextFollow.y - follow.y) * nextBlend : follow.y;
             const targetZoom = nextFollow ? follow.zoom + (nextFollow.zoom - follow.zoom) * nextZoomBlend : follow.zoom;
             // The line is written at an angle to the stage; the camera rolls it back upright. With
-            // no line in reach the stage holds the angle it already has. 文闪 keeps the stage
-            // upright: its chain is already the layout, not a plate turned against the frame.
+            // no line in reach the stage holds the angle it already has. 文闪 counter-rolls the
+            // whole sentence's shared entrance angle by the same motion scale the type uses; it
+            // does not chase each glyph's own tilt, so the horizon does not wobble per character.
+            const glyphMotion = this.options.tuning.glyphMotion * resolveAnimationScale(this.options.theme);
             const targetRoll = glyphFollow
-                ? 0
+                ? currentSource ? -resolveFollowRoll(currentSource, time) * glyphMotion * wenflashCameraRotation() : 0
                 : currentSource ? -(currentSource.orientation ?? 0) : this.followRotation;
             const dt = Math.max(0, Math.min(0.1, time - this.followTime));
             // 镜头抽帧：按固定帧率采样镜头姿态，采样之间保持上一帧的位置，
@@ -1381,8 +1476,18 @@ export class TemperaPixiRuntime {
         }
         if (!wipeDrawn) this.overlay.drawWipe(0, 0, width, height, '#000000');
         this.creditsLayer.applyFrame(creditsFrame, hasCredits, time, finalParagraph?.endTime, width, height);
+        this.updateLetterbox(height);
         if (frameStartedAt) perfMark('rt.frame.total', frameStartedAt);
     };
+
+    private updateLetterbox(height: number) {
+        if (!this.letterbox) return;
+        const limit = Math.min(.30, Math.max(0, wenflashLetterboxPercent()));
+        const zoom = Math.max(.01, this.sceneContainer.scale.x);
+        this.letterbox.params.uViewHeight = height;
+        this.letterbox.params.uThickness = height*limit/(1+Math.pow(zoom, 4));
+        this.letterbox.filter.enabled = limit > 0;
+    }
 
     /** 文闪切到 graphic 档时关掉镜头跟随，切回横/竖排时再打开；不重建运行时。 */
     setCameraFollow(enabled: boolean) {
@@ -1602,6 +1707,8 @@ export class TemperaPixiRuntime {
         this.creditsLayer.dispose();
         this.overlay.release();
         this.imageTextures.destroy();
+        if (this.letterboxLayer) this.letterboxLayer.filters = null;
+        this.letterbox?.filter.destroy();
         this.app.destroy({ removeView: true }, { children: true, texture: true });
         if(destroyAt)perfMark('rt.destroy',destroyAt,{scenes:sceneCount});
     }

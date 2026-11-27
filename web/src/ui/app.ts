@@ -253,7 +253,7 @@ import {
   type BgLyricsBlurLevel,
   type BgLyricsFillMode,
 } from './bgLyricsCover';
-import { currentLyricDisplay, currentLyricSource, lyricGrowMode, lyricMatchMinScore, lyricOffsetOf, LYRIC_UNSUNG_PRESETS, lyricsBackgroundMode, lyricSolidColor, setLyricSolidColor, lyricsLumiereMode, lyricUnsungColor, LyricsView, primeLyrics, setLyricGrowMode, setLyricsBackgroundMode, setLyricsLumiereMode, setLyricMatchMinScore, setLyricOffset, setLyricUnsungColor, updateCurrentLyricLine, lyricMatchText } from './lyrics';
+import { currentLyricDisplay, currentLyricSource, lyricGrowMode, lyricMatchMinScore, lyricOffsetOf, LYRIC_UNSUNG_PRESETS, lyricsBackgroundMode, lyricSolidColor, lyricTranslationEnabled, setLyricSolidColor, setLyricTranslationEnabled, lyricsLumiereMode, lyricUnsungColor, LyricsView, primeLyrics, setLyricGrowMode, setLyricsBackgroundMode, setLyricsLumiereMode, setLyricMatchMinScore, setLyricOffset, setLyricUnsungColor, updateCurrentLyricLine, lyricMatchText } from './lyrics';
 import { LUMIERE_MODES } from './lumiere';
 import { onLyricMatch } from './lyrics';
 import { OnlineError, onOnlineChange } from '../online/client';
@@ -11802,6 +11802,16 @@ export class App {
         fontControl,
         h('div', { class: 'quick-hint', text: '主字体作用于全部歌词效果；可按语言单独覆盖，未指定时跟随主字体。点击后悬停即可实时预览。' }),
       );
+      const translationSwitch = this.pillSwitch(lyricTranslationEnabled(), (next) => {
+        setLyricTranslationEnabled(next);
+      });
+      translationSwitch.root.classList.add('quick-switch');
+      const translationCell = cell(
+        '底部翻译',
+        true,
+        translationSwitch.root,
+        h('div', { class: 'quick-hint', text: '控制播放条上方的译文兜底条；关闭后歌词行内译文仍然保留。' }),
+      );
       const lyricDomCells = [styleCell, growCell];
       const syncGrowCell = (): void => {
         const hidden = lyricsLumiereMode() !== 'off';
@@ -12011,6 +12021,7 @@ export class App {
           solidCell,
           cell('未播放颜色', true, unsungSwatches),
           fontCell,
+          translationCell,
           styleCell,
           growCell,
           visCell,

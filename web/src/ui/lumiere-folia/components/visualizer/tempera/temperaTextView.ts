@@ -3,7 +3,7 @@ import type { TemperaPalette } from './temperaPalette';
 import type { TemperaDecorFragment, TemperaDecorWatermark } from './types';
 import type { TemperaGlyphMotionInput } from './temperaMotion';
 import { createTemperaGlowFilter, type TemperaGlowFilter } from './temperaGlowFilter';
-import { wenflashGlowChance, wenflashGlowColorMode, wenflashGlowColors } from '../../../../wenflashSettings';
+import { wenflashGhostLayers, wenflashGlowChance, wenflashGlowColorMode, wenflashGlowColors } from '../../../../wenflashSettings';
 import { hashTemperaSeed, temperaHash01 } from './temperaRandom';
 
 // src/components/visualizer/tempera/temperaTextView.ts
@@ -35,6 +35,8 @@ export interface TemperaGlyphView {
     };
     /** Motion echoes trailing back along the entrance vector; empty when echoes are off. */
     echoes: import('pixi.js').Text[];
+    /** Persistent offset plates behind the glyph; 文闪 only, empty elsewhere. */
+    ghosts: import('pixi.js').Text[];
     /** Everything the per-frame motion solver needs; the runtime never reads layout again. */
     motion: TemperaGlyphMotionInput;
     /** The colour the glyph was written in; the mask pass restores it after a knockout. */
@@ -51,6 +53,8 @@ export interface TemperaGlyphView {
     masked?: boolean;
     maskStep?: number;
     flashPaint?: 'solid' | 'outline';
+    /** Whether the background-invert flash currently owns this glyph's fill. */
+    invertPainted?: boolean;
     /** Last stroke ratio applied while the glyph was hollow, so dragging the width updates it. */
     flashOutlineWidth?: number;
     /** Absolute time until which the hollow outline lingers after being selected; 0 = line end. */
@@ -184,6 +188,24 @@ export const buildTemperaTextViews = (
         display.position.set(placement.x, placement.y);
         display.rotation = placement.rotation;
 
+        // 文闪的层叠印刷：在基字后面预置几张错位色版，逐帧只更新位置/透明度，
+        // 不在动画里创建节点。层数变化才重建舞台，偏移和透明度可以实时调。
+        const ghosts: import('pixi.js').Text[] = [];
+        if (options.glowAll) {
+            const count = wenflashGhostLayers();
+            for (let index = 0; index < count; index += 1) {
+                const ghost = new Text({
+                    text: placement.char,
+                    style: new TextStyle({...baseStyle, fill: placement.color ?? placement.tint ?? palette.ink}),
+                });
+                ghost.anchor.set(0.5);
+                ghost.rotation = placement.rotation;
+                ghost.visible = false;
+                options.textLayer.addChildAt(ghost, 0);
+                ghosts.push(ghost);
+            }
+        }
+
         // 文闪: an empty block parked behind the type. Its geometry is measured from the
         // glyph's ink, while colour/padding stay live so the settings sheet can tune them
         // without rebuilding the stage.
@@ -232,10 +254,11 @@ export const buildTemperaTextViews = (
         // Motion echoes: dimmed copies parked further back along the entrance vector. The
         // runtime scales their offset per index, so they read as a trail rather than a blur.
         const echoes: import('pixi.js').Text[] = [];
+        const echoFill = placement.color ?? placement.tint ?? (options.glowAll ? palette.ink : palette.tone4);
         for (let index = 0; index < options.echoCount; index += 1) {
             const echo = new Text({
                 text: placement.char,
-                style: new TextStyle({ ...baseStyle, fill: placement.color ?? placement.tint ?? palette.tone4 }),
+                style: new TextStyle({ ...baseStyle, fill: echoFill }),
             });
             echo.anchor.set(0.5);
             echo.rotation = placement.rotation;
@@ -294,6 +317,7 @@ export const buildTemperaTextViews = (
             outline,
             shadow,
             echoes,
+            ghosts,
             glow,
             sungBlur: options.blurAfterSinging ? {
                 filter: null,
@@ -312,6 +336,7 @@ export const buildTemperaTextViews = (
                 enterX: placement.enterX,
                 enterY: placement.enterY,
                 enterRotation: placement.enterRotation,
+                lineRotation: placement.lineRotation,
                 enterScale: placement.enterScale,
                 rotation: placement.rotation,
                 enterStyle: placement.enterStyle,

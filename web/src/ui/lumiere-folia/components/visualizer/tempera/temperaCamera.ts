@@ -88,7 +88,7 @@ export interface TemperaFollowSource {
         baseX: number; baseY: number;
         /** Text node, when the caller has one: used to measure the line's footprint. */
         display?: {width: number; height: number; scale: {x: number; y: number}};
-        motion: {startTime: number};
+        motion: {startTime: number; settleTime?: number; enterRotation?: number; lineRotation?: number};
     }[];
     offsetX?: number;
     offsetY?: number;
@@ -96,6 +96,10 @@ export interface TemperaFollowSource {
     scale?: number;
     /** Quarter turns the line was written at; the camera rolls by the negative of this. */
     orientation?: number;
+    /** 文闪：整句共享的出场角，镜头先跟着它倾斜，再回正到水平。 */
+    roll?: number;
+    rollStart?: number;
+    rollEnd?: number;
 }
 
 /** 文闪的链式排版会一路向下/向右延伸，镜头必须能跟着走出第一屏，不能再套重合的
@@ -190,6 +194,26 @@ export function resolveFollowStart(
     return Number.isFinite(first) ? first : fallback;
 }
 
+/** 文闪的入场旋转是一个瞬态：文字落位后转正，镜头也应跟着回正。
+ * 逐字随机角不能直接取整句平均，否则正负会互相抵消；按当前正在唱的字做高斯加权，
+ * 每个字再乘自己的入场衰减，镜头就会跟着这一笔的倾斜滚过去，字转正时回正。 */
+/** Whole-line entrance roll, damped to zero as the line settles.
+ *
+ * 文闪 gives every glyph on a line one shared `lineRotation`; the camera counters that single
+ * angle so the sentence reads level while it rotates. It deliberately does not chase each
+ * glyph's own entrance tilt, so the horizon does not wobble per character. This stays a pure
+ * function of `time` for seeking. */
+export function resolveFollowRoll(source: TemperaFollowSource, time: number): number {
+    const glyphs = source.glyphs;
+    if (!glyphs.length) return 0;
+    const start = source.rollStart ?? Math.min(...glyphs.map(glyph => glyph.motion.startTime));
+    const end = source.rollEnd ?? Math.max(...glyphs.map(glyph => glyph.motion.settleTime ?? glyph.motion.startTime + 0.5));
+    const span = Math.max(0.08, end - start);
+    const progress = clamp01((time - start) / span);
+    const envelope = 1 - progress * progress * (3 - 2 * progress);
+    return (source.roll ?? 0) * envelope;
+}
+
 /** Breathing focal length for one line, 0..1 in playback time.
  *
  * The swell is a half sine over the sung span, so it is widest exactly at the line's first and
@@ -221,8 +245,8 @@ const resolveFollowZoom = (
  * 都落在差不多的视觉分量上。只统计已经出现的字，所以句子越长镜头越往后退，是连续推拉，
  * 不是等整句排完再跳一下。平移目标仍由 resolveLyricAnchor 决定。 */
 const FOLLOW_TARGET_FILL = 0.62;
-const FOLLOW_ZOOM_MIN = 0.55;
-const FOLLOW_ZOOM_MAX = 1.25;
+export const TEMPERA_COVERAGE_ZOOM_MIN = 0.55;
+export const TEMPERA_COVERAGE_ZOOM_MAX = 1.25;
 export function resolveLyricCoverageZoom(
     source: TemperaFollowSource,
     time: number,
@@ -257,7 +281,7 @@ export function resolveLyricCoverageZoom(
     );
     if (!Number.isFinite(coverage) || coverage < 0.001) return 1;
     const zoom = FOLLOW_TARGET_FILL / coverage;
-    return Math.max(FOLLOW_ZOOM_MIN, Math.min(FOLLOW_ZOOM_MAX, zoom));
+    return Math.max(TEMPERA_COVERAGE_ZOOM_MIN, Math.min(TEMPERA_COVERAGE_ZOOM_MAX, zoom));
 }
 
 /** Follow frame for a line: the point the camera should be looking at right now, plus the

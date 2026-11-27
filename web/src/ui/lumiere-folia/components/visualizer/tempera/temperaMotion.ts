@@ -20,6 +20,8 @@ export interface TemperaGlyphMotionInput {
     enterX: number;
     enterY: number;
     enterRotation: number;
+    /** Whole-line entrance tilt shared by every glyph on the line; drives the camera roll. */
+    lineRotation: number;
     enterScale: number;
     rotation: number;
     enterStyle: TemperaEnterStyle;

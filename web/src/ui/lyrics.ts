@@ -259,6 +259,35 @@ export function setLyricGrowMode(mode: LyricGrowMode): void {
   activeLyricsView?.replayGrow();
 }
 
+const LYRIC_TRANSLATION_KEY = 'zilux2.lyricTranslation';
+
+function readLyricTranslation(): boolean {
+  try {
+    return window.localStorage.getItem(LYRIC_TRANSLATION_KEY) !== 'off';
+  } catch {
+    // ignore
+  }
+  return true;
+}
+
+let lyricTranslationOn = readLyricTranslation();
+
+/** 底部译文兜底条是否显示（默认开）。行内译文不受这个开关影响。 */
+export function lyricTranslationEnabled(): boolean {
+  return lyricTranslationOn;
+}
+
+/** 开关底部译文条；歌词页开着时立即隐藏/恢复，不需要重开页面。 */
+export function setLyricTranslationEnabled(enabled: boolean): void {
+  lyricTranslationOn = enabled;
+  try {
+    window.localStorage.setItem(LYRIC_TRANSLATION_KEY, enabled ? 'on' : 'off');
+  } catch {
+    // ignore
+  }
+  activeLyricsView?.applyTranslationVisibility();
+}
+
 export interface LyricWord {
   text: string;
   startMs: number;
@@ -1481,6 +1510,7 @@ export class LyricsView {
     this.sourceEl = h('div', { class: 'lyrics-source', text: '' });
     this.linesEl = h('div', { class: 'lyrics-lines' });
     this.transBar = h('div', { class: 'lyrics-transbar is-empty' });
+    this.transBar.hidden = !lyricTranslationEnabled();
     this.progressFill = h('div', { class: 'lyrics-progress-fill' });
     this.progressCur = h('span', { class: 'lyrics-progress-cur', text: '00:00' });
     this.progressDur = h('span', { class: 'lyrics-progress-dur', text: '00:00' });
@@ -3184,11 +3214,31 @@ export class LyricsView {
     }
   }
 
+  /** 快捷设置里的「底部翻译」开关：关闭时立即清空兜底条，开启后由下一次同步恢复。 */
+  applyTranslationVisibility(): void {
+    const enabled = lyricTranslationEnabled();
+    this.transBar.hidden = !enabled;
+    if (enabled) return;
+    if (this.transBarTimer !== null) {
+      window.clearTimeout(this.transBarTimer);
+      this.transBarTimer = null;
+    }
+    this.transBarTarget = '';
+    this.transBarVisible = false;
+    this.transBar.classList.remove('is-changing');
+    this.transBar.classList.add('is-empty');
+    this.transBar.textContent = '';
+  }
+
   /**
    * 译文兜底条：当前行有译文，但当前歌词样式没把行内译文显示出来时，
    * 在播放条上方补一条，保证任何动效下都能看到翻译。
    */
   private updateTranslationBar(text: string): void {
+    if (!lyricTranslationEnabled()) {
+      this.applyTranslationVisibility();
+      return;
+    }
     // 兜底同步：以 DOM 里带 is-active 的那一行为准。
     // 这套歌词有两套推进（内部 activeIndex 与 DOM 高亮类），画布/封面舞台上内部索引可能不推进，
     // 于是底部条永远停在第一次写入的句子上。这里每 250ms 直接读高亮行的行内译文，
@@ -3196,6 +3246,7 @@ export class LyricsView {
     if (!this.transSyncTimer) {
       this.transSyncTimer = window.setInterval(() => {
         if (this.disposed) { window.clearInterval(this.transSyncTimer); this.transSyncTimer = 0; return; }
+        if (!lyricTranslationEnabled()) { this.applyTranslationVisibility(); return; }
         // 画布接管后 DOM 歌词整棵停止更新（隐藏且不再刷），此时必须按播放时间从
         // 数据里取当前行的译文，不能再去读 DOM（那会永远读到停住的那一行）。
         let next = '';

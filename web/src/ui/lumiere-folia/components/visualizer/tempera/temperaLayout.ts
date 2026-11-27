@@ -51,6 +51,8 @@ export interface TemperaGlyphPlacement {
     enterX: number;
     enterY: number;
     enterRotation: number;
+    /** Whole-line entrance tilt shared by every glyph on the line. */
+    lineRotation: number;
     enterScale: number;
     /** How this glyph arrives; picked per word so a word lands as one gesture. */
     enterStyle: TemperaEnterStyle;
@@ -103,6 +105,10 @@ interface TemperaLayoutOptions {
     lineDirection?: WenflashLineDirection;
     /** `direction` 档的方向演变：固定 / 每句顺时针转 45° / 按句种子随机。 */
     lineDirectionMode?: WenflashLineDirectionMode;
+    /** 文闪：每个字额外的随机入场旋转角，弧度；0 保持原有入场。 */
+    entryRotation?: number;
+    /** 文闪：整句共享的额外随机入场旋转角，弧度；0 关闭。 */
+    lineRotation?: number;
 }
 
 interface LayoutRegion {
@@ -335,11 +341,25 @@ const collectTemperaLineGlyphs = (
         }));
 });
 
+// Choose the accent once per phrase so seeking restores exactly the same typography.
+const varyFlowGlyphSizes = (glyphs: TemperaFlowGlyph[], fontSize: number, seed: number) => {
+    const letters = glyphs.filter(glyph => /[\p{L}\p{N}]/u.test(glyph.char));
+    const accent = letters.length >= 2 && temperaHash01(seed, 0, 503) < 0.6
+        ? letters[Math.floor(temperaHash01(seed, 0, 509) * letters.length) % letters.length]
+        : null;
+    return glyphs.map((glyph, index) => {
+        const scale = glyph === accent ? 1.32 : accent ? 0.88 + temperaHash01(seed, index, 521) * 0.12 : 1;
+        return {...glyph, width: glyph.width * scale, fontSize: fontSize * scale};
+    });
+};
+
 const resolveFlowEntrance = (
     shotKind: TemperaShotKind,
     fontSize: number,
     seed: number,
     salt: number,
+    extraRotation = 0,
+    lineRotation = 0,
 ) => {
     const base = resolveEnterVector(shotKind, fontSize);
     const baseAngle = Math.atan2(base.y, base.x);
@@ -350,13 +370,22 @@ const resolveFlowEntrance = (
     return {
         enterX: Math.cos(angle) * magnitude,
         enterY: Math.sin(angle) * magnitude,
-        enterRotation: (temperaHash01(seed, salt, 157) - 0.5) * 0.7,
+        enterRotation: (temperaHash01(seed, salt, 157) - 0.5) * 0.7
+            + (temperaHash01(seed, salt, 167) - 0.5) * 2 * extraRotation
+            + lineRotation,
+        lineRotation,
         enterScale: 0.6 + temperaHash01(seed, salt, 163) * 0.3,
         enterStyle: TEMPERA_ENTER_STYLES[
             Math.floor(temperaHash01(seed, salt, 193) * TEMPERA_ENTER_STYLES.length)
             % TEMPERA_ENTER_STYLES.length
         ],
     };
+};
+
+/** 整句共享的入场旋转：同一句所有字拿同一个角度，镜头跟随才有稳定的倾斜。 */
+const resolveLineEntranceRotation = (seed: number, lineIndex: number, magnitude: number): number => {
+    if (!(magnitude > 0)) return 0;
+    return (temperaHash01(seed, lineIndex * 977 + 31, 173) - 0.5) * 2 * magnitude;
 };
 
 const pushFlowPlacement = (
@@ -384,6 +413,8 @@ const layoutVerticalFlow = (options: {
     height: number;
     centerX: number;
     centerY: number;
+    entryRotation?: number;
+    lineRotation?: number;
 }): TemperaGlyphPlacement[] => {
     const active = options.lines
         .map((segments, lineIndex) => ({ segments, lineIndex }))
@@ -413,6 +444,7 @@ const layoutVerticalFlow = (options: {
             options.segmentColors,
         );
         if (glyphs.length === 0) return;
+        const lineTilt = resolveLineEntranceRotation(options.seed, entry.lineIndex, options.lineRotation ?? 0);
         const advance = fontSize * 1.06;
         const totalHeight = glyphs.length * advance;
         const x = options.centerX - totalWidth / 2 + columnIndex * columnGap;
@@ -423,6 +455,8 @@ const layoutVerticalFlow = (options: {
                 fontSize,
                 options.seed,
                 entry.lineIndex * 997 + glyphIndex * 37 + 7,
+                options.entryRotation ?? 0,
+                lineTilt,
             );
             pushFlowPlacement(placements, {
                 char: glyph.char,
@@ -458,6 +492,8 @@ const layoutGraphicFlow = (options: {
     centerX: number;
     centerY: number;
     shape: TemperaGraphicShape;
+    entryRotation?: number;
+    lineRotation?: number;
 }): TemperaGlyphPlacement[] => {
     const count = options.lines.reduce((total, segments) => total + segments.reduce(
         (sum, segment) => sum + segment.graphemes.filter(grapheme => grapheme.char.trim().length > 0).length,
@@ -487,13 +523,13 @@ const layoutGraphicFlow = (options: {
         fontSize = Math.min(fontSize, stepR * 0.82);
     }
     fontSize = Math.max(18, fontSize);
-    const glyphs = options.lines.flatMap((segments, lineIndex) => collectTemperaLineGlyphs(
+    const glyphs = varyFlowGlyphSizes(options.lines.flatMap((segments, lineIndex) => collectTemperaLineGlyphs(
         options.ctx,
         segments,
         lineIndex,
         fontSize,
         options.segmentColors,
-    ));
+    )), fontSize, options.seed);
     const n = glyphs.length;
     const placements: TemperaGlyphPlacement[] = [];
     const spokes = Math.min(6, Math.max(3, Math.ceil(n / 4)));
@@ -528,7 +564,15 @@ const layoutGraphicFlow = (options: {
             // 放射只负责位置，字仍保持正立，避免下半圈倒字。
             rotation = Math.sin(angle) * 0.12;
         }
-        const entrance = resolveFlowEntrance(options.shotKind, fontSize, options.seed, index * 991 + 7);
+        const lineTilt = resolveLineEntranceRotation(options.seed, glyph.lineIndex, options.lineRotation ?? 0);
+        const entrance = resolveFlowEntrance(
+            options.shotKind,
+            fontSize,
+            options.seed,
+            index * 991 + 7,
+            options.entryRotation ?? 0,
+            lineTilt,
+        );
         pushFlowPlacement(placements, {
             char: glyph.char,
             rowIndex: 0,
@@ -540,7 +584,7 @@ const layoutGraphicFlow = (options: {
             rotation,
             startTime: glyph.startTime,
             endTime: glyph.endTime,
-            fontSize,
+            fontSize: glyph.fontSize,
             color: glyph.color,
             ...entrance,
         });
@@ -590,6 +634,8 @@ const layoutChainedFlow = (options: {
     linePlacement?: 'follow' | 'direction' | 'random';
     lineDirection?: WenflashLineDirection;
     lineDirectionMode?: WenflashLineDirectionMode;
+    entryRotation?: number;
+    lineRotation?: number;
 }): TemperaGlyphPlacement[] => {
     const active = options.lines
         .map((segments, lineIndex) => ({segments, lineIndex}))
@@ -599,19 +645,19 @@ const layoutChainedFlow = (options: {
     const placements: TemperaGlyphPlacement[] = [];
     let anchor = options.previousLineAnchor ?? null;
     active.forEach((entry, lineOrdinal) => {
-        const glyphs = collectTemperaLineGlyphs(
+        const glyphs = varyFlowGlyphSizes(collectTemperaLineGlyphs(
             options.ctx,
             entry.segments,
             entry.lineIndex,
             options.baseFontSize,
             options.segmentColors,
-        );
+        ), options.baseFontSize, options.seed + entry.lineIndex * 997);
         if (glyphs.length === 0) return;
 
         const fontSize = options.baseFontSize;
         const gap = Math.max(2, fontSize * 0.18);
         const totalWidth = glyphs.reduce((sum, glyph) => sum + glyph.width, 0);
-        const totalHeight = glyphs.length * fontSize * 1.06;
+        const totalHeight = glyphs.reduce((sum, glyph) => sum + glyph.fontSize * 1.06, 0);
         let cursorX: number;
         let cursorY: number;
         const randomPlacement = options.linePlacement === 'random';
@@ -719,6 +765,7 @@ const layoutChainedFlow = (options: {
             cursorY = options.height / 2 - totalHeight / 2 + fontSize / 2;
         }
 
+        let verticalTop = cursorY - fontSize / 2;
         let lastX = cursorX;
         let lastY = cursorY;
         let lineLeft = Number.POSITIVE_INFINITY;
@@ -726,15 +773,18 @@ const layoutChainedFlow = (options: {
         let lineTop = Number.POSITIVE_INFINITY;
         let lineBottom = Number.NEGATIVE_INFINITY;
         const columnCenterX = cursorX + glyphs[0].width / 2;
+        const lineTilt = resolveLineEntranceRotation(options.seed, entry.lineIndex, options.lineRotation ?? 0);
         glyphs.forEach((glyph, glyphIndex) => {
             const entrance = resolveFlowEntrance(
                 options.shotKind,
                 fontSize,
                 options.seed,
                 entry.lineIndex * 997 + glyphIndex * 37 + 7,
+                options.entryRotation ?? 0,
+                lineTilt,
             );
             const x = options.direction === 'horizontal' ? cursorX + glyph.width / 2 : columnCenterX;
-            const y = options.direction === 'horizontal' ? cursorY : cursorY + glyphIndex * fontSize * 1.06;
+            const y = options.direction === 'horizontal' ? cursorY : verticalTop + glyph.fontSize / 2;
             pushFlowPlacement(placements, {
                 char: glyph.char,
                 rowIndex: lineOrdinal,
@@ -746,23 +796,24 @@ const layoutChainedFlow = (options: {
                 rotation: 0,
                 startTime: glyph.startTime,
                 endTime: glyph.endTime,
-                fontSize,
+                fontSize: glyph.fontSize,
                 color: glyph.color,
                 ...entrance,
             });
             if (options.direction === 'horizontal') cursorX += glyph.width;
+            else verticalTop += glyph.fontSize * 1.06;
             lastX = x;
             lastY = y;
             lineLeft = Math.min(lineLeft, x - glyph.width / 2);
             lineRight = Math.max(lineRight, x + glyph.width / 2);
-            lineTop = Math.min(lineTop, y - fontSize / 2);
-            lineBottom = Math.max(lineBottom, y + fontSize / 2);
+            lineTop = Math.min(lineTop, y - glyph.fontSize / 2);
+            lineBottom = Math.max(lineBottom, y + glyph.fontSize / 2);
         });
 
         const last = glyphs[glyphs.length - 1];
         anchor = {
             left: lastX - last.width / 2,
-            bottom: lastY + fontSize / 2,
+            bottom: lastY + last.fontSize / 2,
             lineLeft,
             lineRight,
             lineTop,
@@ -794,6 +845,8 @@ export const resolveTemperaLayout = ({
     linePlacement = 'follow',
     lineDirection = 'south',
     lineDirectionMode = 'fixed',
+    entryRotation = 0,
+    lineRotation = 0,
 }: TemperaLayoutOptions): TemperaGlyphPlacement[] => {
     const region = resolveRegion(shotKind, width, height);
     if (centered) Object.assign(region, {centerX: width / 2, centerY: height / 2, width: width * 0.82, align: 'center'});
@@ -815,6 +868,8 @@ export const resolveTemperaLayout = ({
             linePlacement,
             lineDirection,
             lineDirectionMode,
+            entryRotation,
+            lineRotation,
         }), settleStretch);
     }
 
@@ -823,10 +878,12 @@ export const resolveTemperaLayout = ({
             ? layoutVerticalFlow({
                 lines, ctx, baseFontSize: areaFontSize, shotKind, seed, segmentColors,
                 width, height, centerX: region.centerX, centerY: region.centerY,
+                entryRotation, lineRotation,
             })
             : layoutGraphicFlow({
                 lines, ctx, baseFontSize: areaFontSize, shotKind, seed, segmentColors,
                 width, height, centerX: region.centerX, centerY: region.centerY, shape: graphicShape,
+                entryRotation, lineRotation,
             });
         return applyGlyphTiming(flowPlacements, settleStretch);
     }
@@ -925,6 +982,7 @@ export const resolveTemperaLayout = ({
                     enterX: Math.cos(angle) * magnitude,
                     enterY: Math.sin(angle) * magnitude,
                     enterRotation: (temperaHash01(seed, glyphSalt, 157) - 0.5) * 0.7,
+                    lineRotation: 0,
                     enterScale: 0.6 + temperaHash01(seed, glyphSalt, 163) * 0.3,
                     enterStyle,
                     releaseTime: 0,

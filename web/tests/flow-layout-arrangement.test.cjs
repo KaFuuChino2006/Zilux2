@@ -160,3 +160,19 @@ test('directional chain places the next line around the previous line box',()=>{
  assert.ok(rotatedSecond[0].x-rotatedSecond[0].width/2>=Math.max(...rotatedFirst.map(item=>item.x+item.width/2))-1e-6,'rotate 45° turns south into south-east');
  assert.ok(rotatedSecond[0].y>=Math.max(...rotatedFirst.map(item=>item.y+item.fontSize/2))-1e-6,'rotated line also drops below');
 });
+
+test('chained and graphic layouts retain seeded per-character size accents', () => {
+ const {resolveTemperaLayout} = layoutLoader()();
+ for (const arrangement of ['horizontal', 'vertical', 'graphic']) {
+  const styles = new Set();
+  for (let seed = 0; seed < 32; seed++) {
+   const options = {lines: [[line(0)]], shotKind: 'duo-split', width: 1280, height: 720,
+    baseFontSize: 64, fontFamily: 'sans-serif', fontWeight: 700, centered: true, chained: true, arrangement, seed};
+   const sizes = () => Array.from(resolveTemperaLayout(options), glyph => glyph.fontSize);
+   const first = sizes();
+   assert.deepEqual(first, sizes());
+   styles.add(new Set(first).size > 1);
+  }
+  assert.equal(styles.size, 2, arrangement + ' has both uniform and accented phrases');
+ }
+});
