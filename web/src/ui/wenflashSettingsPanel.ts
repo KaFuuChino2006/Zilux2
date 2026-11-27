@@ -31,6 +31,7 @@ type NumericKey =
   | 'cameraZoomOverlap'
   | 'cameraSteps'
   | 'renderFps'
+  | 'exitSeconds'
   | 'phraseSize'
   | 'stretchAmount'
   | 'stretchDuration'
@@ -112,6 +113,8 @@ type NumericKey =
   | 'shakeSwing'
   | 'shakeAt'
   | 'shakeDamping'
+  | 'shakeSpeedDamp'
+  | 'shakeSpeedFrom'
   | 'lensDistortion'
   | 'rgbShift'
   | 'grain'
@@ -519,7 +522,7 @@ export function openWenflashSettingsSheet() {
     const top = 10;
     const bottom = hgt - 10;
     const mid = (top + bottom) / 2;
-    const amplitude = Math.max(4, draft.shakePx * draft.shakeY);
+    const amplitude = Math.max(4, Math.abs(draft.shakeY));
     const tx = (t: number) => left + ((right - left) * t) / span;
     const ey = (v: number) => bottom - (bottom - top) * v;
     const dy = (v: number) => mid - (v / amplitude) * ((bottom - top) / 2);
@@ -540,7 +543,7 @@ export function openWenflashSettingsSheet() {
       const e = rise * rise * (3 - 2 * rise)
         * Math.exp(-Math.max(0, t - attack) / decay);
       env.push([tx(t), ey(Math.min(1, e))]);
-      const v = draft.shakePx * e * draft.shakeY
+      const v = e * draft.shakeY
         * Math.sin(t * omega + 0.55);
       wave.push([tx(t), dy(v)]);
     }
@@ -795,16 +798,15 @@ export function openWenflashSettingsSheet() {
           numberRow('cameraRotation', '镜头跟随旋转', 0, 100, 1, v => Math.round(v) + '%', '镜头反向抵消整句的随机倾斜（按文字实际的逐字动态缩放），让文字看着保持水平；100% 完全抵消，0% 保留原始倾斜。'),
           numberRow('letterboxPercent', '黑边占比上限', 0, 30, 1, v => Math.round(v) + '%', '每条黑边最多占画面高度的比例。小幅推拉只带动少量变化，大幅拉远时逐渐接近上限。'),
           numberRow('renderFps', '画面帧率', 0, 30, 1, v => v <= 1 ? '原生' : Math.round(v) + ' 帧/秒', '真正限制整幅画面的重绘帧率：2–30 时文字、色块和镜头一起降帧，模拟动漫低帧；0/1 为原生。'),
-          linkedOverlapRow = numberRow('cameraOverlap', '错帧时长', 0, 2, 0.05, v => v <= 0 ? '关闭' : v.toFixed(2) + 's', '合并时同时控制位置与缩放；0 表示等上一段结束再换目标。'),
-          positionOverlapRow = numberRow('cameraOverlap', '位置错帧', 0, 2, 0.05, v => v <= 0 ? '关闭' : v.toFixed(2) + 's', '只控制平移：下一句的镜头位置提前这么久开始叠加。'),
+          linkedOverlapRow = numberRow('cameraOverlap', '错帧时长', 0, 2, 0.05, v => v <= 0 ? '关闭' : v.toFixed(2) + 's', '合并时同时控制位置、缩放和黑边旋转；0 表示等上一段结束再换目标。'),
+          positionOverlapRow = numberRow('cameraOverlap', '位置错帧', 0, 2, 0.05, v => v <= 0 ? '关闭' : v.toFixed(2) + 's', '下一句的镜头位置和黑边旋转提前这么久开始叠加。'),
           zoomOverlapRow = numberRow('cameraZoomOverlap', '缩放错帧', 0, 2, 0.05, v => v <= 0 ? '关闭' : v.toFixed(2) + 's', '只控制缩放：下一句的镜头推拉提前这么久开始叠加。')),
         h('div', {class:'ts-group'},
           h('div', {class:'ts-group-title', text:'镜头撞击'}),
           numberRow('shakeChance', '撞击概率', 0, 100, 1, v => Math.round(v) + '%', '每一条歌词行独立抽取；拆分短句同行只撞一次。'),
-          numberRow('shakePx', '撞击位移', 0, 320, 1, v => Math.round(v) + 'px'),
           numberRow('shakeElastic', '撞击弹性', 0.3, 5, 0.05, v => v.toFixed(2), '越大越软、余振越长。'),
-          numberRow('shakeX', '横向分量', 0, 4, 0.05, v => v.toFixed(2) + '×'),
-          numberRow('shakeY', '纵向分量', 0, 4, 0.05, v => v.toFixed(2) + '×'),
+          numberRow('shakeX', '横向位移', 0, 320, 1, v => Math.round(v) + 'px', '横向撞开的距离，单位 px。'),
+          numberRow('shakeY', '纵向位移', 0, 320, 1, v => Math.round(v) + 'px', '纵向撞开的距离，单位 px。'),
           numberRow('shakeZ', 'Z 推拉', 0, 400, 2, v => Math.round(v) + 'px', '沿视线方向的推拉，换算成缩放。'),
           numberRow('shakeDepth', 'Z 压缩', 0, 24, 0.2, v => v.toFixed(1) + '%'),
           numberRow('shakeRollDeg', '撞击滚转', 0, 8, 0.05, v => v.toFixed(2) + '°'),
@@ -812,6 +814,8 @@ export function openWenflashSettingsSheet() {
           numberRow('shakeSwing', '撞击回摆', 0, 4, 0.05, v => v.toFixed(2), '0 表示不回摆，只推一下再淡出。'),
           numberRow('shakeAt', '撞击时机', 0, 100, 1, v => Math.round(v) + '%', '当前这句唱到百分之多少时撞一下。'),
           numberRow('shakeDamping', '撞击削减', 0.2, 6, 0.05, v => v.toFixed(2), '越大余振收得越快。'),
+          numberRow('shakeSpeedDamp', '高速弹性削弱', 0, 200, 1, v => Math.round(v) + '%', '运镜越快，撞击的弹跳压得越小；可超过 100%，0 = 不随速度削弱。'),
+          numberRow('shakeSpeedFrom', '削弱起始速度', 0, 3000, 10, v => Math.round(v) + 'px/s', '低于这个镜头位移速度时保持原样；0 = 从静止开始计算。'),
           impactCurveCard,
           h('div', {class:'ts-hint', text:'这是文闪自己的撞击参数，不读取重合效果的运镜设置。曲线实时显示包络与纵向位移。'})),
         h('div', {class:'ts-group'},
@@ -907,6 +911,10 @@ export function openWenflashSettingsSheet() {
           numberRow('glowFlowSpeed', '流动速度', 0, 300, 5, v => Math.round(v) + '%', '色带滚动速度；0% 冻结。'),
           numberRow('glowFlowScale', '色带密度', 30, 300, 5, v => Math.round(v) + '%', '数值越大，色带越窄、重复越密。'),
           h('div', {class:'ts-hint', text:'「跟随重点词」使用每个重点词自己的颜色；「自定义」使用下面三段颜色。普通字只有柔光，不参与流动渐变。'})),
+        h('div', {class:'ts-group'},
+          h('div', {class:'ts-group-title', text:'上一句退场'}),
+          numberRow('exitSeconds', '退场时长', 0, 5, 0.1, v => v.toFixed(1) + 's', '上一句开始散开到完全消失的时间；0s 表示停留结束后直接消失。只影响文闪，和重合的旧句退场分开。'),
+          h('div', {class:'ts-hint', text:'时长越长，旧句停留和散开越从容；0s 不播放散开动画，直接切走。'})),
         h('div', {class:'ts-group'},
           h('div', {class:'ts-group-title', text:'出现后模糊'}),
           numberRow('blurDelay', '出现完成后延迟', 0, 8, 0.1, v => v.toFixed(1) + 's', '从这组文字最后一个字落位完成开始计时；0s 表示落位后立刻开始。'),

@@ -1,3 +1,4 @@
+import { buildWenflashRollTrack, sampleWenflashRoll } from './wenflashRollTrack';
 import { createWenflashLetterbox } from './wenflashLetterbox';
 import type { MotionValue } from "../../../shims/framer-motion";
 import type { TemperaTuning, Theme } from '../../../types';
@@ -9,6 +10,7 @@ import {
 import { snapResolutionToTexturePool } from '../pixi/pixiTextureBudget';
 import type { TemperaProgram } from './types';
 import { resolveFollowRoll, resolveFollowStart, resolveLyricCoverageZoom, resolveLyricFollow } from './temperaCamera';
+import { impactSpringDamping } from './impactSpeedDamping';
 import { createTemperaOverlapGrid, type TemperaOverlapGrid } from './temperaOverlapGrid';
 import { createTemperaOverlapSheet, type TemperaOverlapSheet } from './temperaOverlapSheet';
 import { createTemperaOverlapWave, type TemperaOverlapWave } from './temperaOverlapWave';
@@ -16,7 +18,7 @@ import { createTemperaOverlapDebris } from './temperaOverlapDebris';
 import { createTemperaOverlapAmbient } from './temperaOverlapAmbient';
 import { createTemperaOverlapPrintFilters } from './temperaOverlapPrint';
 import { hashTemperaSeed } from './temperaRandom';
-import { wenflashCameraBlend, wenflashCameraRotation, wenflashCameraSpeed, wenflashCameraSteps, wenflashCameraZoomBlend, wenflashCameraZoomSpeed, wenflashImpact, wenflashInvertFlashCount, wenflashInvertFlashDark, wenflashInvertFlashWindow, wenflashLetterboxPercent } from '../../../../wenflashSettings';
+import { wenflashCameraBlend, wenflashCameraOverlap, wenflashCameraRotation, wenflashCameraSpeed, wenflashCameraSteps, wenflashCameraZoomBlend, wenflashCameraZoomSpeed, wenflashImpact, wenflashInvertFlashCount, wenflashInvertFlashDark, wenflashInvertFlashWindow, wenflashLetterboxPercent, wenflashLineRotation } from '../../../../wenflashSettings';
 
 /** Critically damped follow. The camera is sprung toward the point it should be looking at, so
  * the drift along a line and the hand-off onto the next line both start and stop softly instead
@@ -118,9 +120,9 @@ import { overlapCameraSpeed, overlapCameraZoomSpeed, overlapFx } from '../../../
 interface TemperaImpact {
     start: number;
     angle: number;
-    px: number;
-    shareX: number;
-    shareY: number;
+    /** Absolute horizontal/vertical kick in screen pixels, already speed-damped. */
+    pxX: number;
+    pxY: number;
     depth: number;
     z: number;
     rollDeg: number;
@@ -236,6 +238,13 @@ export class TemperaPixiRuntime {
     private followVY = 0;
     private followVZoom = 0;
     private followVRoll = 0;
+    /** Where the camera wants to be, tracked across frames to measure travel speed before the
+     * spring has caught up - the impact usually lands at the start of a line, when the actual
+     * spring velocity is still near zero even though the camera is about to fly. */
+    private lastTargetX = 0;
+    private lastTargetY = 0;
+    private lastTargetZoom = 1;
+    private cameraTargetSpeed = 0;
     private followTime = Number.NEGATIVE_INFINITY;
     /** Last time the camera pose was sampled when camera stepping is on. */
     private cameraSampleTime = 0;
@@ -258,6 +267,10 @@ export class TemperaPixiRuntime {
 
     private sceneContainer!: import('pixi.js').Container;
     /** Equal-height black bars that breathe with the follow camera's zoom. */
+    private rollTrackProgram?: TemperaProgram;
+    private rollTrackOverlap = -1;
+    private rollTrackStrength = Number.NaN;
+    private rollTrack: ReturnType<typeof buildWenflashRollTrack> = [];
     private letterbox: ReturnType<typeof createWenflashLetterbox> | null = null;
     private letterboxLayer: import('pixi.js').Container | null = null;
     /** Full-frame wash behind the type while the background-invert flash is active. */
@@ -414,12 +427,13 @@ export class TemperaPixiRuntime {
             }
             runtime.letterbox = createWenflashLetterbox(pixi);
             const foreground = new pixi.Container();
-            foreground.addChild(runtime.printLayer, runtime.creditsLayer.container);
-            app.stage.addChildAt(foreground, 0);
+            // Composite the matte and crossing ink before the shared screen-space print pass.
+            foreground.addChild(runtime.sceneContainer, runtime.creditsLayer.container);
+            runtime.printLayer.addChild(foreground);
             foreground.filters = [runtime.letterbox.filter];
             foreground.filterArea = new pixi.Rectangle(0, 0, width, height);
             runtime.letterboxLayer = foreground;
-            runtime.updateLetterbox(height);
+            runtime.updateLetterbox(width, height);
         }
 
         // Textures are loaded once and shared by every scene: paragraph scenes are rebuilt as
@@ -548,7 +562,7 @@ export class TemperaPixiRuntime {
         this.wave?.resize(width, height);
         if (this.letterboxLayer) {
             this.letterboxLayer.filterArea = new this.pixi.Rectangle(0, 0, width, height);
-            this.updateLetterbox(height);
+            this.updateLetterbox(width, height);
         }
         if (this.printFilters.length > 0) {
             this.printLayer.filterArea = new this.pixi.Rectangle(0, 0, width, height);
@@ -806,6 +820,7 @@ export class TemperaPixiRuntime {
         if (paragraphIndex < 0) {
             this.activeParagraphIndex = -1;
             this.sceneContainer.visible = false;
+            this.updateLetterbox(this.lastWidth, this.lastHeight, time);
             return;
         }
         this.sceneContainer.visible = true;
@@ -901,7 +916,7 @@ export class TemperaPixiRuntime {
             const isIncoming = preRoll && index === paragraphIndex + 1;
 
             const hasHeldLyric = index < paragraphIndex && scene.shots.some(view =>
-                view.shot.holdUntil !== undefined && resolveTemperaShotExit(view,time) < 1);
+                view.shot.holdUntil !== undefined && resolveTemperaShotExit(view,time,this.options.glyphsOnly === true) < 1);
             setPixiDisplayTreeVisibility(scene.container, isActive || isIncoming || hasHeldLyric);
             // The arriving scene has to sit above the one it is replacing; cache insertion
             // order says nothing about paragraph order.
@@ -928,6 +943,7 @@ export class TemperaPixiRuntime {
                 transitionsEnabled,
             );
             const activeShotIndex = findTemperaActiveShotIndex(scene, time);
+
             if (this.options.glyphsOnly && activeShotIndex >= 0) {
                 // The invert state is held across lines; only advance it on the active shot.
                 this.updateInvertState(scene.shots[activeShotIndex] ?? null, time);
@@ -945,7 +961,7 @@ export class TemperaPixiRuntime {
                 // compositions overlap exactly while one is pushing the other out.
                 const isShotActive = !hasHeldLyric && shotIndex === activeShotIndex;
                 const isHandingOff = (hasHeldLyric ? shot.shot.holdUntil !== undefined : shotIndex < activeShotIndex)
-                    && resolveTemperaShotExit(shot, time) < 1;
+                    && resolveTemperaShotExit(shot, time, this.options.glyphsOnly === true) < 1;
                 setPixiDisplayTreeVisibility(shot.container, isShotActive || isHandingOff);
                 if (!shot.container.visible) return;
                 if (this.options.lyricsOnly) {
@@ -996,7 +1012,7 @@ export class TemperaPixiRuntime {
                     z: scene.container.zIndex,
                     shots: scene.shots.length,
                     hold: first?.shot.holdUntil === undefined ? -1 : Number(first.shot.holdUntil.toFixed(2)),
-                    exit: first ? Number(resolveTemperaShotExit(first, time).toFixed(3)) : -1,
+                    exit: first ? Number(resolveTemperaShotExit(first, time, this.options.glyphsOnly === true).toFixed(3)) : -1,
                     shotVis: scene.shots.filter(shot => shot.container.visible).length,
                     // 首镜头首字的落点（诊断「散开是否匀速/有没有跳变」用）。
                     g: scene.shots[0]?.glyphs?.[0]
@@ -1107,17 +1123,23 @@ export class TemperaPixiRuntime {
             const spawnImpact = (hash: number, at: number, now: ReturnType<typeof overlapFx> | ReturnType<typeof wenflashImpact>) => {
                 const elastic = Math.max(0.2, now.shakeElastic);
                 const damping = Math.max(0.15, now.shakeDamping);
+                // Only the camera travel counts here, not the bump's own kick: fast pans already
+                // fill the frame with motion, so the same spring would read as a much bigger
+                // bounce. Use the target travel speed rather than the spring velocity: the bump
+                // usually lands on the first frame of a line, where the spring has not moved yet.
+                const speedDamp = impactSpringDamping(this.cameraTargetSpeed, now.shakeSpeedDamp, now.shakeSpeedFrom);
                 this.impacts.push({
                     start: at,
                     angle: (((hash >>> 8) % 360) * Math.PI) / 180,
-                    px: now.shakePx,
-                    shareX: now.shakeX,
-                    shareY: now.shakeY,
-                    depth: now.shakeDepth / 100,
-                    z: now.shakeZ,
-                    rollDeg: now.shakeRollDeg,
-                    decay: (0.14 * elastic) / damping,
-                    omega: now.shakeSwing < 0.02 ? 0 : (46 / Math.sqrt(elastic)) * now.shakeSwing,
+                    pxX: now.shakeX * speedDamp.amplitude,
+                    pxY: now.shakeY * speedDamp.amplitude,
+                    depth: (now.shakeDepth / 100) * speedDamp.amplitude,
+                    z: now.shakeZ * speedDamp.amplitude,
+                    rollDeg: now.shakeRollDeg * speedDamp.amplitude,
+                    decay: ((0.14 * elastic) / damping) * speedDamp.decay,
+                    omega: now.shakeSwing < 0.02
+                        ? 0
+                        : (46 / Math.sqrt(elastic)) * now.shakeSwing * speedDamp.frequency,
                     attack: Math.max(0.005, now.shakeAttack),
                 });
                 if (this.impacts.length > 6) this.impacts.shift();
@@ -1152,7 +1174,7 @@ export class TemperaPixiRuntime {
                         width / 2 + Math.cos(angle) * width * 0.12,
                         height / 2 + Math.sin(angle) * height * 0.12,
                         angle,
-                        overlapFx().shakePx / 60,
+                        Math.max(impactNow.shakeX, impactNow.shakeY) / 25,
                     );
                 }
             }
@@ -1176,8 +1198,8 @@ export class TemperaPixiRuntime {
                 const oscRoll = impact.omega > 0 ? Math.sin(t * impact.omega * 0.74 + 2.1) : 1;
                 const oscDepth = impact.omega > 0 ? Math.sin(t * impact.omega * 0.65 + 1.4) : 1;
                 const oscZ = impact.omega > 0 ? Math.sin(t * impact.omega * 0.85 + 0.9) : 1;
-                impactKickX += impact.px * env * impact.shareX * Math.cos(impact.angle) * osc;
-                impactKickY += impact.px * env * impact.shareY * Math.sin(impact.angle) * oscY;
+                impactKickX += impact.pxX * env * osc;
+                impactKickY += impact.pxY * env * oscY;
                 impactRoll += (impact.rollDeg * Math.PI / 180) * (Math.cos(impact.angle) >= 0 ? 1 : -1)
                     * env * oscRoll;
                 impactZoom *= 1 - impact.depth * Math.max(0, Math.exp(-t / (impact.decay * 0.5)))
@@ -1240,7 +1262,23 @@ export class TemperaPixiRuntime {
             const cameraDt = cameraSteps > 1
                 ? Math.max(0, Math.min(0.5, time - this.cameraSampleTime))
                 : dt;
+            // Track how fast the camera target is travelling, in screen pixels per second.
+            // A line-change bump is planned on the shot clock, so it usually fires before the
+            // spring has picked up speed; measuring the target instead makes the speed guard
+            // react to the move that is actually happening.
+            if (!seek && dt > 0) {
+                const travelRate = Math.max(dt, 1 / 240);
+                const zoomed = Math.max(0.2, this.followZoom);
+                const panTravel = Math.hypot(targetX - this.lastTargetX, targetY - this.lastTargetY) * zoomed / travelRate;
+                const zoomTravel = Math.abs(targetZoom - this.lastTargetZoom) * Math.max(width, height) * 0.35 / travelRate;
+                const instantSpeed = Math.min(8000, panTravel + zoomTravel);
+                this.cameraTargetSpeed = this.cameraTargetSpeed * 0.65 + instantSpeed * 0.35;
+            }
+            this.lastTargetX = targetX;
+            this.lastTargetY = targetY;
+            this.lastTargetZoom = targetZoom;
             if (seek) {
+                this.cameraTargetSpeed = 0;
                 this.followX = targetX;
                 this.followY = targetY;
                 this.followZoom = targetZoom;
@@ -1476,14 +1514,32 @@ export class TemperaPixiRuntime {
         }
         if (!wipeDrawn) this.overlay.drawWipe(0, 0, width, height, '#000000');
         this.creditsLayer.applyFrame(creditsFrame, hasCredits, time, finalParagraph?.endTime, width, height);
-        this.updateLetterbox(height);
+        this.updateLetterbox(width, height, time);
         if (frameStartedAt) perfMark('rt.frame.total', frameStartedAt);
     };
 
-    private updateLetterbox(height: number) {
+    private updateLetterbox(width: number, height: number, time?: number) {
         if (!this.letterbox) return;
         const limit = Math.min(.30, Math.max(0, wenflashLetterboxPercent()));
         const zoom = Math.max(.01, this.sceneContainer.scale.x);
+        this.letterbox.params.uViewWidth = width;
+        if (time !== undefined) {
+            // Glyph centres form the sentence baseline; the follow camera rolls
+            // that baseline opposite to the local entrance tilt. Convert each key
+            // before choosing its nearest equivalent angle and interpolating.
+            const rollGain = this.options.cameraFollow
+                ? -this.options.tuning.glyphMotion * resolveAnimationScale(this.options.theme) * wenflashCameraRotation()
+                : 1;
+            const strength = wenflashLineRotation() * rollGain;
+            const overlap = wenflashCameraOverlap();
+            if (this.rollTrackProgram !== this.options.program || this.rollTrackStrength !== strength || this.rollTrackOverlap !== overlap) {
+                this.rollTrack = buildWenflashRollTrack(this.options.program, strength, overlap);
+                this.rollTrackOverlap = overlap;
+                this.rollTrackProgram = this.options.program;
+                this.rollTrackStrength = strength;
+            }
+            this.letterbox.params.uAngle = sampleWenflashRoll(this.rollTrack, time);
+        }
         this.letterbox.params.uViewHeight = height;
         this.letterbox.params.uThickness = height*limit/(1+Math.pow(zoom, 4));
         this.letterbox.filter.enabled = limit > 0;

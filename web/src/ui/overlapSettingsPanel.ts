@@ -134,7 +134,7 @@ export function openOverlapSettingsSheet(): void {
     const top = 10;
     const bottom = hgt - 10;
     const mid = (top + bottom) / 2;
-    const amplitude = Math.max(4, draft.shakePx * draft.shakeY);
+    const amplitude = Math.max(4, Math.abs(draft.shakeY));
     const tx = (t: number) => left + ((right - left) * t) / span;
     const ey = (v: number) => bottom - (bottom - top) * v;
     const dy = (v: number) => mid - (v / amplitude) * ((bottom - top) / 2);
@@ -155,7 +155,7 @@ export function openOverlapSettingsSheet(): void {
       const e = rise * rise * (3 - 2 * rise)
         * Math.exp(-Math.max(0, t - attack) / decay);
       env.push([tx(t), ey(Math.min(1, e))]);
-      const v = draft.shakePx * e * draft.shakeY
+      const v = e * draft.shakeY
         * Math.sin(t * omega + 0.55);
       wave.push([tx(t), dy(v)]);
     }

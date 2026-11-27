@@ -90,6 +90,10 @@ export interface OverlapSettings {
   shakeZ: number;
   /** How fast the ring dies out: bigger = shorter tail. */
   shakeDamping: number;
+  /** 高速运镜时撞击弹跳的削弱强度，百分比；可超过 100% 让中高速更早压平，0 不削弱。 */
+  shakeSpeedDamp: number;
+  /** 开始削弱撞击的镜头位移速度（px/s），0 表示从静止就开始算；低于它保持原样。 */
+  shakeSpeedFrom: number;
   shakeRollDeg: number;
   /** Seconds for the hit to reach full force: smaller = sharper. */
   shakeAttack: number;
@@ -207,11 +211,13 @@ export const OVERLAP_DEFAULTS: OverlapSettings = {
   shakeChance: 0.35,
   shakePx: 47,
   shakeElastic: 5.0,
-  shakeX: 0.65,
-  shakeY: 0.95,
+  shakeX: 30,
+  shakeY: 45,
   shakeZ: 70,
   shakeDepth: 0.0,
   shakeDamping: 1.75,
+  shakeSpeedDamp: 62,
+  shakeSpeedFrom: 700,
   shakeRollDeg: 7.6,
   shakeAttack: 0.34,
   shakeSwing: 0.4,
@@ -272,7 +278,7 @@ export type OverlapRangeKey =
   | 'cameraOverlap' | 'panSoft' | 'zoomSoft' | 'rollSoft'
   | 'turnChance' | 'turnMinDeg' | 'turnMaxDeg'
   | 'scatter' | 'ghostDrift' | 'holdFade' | 'ghostBlur' | 'exitSeconds' | 'trailInk'
-  | 'paper' | 'ink' | 'accent' | 'followCover' | 'splitLyrics' | 'sizeScale' | 'lyricTint' | 'keywordGlow' | 'fontWeight' | 'glyphMotion' | 'glyphSettleStretch' | 'intensity' | 'followGain' | 'zoomRest' | 'zoomSwell' | 'zoomRelax' | 'panSoft' | 'zoomSoft' | 'rollSoft' | 'turnChance' | 'turnMinDeg' | 'turnMaxDeg' | 'scatter' | 'ghostDrift' | 'holdFade' | 'ghostBlur' | 'exitSeconds' | 'trailInk' | 'trailChance' | 'bracketChance' | 'bracketCrossChance' | 'mouldChance' | 'fieldChance' | 'fieldStrength' | 'fieldSpeed' | 'fieldLength' | 'shakeChance' | 'shakePx' | 'shakeElastic' | 'shakeX' | 'shakeY' | 'shakeDepth' | 'shakeZ' | 'shakeDamping' | 'shakeRollDeg' | 'shakeAttack' | 'shakeSwing' | 'shakeAt' | 'sealChance' | 'breakChance' | 'underlineChance' | 'arcChance' | 'silhouetteChance' | 'creaseChance' | 'specks' | 'maskChance' | 'gridParallax' | 'gridLens' | 'waveGain' | 'decorAlpha' | 'stagger' | 'showBracket' | 'showSeal' | 'showField' | 'showProgressArc' | 'showMould' | 'showBreak' | 'showArc' | 'showTrail' | 'showHud' | 'rackFocus' | 'dollySplit' | 'handheld' | 'panStreak' | 'settle' | 'lensDistortion' | 'rgbShift' | 'grain' | 'contrast' | 'vignette' | 'showMask' | 'showGrid' | 'showUnderline' | 'showSilhouette' | 'showCrease' | 'showWave' | 'showDebris' | 'showAmbient' | 'ambientRate' | 'dustGain' | 'splashGain' | 'shardGain';
+  | 'paper' | 'ink' | 'accent' | 'followCover' | 'splitLyrics' | 'sizeScale' | 'lyricTint' | 'keywordGlow' | 'fontWeight' | 'glyphMotion' | 'glyphSettleStretch' | 'intensity' | 'followGain' | 'zoomRest' | 'zoomSwell' | 'zoomRelax' | 'panSoft' | 'zoomSoft' | 'rollSoft' | 'turnChance' | 'turnMinDeg' | 'turnMaxDeg' | 'scatter' | 'ghostDrift' | 'holdFade' | 'ghostBlur' | 'exitSeconds' | 'trailInk' | 'trailChance' | 'bracketChance' | 'bracketCrossChance' | 'mouldChance' | 'fieldChance' | 'fieldStrength' | 'fieldSpeed' | 'fieldLength' | 'shakeChance' | 'shakePx' | 'shakeElastic' | 'shakeX' | 'shakeY' | 'shakeDepth' | 'shakeZ' | 'shakeDamping' | 'shakeSpeedDamp' | 'shakeSpeedFrom' | 'shakeRollDeg' | 'shakeAttack' | 'shakeSwing' | 'shakeAt' | 'sealChance' | 'breakChance' | 'underlineChance' | 'arcChance' | 'silhouetteChance' | 'creaseChance' | 'specks' | 'maskChance' | 'gridParallax' | 'gridLens' | 'waveGain' | 'decorAlpha' | 'stagger' | 'showBracket' | 'showSeal' | 'showField' | 'showProgressArc' | 'showMould' | 'showBreak' | 'showArc' | 'showTrail' | 'showHud' | 'rackFocus' | 'dollySplit' | 'handheld' | 'panStreak' | 'settle' | 'lensDistortion' | 'rgbShift' | 'grain' | 'contrast' | 'vignette' | 'showMask' | 'showGrid' | 'showUnderline' | 'showSilhouette' | 'showCrease' | 'showWave' | 'showDebris' | 'showAmbient' | 'ambientRate' | 'dustGain' | 'splashGain' | 'shardGain';
 
 /** [key, label, min, max, step, category, hint] */
 export const OVERLAP_RANGES: [OverlapRangeKey, string, number, number, number, string, string][] = [
@@ -317,10 +323,9 @@ export const OVERLAP_RANGES: [OverlapRangeKey, string, number, number, number, s
   ['fieldSpeed', '风速', 40, 400, 5, '装饰', '线横穿文字的速度，px/s'],
   ['fieldLength', '风的线长', 2, 30, 0.5, '装饰', '每根风线的基准长度'],
   ['shakeChance', '镜头撞击概率', 0, 1, 0.05, '高级', '换句时像轻轻撞了一下、弹回来的概率'],
-  ['shakePx', '撞击位移', 0, 320, 1, '高级', '换句时相机被撞开的基准距离，单位 px'],
   ['shakeElastic', '撞击弹性', 0.3, 5, 0.05, '高级', '回弹的快慢与余振长度，越大越软、余振越长'],
-  ['shakeX', '撞击 X 占比', 0, 4, 0.05, '高级', '横向分量的倍率'],
-  ['shakeY', '撞击 Y 占比', 0, 4, 0.05, '高级', '纵向分量的倍率'],
+  ['shakeX', '横向位移', 0, 320, 1, '高级', '横向撞开的距离，单位 px'],
+  ['shakeY', '纵向位移', 0, 320, 1, '高级', '纵向撞开的距离，单位 px'],
   ['shakeZ', '撞击 Z 位移', 0, 400, 2, '高级', '沿视线方向的推拉位移，单位 px（换算成缩放）'],
   ['shakeDepth', '撞击 Z 压缩', 0, 24, 0.2, '高级', '撞击瞬间镜头前后挤压的百分比'],
   ['shakeRollDeg', '撞击滚转', 0, 8, 0.05, '高级', '镜头滚转的角度，单位度'],
@@ -328,6 +333,8 @@ export const OVERLAP_RANGES: [OverlapRangeKey, string, number, number, number, s
   ['shakeSwing', '撞击回摆', 0, 4, 0.05, '高级', '余振的频率倍率；0 表示不回摆，只推一下再淡出'],
   ['shakeAt', '撞击时机', 0, 100, 1, '高级', '当前这一句唱到百分之多少时撞一下；0 = 句首'],
   ['shakeDamping', '撞击削减', 0.2, 6, 0.05, '高级', '余振衰减的快慢，越大收得越快'],
+  ['shakeSpeedDamp', '高速弹性削弱', 0, 200, 1, '高级', '运镜越快，撞击的弹跳压得越小；可超过 100%，0 = 不随速度削弱'],
+  ['shakeSpeedFrom', '削弱起始速度', 0, 3000, 10, '高级', '镜头位移速度低于这个值时保持原样，0 = 从静止开始计算，单位 px/s'],
   ['sealChance', '落款概率', 0, 1, 0.05, '装饰', '每一句有多少概率在句尾盖一枚落款印'],
   ['breakChance', '断句记号概率', 0, 1, 0.05, '装饰', '每一句在句尾留下断句竖线的概率'],
   ['underlineChance', '横线概率', 0, 1, 0.05, '装饰', '每一句出现句下横线的概率'],

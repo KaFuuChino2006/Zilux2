@@ -88,6 +88,7 @@ import {
     wenflashStretchAmount,
     wenflashStretchDuration,
     wenflashStretchSteps,
+    wenflashExitSeconds,
 } from '../../../../wenflashSettings';
 import { wenflashEasedCycles } from '../../../../wenflashPhase';
 import { pickWenflashLineStyle } from './wenflashLineStyles';
@@ -132,18 +133,21 @@ const resolveShotHandoff = (view: TemperaShotView) => (
 
 /** A retained line is already a ghost; dissolving it on the normal 0.3–1.1s hand-off clock
  * read as a cut. It gets a longer runway, floored so even a two-second line takes its time. */
-const resolveHeldExitDuration = (view: TemperaShotView) => (
-    Math.max(overlapFx().exitSeconds, resolveShotHandoff(view) * 1.2)
-);
+const resolveHeldExitDuration = (view: TemperaShotView, fixedCamera = false) => {
+    if (fixedCamera) return wenflashExitSeconds();
+    return Math.max(overlapFx().exitSeconds, resolveShotHandoff(view) * 1.2);
+};
 
 /** How long after `holdUntil` a retained scene can still be on screen. The runtime keeps it in
  * the scene cache for this long; it must stay above the slowest held exit above. */
-export const heldExitSeconds = () => Math.max(overlapFx().exitSeconds, 1.1 * 1.2);
+export const heldExitSeconds = () => Math.max(overlapFx().exitSeconds, wenflashExitSeconds(), 1.1 * 1.2);
 
-export const resolveTemperaShotExit = (view: TemperaShotView, time: number) => {
+export const resolveTemperaShotExit = (view: TemperaShotView, time: number, fixedCamera = false) => {
     const held = view.shot.holdUntil !== undefined;
-    const duration = held ? resolveHeldExitDuration(view) : resolveShotHandoff(view);
-    return clamp01((time - (view.shot.holdUntil ?? view.shot.endTime)) / duration);
+    const duration = held ? resolveHeldExitDuration(view, fixedCamera) : resolveShotHandoff(view);
+    const start = view.shot.holdUntil ?? view.shot.endTime;
+    if (duration <= 1e-6) return time < start ? 0 : 1;
+    return clamp01((time - start) / duration);
 };
 
 /**
@@ -364,7 +368,7 @@ export const updateTemperaShot = (
     // The arrival is front-loaded on purpose: the glyphs start revealing on the shot's
     // own timeline, so a slow entrance would expose type that is still off frame.
     const enter = easeTemperaEnter(clamp01((time - view.shot.startTime) / (handoff * 0.8)));
-    const exitProgress = resolveTemperaShotExit(view, time);
+    const exitProgress = resolveTemperaShotExit(view, time, fixedCamera);
     const exit = easeTemperaInOut(exitProgress);
     const held = view.shot.holdUntil !== undefined;
     // A retained line appears where it will be sung. The entrance push used to start it up to
@@ -1361,10 +1365,14 @@ export const updateTemperaShot = (
             const scale = (1 + (entryScale - 1) * (1 - eased)) * (1 + (entryScale - 1) * retract);
             const cx = box.x + box.width / 2;
             const cy = box.y + box.height / 2;
+            // 整句的随机角度只存在于 lineRotation 上；框跟着它绕句心转，
+            // 否则文字已经倾斜、框还横平竖直，看起来会脱节。
+            const lineTilt = view.glyphs[0]?.motion.lineRotation ?? 0;
             for (const line of [view.marquee.glow, view.marquee.core]) {
                 line.pivot.set(cx, cy);
                 line.position.set(cx, cy);
                 line.scale.set(scale);
+                line.rotation = lineTilt;
             }
             view.marquee.glow.visible = glow > 0.01;
             view.marquee.core.visible = true;

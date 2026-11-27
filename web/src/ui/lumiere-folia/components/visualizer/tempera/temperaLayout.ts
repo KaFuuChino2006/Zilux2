@@ -353,6 +353,11 @@ const varyFlowGlyphSizes = (glyphs: TemperaFlowGlyph[], fontSize: number, seed: 
     });
 };
 
+export const glyphEntranceSalt = (line: number, index: number) => line * 997 + index * 37 + 7;
+export const graphicEntranceSalt = (index: number) => index * 991 + 7;
+export const randomGlyphEntryAngle = (seed: number, salt: number, magnitude: number) =>
+    (temperaHash01(seed, salt, 167) - 0.5) * 2 * magnitude;
+
 const resolveFlowEntrance = (
     shotKind: TemperaShotKind,
     fontSize: number,
@@ -371,7 +376,7 @@ const resolveFlowEntrance = (
         enterX: Math.cos(angle) * magnitude,
         enterY: Math.sin(angle) * magnitude,
         enterRotation: (temperaHash01(seed, salt, 157) - 0.5) * 0.7
-            + (temperaHash01(seed, salt, 167) - 0.5) * 2 * extraRotation
+            + randomGlyphEntryAngle(seed, salt, extraRotation)
             + lineRotation,
         lineRotation,
         enterScale: 0.6 + temperaHash01(seed, salt, 163) * 0.3,
@@ -383,7 +388,7 @@ const resolveFlowEntrance = (
 };
 
 /** 整句共享的入场旋转：同一句所有字拿同一个角度，镜头跟随才有稳定的倾斜。 */
-const resolveLineEntranceRotation = (seed: number, lineIndex: number, magnitude: number): number => {
+export const resolveLineEntranceRotation = (seed: number, lineIndex: number, magnitude: number): number => {
     if (!(magnitude > 0)) return 0;
     return (temperaHash01(seed, lineIndex * 977 + 31, 173) - 0.5) * 2 * magnitude;
 };
@@ -454,7 +459,7 @@ const layoutVerticalFlow = (options: {
                 options.shotKind,
                 fontSize,
                 options.seed,
-                entry.lineIndex * 997 + glyphIndex * 37 + 7,
+                glyphEntranceSalt(entry.lineIndex, glyphIndex),
                 options.entryRotation ?? 0,
                 lineTilt,
             );
@@ -569,7 +574,7 @@ const layoutGraphicFlow = (options: {
             options.shotKind,
             fontSize,
             options.seed,
-            index * 991 + 7,
+            graphicEntranceSalt(index),
             options.entryRotation ?? 0,
             lineTilt,
         );
@@ -779,7 +784,7 @@ const layoutChainedFlow = (options: {
                 options.shotKind,
                 fontSize,
                 options.seed,
-                entry.lineIndex * 997 + glyphIndex * 37 + 7,
+                glyphEntranceSalt(entry.lineIndex, glyphIndex),
                 options.entryRotation ?? 0,
                 lineTilt,
             );
