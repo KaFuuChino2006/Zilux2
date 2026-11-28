@@ -3265,14 +3265,12 @@ export class LyricsView {
         if (!lyricTranslationEnabled()) { this.applyTranslationVisibility(); return; }
         // 画布接管后 DOM 歌词整棵停止更新（隐藏且不再刷），此时必须按播放时间从
         // 数据里取当前行的译文，不能再去读 DOM（那会永远读到停住的那一行）。
-        let next = '';
-        if (this.lumiereCoversLyrics() && this.state) {
-          const index = activeIndexOf(this.doc.lines, this.state.positionMs + lyricOffsetOf(this.lastTrackKey));
-          next = (this.doc.lines[index]?.translation ?? '').trim();
-        } else {
-          const line = document.querySelector('.lyric-line.is-active');
-          next = (line?.querySelector('.lyric-trans')?.textContent ?? '').trim();
-        }
+        // 只在画布接管时兜底。DOM 歌词模式（默认效果等）下行内译文本来就看得见，
+        // 底部条不该再插一条重复的；以前这里也会读 DOM 硬顶出来，于是和主判定的
+        // 「行内可见就隐藏」互相打架，表现为默认效果下底部条忽隐忽现。
+        if (!this.lumiereCoversLyrics() || !this.state) return;
+        const index = activeIndexOf(this.doc.lines, this.state.positionMs + lyricOffsetOf(this.lastTrackKey));
+        const next = (this.doc.lines[index]?.translation ?? '').trim();
         if (!next) {
           if (this.transBarTarget) {
             this.transBarTarget = '';
