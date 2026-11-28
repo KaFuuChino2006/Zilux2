@@ -266,6 +266,46 @@ export function coverColorsOf(track: OnlineTrack | null): Promise<CoverColors | 
   return task;
 }
 
+/** 按封面 URL 取主色：话语这类效果手上只有 coverUrl，没有 OnlineTrack。
+    代理地址（/api/cover?source=&key=）先走宿主取色，其余按 <img crossOrigin> 采样，
+    失败返回 null 由调用方保留原配色。 */
+export function coverColorsOfUrl(url: string | null | undefined): Promise<CoverColors | null> {
+  if (!url) return Promise.resolve(null);
+  const key = `url:${url}`;
+  const cached = cache.get(key);
+  if (cached !== undefined) return Promise.resolve(cached);
+  const running = inflight.get(key);
+  if (running) return running;
+  const task = (async () => {
+    let colors: CoverColors | null = null;
+    try {
+      const parsed = new URL(url);
+      if (parsed.pathname.endsWith('/api/cover')) {
+        const source = parsed.searchParams.get('source');
+        const apiKey = parsed.searchParams.get('key');
+        if (source && apiKey) {
+          const data = await fetchCoverColors(source, apiKey);
+          if (data && data.dominant) colors = { dominant: data.dominant, palette: data.palette.slice(0, 3) };
+        }
+      }
+      if (!colors) {
+        const data = await readPixels(url);
+        colors = data ? quantize(data) : null;
+      }
+    } catch {
+      colors = null;
+    }
+    remember(key, colors);
+    return colors;
+  })()
+    .catch(() => null)
+    .finally(() => {
+      inflight.delete(key);
+    });
+  inflight.set(key, task);
+  return task;
+}
+
 /** 本地无封面时用标题算一个稳定的兜底渐变。 */
 export function fallbackColors(seed: string): CoverColors {
   let hash = 2166136261;

@@ -352,6 +352,7 @@ import type { PlayScope } from './home';
 import type { HomeCollection, HomeData, HomeSpecial, HomeSpecialKind } from './home';
 import { openLyricPicker } from './lyricPicker';
 import { openTextSettingsSheet } from './textSettingsPanel';
+import { openHuayuSettingsSheet } from './huayuSettingsPanel';
 import { openRoomSettingsSheet } from './roomSettingsPanel';
 import { openVinylSettingsSheet } from './vinylSettingsPanel';
 import { readPosterLayout, writePosterLayout, type PosterLayout } from './posterLayout';
@@ -11727,13 +11728,10 @@ export class App {
         const renderRows = (): void => {
           const query = search.value.trim().toLowerCase();
           const matched = query ? families.filter((family) => family.toLowerCase().includes(query)) : families;
-          const shown = matched.slice(0, 160);
           list.replaceChildren(makeRow('', lang ? '跟随主字体' : '默认（跟随效果）', saved === ''));
-          for (const family of shown) list.append(makeRow(family, family, family === saved));
-          if (!shown.length) list.append(h('div', { class: 'qf-empty', text: '没有匹配的字体' }));
-          else if (matched.length > shown.length) {
-            list.append(h('div', { class: 'qf-empty', text: `还有 ${matched.length - shown.length} 款，继续输入筛选` }));
-          }
+          for (const family of matched) list.append(makeRow(family, family, family === saved));
+          if (!matched.length) list.append(h('div', { class: 'qf-empty', text: '没有匹配的字体' }));
+          else list.append(h('div', { class: 'qf-empty', text: `共 ${matched.length} 款` }));
         };
 
         search.addEventListener('input', renderRows);
@@ -11848,6 +11846,7 @@ export class App {
         flow: {action:'拼合设置…',hint:'背景与歌词独立配色、封面取色、段落换色、多角度运镜'},
         wenflash: {action:'文闪设置…',hint:'入场、闪烁、亮拍外观与模糊'},
         overlap: {action:'重合设置…',hint:'配色、字号、跟随运镜、旋转概率与角度、落点散开、旧句消散、括号/轨迹/弧线/刻度尺'},
+        huayu: {action:'话语设置…',hint:'布局（字号/同屏条数/落点/气泡宽度/圆角/分侧）、外观（气泡外观/贴纸歪斜/浓度/未唱亮度/辉光/译文/双勾/时间戳/头像）、动效（入场/出场/入场时长与位移/回弹/跟随/正在输入）'},
       };
       const effectSettingsBtn = h('button', {
         class: 'quick-value quick-text-settings-btn',
@@ -11863,7 +11862,8 @@ export class App {
         if (mode === 'off') return;
         this.closeQuick();
         const open =
-          mode === 'wenflash' ? openWenflashSettingsSheet : mode === 'overlap' ? openOverlapSettingsSheet
+          mode === 'huayu' ? openHuayuSettingsSheet
+            : mode === 'wenflash' ? openWenflashSettingsSheet : mode === 'overlap' ? openOverlapSettingsSheet
             : mode === 'flow' ? openFlowSettingsSheet : mode === 'text'
               ? openTextSettingsSheet
               : mode === 'room'

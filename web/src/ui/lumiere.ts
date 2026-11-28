@@ -41,8 +41,8 @@ import { lyricDominantLang, lyricFontFamilyFor } from './lyricFont';
 for (const profile of LUMIERE_PROFILES) profile.typography = 'horizontal';
 
 
-/** 播放效果：关闭 / 纯字 / 房间 / 唱片 / 拼合（声压、长镜流诗已从当前版本移除）。 */
-export type LumiereMode = 'off' | 'text' | 'room' | 'vinyl' | 'overlap' | 'wenflash' | 'flow' | 'poem' | 'pressure';
+/** 播放效果：关闭 / 纯字 / 房间 / 唱片 / 拼合 / 话语（声压、长镜流诗已从当前版本移除）。 */
+export type LumiereMode = 'off' | 'text' | 'room' | 'vinyl' | 'overlap' | 'wenflash' | 'flow' | 'huayu' | 'poem' | 'pressure';
 
 export const LUMIERE_MODES: Array<{ id: LumiereMode; label: string; hint: string }> = [
   { id: 'flow', label: '拼合', hint: '按句分镜排版、镜头连续推移，歌词逐字入场；网点几何底纹配反色大字，强节奏的歌最带感' },
@@ -52,6 +52,8 @@ export const LUMIERE_MODES: Array<{ id: LumiereMode; label: string; hint: string
   { id: 'text', label: '纯字', hint: '发光大字、关键字自动染色、逐字点亮；到「文字设置」里还能加背景光柱与雾' },
   { id: 'room', label: '房间', hint: '薄荷绿纵深 + 长条地毯：每句歌词拆成词散落在前方空间里，镜头跟着正在唱的那句推进；到「快捷设置 → 房间设置」可细调歌词风格、颜色与离散度' },
   { id: 'vinyl', label: '唱片', hint: '暖褐聆听室 + 33⅓ 转黑胶 + 黄铜唱臂：歌词压在唱片下方逐词点亮，暂停时唱片渐停、唱臂抬起；到「快捷设置 → 唱片设置」可细调盘面、唱臂与歌词样式' },
+  // 话语：新字模先占位。链路、时钟、逐句出入场已就位，画面内容后续再长。
+  { id: 'huayu', label: '话语', hint: '新效果（骨架）：当前只跑通播放时钟、逐句出入场与逐词点亮，画面内容待定' },
 ];
 
 const STORE_KEY = 'zilux2.lumiere';
@@ -64,7 +66,7 @@ export function lumiereMode(): LumiereMode {
     // 「绘光」被「纯字」取代，存档直接落到纯字。
     if (raw === 'room') return 'room';
     if (raw === 'vinyl') return 'vinyl';
-    if (raw === 'flow' || raw === 'overlap' || raw === 'wenflash') return raw;
+    if (raw === 'flow' || raw === 'overlap' || raw === 'wenflash' || raw === 'huayu') return raw;
     // 声压 / 长镜流诗已从当前版本移除，旧存档统一回落到关闭。
     if (raw === 'poem' || raw === 'pressure') return 'off';
     if (raw === 'off' || raw === 'lightfield') return 'off';

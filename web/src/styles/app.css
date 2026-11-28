@@ -3827,6 +3827,8 @@ body,
 
 .text-sheet .ts-panel {
   width: min(1240px, 94vw);
+  /* 固定窗高：切分段/换效果时不跟着内容长短跳动 */
+  height: min(76vh, 700px);
   max-height: min(76vh, 700px);
   display: flex;
   flex-direction: column;
@@ -3978,6 +3980,36 @@ body,
   gap: 20px;
 }
 
+/* 复用 .ts-seg 的白色滑块与 app.ts 的弹入动画，只额外负责吸顶与分段宽度。 */
+.ts-section-nav {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  margin: 0 0 16px;
+  background: rgb(var(--overlay-rgb) / .06);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.ts-section-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  white-space: nowrap;
+  letter-spacing: .04em;
+}
+
+.ts-section-btn:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 1px; }
+
+.ts-section {
+  display: none;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.ts-section.is-on { display: flex; }
+
 .ts-group {
   display: flex;
   flex-direction: column;
@@ -4029,6 +4061,32 @@ body,
   font-size: 12px;
   color: var(--accent-strong);
   font-variant-numeric: tabular-nums;
+}
+
+/* 头像文字这类短文本输入：跟滑杆行同一套宽度与描边，不要用浏览器默认框。 */
+.ts-input {
+  width: 100%;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: rgb(var(--ink-rgb) / 0.22);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  outline: 0;
+  transition: border-color var(--motion-quick) var(--ease), background var(--motion-quick) var(--ease);
+}
+
+.ts-input::placeholder {
+  color: var(--muted);
+  opacity: 0.7;
+}
+
+.ts-input:focus-visible {
+  border-color: var(--accent);
+  background: rgb(var(--ink-rgb) / 0.34);
 }
 
 .ts-hint {
@@ -4229,6 +4287,7 @@ body,
 
   .text-sheet .ts-panel {
     width: 94vw;
+    height: 78vh;
     max-height: 78vh;
   }
 
@@ -4272,6 +4331,115 @@ body,
   letter-spacing: 0.24em;
   color: rgb(232 226 214 / 0.3);
   pointer-events: none;
+}
+
+/* ── 播放效果 · 话语（聊天记录：左侧会话栏 + 逐句发出的气泡） ──
+   舞台沿用 .lyrics-stage 的绝对定位与淡入规则，这里只补落底色、画布尺寸与亮场控件配色。 */
+.lyrics-stage.is-huayu {
+  background:
+    radial-gradient(124% 88% at 50% 40%, #ffffff, #f6f3ef 62%, #ebe7e1 100%),
+    #f7f5f2;
+}
+.lyrics-stage.is-huayu .huayu-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+/* 背景设成「关闭」：舞台不铺底色，整页背景透上来 */
+.lyrics-stage.is-huayu.is-bg-off {
+  background: transparent;
+}
+.lyrics-view.is-huayu:has(.lyrics-stage.is-bg-off) .lyrics-bg,
+.lyrics-view.is-huayu:has(.lyrics-stage.is-bg-off) .lyrics-scrim {
+  opacity: 0;
+}
+.lyrics-view.is-huayu .lyrics-scrim {
+  background: transparent;
+}
+.lyrics-view.is-huayu .lyrics-bg {
+  opacity: 0.05;
+  filter: blur(120px) saturate(1.02) brightness(1.3);
+}
+/* 白底上歌词页自己的控件换成半透明深墨，压在白场里仍然看得清 */
+/* 话语输入条：真接键的透明 textarea，字形和闪烁光标仍由 canvas 画，
+   所以既能用输入法真打，视觉上也还是那一条统一的聊天输入条。 */
+.lyrics-stage.is-huayu .huayu-canvas,
+.lyrics-stage.is-huayu .huayu-input {
+  /* 舞台基类是 pointer-events:none（背景层不接事件），话语要接点击，只把画布和输入层放出来 */
+  pointer-events: auto;
+}
+
+/* 输入框是真 textarea 但字是 canvas 画的：原生选区会画成一块盖在字形上的色块
+   （而且行盒位置与 canvas 基线对不上），所以原生选区彻底透明，选中范围由 canvas 自绘。 */
+.lyrics-stage.is-huayu .huayu-input::selection {
+  background: transparent;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+.lyrics-stage.is-huayu .huayu-input::-moz-selection {
+  background: transparent;
+  color: transparent;
+}
+
+.lyrics-stage.is-huayu .huayu-input {
+  position: absolute;
+  z-index: 3;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  resize: none;
+  overflow: hidden;
+  background: transparent;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  caret-color: transparent;
+  font: inherit;
+  line-height: 1;
+  white-space: pre;
+}
+
+/* 话语：整屏都交给 canvas 的聊天气泡，DOM 歌词（含底部那条当前句胶囊）一律不画，
+   免得它压在输入条上方跟草稿重复。舞台起不来时靠 :has(.is-failed) 兜底放回来。 */
+.lyrics-view.is-huayu .lyrics-frame,
+.lyrics-view.is-huayu .lyrics-transbar {
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(0.99);
+  transition: opacity var(--motion-slow) var(--ease), transform var(--motion-slow) var(--ease);
+}
+
+.lyrics-view.is-huayu:has(.lyrics-stage.is-failed) .lyrics-frame,
+.lyrics-view.is-huayu:has(.lyrics-stage.is-failed) .lyrics-transbar {
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+}
+
+.lyrics-view.is-huayu .lyrics-close {
+  color: #2b2530;
+  background: rgb(255 255 255 / 0.72);
+  border-color: rgb(43 37 48 / 0.12);
+  box-shadow: 0 10px 26px rgb(58 44 24 / 0.12);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+.lyrics-view.is-huayu .lyrics-close:hover {
+  background: rgb(255 255 255 / 0.9);
+}
+.lyrics-view.is-huayu .lyrics-title {
+  color: #2b2530;
+}
+.lyrics-view.is-huayu .lyrics-artist,
+.lyrics-view.is-huayu .lyrics-source,
+.lyrics-view.is-huayu .lyrics-progress-time {
+  color: rgb(43 37 48 / 0.62) !important;
+}
+.lyrics-view.is-huayu .lyrics-progress-track {
+  background: rgb(43 37 48 / 0.12);
+}
+.lyrics-view.is-huayu .lyrics-progress-fill {
+  background: #b08a4a;
 }
 
 /* ── 播放效果 · 房间（薄荷绿纵深隧道：逐词散落 + 镜头跟随） ──

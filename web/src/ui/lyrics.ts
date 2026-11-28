@@ -27,6 +27,7 @@ import { coverColorsOf, fallbackColors } from './coverColors';
 import { createLumiereStage, lumiereMode, lumiereThemeForCover, setLumiereMode, type LumiereMode, type LumiereSongInput, type LumiereStage } from './lumiere';
 import { createRoomStage, applyRoomStyleSettings, setRoomLyricTintProvider, type RoomStage } from './room';
 import { createVinylStage, applyVinylStyleSettings, setVinylLyricTintProvider, type VinylStage } from './vinyl';
+import { createHuayuStage, type HuayuStage } from './huayu';
 import { createFlowStage, type FlowStage } from './flow';
 import { perfEvent, perfMark, perfOn } from './perfProbe';
 import { createPoemStage, type PoemStage } from './poem';
@@ -1439,6 +1440,8 @@ export class LyricsView {
   /** 播放效果（唱片）舞台：暖褐聆听室 + 33⅓ 转黑胶 + 黄铜唱臂，歌词压在唱片下方。 */
   private vinylStage: VinylStage | null = null;
   private flowStage: FlowStage | null = null;
+  /** 播放效果（话语）舞台：新字模骨架，画布 2D 逐句出入场 + 逐词点亮。 */
+  private huayuStage: HuayuStage | null = null;
   private poemStage: PoemStage | null = null;
   private pressureStage: PressureStage | null = null;
   /** 进页时等画布第一次出像的监听（见 watchStagePaint）。 */
@@ -2154,9 +2157,10 @@ export class LyricsView {
     const roomOn = mode === 'room';
     const vinylOn = mode === 'vinyl';
     const flowOn = (mode === 'flow' || mode === 'overlap' || mode === 'wenflash');
+    const huayuOn = mode === 'huayu';
     const poemOn = mode === 'poem';
     const pressureOn = mode === 'pressure';
-    const anyOn = textOn || roomOn || vinylOn || flowOn || poemOn || pressureOn;
+    const anyOn = textOn || roomOn || vinylOn || flowOn || huayuOn || poemOn || pressureOn;
     // 纯字 / 房间 / 唱片都由 canvas 画歌词，DOM 歌词与封面栏让位；什么时候藏由 CSS 的 is-painted 门槛决定，
     // 画布还没出像时默认歌词页仍然可见，不会闪灰。
     if (anyOn && !this.lumiereText) {
@@ -2164,6 +2168,7 @@ export class LyricsView {
       this.roomStage = createRoomStage();
       this.vinylStage = createVinylStage();
       this.flowStage = createFlowStage();
+      this.huayuStage = createHuayuStage();
       this.poemStage = createPoemStage();
       this.pressureStage = createPressureStage();
       this.bgEl.nextElementSibling?.after(
@@ -2171,6 +2176,7 @@ export class LyricsView {
       this.roomStage.root,
       this.vinylStage.root,
       this.flowStage.root,
+      this.huayuStage.root,
       this.poemStage.root,
       this.pressureStage.root,
       );
@@ -2183,6 +2189,7 @@ export class LyricsView {
     this.root.classList.toggle('is-room', roomOn);
     this.root.classList.toggle('is-vinyl', vinylOn);
     this.root.classList.toggle('is-flow', flowOn);
+    this.root.classList.toggle('is-huayu', huayuOn);
     // 重合单独一个类：壁纸在背后时它要保留纸底（不能走 screen 混合，否则纸和字一起被滤掉）。
     this.root.classList.toggle('is-overlap', mode === 'overlap' || mode === 'wenflash');
     this.root.classList.toggle('is-poem', poemOn);
@@ -2195,6 +2202,7 @@ export class LyricsView {
       : mode === 'text' ? '纯字'
       : mode === 'room' ? '房间'
       : mode === 'vinyl' ? '唱片'
+      : mode === 'huayu' ? '话语'
       : '歌词';
     this.root.dataset.lumiereHint = anyOn ? `${stageLabel} · 准备中` : '';
     // 播放效果开启/关闭会改变「封面在左」是否生效，切完模式立即重算一次。
@@ -2230,10 +2238,16 @@ export class LyricsView {
     const poem = this.poemStage;
     if (poemOn) poem?.activate();
     else poem?.deactivate();
+    const huayu = this.huayuStage;
+    if (huayu) {
+      huayu.setMode(huayuOn ? 'huayu' : 'off');
+      if (huayuOn) huayu.activate();
+      else huayu.deactivate();
+    }
     const pressure = this.pressureStage;
     if (pressureOn) pressure?.activate();
     else pressure?.deactivate();
-    const stageRoot = pressureOn ? pressure?.root : poemOn ? poem?.root : flowOn ? flow?.root : roomOn ? room?.root : vinylOn ? vinyl?.root : stage?.root;
+    const stageRoot = pressureOn ? pressure?.root : poemOn ? poem?.root : huayuOn ? huayu?.root : flowOn ? flow?.root : roomOn ? room?.root : vinylOn ? vinyl?.root : stage?.root;
     const painted = stageRoot ? stageRoot.classList.contains('is-painted') : false;
     const failed = stageRoot ? stageRoot.classList.contains('is-failed') : false;
     if (anyOn && stageRoot && !painted && !failed) {
@@ -2346,6 +2360,7 @@ export class LyricsView {
     lumiereThemeNow = lumiereThemeForCover(this.bgMode, this.palette, this.doc.lines.map((line) => line.text).join(' '));
     lumierePaletteNow = this.palette ? [...this.palette] : null;
     this.lumiereText?.setTheme(lumiereThemeNow, lumierePaletteNow);
+    this.huayuStage?.setTheme(lumiereThemeNow);
     {perfEvent('lyrics.theme.flow');const startedAt=perfOn()?performance.now():0;this.flowStage?.setTheme(lumiereThemeNow);if(startedAt)perfMark('lyrics.theme.flow',startedAt);}
   }
 
@@ -2378,6 +2393,7 @@ export class LyricsView {
     this.roomStage?.setSong(input);
     this.vinylStage?.setSong(input);
     {perfEvent('lyrics.song.flow');const startedAt=perfOn()?performance.now():0;this.flowStage?.setSong(input);if(startedAt)perfMark('lyrics.song.flow',startedAt);}
+    this.huayuStage?.setSong(input);
     this.poemStage?.setSong(input);
     this.pressureStage?.setSong(input);
   }
@@ -3477,6 +3493,8 @@ export class LyricsView {
     this.vinylStage = null;
     this.flowStage?.dispose();
     this.flowStage = null;
+    this.huayuStage?.dispose();
+    this.huayuStage = null;
     this.poemStage?.dispose();
     this.poemStage = null;
     this.pressureStage?.dispose();
