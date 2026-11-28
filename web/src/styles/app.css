@@ -9710,3 +9710,77 @@ html.is-pb-expanded .app:not(.is-mini):not(.is-mini-entering):not(.is-mini-exiti
 
 /* 文闪背景反色：整幅画面一起黑白翻转（含旧句、装饰、图片与底色）。 */
 .zl-flow-scene.is-invert-flipped{filter:invert(1)}
+
+/* 两侧始终平分空间，收放时上一首和下一首在主按钮两边对称展开。 */
+.playerbar .pb-leading, .playerbar .pb-trailing { display: contents; }
+.app:not(.is-mini,.is-mini-entering,.is-mini-exiting) .playerbar {
+  display: grid;
+  grid-template-columns: minmax(0,1fr) auto minmax(0,1fr);
+  padding-inline: 10px;
+}
+.app:not(.is-mini,.is-mini-entering,.is-mini-exiting) .playerbar :is(.pb-leading,.pb-trailing) {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: inherit;
+}
+.app:not(.is-mini,.is-mini-entering,.is-mini-exiting) .pb-leading .pb-actions { margin-left: auto; }
+.app:not(.is-mini,.is-mini-entering,.is-mini-exiting) .pb-trailing .pb-progress { min-width: 0; }
+.app:is(.is-mini,.is-mini-entering,.is-mini-exiting) .pb-actions { order: 1; }
+.app:is(.is-mini,.is-mini-entering,.is-mini-exiting) .pb-extra { order: 2; }
+
+/* 播放键收放时的体积呼吸：收起略小，悬停 / 常驻展开回到原大，曲线与条子同一条。
+   用独立的 scale 属性，不碰 transform —— 按压反馈（transform:scale(.95)）照旧叠加。 */
+.app:not(.is-mini,.is-mini-entering,.is-mini-exiting) .playerbar .pb-btn.is-main {
+  scale: 1;
+  transition:
+    background var(--motion-instant) var(--ease),
+    color var(--motion-instant) var(--ease),
+    transform var(--motion-instant) var(--ease),
+    filter var(--motion-fast) var(--ease),
+    scale var(--pb-settle-duration, .6s) var(--pb-settle-curve, cubic-bezier(.22,1.28,.36,1));
+}
+.app:not(.is-mini,.is-mini-entering,.is-mini-exiting) .playerbar:not(.is-open):not(:focus-within) .pb-btn.is-main {
+  scale: .9;
+}
+html.is-pb-expanded .app:not(.is-mini,.is-mini-entering,.is-mini-exiting) .playerbar:not(.is-open):not(:focus-within) .pb-btn.is-main {
+  scale: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .app:not(.is-mini,.is-mini-entering,.is-mini-exiting) .playerbar .pb-btn.is-main {
+    transition-duration: var(--motion-instant);
+  }
+}
+
+/* 常驻展开 = 悬停展开的完整形态：宽度、封面、标题、进度、音量之外，
+   上一首 / 下一首 / 模式 / 收藏 / 评论 / 下载 / 人声分离 / 队列这一排也不再收缩淡出，
+   播放键保持原尺寸。别再出现「常驻展开却还剩几个按钮是收起态」的错位。 */
+html.is-pb-expanded .app:not(.is-mini,.is-mini-entering,.is-mini-exiting) .playerbar .pb-controls .pb-btn,
+html.is-pb-expanded .app:not(.is-mini,.is-mini-entering,.is-mini-exiting) .playerbar .pb-actions .pb-btn {
+  display: grid;
+  max-width: 38px;
+  opacity: 1;
+  overflow: visible;
+  pointer-events: auto;
+}
+html.is-pb-expanded .app:not(.is-mini,.is-mini-entering,.is-mini-exiting) .playerbar .pb-actions .pb-btn.pb-stem {
+  max-width: 68px;
+  min-width: 46px;
+  padding: 0 11px;
+  overflow: hidden;
+}
+
+/* 左列放不下时让标题先让位：常驻展开下标题原本被钉成 width:190px;flex:none，
+   加上封面与「模式/收藏/评论/下载/原声/队列」六颗按钮后总宽超过 1fr 列，
+   队列按钮会溢出到中间列、压在「上一首」身上。改成可压缩，永远不越界。 */
+.app:not(.is-mini,.is-mini-entering,.is-mini-exiting) .playerbar .pb-meta {
+  min-width: 0;
+}
+html.is-pb-expanded .app:not(.is-mini,.is-mini-entering,.is-mini-exiting) .playerbar .pb-meta {
+  width: auto;
+  flex: 0 1 190px;
+  min-width: 0;
+}
+.app:not(.is-mini,.is-mini-entering,.is-mini-exiting) .pb-leading {
+  overflow: hidden;
+}

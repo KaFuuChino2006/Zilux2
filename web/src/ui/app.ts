@@ -10021,13 +10021,15 @@ export class App {
     const bar = h(
       'div',
       { class: 'playerbar' },
-      this.pbCoverWrap,
-      this.pbMeta,
+      h('div', { class: 'pb-leading' },
+        this.pbCoverWrap, this.pbMeta,
+        h('div', { class: 'pb-actions' }, this.pbModeBtn, this.pbLikeBtn, this.pbCommentBtn, downloadBtn, this.pbStemBtn, this.pbQueueBtn),
+      ),
       h('div', { class: 'pb-controls' }, prevBtn, this.pbPlayBtn, nextBtn),
-      // 播放模式 / 收藏 / 评论 / 下载 / 人声分离 / 待播队列常驻显示，不随播放条收起而隐藏
-      h('div', { class: 'pb-actions' }, this.pbModeBtn, this.pbLikeBtn, this.pbCommentBtn, downloadBtn, this.pbStemBtn, this.pbQueueBtn),
-      h('div', { class: 'pb-progress' }, this.pbCur, track, this.pbDur),
-      h('div', { class: 'pb-extra' }, lyricsBtn, volumeWrap, this.miniBtn),
+      h('div', { class: 'pb-trailing' },
+        h('div', { class: 'pb-progress' }, this.pbCur, track, this.pbDur),
+        h('div', { class: 'pb-extra' }, lyricsBtn, volumeWrap, this.miniBtn),
+      ),
     );
 
     this.seamlessHint = h('div', { class: 'pb-seamless-hint', 'aria-live': 'polite' });
